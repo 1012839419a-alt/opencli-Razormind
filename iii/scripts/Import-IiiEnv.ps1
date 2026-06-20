@@ -10,8 +10,14 @@ function Import-IiiEnv {
         $RepoRoot = Split-Path -Parent $IiiRoot
     }
 
-    $env:III_URL = if ($env:III_URL) { $env:III_URL } else { "ws://127.0.0.1:49134" }
-    $env:ODP_INGEST_URL = if ($env:ODP_INGEST_URL) { $env:ODP_INGEST_URL } else { "http://127.0.0.1:8040" }
+    $nasHost = if ($env:III_NAS_HOST) { $env:III_NAS_HOST } else { "192.168.50.130" }
+    $nasMode = $env:III_DEPLOY_MODE -eq "nas-edge"
+    if (-not $env:III_URL) {
+        $env:III_URL = if ($nasMode) { "ws://${nasHost}:49134" } else { "ws://127.0.0.1:49134" }
+    }
+    if (-not $env:ODP_INGEST_URL) {
+        $env:ODP_INGEST_URL = if ($nasMode) { "http://${nasHost}:8040" } else { "http://127.0.0.1:8040" }
+    }
     if (-not $env:DISCORD_CLI_BIN) { $env:DISCORD_CLI_BIN = "discord" }
 
     $loaded = $null
@@ -40,7 +46,38 @@ function Import-IiiEnv {
         RepoRoot = $RepoRoot
         EnvFile = $loaded
         DiscordTokenSet = [bool]$env:DISCORD_TOKEN
+        NasEdge = $nasMode
+        EngineHost = Get-IiiEngineHost
     }
+}
+
+function Get-IiiEngineHost {
+    $nasHost = if ($env:III_NAS_HOST) { $env:III_NAS_HOST } else { "192.168.50.130" }
+    $url = $env:III_URL
+    if ($url -match '^wss?://([^:/]+)') {
+        return $matches[1]
+    }
+    if ($env:III_DEPLOY_MODE -eq "nas-edge") {
+        return $nasHost
+    }
+    return "127.0.0.1"
+}
+
+function Get-IiiExe {
+    Join-Path $env:USERPROFILE ".local\iii\iii.exe"
+}
+
+function Invoke-IiiEngineTrigger {
+    param(
+        [Parameter(Mandatory)][string]$FunctionPath,
+        [string[]]$ExtraArgs = @(),
+        [int]$TimeoutMs = 30000
+    )
+    $iii = Get-IiiExe
+    if (-not (Test-Path $iii)) { throw "iii CLI not found: $iii" }
+    $engineHost = Get-IiiEngineHost
+    $triggerArgs = @("trigger", "--address", $engineHost, "--timeout-ms", $TimeoutMs, $FunctionPath) + $ExtraArgs
+    & $iii @triggerArgs
 }
 
 function Get-IiiWorkerEnvironment {
@@ -57,6 +94,7 @@ function Start-IiiPythonWorker {
     $script = Join-Path $IiiRoot "workers\$WorkerName\src\main.py"
     if (-not (Test-Path $script)) { throw "Worker script not found: $script" }
     $py = (Get-Command python -ErrorAction Stop).Source
+    $env:PYTHONPATH = $IiiRoot
     $envBlock = Get-IiiWorkerEnvironment
     $params = @{
         FilePath = $py

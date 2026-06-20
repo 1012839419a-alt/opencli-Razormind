@@ -26,13 +26,21 @@ pub async fn migrate(pool: &PgPool) -> Result<()> {
             task_id UUID,
             committed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             CONSTRAINT uq_odp_source_event UNIQUE (source_id, event_id)
-        );
-        CREATE INDEX IF NOT EXISTS idx_odp_records_source_ts
-            ON odp_records (source_id, source_ts DESC);
+        )
         "#,
     )
     .execute(pool)
     .await?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_odp_records_source_ts
+            ON odp_records (source_id, source_ts DESC)
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
     Ok(())
 }
 
