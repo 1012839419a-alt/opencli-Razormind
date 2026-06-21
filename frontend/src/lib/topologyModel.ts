@@ -38,6 +38,11 @@ export interface TopologySkill {
   targetPath?: string
 }
 
+export interface TopologyPorts {
+  inputs: string[]
+  outputs: string[]
+}
+
 export interface TopologyNodeData extends Record<string, unknown> {
   kind: TopologyKind
   title: string
@@ -45,6 +50,7 @@ export interface TopologyNodeData extends Record<string, unknown> {
   health: TopologyHealth
   badges: string[]
   skills: TopologySkill[]
+  ports: TopologyPorts
   targetPath?: string
   detail: Record<string, unknown>
 }
@@ -55,6 +61,7 @@ interface TopologyNodeBody {
   health: TopologyHealth
   badges: string[]
   skills: TopologySkill[]
+  ports: TopologyPorts
   targetPath?: string
   detail: Record<string, unknown>
 }
@@ -171,6 +178,14 @@ export function buildTopologyGraph(input: TopologyInput, options: TopologyOption
       subtitle: source.channel_type,
       health: source.enabled ? 'healthy' : 'disabled',
       badges: compact([source.enabled ? 'enabled' : 'disabled', ...source.tags.slice(0, 2)]),
+      ports: {
+        inputs: ['source_channel'],
+        outputs: compact([
+          sourceSchedules.length > 0 ? 'plan' : undefined,
+          sourceTasks.length > 0 ? 'trigger' : undefined,
+          sourceRules.length > 0 ? 'notify' : undefined,
+        ]),
+      },
       skills: [
         skill('collect', 'Collect', source.enabled ? 'ready' : 'blocked', source.enabled ? 'Channel can be triggered' : 'Source is disabled', '/sources'),
         skill('schedule', 'Schedule', sourceSchedules.length > 0 ? 'ready' : 'missing', sourceSchedules.length > 0 ? `${sourceSchedules.length} plan(s) attached` : 'No schedule attached', `/schedules?source_id=${encodeURIComponent(source.id)}`),
@@ -197,6 +212,10 @@ export function buildTopologyGraph(input: TopologyInput, options: TopologyOption
         schedule.timezone,
         schedule.next_run_at ? `next ${shortDate(schedule.next_run_at)}` : undefined,
       ]),
+      ports: {
+        inputs: compact(['source', 'manual']),
+        outputs: compact(['trigger', schedule.agent_id ? 'agent' : undefined]),
+      },
       skills: [
         skill('cron', 'Cron', schedule.enabled ? 'ready' : 'blocked', schedule.enabled ? schedule.cron_expression : 'Schedule is disabled', `/schedules?source_id=${encodeURIComponent(schedule.source_id)}`),
         skill('next-run', 'Next run', schedule.next_run_at ? 'ready' : 'missing', schedule.next_run_at ? shortDate(schedule.next_run_at) : 'No next run calculated', '/schedules'),
@@ -225,6 +244,10 @@ export function buildTopologyGraph(input: TopologyInput, options: TopologyOption
       subtitle: task.trigger_type,
       health: healthFromTaskStatus(task.status),
       badges: compact([task.status, `P${task.priority}`]),
+      ports: {
+        inputs: compact(['source', task.agent_id ? 'agent' : undefined]),
+        outputs: compact(['record']),
+      },
       skills: [
         skill('run', 'Run', task.status === 'running' ? 'running' : task.status === 'failed' || task.status === 'cancelled' ? 'blocked' : 'ready', task.status, '/tasks'),
         skill('agent', 'Agent', task.agent_id ? 'ready' : 'missing', task.agent_id ? `Agent ${shortId(task.agent_id)}` : 'No agent attached', '/agents'),
@@ -249,6 +272,10 @@ export function buildTopologyGraph(input: TopologyInput, options: TopologyOption
       subtitle: agent.model || agent.processor_type,
       health: agent.enabled ? 'healthy' : 'disabled',
       badges: compact([agent.enabled ? 'enabled' : 'disabled', agent.processor_type]),
+      ports: {
+        inputs: ['task'],
+        outputs: compact(['result']),
+      },
       skills: [
         skill('prompt', 'Prompt', agent.prompt_template ? 'ready' : 'missing', agent.prompt_template ? 'Prompt template configured' : 'No prompt template', '/agents'),
         skill('model', 'Model', agent.model ? 'ready' : 'missing', agent.model || 'No model override', '/providers'),
@@ -285,6 +312,10 @@ export function buildTopologyGraph(input: TopologyInput, options: TopologyOption
       subtitle: record.status,
       health: healthFromRecordStatus(record.status),
       badges: compact([record.status, shortId(record.content_hash)]),
+      ports: {
+        inputs: compact(['task']),
+        outputs: compact(['notification', record.status === 'stored' ? undefined : 'normalize']),
+      },
       skills: [
         skill('normalize', 'Normalize', record.normalized_data && Object.keys(record.normalized_data).length > 0 ? 'ready' : 'missing', 'Normalized payload', '/records'),
         skill('ai', 'AI', record.ai_enrichment && Object.keys(record.ai_enrichment).length > 0 ? 'ready' : 'missing', record.ai_enrichment ? 'AI enrichment present' : 'No AI enrichment', '/records'),
@@ -313,6 +344,10 @@ export function buildTopologyGraph(input: TopologyInput, options: TopologyOption
       subtitle: rule.notifier_type,
       health: healthFromNotification(rule, ruleLogs),
       badges: compact([rule.enabled ? 'enabled' : 'disabled', rule.trigger_event]),
+      ports: {
+        inputs: compact(['source', 'record']),
+        outputs: compact(['ack']),
+      },
       skills: [
         skill('deliver', 'Deliver', rule.enabled ? 'ready' : 'blocked', rule.enabled ? rule.notifier_type : 'Rule is disabled', '/notifications'),
         skill('ack', 'ACK', hasAck ? 'ready' : hasPendingAck ? 'running' : 'missing', hasAck ? 'Downstream acknowledged' : hasPendingAck ? 'Waiting for downstream ACK' : 'No ACK observed', '/notifications'),
@@ -348,6 +383,10 @@ export function buildTopologyGraph(input: TopologyInput, options: TopologyOption
       subtitle: `${node.protocol.toUpperCase()} · ${node.mode}`,
       health: node.status === 'online' ? 'healthy' : 'failed',
       badges: compact([node.node_type, node.status]),
+      ports: {
+        inputs: compact(['control', 'proxy']),
+        outputs: compact(['telemetry']),
+      },
       skills: [
         skill('transport', 'Transport', node.status === 'online' ? 'ready' : 'blocked', node.protocol.toUpperCase(), '/nodes'),
         skill('browser', 'Browser', node.mode ? 'ready' : 'missing', node.mode, '/nodes'),
@@ -369,6 +408,10 @@ export function buildTopologyGraph(input: TopologyInput, options: TopologyOption
       subtitle: worker.worker_id,
       health: healthFromWorker(worker),
       badges: compact([worker.status, `${worker.active_tasks} active`]),
+      ports: {
+        inputs: compact(['scheduler', 'task']),
+        outputs: compact(['result', 'heartbeat']),
+      },
       skills: [
         skill('execute', 'Execute', healthFromWorker(worker) === 'failed' ? 'blocked' : 'ready', worker.status, '/workers'),
         skill('queue', 'Queue', worker.active_tasks > 0 ? 'running' : 'ready', `${worker.active_tasks} active task(s)`, '/workers'),

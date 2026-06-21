@@ -20,6 +20,7 @@ import {
   Calendar,
   CheckCircle2,
   CircleAlert,
+  SlidersHorizontal,
   Database,
   FileText,
   ListChecks,
@@ -108,6 +109,7 @@ export default function TopologyPage() {
   const [searchParams] = useSearchParams()
   const sourceFilter = searchParams.get('source')
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
+  const [viewMode, setViewMode] = useState<'flow' | 'health' | 'skills'>('flow')
   const [layouted, setLayouted] = useState<{ nodes: TopologyFlowNode[]; edges: TopologyFlowEdge[] }>({
     nodes: [],
     edges: [],
@@ -200,8 +202,8 @@ export default function TopologyPage() {
     ],
   )
   const graph = useMemo(
-    () => filterTopologyGraphBySource(fullGraph, sourceFilter),
-    [fullGraph, sourceFilter],
+    () => deriveTopologyGraph(fullGraph, sourceFilter, viewMode),
+    [fullGraph, sourceFilter, viewMode],
   )
   const focusedSource = useMemo(
     () => sourcesQuery.data?.data.find((source) => source.id === sourceFilter) ?? null,
@@ -244,6 +246,7 @@ export default function TopologyPage() {
           : t('topology.description')}
         action={
           <div className="flex flex-wrap items-center gap-2">
+            <TopologyModeSwitcher value={viewMode} onChange={setViewMode} />
             {sourceFilter && (
               <Link
                 to="/topology"
@@ -307,9 +310,57 @@ export default function TopologyPage() {
   )
 }
 
+function TopologyModeSwitcher({
+  value,
+  onChange,
+}: {
+  value: 'flow' | 'health' | 'skills'
+  onChange: (next: 'flow' | 'health' | 'skills') => void
+}) {
+  return (
+    <div className="flex items-center rounded-md border border-slate-200 bg-white/90 p-0.5 text-xs font-medium text-gray-600 shadow-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">
+      <button
+        type="button"
+        onClick={() => onChange('flow')}
+        className={[
+          'inline-flex items-center gap-1 rounded px-2.5 py-1.5',
+          value === 'flow' ? 'bg-cyan-500 text-white' : 'hover:bg-slate-100 dark:hover:bg-slate-700',
+        ].join(' ')}
+      >
+        <Workflow className="h-3.5 w-3.5" />
+        流程
+      </button>
+      <button
+        type="button"
+        onClick={() => onChange('health')}
+        className={[
+          'inline-flex items-center gap-1 rounded px-2.5 py-1.5',
+          value === 'health' ? 'bg-amber-500 text-white' : 'hover:bg-slate-100 dark:hover:bg-slate-700',
+        ].join(' ')}
+      >
+        <SlidersHorizontal className="h-3.5 w-3.5" />
+        健康
+      </button>
+      <button
+        type="button"
+        onClick={() => onChange('skills')}
+        className={[
+          'inline-flex items-center gap-1 rounded px-2.5 py-1.5',
+          value === 'skills' ? 'bg-red-500 text-white' : 'hover:bg-slate-100 dark:hover:bg-slate-700',
+        ].join(' ')}
+      >
+        <CircleAlert className="h-3.5 w-3.5" />
+        缺能力
+      </button>
+    </div>
+  )
+}
+
 function TopologyNodeView({ data, selected }: NodeProps<TopologyFlowNode>) {
   const Icon = KIND_ICONS[data.kind]
   const stateLabel = healthLabel(data.health)
+  const inPorts = data.ports?.inputs ?? []
+  const outPorts = data.ports?.outputs ?? []
 
   return (
     <div
@@ -349,6 +400,40 @@ function TopologyNodeView({ data, selected }: NodeProps<TopologyFlowNode>) {
             {badge}
           </span>
         ))}
+      </div>
+      <div className="mt-3 border-t border-white/10 pt-3">
+        <div className="mb-1 flex items-center justify-between text-[10px] uppercase tracking-wide text-slate-500">
+          <span>输入</span>
+          <span>输出</span>
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          <div className="min-h-[28px] rounded border border-white/10 bg-black/20 p-1.5">
+            <div className="flex flex-wrap gap-1">
+              {inPorts.length === 0 ? (
+                <span className="text-[10px] text-slate-500">None</span>
+              ) : (
+                inPorts.map((port) => (
+                  <span key={port} className="rounded border border-sky-400/35 bg-sky-400/10 px-1.5 py-0.5 text-[10px] text-sky-200">
+                    {port}
+                  </span>
+                ))
+              )}
+            </div>
+          </div>
+          <div className="min-h-[28px] rounded border border-white/10 bg-black/20 p-1.5">
+            <div className="flex flex-wrap gap-1">
+              {outPorts.length === 0 ? (
+                <span className="text-[10px] text-slate-500">None</span>
+              ) : (
+                outPorts.map((port) => (
+                  <span key={port} className="rounded border border-emerald-400/35 bg-emerald-400/10 px-1.5 py-0.5 text-[10px] text-emerald-200">
+                    {port}
+                  </span>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
       </div>
       <div className="mt-3 grid grid-cols-3 gap-1.5 border-t border-white/10 pt-3">
         {data.skills.slice(0, 3).map((item) => (
@@ -413,6 +498,8 @@ function NodeInspector({ node }: { node: TopologyFlowNode | null }) {
   const entries = Object.entries(node.data.detail).filter(([, value]) => value != null && value !== '')
   const missingSkills = node.data.skills.filter((item) => item.state === 'missing' || item.state === 'blocked')
   const readySkills = node.data.skills.filter((item) => item.state === 'ready' || item.state === 'running')
+  const inPorts = node.data.ports?.inputs ?? []
+  const outPorts = node.data.ports?.outputs ?? []
 
   return (
     <Card className="h-full dark:border-slate-700 dark:bg-slate-900">
@@ -471,6 +558,24 @@ function NodeInspector({ node }: { node: TopologyFlowNode | null }) {
               )}
             </div>
           ))}
+        </div>
+      </section>
+
+      <section className="mt-4 border border-slate-800 bg-slate-950/40 p-3">
+        <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Ports</p>
+        <div className="mt-2 grid gap-2 text-xs">
+          <div>
+            <p className="text-[10px] text-slate-500">Input</p>
+            <p className="mt-1 break-all text-slate-300">
+              {inPorts.length ? inPorts.join(' / ') : 'none'}
+            </p>
+          </div>
+          <div>
+            <p className="text-[10px] text-slate-500">Output</p>
+            <p className="mt-1 break-all text-slate-300">
+              {outPorts.length ? outPorts.join(' / ') : 'none'}
+            </p>
+          </div>
         </div>
       </section>
 
@@ -565,70 +670,90 @@ function toFlowElements(graph: TopologyGraph, positions: Map<string, { x: number
   return { nodes, edges }
 }
 
-function filterTopologyGraphBySource(graph: TopologyGraph, sourceId: string | null): TopologyGraph {
-  if (!sourceId) return graph
+function deriveTopologyGraph(graph: TopologyGraph, sourceId: string | null, mode: 'flow' | 'health' | 'skills'): TopologyGraph {
+  if (mode === 'flow' && !sourceId) return graph
 
-  const sourceNodeId = nodeId('source', sourceId)
-  const related = new Set(
-    graph.nodes
-      .filter((node) =>
-        node.id === sourceNodeId
-        || node.data.detail.source_id === sourceId
-        || (node.data.kind === 'source' && node.data.detail.id === sourceId),
-      )
-      .map((node) => node.id),
+  const sourceNodeId = sourceId ? nodeId('source', sourceId) : null
+  const sourceSet = sourceNodeId
+    ? new Set(
+      graph.nodes
+        .filter((node) =>
+          node.id === sourceNodeId
+          || node.data.detail.source_id === sourceId
+          || (node.data.kind === 'source' && node.data.detail.id === sourceId),
+        )
+        .map((node) => node.id),
+    )
+    : new Set<string>()
+
+  const modeSet = new Set(
+    graph.nodes.filter((node) => {
+      if (mode === 'flow') return true
+      if (mode === 'health') {
+        return node.data.health === 'failed' || node.data.health === 'warning' || node.data.health === 'active'
+      }
+      return node.data.skills.some((item) => item.state === 'missing' || item.state === 'blocked')
+    }).map((node) => node.id),
   )
-  const expandableLabels = new Set(['plans', 'triggers', 'collects', 'notifies', 'enriches', 'writes', 'sent', 'acked'])
+
+  const visible = sourceNodeId ? new Set([...sourceSet, ...modeSet]) : new Set(modeSet)
+  if (visible.size === 0) {
+    graph.nodes.forEach((node) => visible.add(node.id))
+  }
 
   let changed = true
   while (changed) {
     changed = false
     for (const edge of graph.edges) {
-      if (!expandableLabels.has(edge.label ?? '')) continue
-      if (related.has(edge.source) && !related.has(edge.target)) {
-        related.add(edge.target)
+      if (!visible.has(edge.source) && !visible.has(edge.target)) continue
+      if (visible.has(edge.source) && !visible.has(edge.target)) {
+        visible.add(edge.target)
         changed = true
       }
-      if ((edge.label === 'writes' || edge.label === 'sent' || edge.label === 'acked') && related.has(edge.target) && !related.has(edge.source)) {
-        related.add(edge.source)
+      if (visible.has(edge.target) && !visible.has(edge.source)) {
+        visible.add(edge.source)
         changed = true
       }
     }
   }
 
-  const nodes = graph.nodes.filter((node) => related.has(node.id))
-  const edges = graph.edges.filter((edge) => related.has(edge.source) && related.has(edge.target))
+  const nodes = graph.nodes.filter((node) => visible.has(node.id))
+  const edges = graph.edges.filter((edge) => visible.has(edge.source) && visible.has(edge.target))
   return {
     nodes,
     edges,
-    summary: nodes.reduce(
-      (acc, node) => ({
-        total: acc.total + 1,
-        failed: acc.failed + (node.data.health === 'failed' ? 1 : 0),
-        warning: acc.warning + (node.data.health === 'warning' ? 1 : 0),
-        active: acc.active + (node.data.health === 'active' ? 1 : 0),
-        disabled: acc.disabled + (node.data.health === 'disabled' ? 1 : 0),
-        skills: node.data.skills.reduce(
-          (skills, item) => ({
-            total: skills.total + 1,
-            ready: skills.ready + (item.state === 'ready' ? 1 : 0),
-            running: skills.running + (item.state === 'running' ? 1 : 0),
-            missing: skills.missing + (item.state === 'missing' ? 1 : 0),
-            blocked: skills.blocked + (item.state === 'blocked' ? 1 : 0),
-          }),
-          acc.skills,
-        ),
-      }),
-      {
-        total: 0,
-        failed: 0,
-        warning: 0,
-        active: 0,
-        disabled: 0,
-        skills: { total: 0, ready: 0, running: 0, missing: 0, blocked: 0 },
-      },
-    ),
+    summary: summarizeGraph(nodes),
   }
+}
+
+function summarizeGraph(nodes: TopologyGraph['nodes']) {
+  return nodes.reduce(
+    (acc, node) => ({
+      total: acc.total + 1,
+      failed: acc.failed + (node.data.health === 'failed' ? 1 : 0),
+      warning: acc.warning + (node.data.health === 'warning' ? 1 : 0),
+      active: acc.active + (node.data.health === 'active' ? 1 : 0),
+      disabled: acc.disabled + (node.data.health === 'disabled' ? 1 : 0),
+      skills: node.data.skills.reduce(
+        (skills, item) => ({
+          total: skills.total + 1,
+          ready: skills.ready + (item.state === 'ready' ? 1 : 0),
+          running: skills.running + (item.state === 'running' ? 1 : 0),
+          missing: skills.missing + (item.state === 'missing' ? 1 : 0),
+          blocked: skills.blocked + (item.state === 'blocked' ? 1 : 0),
+        }),
+        acc.skills,
+      ),
+    }),
+    {
+      total: 0,
+      failed: 0,
+      warning: 0,
+      active: 0,
+      disabled: 0,
+      skills: { total: 0, ready: 0, running: 0, missing: 0, blocked: 0 },
+    },
+  )
 }
 
 function healthLabel(health: TopologyHealth) {
