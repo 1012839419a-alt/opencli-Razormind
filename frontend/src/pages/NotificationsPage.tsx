@@ -15,7 +15,14 @@ import Card from '../components/Card'
 import DataTable from '../components/DataTable'
 import PageHeader from '../components/PageHeader'
 import StatusBadge from '../components/StatusBadge'
+import TruncatedText from '../components/TruncatedText'
 import NotifierConfigForm, { type NotifierType } from '../components/NotifierConfigForm'
+import {
+  formatJsonPreview,
+  getAckStatusTone,
+  summarizeNotificationResponse,
+  type AckStatusTone,
+} from '../lib/notificationDisplay'
 import { Plus, Trash2 } from 'lucide-react'
 import { formatInTimeZone } from 'date-fns-tz'
 
@@ -24,11 +31,23 @@ const TRIGGER_EVENTS = ['on_new_record', 'on_ai_processed', 'on_task_failed'] as
 type TriggerEvent = typeof TRIGGER_EVENTS[number]
 
 const DEFAULT_CONFIGS: Record<NotifierType, Record<string, unknown>> = {
-  webhook: { url: '' },
+  webhook: { url: '', secret: '', ack_secret: '' },
   dingtalk: { webhook_url: '' },
   feishu: { webhook_url: '' },
   wecom: { webhook_url: '' },
   email: { smtp_host: '', smtp_port: 587, to: [] },
+}
+
+const ACK_TONE_RING: Record<AckStatusTone, string> = {
+  success: 'ring-1 ring-green-200',
+  warning: 'ring-1 ring-yellow-200',
+  danger: 'ring-1 ring-red-200',
+  muted: 'ring-1 ring-gray-200',
+}
+
+function formatTime(value?: string) {
+  if (!value) return '—'
+  return formatInTimeZone(new Date(value), 'Asia/Shanghai', 'MM-dd HH:mm:ss')
 }
 
 function AddRuleModal({ onClose, onSave }: { onClose: () => void; onSave: (d: Partial<NotificationRule>) => void }) {
@@ -199,12 +218,47 @@ export default function NotificationsPage() {
                 key: 'id', header: t('common.id'), width: '100px',
                 render: (l) => <span className="font-mono text-xs text-gray-400">{l.id.slice(0, 8)}</span>,
               },
-              { key: 'rule', header: t('notifications.ruleId'), render: (l) => <span className="font-mono text-xs">{l.rule_id.slice(0, 12)}…</span> },
-              { key: 'status', header: t('common.status'), render: (l) => <StatusBadge status={l.status} /> },
+              {
+                key: 'record_id', header: t('notifications.recordId'), width: '100px',
+                render: (l) => <span className="font-mono text-xs text-gray-500">{l.record_id ? l.record_id.slice(0, 8) : '—'}</span>,
+              },
+              { key: 'rule', header: t('notifications.ruleId'), width: '110px', render: (l) => <span className="font-mono text-xs">{l.rule_id.slice(0, 10)}…</span> },
+              { key: 'status', header: t('notifications.deliveryStatus'), width: '96px', render: (l) => <StatusBadge status={l.status} /> },
+              {
+                key: 'ack_status', header: t('notifications.ackStatus'), width: '104px',
+                render: (l) => {
+                  const ackStatus = l.ack_status || 'not_required'
+                  return <StatusBadge status={ackStatus} className={ACK_TONE_RING[getAckStatusTone(ackStatus)]} />
+                },
+              },
+              {
+                key: 'response', header: t('notifications.response'),
+                render: (l) => (
+                  <TruncatedText
+                    text={summarizeNotificationResponse(l.response_data)}
+                    lines={2}
+                    className="text-xs text-gray-500 dark:text-gray-400"
+                  />
+                ),
+              },
+              {
+                key: 'ack_data', header: t('notifications.ackDetail'),
+                render: (l) => (
+                  <TruncatedText
+                    text={formatJsonPreview(l.ack_data)}
+                    lines={2}
+                    className="font-mono text-xs text-gray-500 dark:text-gray-400"
+                  />
+                ),
+              },
               { key: 'error', header: t('notifications.errorMsg'), render: (l) => <span className="text-xs text-red-400">{l.error_message || '—'}</span> },
               {
+                key: 'acked_at', header: t('notifications.ackedAt'), width: '130px',
+                render: (l) => <span className="text-xs text-gray-500">{formatTime(l.acked_at)}</span>,
+              },
+              {
                 key: 'created_at', header: t('common.createdAt'), width: '130px',
-                render: (l) => <span className="text-xs text-gray-500">{formatInTimeZone(new Date(l.created_at), 'Asia/Shanghai', 'MM-dd HH:mm:ss')}</span>,
+                render: (l) => <span className="text-xs text-gray-500">{formatTime(l.created_at)}</span>,
               },
             ]}
           />

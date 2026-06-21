@@ -1,5 +1,7 @@
+import { lazy, Suspense } from 'react'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import Layout from './components/Layout'
+import { PageLoader } from './components/LoadingSpinner'
 import DashboardPage from './pages/DashboardPage'
 import SourcesPage from './pages/SourcesPage'
 import TasksPage from './pages/TasksPage'
@@ -11,6 +13,8 @@ import AgentsPage from './pages/AgentsPage'
 import ProvidersPage from './pages/ProvidersPage'
 import NodesPage from './pages/NodesPage'
 
+const TopologyPage = lazy(() => import('./pages/TopologyPage'))
+
 export default function App() {
   return (
     <BrowserRouter>
@@ -18,6 +22,14 @@ export default function App() {
         <Route path="/" element={<Layout />}>
           <Route index element={<Navigate to="/dashboard" replace />} />
           <Route path="dashboard" element={<DashboardPage />} />
+          <Route
+            path="topology"
+            element={
+              <Suspense fallback={<PageLoader />}>
+                <TopologyPage />
+              </Suspense>
+            }
+          />
           <Route path="sources" element={<SourcesPage />} />
           <Route path="tasks" element={<TasksPage />} />
           <Route path="records" element={<RecordsPage />} />

@@ -176,6 +176,14 @@ function WebhookConfig({
           type="password"
         />
       </Field>
+      <Field label={t('notifierConfig.ackSecret')} hint={t('notifierConfig.ackSecretHint')}>
+        <TextInput
+          value={(config.ack_secret as string) ?? ''}
+          onChange={(v) => update({ ack_secret: v })}
+          placeholder={t('notifierConfig.optional')}
+          type="password"
+        />
+      </Field>
       <Field label={t('notifierConfig.extraHeaders')}>
         <KVList
           pairs={headers}

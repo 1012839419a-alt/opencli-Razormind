@@ -11,6 +11,7 @@ import ErrorAlert from '../components/ErrorAlert'
 import Card from '../components/Card'
 import StatusBadge from '../components/StatusBadge'
 import PageHeader from '../components/PageHeader'
+import AgentFlightBoard from '../components/AgentFlightBoard'
 import { formatInTimeZone } from 'date-fns-tz'
 import {
   Database, Activity, FileText, Zap,
@@ -36,6 +37,43 @@ const TRIGGER_LABELS: Record<string, string> = {
   webhook: 'Webhook',
 }
 
+const CHART_GRID = 'rgba(255, 255, 255, 0.1)'
+const CHART_AXIS = '#71717a'
+const CHART_TOTAL = '#fafafa'
+const CHART_SUCCESS = '#34d399'
+const CHART_FAILED = '#ff3b30'
+const CHART_RECORDS = '#d4d4d8'
+
+type ToneKey = 'neutral' | 'accent' | 'success' | 'danger' | 'warning'
+
+const TONE_STYLES: Record<ToneKey, { rail: string; icon: string; dot: string }> = {
+  neutral: {
+    rail: 'bg-zinc-300',
+    icon: 'border-zinc-400/30 bg-zinc-400/10 text-zinc-200',
+    dot: 'bg-zinc-300',
+  },
+  accent: {
+    rail: 'bg-primary-500',
+    icon: 'border-primary-500/40 bg-primary-500/10 text-primary-100',
+    dot: 'bg-primary-500',
+  },
+  success: {
+    rail: 'bg-emerald-400',
+    icon: 'border-emerald-400/35 bg-emerald-400/10 text-emerald-200',
+    dot: 'bg-emerald-400',
+  },
+  danger: {
+    rail: 'bg-primary-500',
+    icon: 'border-primary-500/50 bg-primary-500/15 text-primary-100',
+    dot: 'bg-primary-500',
+  },
+  warning: {
+    rail: 'bg-amber-400',
+    icon: 'border-amber-400/35 bg-amber-400/10 text-amber-200',
+    dot: 'bg-amber-400',
+  },
+}
+
 function TimeRangeBar({
   range, customStart, customEnd, onChange, onCustomChange,
 }: {
@@ -47,35 +85,33 @@ function TimeRangeBar({
 }) {
   const keys: RangeKey[] = ['all', 'today', 'yesterday', '7d', '30d', 'custom']
   return (
-    <div className="flex flex-wrap items-center gap-2 mb-5">
-      {keys.map((k) => (
-        <button
-          key={k}
-          onClick={() => onChange(k)}
-          className={[
-            'px-3 py-1.5 rounded-lg text-xs font-medium transition-colors',
-            range === k
-              ? 'bg-blue-600 text-white'
-              : 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600',
-          ].join(' ')}
-        >
-          {RANGE_LABELS[k]}
-        </button>
-      ))}
+    <div className="mb-5 flex flex-wrap items-center gap-2">
+      <div className="flex flex-wrap gap-1 border border-white/10 bg-black/20 p-1">
+        {keys.map((k) => (
+          <button
+            key={k}
+            data-active={range === k}
+            onClick={() => onChange(k)}
+            className="telemetry-button px-3 py-1.5 font-telemetry text-[11px] font-semibold uppercase tracking-[0.12em]"
+          >
+            {RANGE_LABELS[k]}
+          </button>
+        ))}
+      </div>
       {range === 'custom' && (
         <div className="flex items-center gap-2">
           <input
             type="datetime-local"
             value={customStart}
             onChange={(e) => onCustomChange(e.target.value, customEnd)}
-            className="text-xs border border-gray-300 dark:border-gray-600 rounded px-2 py-1 dark:bg-gray-700 dark:text-white"
+            className="telemetry-input px-2 py-1"
           />
-          <span className="text-xs text-gray-400">—</span>
+          <span className="text-xs text-zinc-600">-</span>
           <input
             type="datetime-local"
             value={customEnd}
             onChange={(e) => onCustomChange(customStart, e.target.value)}
-            className="text-xs border border-gray-300 dark:border-gray-600 rounded px-2 py-1 dark:bg-gray-700 dark:text-white"
+            className="telemetry-input px-2 py-1"
           />
         </div>
       )}
@@ -92,7 +128,7 @@ function TrendBadge({ current, previous }: { current: number; previous: number }
 
   if (diff > 0) {
     return (
-      <span className="inline-flex items-center gap-0.5 text-xs font-medium text-emerald-600 dark:text-emerald-400">
+      <span className="inline-flex items-center gap-1 font-telemetry text-[11px] font-semibold uppercase tracking-[0.1em] text-emerald-300">
         <TrendingUp size={12} />
         {pct !== null ? `+${pct}%` : `+${diff}`}
       </span>
@@ -100,14 +136,14 @@ function TrendBadge({ current, previous }: { current: number; previous: number }
   }
   if (diff < 0) {
     return (
-      <span className="inline-flex items-center gap-0.5 text-xs font-medium text-red-500 dark:text-red-400">
+      <span className="inline-flex items-center gap-1 font-telemetry text-[11px] font-semibold uppercase tracking-[0.1em] text-primary-300">
         <TrendingDown size={12} />
         {pct !== null ? `${pct}%` : `${diff}`}
       </span>
     )
   }
   return (
-    <span className="inline-flex items-center gap-0.5 text-xs font-medium text-gray-400">
+    <span className="inline-flex items-center gap-1 font-telemetry text-[11px] font-semibold uppercase tracking-[0.1em] text-zinc-500">
       <Minus size={12} />
       持平
     </span>
@@ -117,29 +153,36 @@ function TrendBadge({ current, previous }: { current: number; previous: number }
 // ── Stat card ─────────────────────────────────────────────────────────────────
 
 function StatCard({
-  label, value, sub, icon: Icon, color, trend,
+  label, value, sub, icon: Icon, tone = 'neutral', trend,
 }: {
   label: string
   value: number | string
   sub?: string
   icon: React.ElementType
-  color: string
+  tone?: ToneKey
   trend?: { current: number; previous: number }
 }) {
+  const toneStyle = TONE_STYLES[tone]
   return (
-    <Card>
-      <div className="flex items-start justify-between">
-        <div className="flex-1 min-w-0">
-          <p className="text-sm text-gray-500 dark:text-gray-400">{label}</p>
-          <p className="mt-1 text-3xl font-bold text-gray-900 dark:text-white">{value}</p>
-          <div className="mt-1 flex items-center gap-2">
-            {sub && <p className="text-xs text-gray-400">{sub}</p>}
-            {trend && <TrendBadge current={trend.current} previous={trend.previous} />}
+    <Card className="min-h-[138px] p-4">
+      <div className={`absolute left-0 top-0 h-full w-[3px] ${toneStyle.rail}`} />
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <span className={`h-1.5 w-1.5 ${toneStyle.dot}`} />
+            <p className="telemetry-label truncate">{label}</p>
           </div>
+          <p className="telemetry-value mt-4 truncate text-3xl font-semibold sm:text-4xl">
+            {value}
+          </p>
         </div>
-        <span className={`p-2 rounded-lg ${color} flex-shrink-0 ml-3`}>
-          <Icon size={20} className="text-white" />
+        <span className={`grid h-10 w-10 shrink-0 place-items-center border ${toneStyle.icon}`}>
+          <Icon size={19} />
         </span>
+      </div>
+      <div className="mt-4 flex flex-wrap items-center gap-2">
+        {sub && <p className="text-xs text-zinc-500">{sub}</p>}
+        {trend && <TrendBadge current={trend.current} previous={trend.previous} />}
       </div>
     </Card>
   )
@@ -154,8 +197,8 @@ function ChartTooltip({ active, payload, label }: {
 }) {
   if (!active || !payload?.length) return null
   return (
-    <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg p-2.5 text-xs shadow-lg">
-      <p className="font-medium text-gray-700 dark:text-gray-300 mb-1">{label}</p>
+    <div className="border border-white/15 bg-black/90 p-2.5 text-xs shadow-2xl">
+      <p className="mb-1 font-semibold uppercase tracking-[0.12em] text-zinc-300">{label}</p>
       {payload.map((p) => (
         <p key={p.name} style={{ color: p.color }}>{p.name}: {p.value}</p>
       ))}
@@ -207,7 +250,7 @@ export default function DashboardPage() {
   const chartData = daily.map((d) => ({ ...d, label: d.date.slice(5).replace('-', '/') }))
 
   return (
-    <div>
+    <div className="space-y-5">
       <PageHeader title={t('dashboard.title')} description={t('dashboard.description')} />
 
       <TimeRangeBar
@@ -219,20 +262,20 @@ export default function DashboardPage() {
       />
 
       {/* Stat cards — row 1 */}
-      <div className="grid grid-cols-2 gap-4 mb-4 lg:grid-cols-4">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard
           label={t('dashboard.totalSources')}
           value={data.sources.total}
           sub={t('dashboard.enabledSources', { count: data.sources.enabled })}
           icon={Database}
-          color="bg-blue-500"
+          tone="neutral"
         />
         <StatCard
           label={t('dashboard.recordsCollected')}
           value={data.records.total}
           sub={t('dashboard.aiProcessed', { count: data.records.ai_processed })}
           icon={FileText}
-          color="bg-purple-500"
+          tone="accent"
           trend={todayData && yesterdayData
             ? { current: todayData.new_records, previous: yesterdayData.new_records }
             : undefined}
@@ -242,7 +285,7 @@ export default function DashboardPage() {
           value={todayData?.total_runs ?? 0}
           sub={`成功 ${todayData?.success_runs ?? 0} · 失败 ${todayData?.failed_runs ?? 0}`}
           icon={Activity}
-          color="bg-green-500"
+          tone="success"
           trend={todayData && yesterdayData
             ? { current: todayData.total_runs, previous: yesterdayData.total_runs }
             : undefined}
@@ -252,115 +295,155 @@ export default function DashboardPage() {
           value={data.tasks.failed}
           sub={t('dashboard.needsAttention')}
           icon={Zap}
-          color="bg-red-500"
+          tone={data.tasks.failed > 0 ? 'danger' : 'neutral'}
         />
       </div>
 
       {/* Stat cards — row 2: run stats */}
-      <div className="grid grid-cols-2 gap-4 mb-6 lg:grid-cols-3">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
         <StatCard
           label="成功执行次数"
           value={runs.success}
           sub={`共 ${runs.total} 次执行`}
           icon={CheckCircle}
-          color="bg-emerald-500"
+          tone="success"
         />
         <StatCard
           label="失败执行次数"
           value={runs.failed}
           sub={`共 ${runs.total} 次执行`}
           icon={XCircle}
-          color="bg-orange-500"
+          tone={runs.failed > 0 ? 'danger' : 'neutral'}
         />
         <StatCard
           label="成功率"
           value={`${runs.success_rate}%`}
           sub={runs.total > 0 ? `${runs.success} / ${runs.total}` : '暂无数据'}
           icon={Activity}
-          color="bg-sky-500"
+          tone={runs.success_rate >= 90 ? 'success' : runs.success_rate >= 70 ? 'warning' : 'danger'}
         />
       </div>
 
+      <AgentFlightBoard runs={data.recent_runs} />
+
       {/* Charts */}
       {daily.length > 0 && (
-        <div className="grid grid-cols-1 gap-4 mb-6 lg:grid-cols-2">
-          <Card>
-            <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-4">7 天任务执行趋势</h3>
-            <ResponsiveContainer width="100%" height={200}>
-              <LineChart data={chartData} margin={{ top: 4, right: 8, left: -20, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                <XAxis dataKey="label" tick={{ fontSize: 11 }} />
-                <YAxis tick={{ fontSize: 11 }} allowDecimals={false} />
-                <Tooltip content={<ChartTooltip />} />
-                <Legend wrapperStyle={{ fontSize: 11 }} />
-                <Line type="monotone" dataKey="total_runs" name="总执行" stroke="#3b82f6" strokeWidth={2} dot={{ r: 3 }} />
-                <Line type="monotone" dataKey="success_runs" name="成功" stroke="#10b981" strokeWidth={2} dot={{ r: 3 }} />
-                <Line type="monotone" dataKey="failed_runs" name="失败" stroke="#ef4444" strokeWidth={2} dot={{ r: 3 }} />
-              </LineChart>
-            </ResponsiveContainer>
+        <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+          <Card padding={false}>
+            <div className="border-b border-white/10 px-5 py-4">
+              <p className="telemetry-label">RUNS / 7D</p>
+              <h3 className="mt-1 text-sm font-semibold text-zinc-100">7 天任务执行趋势</h3>
+            </div>
+            <div className="p-4">
+              <ResponsiveContainer width="100%" height={230}>
+                <LineChart data={chartData} margin={{ top: 8, right: 16, left: -18, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="1 8" stroke={CHART_GRID} vertical={false} />
+                  <XAxis
+                    dataKey="label"
+                    axisLine={{ stroke: CHART_GRID }}
+                    tick={{ fill: CHART_AXIS, fontSize: 11 }}
+                    tickLine={false}
+                  />
+                  <YAxis
+                    allowDecimals={false}
+                    axisLine={false}
+                    tick={{ fill: CHART_AXIS, fontSize: 11 }}
+                    tickLine={false}
+                  />
+                  <Tooltip content={<ChartTooltip />} />
+                  <Legend wrapperStyle={{ color: CHART_AXIS, fontSize: 11, paddingTop: 8 }} />
+                  <Line type="monotone" dataKey="total_runs" name="总执行" stroke={CHART_TOTAL} strokeWidth={2} dot={false} />
+                  <Line type="monotone" dataKey="success_runs" name="成功" stroke={CHART_SUCCESS} strokeWidth={2} dot={false} />
+                  <Line type="monotone" dataKey="failed_runs" name="失败" stroke={CHART_FAILED} strokeWidth={2} dot={false} />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
           </Card>
 
-          <Card>
-            <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-4">7 天新增采集量</h3>
-            <ResponsiveContainer width="100%" height={200}>
-              <BarChart data={chartData} margin={{ top: 4, right: 8, left: -20, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                <XAxis dataKey="label" tick={{ fontSize: 11 }} />
-                <YAxis tick={{ fontSize: 11 }} allowDecimals={false} />
+          <Card padding={false}>
+            <div className="border-b border-white/10 px-5 py-4">
+              <p className="telemetry-label">RECORD INTAKE</p>
+              <h3 className="mt-1 text-sm font-semibold text-zinc-100">7 天新增采集量</h3>
+            </div>
+            <div className="p-4">
+              <ResponsiveContainer width="100%" height={230}>
+                <BarChart data={chartData} margin={{ top: 8, right: 16, left: -18, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="1 8" stroke={CHART_GRID} vertical={false} />
+                  <XAxis
+                    dataKey="label"
+                    axisLine={{ stroke: CHART_GRID }}
+                    tick={{ fill: CHART_AXIS, fontSize: 11 }}
+                    tickLine={false}
+                  />
+                  <YAxis
+                    allowDecimals={false}
+                    axisLine={false}
+                    tick={{ fill: CHART_AXIS, fontSize: 11 }}
+                    tickLine={false}
+                  />
                 <Tooltip content={<ChartTooltip />} />
-                <Bar dataKey="new_records" name="新增记录" fill="#8b5cf6" radius={[3, 3, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
+                  <Bar dataKey="new_records" name="新增记录" fill={CHART_RECORDS} radius={[0, 0, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
           </Card>
         </div>
       )}
 
       {/* Recent runs */}
-      <Card padding={false}>
-        <div className="px-5 py-4 border-b border-gray-200 dark:border-gray-700">
-          <h2 className="font-semibold text-gray-900 dark:text-white">{t('dashboard.recentRuns')}</h2>
+      <Card padding={false} className="overflow-hidden">
+        <div className="flex items-center justify-between border-b border-white/10 px-5 py-4">
+          <div>
+            <p className="telemetry-label">EVENT LOG</p>
+            <h2 className="mt-1 font-semibold text-zinc-100">{t('dashboard.recentRuns')}</h2>
+          </div>
+          <span className="border border-white/10 bg-white/[0.03] px-2 py-1 font-telemetry text-[10px] font-semibold uppercase tracking-[0.14em] text-zinc-500">
+            POLL 15S
+          </span>
         </div>
-        <table className="w-full text-sm" style={{ tableLayout: 'fixed' }}>
-          <thead>
-            <tr className="border-b border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50">
-              <th className="px-5 py-2.5 text-left text-xs font-medium text-gray-500 dark:text-gray-400" style={{ width: '90px' }}>{t('common.status')}</th>
-              <th className="px-5 py-2.5 text-left text-xs font-medium text-gray-500 dark:text-gray-400" style={{ width: '200px' }}>{t('sources.title')}</th>
-              <th className="px-5 py-2.5 text-left text-xs font-medium text-gray-500 dark:text-gray-400" style={{ width: '70px' }}>触发方式</th>
-              <th className="px-5 py-2.5 text-right text-xs font-medium text-gray-500 dark:text-gray-400" style={{ width: '70px' }}>{t('dashboard.records')}</th>
-              <th className="px-5 py-2.5 text-right text-xs font-medium text-gray-500 dark:text-gray-400" style={{ width: '60px' }}>耗时</th>
-              <th className="px-5 py-2.5 text-right text-xs font-medium text-gray-500 dark:text-gray-400" style={{ width: '130px' }}>{t('common.createdAt')}</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
-            {data.recent_runs.length === 0 ? (
-              <tr>
-                <td colSpan={6} className="px-5 py-8 text-center text-gray-400">{t('dashboard.noRuns')}</td>
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[820px] text-sm" style={{ tableLayout: 'fixed' }}>
+            <thead>
+              <tr className="border-b border-white/10 bg-white/[0.025]">
+                <th className="px-5 py-2.5 text-left font-telemetry text-[10px] font-semibold uppercase tracking-[0.16em] text-zinc-500" style={{ width: '100px' }}>{t('common.status')}</th>
+                <th className="px-5 py-2.5 text-left font-telemetry text-[10px] font-semibold uppercase tracking-[0.16em] text-zinc-500" style={{ width: '220px' }}>{t('sources.title')}</th>
+                <th className="px-5 py-2.5 text-left font-telemetry text-[10px] font-semibold uppercase tracking-[0.16em] text-zinc-500" style={{ width: '90px' }}>触发方式</th>
+                <th className="px-5 py-2.5 text-right font-telemetry text-[10px] font-semibold uppercase tracking-[0.16em] text-zinc-500" style={{ width: '80px' }}>{t('dashboard.records')}</th>
+                <th className="px-5 py-2.5 text-right font-telemetry text-[10px] font-semibold uppercase tracking-[0.16em] text-zinc-500" style={{ width: '70px' }}>耗时</th>
+                <th className="px-5 py-2.5 text-right font-telemetry text-[10px] font-semibold uppercase tracking-[0.16em] text-zinc-500" style={{ width: '140px' }}>{t('common.createdAt')}</th>
               </tr>
-            ) : (
-              data.recent_runs.map((run) => (
-                <tr key={run.id} className="hover:bg-gray-50 dark:hover:bg-gray-800/30">
-                  <td className="px-5 py-3 overflow-hidden"><StatusBadge status={run.status} /></td>
-                  <td className="px-5 py-3 overflow-hidden">
-                    <p className="font-medium text-gray-800 dark:text-gray-200 truncate">{run.source_name}</p>
-                    <p className="font-mono text-xs text-gray-400 truncate">{run.task_id.slice(0, 8)}…</p>
-                  </td>
-                  <td className="px-5 py-3 overflow-hidden">
-                    <span className="text-xs text-gray-500">
-                      {TRIGGER_LABELS[run.task_trigger_type] ?? run.task_trigger_type}
-                    </span>
-                  </td>
-                  <td className="px-5 py-3 text-right text-gray-500 overflow-hidden">{run.records_collected}</td>
-                  <td className="px-5 py-3 text-right text-gray-500 overflow-hidden">
-                    {run.duration_ms != null ? `${(run.duration_ms / 1000).toFixed(1)}s` : '—'}
-                  </td>
-                  <td className="px-5 py-3 text-right text-gray-500 overflow-hidden">
-                    {formatInTimeZone(new Date(run.created_at), 'Asia/Shanghai', 'MM-dd HH:mm:ss')}
-                  </td>
+            </thead>
+            <tbody className="divide-y divide-white/10">
+              {data.recent_runs.length === 0 ? (
+                <tr>
+                  <td colSpan={6} className="px-5 py-10 text-center text-sm text-zinc-500">{t('dashboard.noRuns')}</td>
                 </tr>
-              ))
-            )}
-          </tbody>
-        </table>
+              ) : (
+                data.recent_runs.map((run) => (
+                  <tr key={run.id} className="transition-colors hover:bg-white/[0.035]">
+                    <td className="overflow-hidden px-5 py-3"><StatusBadge status={run.status} /></td>
+                    <td className="overflow-hidden px-5 py-3">
+                      <p className="truncate font-medium text-zinc-100">{run.source_name}</p>
+                      <p className="truncate text-xs text-zinc-600">{run.task_id.slice(0, 8)}</p>
+                    </td>
+                    <td className="overflow-hidden px-5 py-3">
+                      <span className="text-xs text-zinc-500">
+                        {TRIGGER_LABELS[run.task_trigger_type] ?? run.task_trigger_type}
+                      </span>
+                    </td>
+                    <td className="overflow-hidden px-5 py-3 text-right text-zinc-400">{run.records_collected}</td>
+                    <td className="overflow-hidden px-5 py-3 text-right text-zinc-400">
+                      {run.duration_ms != null ? `${(run.duration_ms / 1000).toFixed(1)}s` : '-'}
+                    </td>
+                    <td className="overflow-hidden px-5 py-3 text-right text-zinc-500">
+                      {formatInTimeZone(new Date(run.created_at), 'Asia/Shanghai', 'MM-dd HH:mm:ss')}
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
       </Card>
     </div>
   )

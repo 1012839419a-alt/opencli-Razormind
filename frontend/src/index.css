@@ -2,6 +2,28 @@
 @tailwind components;
 @tailwind utilities;
 
+@font-face {
+  font-family: 'Source Han Sans Local';
+  src:
+    local('Source Han Sans CN'),
+    local('Source Han Sans SC'),
+    local('Source Han Sans'),
+    local('Noto Sans SC'),
+    local('Noto Sans CJK SC');
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'ToaHI Local';
+  src:
+    local('ToaHI-Rg'),
+    local('ToaHI Rg'),
+    local('Toa HI Rg'),
+    local('ToaHI-Regular'),
+    local('ToaHI');
+  font-display: swap;
+}
+
 @keyframes fadeSlideIn {
   from { opacity: 0; transform: translateY(8px); }
   to   { opacity: 1; transform: translateY(0); }
@@ -12,56 +34,166 @@
 
 @layer base {
   :root {
-    --background: 0 0% 100%;
-    --foreground: 222.2 84% 4.9%;
-    --card: 0 0% 100%;
-    --card-foreground: 222.2 84% 4.9%;
-    --popover: 0 0% 100%;
-    --popover-foreground: 222.2 84% 4.9%;
-    --primary: 221.2 83.2% 53.3%;
+    --background: 210 10% 3%;
+    --foreground: 0 0% 94%;
+    --card: 210 10% 5%;
+    --card-foreground: 0 0% 94%;
+    --popover: 210 10% 5%;
+    --popover-foreground: 0 0% 94%;
+    --primary: 3 84% 57%;
     --primary-foreground: 210 40% 98%;
-    --secondary: 210 40% 96.1%;
-    --secondary-foreground: 222.2 47.4% 11.2%;
-    --muted: 210 40% 96.1%;
-    --muted-foreground: 215.4 16.3% 46.9%;
-    --accent: 210 40% 96.1%;
-    --accent-foreground: 222.2 47.4% 11.2%;
-    --destructive: 0 84.2% 60.2%;
+    --secondary: 210 9% 10%;
+    --secondary-foreground: 0 0% 88%;
+    --muted: 210 9% 10%;
+    --muted-foreground: 220 9% 61%;
+    --accent: 3 84% 57%;
+    --accent-foreground: 0 0% 98%;
+    --destructive: 3 84% 57%;
     --destructive-foreground: 210 40% 98%;
-    --border: 214.3 31.8% 91.4%;
-    --input: 214.3 31.8% 91.4%;
-    --ring: 221.2 83.2% 53.3%;
-    --radius: 0.5rem;
+    --border: 220 9% 18%;
+    --input: 220 9% 18%;
+    --ring: 3 84% 57%;
+    --radius: 0.125rem;
+    --font-ui: 'Source Han Sans Local', 'Source Han Sans CN', 'Source Han Sans SC', 'Noto Sans SC', 'Noto Sans CJK SC', 'Microsoft YaHei UI', 'Microsoft YaHei', 'PingFang SC', 'Hiragino Sans GB', system-ui, sans-serif;
+    --font-telemetry: 'ToaHI Local', 'ToaHI-Rg', 'ToaHI Rg', 'Source Han Sans Local', 'Source Han Sans CN', 'Noto Sans SC', 'Microsoft YaHei UI', system-ui, sans-serif;
+    --font-code: 'ToaHI Local', 'ToaHI-Rg', 'ToaHI Rg', 'Cascadia Mono', 'SFMono-Regular', 'JetBrains Mono', ui-monospace, monospace;
   }
 
   .dark {
-    --background: 222.2 84% 4.9%;
-    --foreground: 210 40% 98%;
-    --card: 222.2 84% 4.9%;
-    --card-foreground: 210 40% 98%;
-    --popover: 222.2 84% 4.9%;
-    --popover-foreground: 210 40% 98%;
-    --primary: 217.2 91.2% 59.8%;
-    --primary-foreground: 222.2 47.4% 11.2%;
-    --secondary: 217.2 32.6% 17.5%;
-    --secondary-foreground: 210 40% 98%;
-    --muted: 217.2 32.6% 17.5%;
-    --muted-foreground: 215 20.2% 65.1%;
-    --accent: 217.2 32.6% 17.5%;
-    --accent-foreground: 210 40% 98%;
-    --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 217.2 32.6% 17.5%;
-    --input: 217.2 32.6% 17.5%;
-    --ring: 224.3 76.3% 48%;
+    color-scheme: dark;
   }
 
   * {
-    @apply border-gray-200;
+    @apply border-zinc-800;
   }
 
   body {
-    @apply bg-gray-50 text-gray-900 dark:bg-gray-900 dark:text-gray-100;
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    @apply min-h-screen bg-[#070809] text-zinc-100 antialiased;
+    font-family: var(--font-ui);
+    letter-spacing: 0;
+  }
+
+  code,
+  kbd,
+  pre,
+  .font-mono {
+    font-family: var(--font-code);
+    font-variant-numeric: tabular-nums;
+  }
+
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    background:
+      linear-gradient(rgba(255, 255, 255, 0.025) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255, 255, 255, 0.02) 1px, transparent 1px);
+    background-size: 48px 48px;
+    opacity: 0.55;
+  }
+
+  #root {
+    position: relative;
+    z-index: 1;
+    min-height: 100vh;
+    isolation: isolate;
+  }
+
+  ::selection {
+    background: rgba(255, 59, 48, 0.35);
+    color: #fff;
+  }
+}
+
+@layer components {
+  .mission-canvas {
+    background:
+      linear-gradient(180deg, #0b0d0e 0%, #070809 42%, #050607 100%);
+  }
+
+  .telemetry-panel {
+    position: relative;
+    overflow: hidden;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 2px;
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0)),
+      rgba(9, 11, 12, 0.9);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  }
+
+  .telemetry-panel::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background:
+      linear-gradient(90deg, rgba(255, 255, 255, 0.045) 1px, transparent 1px),
+      linear-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px);
+    background-size: 32px 32px;
+    opacity: 0.18;
+  }
+
+  .telemetry-panel > * {
+    position: relative;
+  }
+
+  .telemetry-label {
+    color: rgb(161 161 170);
+    font-family: var(--font-telemetry);
+    font-size: 0.625rem;
+    font-weight: 700;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+  }
+
+  .telemetry-value {
+    color: rgb(250 250 250);
+    font-family: var(--font-telemetry);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0;
+  }
+
+  .telemetry-button {
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 2px;
+    background: rgba(255, 255, 255, 0.035);
+    color: rgb(212 212 216);
+    font-family: var(--font-telemetry);
+    transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+  }
+
+  .telemetry-button:hover {
+    border-color: rgba(255, 255, 255, 0.22);
+    background: rgba(255, 255, 255, 0.075);
+    color: #fff;
+  }
+
+  .telemetry-button[data-active='true'] {
+    border-color: rgba(255, 59, 48, 0.75);
+    background: rgba(255, 59, 48, 0.16);
+    color: #fff;
+  }
+
+  .telemetry-input {
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: 2px;
+    background: rgba(0, 0, 0, 0.35);
+    color: #fff;
+    font-family: var(--font-code);
+    font-size: 0.75rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
   }
 }

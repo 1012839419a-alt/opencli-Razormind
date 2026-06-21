@@ -141,6 +141,9 @@ export interface NotificationLog {
   status: string
   response_data?: Record<string, unknown>
   error_message?: string
+  ack_status: string
+  ack_data?: Record<string, unknown>
+  acked_at?: string
   created_at: string
 }
 

@@ -9,6 +9,14 @@ const input =
 const label = 'block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1'
 const hint = 'mt-1 text-xs text-gray-400'
 
+function formFieldName(seed: string | undefined, fallback: string) {
+  const slug = (seed ?? '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+  return `channel-config-${slug || fallback}`
+}
+
 function Field({
   label: l,
   hint: h,
@@ -36,14 +44,18 @@ function TextInput({
   onChange,
   placeholder,
   required,
+  ariaLabel,
 }: {
   value: string
   onChange: (v: string) => void
   placeholder?: string
   required?: boolean
+  ariaLabel?: string
 }) {
   return (
     <input
+      aria-label={ariaLabel ?? placeholder ?? '配置文本'}
+      name={formFieldName(placeholder, 'text')}
       className={input}
       value={value}
       onChange={(e) => onChange(e.target.value)}
@@ -58,14 +70,18 @@ function NumberInput({
   onChange,
   placeholder,
   min,
+  ariaLabel,
 }: {
   value: number | ''
   onChange: (v: number | '') => void
   placeholder?: string
   min?: number
+  ariaLabel?: string
 }) {
   return (
     <input
+      aria-label={ariaLabel ?? placeholder ?? '配置数字'}
+      name={formFieldName(placeholder, 'number')}
       type="number"
       className={input}
       value={value}
@@ -80,13 +96,21 @@ function SelectInput({
   value,
   onChange,
   options,
+  ariaLabel,
 }: {
   value: string
   onChange: (v: string) => void
   options: { value: string; label: string }[]
+  ariaLabel?: string
 }) {
   return (
-    <select className={input} value={value} onChange={(e) => onChange(e.target.value)}>
+    <select
+      aria-label={ariaLabel ?? '配置选项'}
+      name={formFieldName(ariaLabel ?? options[0]?.label, 'select')}
+      className={input}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+    >
       {options.map((o) => (
         <option key={o.value} value={o.value}>
           {o.label}
@@ -120,12 +144,16 @@ function KVList({
       {pairs.map((p, i) => (
         <div key={i} className="flex gap-2 items-center">
           <input
+            aria-label={keyPlaceholder ?? 'key'}
+            name={`channel-config-key-${i}`}
             className={`${input} flex-1`}
             value={p.key}
             onChange={(e) => update(i, 'key', e.target.value)}
             placeholder={keyPlaceholder ?? 'key'}
           />
           <input
+            aria-label={valuePlaceholder ?? 'value'}
+            name={`channel-config-value-${i}`}
             className={`${input} flex-1`}
             value={p.value}
             onChange={(e) => update(i, 'value', e.target.value)}
@@ -133,6 +161,7 @@ function KVList({
           />
           <button
             type="button"
+            aria-label="删除参数行"
             onClick={() => remove(i)}
             className="p-1.5 text-red-400 hover:text-red-600 flex-shrink-0"
           >
@@ -704,12 +733,16 @@ function ArgsKVList({
           <div key={i} className="space-y-0.5">
             <div className="flex gap-2 items-center">
               <input
+                aria-label="参数名"
+                name={`opencli-arg-key-${i}`}
                 className={`${input} flex-1 font-mono`}
                 value={p.key}
                 onChange={(e) => update(i, 'key', e.target.value)}
                 placeholder="参数名"
               />
               <input
+                aria-label={hintText ?? '参数值'}
+                name={`opencli-arg-value-${i}`}
                 className={`${input} flex-1`}
                 value={p.value}
                 onChange={(e) => update(i, 'value', e.target.value)}
@@ -717,6 +750,7 @@ function ArgsKVList({
               />
               <button
                 type="button"
+                aria-label="删除参数"
                 onClick={() => remove(i)}
                 className="p-1.5 text-red-400 hover:text-red-600 flex-shrink-0"
               >
@@ -731,6 +765,8 @@ function ArgsKVList({
       })}
       {availableKeys.length > 0 ? (
         <select
+          aria-label="添加参数"
+          name="opencli-add-param"
           className="text-xs text-blue-600 bg-transparent border-none cursor-pointer hover:text-blue-700 mt-1 outline-none"
           value=""
           onChange={(e) => { if (e.target.value) addParam(e.target.value) }}
@@ -806,7 +842,13 @@ function OpenCLIConfig({
     <div className="space-y-3">
       <div className="grid grid-cols-2 gap-3">
         <Field label={t('channelConfig.site')} required>
-          <select className={input} value={currentSite} onChange={(e) => onSiteChange(e.target.value)}>
+          <select
+            aria-label={t('channelConfig.site')}
+            name="opencli-site"
+            className={input}
+            value={currentSite}
+            onChange={(e) => onSiteChange(e.target.value)}
+          >
             <option value="">-- 选择平台 --</option>
             {SITE_GROUPS.map((g) => (
               <optgroup key={g.label} label={g.label}>
@@ -821,6 +863,8 @@ function OpenCLIConfig({
         </Field>
         <Field label={t('channelConfig.command')} required>
           <select
+            aria-label={t('channelConfig.command')}
+            name="opencli-command"
             className={input}
             value={currentCommand}
             onChange={(e) => onCommandChange(e.target.value)}
