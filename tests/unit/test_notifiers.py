@@ -1,10 +1,10 @@
 """Unit tests for notifier base classes and webhook notifier."""
 
-import json
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from backend.notifiers.base import NotificationPayload
+import pytest
+
+from backend.notifiers.base import NotificationPayload, NotificationSendResult
 from backend.notifiers.registry import get_notifier, list_notifier_types
 from backend.notifiers.webhook_notifier import WebhookNotifier
 
@@ -30,6 +30,7 @@ def test_notification_payload_defaults():
     assert payload.event == "on_new_record"
     assert payload.source_id == "src-123"
     assert payload.record_id is None
+    assert payload.delivery_id is None
     assert payload.ai_enrichment is None
     assert payload.data == {}
 
@@ -46,6 +47,8 @@ async def test_webhook_notifier_send_success():
 
     mock_response = MagicMock()
     mock_response.is_success = True
+    mock_response.status_code = 200
+    mock_response.text = "ok"
 
     with patch("httpx.AsyncClient") as mock_client_class:
         mock_client = AsyncMock()
@@ -59,7 +62,9 @@ async def test_webhook_notifier_send_success():
             payload,
         )
 
-    assert result is True
+    assert isinstance(result, NotificationSendResult)
+    assert result.success is True
+    assert result.response_data == {"status_code": 200, "body": "ok"}
 
 
 @pytest.mark.asyncio
@@ -73,6 +78,8 @@ async def test_webhook_notifier_send_with_signature():
         captured_headers.update(headers)
         mock_resp = MagicMock()
         mock_resp.is_success = True
+        mock_resp.status_code = 200
+        mock_resp.text = "ok"
         return mock_resp
 
     with patch("httpx.AsyncClient") as mock_client_class:
