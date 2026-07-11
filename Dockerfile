@@ -28,10 +28,10 @@ WORKDIR /app
 RUN sed -i 's|http://deb.debian.org|http://mirrors.aliyun.com|g' /etc/apt/sources.list.d/debian.sources 2>/dev/null || \
     sed -i 's|http://deb.debian.org|http://mirrors.aliyun.com|g' /etc/apt/sources.list 2>/dev/null || true
 
-# Runtime system deps (psycopg2 needs libpq, opencli needs Node.js 22+)
+# Runtime system deps (psycopg2 needs libpq, opencli needs Node.js 24 LTS)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq5 curl ca-certificates \
-    && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 

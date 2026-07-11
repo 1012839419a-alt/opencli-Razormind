@@ -2,7 +2,7 @@
 name = "odp-ingest-bridge"
 version = "0.1.0"
 description = "III worker — forwards Record v2 batches to Rust odp-ingest"
-requires-python = ">=3.11"
+requires-python = ">=3.13,<3.14"
 dependencies = [
     "iii-sdk==0.19.4",
     "iii-observability==0.19.4",

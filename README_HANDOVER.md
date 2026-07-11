@@ -178,7 +178,7 @@ opencli-admin/
 | 工具 | 版本 | 用途 |
 |------|------|------|
 | Node.js | ≥20 | 前端开发 |
-| Python | ≥3.11 | 后端开发 |
+| Python | 3.13 | 后端开发 |
 | Docker | Latest | 容器化 |
 | Rust | Latest | odp-rs |
 | Git | Latest | 版本控制 |

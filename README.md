@@ -173,7 +173,7 @@ npm run typecheck:frontend
 
 直接复用本地 opencli 和 Chrome，适合开发和个人使用。
 
-**前置要求**：Python 3.11+、Node.js 18+、[opencli Browser Bridge 扩展](https://github.com/jackwener/opencli/blob/main/README.zh-CN.md#playwright-mcp-bridge-%E6%89%A9%E5%B1%95%E9%85%8D%E7%BD%AE)
+**前置要求**：Python 3.13、Node.js 24 LTS、[opencli Browser Bridge 扩展](https://github.com/jackwener/opencli/blob/main/README.zh-CN.md#playwright-mcp-bridge-%E6%89%A9%E5%B1%95%E9%85%8D%E7%BD%AE)
 
 ```bash
 cp .env.example .env

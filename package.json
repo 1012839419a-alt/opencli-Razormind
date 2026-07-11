@@ -2,6 +2,10 @@
   "name": "opencli-admin",
   "private": true,
   "version": "0.1.0",
+  "engines": {
+    "node": ">=24 <25",
+    "npm": ">=11"
+  },
   "workspaces": [
     "chrome/extension-src"
   ],

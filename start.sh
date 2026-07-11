@@ -72,8 +72,8 @@ CDP_PORT="${_ARG_CDP_PORT:-${CDP_PORT:-9222}}"
 
 # ── Check Python ──────────────────────────────────────────────────────────────
 PYTHON="${PYTHON:-python3}"
-"$PYTHON" -c "import sys; sys.exit(0 if sys.version_info >= (3,11) else 1)" \
-  || die "Python 3.11+ required (found: $("$PYTHON" --version 2>&1))"
+"$PYTHON" -c "import sys; sys.exit(0 if sys.version_info[:2] == (3,13) else 1)" \
+  || die "Python 3.13 required (found: $("$PYTHON" --version 2>&1))"
 ok "Python $("$PYTHON" --version)"
 
 # ── Create/activate venv ──────────────────────────────────────────────────────
