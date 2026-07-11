@@ -447,7 +447,7 @@ def _install_script_template(
 
 set -euo pipefail
 CENTRAL_API_URL="${{CENTRAL_API_URL:-{central_url}}}"
-AGENT_API_TOKEN="${{AGENT_API_TOKEN:-{agent_api_token}}}"
+AGENT_API_TOKEN="${{AGENT_API_TOKEN:-${{API_AUTH_TOKEN:-{agent_api_token}}}}}"
 AGENT_REGISTER="${{AGENT_REGISTER:-ws}}"
 AGENT_PORT="${{AGENT_PORT:-19823}}"
 AGENT_ADVERTISE_URL="${{AGENT_ADVERTISE_URL:-}}"
