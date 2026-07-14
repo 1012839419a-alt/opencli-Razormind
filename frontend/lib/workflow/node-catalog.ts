@@ -11,7 +11,10 @@ import { getNodeInternals } from "./node-internals"
 import { createParameterInterfaceFromInternals } from "./parameter-interface"
 import {
   catalogRuntimeCapability,
+  projectedCatalogRuntimeCapability,
+  runtimeContractForCapability,
   type WorkflowCapabilitiesResponse,
+  type WorkflowRuntimeIOContract,
   type WorkflowRuntimeCapability,
 } from "./capabilities"
 
@@ -43,6 +46,7 @@ export type WorkflowNodeCatalogItem = {
   topicCollapse?: WorkflowProjectNode["topicCollapse"]
   internals?: WorkflowProjectNode["internals"]
   runtimeCapability?: WorkflowRuntimeCapability
+  runtimeContract?: WorkflowRuntimeIOContract
   keywords: string[]
 }
 
@@ -204,22 +208,22 @@ export function buildOpenCLIMultiSourceHDAInternals(sources: OpenCLISourceSlot[]
         id: `source-pool-${sourceNode.id}`,
         source: "source-pool",
         target: sourceNode.id,
-        sourcePort: "trigger",
-        targetPort: "trigger",
+        sourcePort: "out",
+        targetPort: "in",
       })),
       ...sourceNodes.map((sourceNode) => ({
         id: `${sourceNode.id}-normalize`,
         source: sourceNode.id,
         target: "internal-normalize",
-        sourcePort: "items",
-        targetPort: "items",
+        sourcePort: "out",
+        targetPort: "in",
       })),
       {
         id: "internal-normalize-output",
         source: "internal-normalize",
         target: "collection-output",
-        sourcePort: "items",
-        targetPort: "items",
+        sourcePort: "out",
+        targetPort: "in",
       },
     ],
   }
@@ -565,12 +569,11 @@ export const WORKFLOW_NODE_CATALOG: WorkflowNodeCatalogItem[] = [
       lockedInternals: true,
       execution: {
         fanout: "parallel",
-        maxConcurrency: 4,
       },
       sources: DEFAULT_OPENCLI_HDA_SOURCES,
       aiCallable: {
         schema: "opencli.multi_source_hda.v1",
-        editable: ["sources", "sources[].args", "execution.maxConcurrency"],
+        editable: ["sources", "sources[].args"],
         sourceMode: "parallel",
       },
     },
@@ -717,10 +720,18 @@ export function getWorkflowNodeCatalog(
   profile: WorkflowProfile,
   capabilities?: WorkflowCapabilitiesResponse | null,
 ): WorkflowNodeCatalogItem[] {
-  return WORKFLOW_NODE_CATALOG.filter((item) => item.profile === profile).map((item) => ({
-    ...item,
-    runtimeCapability: catalogRuntimeCapability(capabilities, item.id),
-  }))
+  return WORKFLOW_NODE_CATALOG.filter((item) => item.profile === profile).map((item) => {
+    const runtimeCapability = projectedCatalogRuntimeCapability(
+      catalogRuntimeCapability(capabilities, item.id),
+      item,
+      Boolean(capabilities),
+    )
+    return {
+      ...item,
+      runtimeCapability,
+      runtimeContract: runtimeContractForCapability(runtimeCapability),
+    }
+  })
 }
 
 export function createWorkflowNodeFromCatalog(
@@ -757,6 +768,68 @@ export function createWorkflowNodeFromCatalog(
       position,
       catalogId: item.id,
       runtimeCapability: cloneCatalogValue(item.runtimeCapability),
+      runtimeContract: cloneCatalogValue(item.runtimeContract),
+    },
+  }
+}
+
+export type WorkflowOperatorNodeOptions = {
+  label?: string
+  description?: string
+}
+
+/**
+ * Build the Dify-style business layer without replacing the existing OpenCLI node.
+ *
+ * The operator is a structural/governance container (L1). The catalog node remains
+ * intact as its implementation child (L2), including its adapter, parameter
+ * interface, runtime contract, and deeper internal network.
+ */
+export function createOperatorNodeFromCatalog(
+  item: WorkflowNodeCatalogItem,
+  operatorId: string,
+  implementationId: string,
+  position: { x: number; y: number },
+  options: WorkflowOperatorNodeOptions = {},
+): WorkflowProjectNode {
+  const implementation = createWorkflowNodeFromCatalog(item, implementationId, { x: 120, y: 160 })
+  const implementationNode: WorkflowProjectNode = {
+    ...implementation,
+    ui: {
+      ...implementation.ui,
+      networkRole: "implementation",
+    },
+  }
+
+  return {
+    id: operatorId,
+    kind: item.kind,
+    capability: item.capability,
+    params: {
+      operator: {
+        execution: "internals",
+        implementationCatalogId: item.id,
+        implementationNodeId: implementationId,
+      },
+    },
+    internals: {
+      locked: false,
+      nodes: [implementationNode],
+      edges: [],
+    },
+    miniNetwork: {
+      nodes: 1,
+      edges: 0,
+      mode: "title-only",
+    },
+    ui: {
+      label: options.label ?? item.label,
+      description: options.description ?? `${item.description}；双击进入 OpenCLI 实现网络`,
+      icon: item.icon,
+      color: item.color,
+      position,
+      networkRole: "operator",
+      implementationCatalogId: item.id,
     },
   }
 }
@@ -772,7 +845,12 @@ export function addCatalogNodeToWorkflowProject(
   return parseWorkflowProject({
     ...project,
     adapters: [...project.adapters, ...requiredAdapters],
-    nodes: [...project.nodes, createWorkflowNodeFromCatalog(item, id, position)],
+    nodes: [
+      ...project.nodes,
+      item.category === "package"
+        ? createOperatorNodeFromCatalog(item, id, `${id}-implementation`, position)
+        : createWorkflowNodeFromCatalog(item, id, position),
+    ],
   })
 }
 

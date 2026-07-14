@@ -14,6 +14,10 @@ from backend.models.task import CollectionTask
 from backend.models.workflow_run import WorkflowRun, WorkflowRunEvent
 from backend.workflow.opencli_hda_tracer import _RUNS
 from tests.fixtures.workflow_conformance import workflow_conformance_project
+from tests.integration.test_workflow_compile_api import (
+    _nested_operator_project,
+    _two_operator_pipeline_project,
+)
 
 
 def _multi_source_opencli_hda_project() -> dict:
@@ -461,6 +465,7 @@ async def test_opencli_hda_trace_builds_iii_fanout_payloads(client):
         "multi-source-opencli::source-xiaohongshu",
     ]
     first = dispatches[0]
+    assert first["nodePath"] == ["multi-source-opencli", "source-bilibili"]
     assert first["packageNodeId"] == "multi-source-opencli"
     assert first["internalNodeId"] == "source-bilibili"
     assert first["sourceGroup"] == "video"
@@ -474,6 +479,7 @@ async def test_opencli_hda_trace_builds_iii_fanout_payloads(client):
             "workflow_run_id": "run-001",
             "package_node_id": "multi-source-opencli",
             "node_id": "multi-source-opencli::source-bilibili",
+            "node_path": ["multi-source-opencli", "source-bilibili"],
             "internal_node_id": "source-bilibili",
             "source_group": "video",
             "site": "bilibili",
@@ -521,8 +527,6 @@ async def test_opencli_hda_trace_accepts_ai_source_slots_without_static_internal
         "lockedInternals": True,
         "execution": {
             "fanout": "parallel",
-            "maxConcurrency": 8,
-            "workerPool": "docker-browser-workers",
         },
         "sources": [
             {
@@ -753,6 +757,21 @@ async def test_workflow_run_trace_records_fleet_match_for_opencli_source(
     assert batch_ready["batch"]["itemCount"] == 1
     assert batch_ready["details"]["agentDispatch"]["success"] is True
     assert batch_ready["details"]["agentDispatch"]["itemCount"] == 1
+    assert batch_ready["details"]["resourceRequirement"] == {
+        "nodeId": "multi-source-opencli::source-bilibili",
+        "sourceGroup": "video",
+        "site": "twitter",
+        "mutationMode": "read",
+        "requestedCapability": "opencli.twitter.search",
+        "adapterNodeId": "opencli.adapter.twitter.search",
+    }
+    resource_resolution = batch_ready["details"]["resourceResolution"]
+    assert resource_resolution["status"] == "resolved"
+    assert resource_resolution["workerSlotId"] == "http://agent-x:19823"
+    assert resource_resolution["profileBindingId"]
+    assert resource_resolution["sessionSnapshotId"]
+    assert "lockId" not in resource_resolution
+    assert "cookie" not in str(resource_resolution).lower()
     assert partial["details"]["itemCount"] == 1
     assert partial["details"]["agentDispatch"]["agentUrl"] == "http://agent-x:19823"
     assert "iii" not in batch_ready["details"]
@@ -764,6 +783,69 @@ async def test_workflow_run_trace_records_fleet_match_for_opencli_source(
     )
     assert normalize_partial["details"]["inputItemCount"] == 1
     assert dispatched[0][0].site == "twitter"
+
+
+@pytest.mark.asyncio
+async def test_workflow_run_blocks_missing_opencli_profile_resource(
+    client,
+    monkeypatch,
+):
+    _install_fleet_trace_pool(monkeypatch)
+    monkeypatch.setattr(
+        "backend.workflow.fleet_inventory.ws_agent_manager.list_connected",
+        lambda: ["http://agent-x:19823"],
+    )
+    monkeypatch.setattr(
+        "backend.workflow.opencli_adapter_nodes._load_opencli_catalog",
+        _fleet_trace_opencli_catalog,
+    )
+    dispatched = []
+
+    async def fake_dispatch(dispatch, fleet_match):
+        dispatched.append(dispatch.nodeId)
+        return [], None
+
+    monkeypatch.setattr(
+        "backend.workflow.opencli_hda_tracer._dispatch_opencli_source_to_fleet",
+        fake_dispatch,
+    )
+    project = _multi_source_opencli_hda_project()
+    source = project["nodes"][0]["internals"]["nodes"][1]
+    source["params"].update(
+        {
+            "site": "twitter",
+            "command": "search",
+            "opencliAdapterNodeId": "opencli.adapter.twitter.search",
+        }
+    )
+
+    response = await client.post(
+        "/api/v1/workflows/runs",
+        json={
+            "project": project,
+            "packageNodeId": "multi-source-opencli",
+            "runId": "run-missing-profile-resource",
+            "traceId": "trace-missing-profile-resource",
+        },
+    )
+
+    assert response.status_code == 202
+    events = (
+        await client.get(
+            "/api/v1/workflows/runs/run-missing-profile-resource/events"
+        )
+    ).json()["data"]
+    blocked = next(
+        event
+        for event in events
+        if event["nodeId"] == "multi-source-opencli::source-bilibili"
+        and event["eventType"] == "blocked"
+    )
+    assert blocked["blockReason"]["code"] == "missing_profile_binding"
+    assert blocked["blockReason"]["source"] == "workflow_runtime_resources"
+    assert blocked["details"]["resourceResolution"]["status"] == "blocked"
+    assert blocked["details"]["resourceRequirement"]["site"] == "twitter"
+    assert "multi-source-opencli::source-bilibili" not in dispatched
 
 
 @pytest.mark.asyncio
@@ -852,6 +934,101 @@ async def test_workflow_run_emits_native_first_loop_trace_events(client, db_sess
     assert {task.trigger_type for task in tasks} == {"workflow"}
     assert {task.status for task in tasks} == {"completed"}
     assert {task.parameters["workflowRunId"] for task in tasks} == {"run-native-first-loop"}
+
+
+@pytest.mark.asyncio
+async def test_workflow_run_moves_data_between_operator_implementation_boundaries(client):
+    project = _two_operator_pipeline_project()
+    project["nodes"].reverse()
+    response = await client.post(
+        "/api/v1/workflows/runs",
+        json={
+            "project": project,
+            "runId": "run-operator-boundaries",
+            "traceId": "trace-operator-boundaries",
+        },
+    )
+
+    assert response.status_code == 202
+    data = response.json()["data"]
+    assert data["valid"] is True
+    assert data["status"] == "completed"
+    states = {state["nodeId"]: state for state in data["nodeStates"]}
+    clean_node_id = "clean-operator::clean-implementation"
+    assert states[clean_node_id]["status"] == "completed"
+    assert states[clean_node_id]["nodePath"] == [
+        "clean-operator",
+        "clean-implementation",
+    ]
+    assert states[clean_node_id]["packageNodeId"] == "clean-operator"
+    assert states[clean_node_id]["internalNodeId"] == "clean-implementation"
+
+    events = (
+        await client.get("/api/v1/workflows/runs/run-operator-boundaries/events")
+    ).json()["data"]
+    by_node: dict[str, list[dict]] = {}
+    for event in events:
+        by_node.setdefault(event["nodeId"], []).append(event)
+
+    assert [event["eventType"] for event in by_node["collect-operator"]] == [
+        "queued",
+        "started",
+        "completed",
+    ]
+    assert [event["eventType"] for event in by_node["clean-operator"]] == [
+        "queued",
+        "started",
+        "completed",
+    ]
+    clean_partial = by_node[clean_node_id][2]
+    assert clean_partial["eventType"] == "partial"
+    assert clean_partial["details"]["inputItemCount"] == 1
+    assert clean_partial["details"]["lineage"]["dependsOn"] == [
+        "collect-operator::collect-implementation"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_workflow_run_locates_four_level_implementation_events(client):
+    response = await client.post(
+        "/api/v1/workflows/runs",
+        json={
+            "project": _nested_operator_project(depth=4),
+            "runId": "run-four-level-path",
+            "traceId": "trace-four-level-path",
+        },
+    )
+
+    assert response.status_code == 202
+    data = response.json()["data"]
+    assert data["valid"] is True
+    assert data["status"] == "completed"
+    leaf_id = (
+        "level-1-operator::level-2-package::level-3-package::level-4-implementation"
+    )
+    leaf_state = next(state for state in data["nodeStates"] if state["nodeId"] == leaf_id)
+    assert leaf_state["nodePath"] == [
+        "level-1-operator",
+        "level-2-package",
+        "level-3-package",
+        "level-4-implementation",
+    ]
+    assert leaf_state["packageNodeId"] == (
+        "level-1-operator::level-2-package::level-3-package"
+    )
+    assert leaf_state["internalNodeId"] == "level-4-implementation"
+
+    events = (
+        await client.get("/api/v1/workflows/runs/run-four-level-path/events")
+    ).json()["data"]
+    leaf_events = [event for event in events if event["nodeId"] == leaf_id]
+    assert [event["eventType"] for event in leaf_events] == [
+        "queued",
+        "started",
+        "partial",
+        "completed",
+    ]
+    assert all(event["nodePath"] == leaf_state["nodePath"] for event in leaf_events)
 
 
 @pytest.mark.asyncio
@@ -1431,9 +1608,14 @@ async def test_workflow_run_emits_node_failed_events_for_compile_errors(client):
     assert data["status"] == "failed"
     assert data["eventCount"] == 1
     failed_state = data["nodeStates"][0]
-    assert failed_state["nodeId"] == "multi-source-opencli"
+    assert failed_state["nodeId"] == "multi-source-opencli::source-bilibili"
+    assert failed_state["nodePath"] == ["multi-source-opencli", "source-bilibili"]
+    assert failed_state["packageNodeId"] == "multi-source-opencli"
+    assert failed_state["internalNodeId"] == "source-bilibili"
     assert failed_state["status"] == "failed"
-    assert failed_state["latestEventId"] == "run-events-004:0001:failed:multi-source-opencli"
+    assert failed_state["latestEventId"] == (
+        "run-events-004:0001:failed:multi-source-opencli::source-bilibili"
+    )
     assert failed_state["blockReasons"][0]["code"] == "missing_adapter_binding"
     assert "source-bilibili" in failed_state["blockReasons"][0]["message"]
     assert failed_state["blockReasons"][0]["details"]["path"] == [
@@ -1447,4 +1629,5 @@ async def test_workflow_run_emits_node_failed_events_for_compile_errors(client):
 
     events = (await client.get("/api/v1/workflows/runs/run-events-004/events")).json()["data"]
     assert events[0]["eventType"] == "failed"
-    assert events[0]["nodeId"] == "multi-source-opencli"
+    assert events[0]["nodeId"] == "multi-source-opencli::source-bilibili"
+    assert events[0]["nodePath"] == ["multi-source-opencli", "source-bilibili"]

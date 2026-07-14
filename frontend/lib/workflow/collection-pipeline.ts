@@ -6,9 +6,15 @@
  * 2. 目录缺失的节点（RSS/HTTP 通用源、Telegram/邮件发送、Postgres 存档）
  *    从 n8n 节点库导出 JSON，经官方 translateN8nWorkflowToWorkflowProject 翻译引入，
  *    绝不手搓节点结构。
- * 3. 封装（package）条目注册在 node-catalog.ts，internals 锁定，模板驱动。
+ * 3. 顶层以 Dify 风格业务节点呈现，现有 package/internals 作为第二层起的实现网络。
+ * 4. 所有层级复用同一个 canonical node/edge contract，不创建平行节点模型。
  */
-import { WORKFLOW_NODE_CATALOG, createWorkflowNodeFromCatalog, type WorkflowNodeCatalogItem } from "./node-catalog"
+import {
+  WORKFLOW_NODE_CATALOG,
+  createOperatorNodeFromCatalog,
+  createWorkflowNodeFromCatalog,
+  type WorkflowNodeCatalogItem,
+} from "./node-catalog"
 import { translateN8nWorkflowToWorkflowProject } from "./n8n-translator"
 import { parseWorkflowProject, type WorkflowProject, type WorkflowProjectEdge, type WorkflowProjectNode } from "./schema"
 import n8nMissingNodes from "./n8n/collection-missing-nodes.json"
@@ -124,4 +130,57 @@ export function buildCollectionWorkflowProject(): WorkflowProject {
   })
 }
 
+/**
+ * 默认 DOP 网络只展示已经封装好的工具。
+ *
+ * 每个顶层节点都可以双击进入自己的内部网络；内部节点如果仍是 package，
+ * store 会继续按 scoped id 进入下一层，和 Houdini 的嵌套 network 一致。
+ */
+export function buildPackagedWorkflowProject(): WorkflowProject {
+  const packageSpecs = [
+    ["package.opencli.multi-source-hda", "source-operator", "source-package", "多源数据采集"],
+    ["package.intelligence.pipeline", "intelligence-operator", "intelligence-package", "情报清洗与研判"],
+    ["package.review.human-review", "review-operator", "review-package", "人工复核"],
+    ["package.dispatch.fanout", "dispatch-operator", "dispatch-package", "交付与分发"],
+  ] as const
+
+  const nodes = packageSpecs.map(([catalogId, operatorId, implementationId, label], index) =>
+    createOperatorNodeFromCatalog(
+      catalogItem(catalogId),
+      operatorId,
+      implementationId,
+      { x: 120 + index * 360, y: 240 },
+      { label },
+    ),
+  )
+
+  const edges = nodes.slice(0, -1).map((node, index) =>
+    edge(`e-package-${index + 1}`, node.id, nodes[index + 1].id),
+  )
+  const adapters = packageSpecs.flatMap(([catalogId]) => catalogItem(catalogId).requiredAdapters ?? [])
+  const adapterById = new Map(adapters.map((adapter) => [adapter.id, adapter]))
+
+  return parseWorkflowProject({
+    id: "workflow-packaged-intelligence",
+    name: "OpenCLI 情报生产系统",
+    profile: "intelligence",
+    version: 1,
+    nodes,
+    edges,
+    adapters: Array.from(adapterById.values()),
+    settings: {
+      timezone: "Asia/Shanghai",
+      deterministicSimulation: true,
+      maxItemsPerRun: 50,
+    },
+    agentPermissions: {
+      canFetchNetwork: true,
+      canSendNotifications: false,
+      canWriteInbox: true,
+      allowedDomains: ["jin10.com", "bilibili.com", "xiaohongshu.com"],
+    },
+  })
+}
+
+export const PACKAGED_WORKFLOW_PROJECT = buildPackagedWorkflowProject()
 export const COLLECTION_WORKFLOW_PROJECT = buildCollectionWorkflowProject()

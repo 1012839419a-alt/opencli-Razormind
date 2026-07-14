@@ -1,6 +1,8 @@
-import type { WorkflowNode, WorkflowNodeData } from "@/lib/flow/types"
+import type { WorkflowEdge, WorkflowNode, WorkflowNodeData } from "@/lib/flow/types"
 import type { WorkflowCompileError, WorkflowCompileResponse } from "./backend-compile"
 import type { WorkflowOpenCLIHDATraceDispatchItem, WorkflowOpenCLIHDATraceResponse } from "./backend-opencli-hda-trace"
+import type { WorkflowEvidenceBatchProjection, WorkflowEvidenceBatchSummary } from "./backend-runs"
+import { workflowRuntimeCanvasNodeIds } from "./node-path.ts"
 
 export type WorkflowRuntimeBridgePreview = {
   compile?: WorkflowCompileResponse | null
@@ -38,30 +40,38 @@ export function buildRuntimeNodePatches(preview: WorkflowRuntimeBridgePreview): 
     const runtime = node.runtime
     const binding = readRecord(runtime.binding)
     const missingRuntime = readRecord(runtime.missing_runtime)
-    const visibleNodeId = readString(runtime.package_parent_id) ?? node.id
+    const runtimeNodeIds = workflowRuntimeCanvasNodeIds({
+      nodeId: node.id,
+      nodePath: readStringList(runtime.node_path),
+      packageNodeId: readString(runtime.package_parent_id),
+    })
 
     if (binding) {
-      mergePatch(visibleNodeId, {
-        status: "success",
-        runtimePreview: {
-          status: "bound",
-          worker: readString(binding.worker),
-          functionId: readString(binding.function_id),
-          internalNodeIds: visibleNodeId === node.id ? [] : [node.id],
-        },
-      })
+      for (const runtimeNodeId of runtimeNodeIds) {
+        mergePatch(runtimeNodeId, {
+          status: "success",
+          runtimePreview: {
+            status: "bound",
+            worker: readString(binding.worker),
+            functionId: readString(binding.function_id),
+            internalNodeIds: runtimeNodeId === node.id ? [] : [node.id],
+          },
+        })
+      }
       continue
     }
 
     if (missingRuntime && readString(missingRuntime.code) === "missing_runtime_parameter") {
-      mergePatch(visibleNodeId, {
-        status: "error",
-        runtimePreview: {
-          status: "blocked",
-          diagnostic: readString(missingRuntime.message) ?? "Missing runtime parameter",
-          internalNodeIds: visibleNodeId === node.id ? [] : [node.id],
-        },
-      })
+      for (const runtimeNodeId of runtimeNodeIds) {
+        mergePatch(runtimeNodeId, {
+          status: "error",
+          runtimePreview: {
+            status: "blocked",
+            diagnostic: readString(missingRuntime.message) ?? "Missing runtime parameter",
+            internalNodeIds: runtimeNodeId === node.id ? [] : [node.id],
+          },
+        })
+      }
     }
   }
 
@@ -72,8 +82,9 @@ export function buildRuntimeNodePatches(preview: WorkflowRuntimeBridgePreview): 
   if (preview.trace?.valid) {
     const dispatchCountByNode = new Map<string, WorkflowOpenCLIHDATraceDispatchItem[]>()
     for (const dispatch of preview.trace.dispatches) {
-      const visibleNodeId = dispatch.packageNodeId ?? packageIdFromInternalNode(dispatch.nodeId) ?? dispatch.nodeId
-      dispatchCountByNode.set(visibleNodeId, [...(dispatchCountByNode.get(visibleNodeId) ?? []), dispatch])
+      for (const runtimeNodeId of workflowRuntimeCanvasNodeIds(dispatch)) {
+        dispatchCountByNode.set(runtimeNodeId, [...(dispatchCountByNode.get(runtimeNodeId) ?? []), dispatch])
+      }
     }
 
     for (const [nodeId, dispatches] of dispatchCountByNode) {
@@ -121,6 +132,68 @@ export function applyRuntimeNodePatches(nodes: WorkflowNode[], patches: Workflow
   })
 }
 
+export function applyEvidenceBatchRuntimePatches(
+  nodes: WorkflowNode[],
+  edges: WorkflowEdge[],
+  projection: WorkflowEvidenceBatchProjection,
+  batches: WorkflowEvidenceBatchSummary[],
+): { nodes: WorkflowNode[]; edges: WorkflowEdge[] } {
+  const batchesByNodeId = new Map<string, WorkflowEvidenceBatchSummary[]>()
+  for (const batch of batches) {
+    for (const runtimeNodeId of workflowRuntimeCanvasNodeIds(batch)) {
+      batchesByNodeId.set(runtimeNodeId, [...(batchesByNodeId.get(runtimeNodeId) ?? []), batch])
+    }
+  }
+
+  const nextNodes = nodes.map((node) => {
+    const batches = batchesByNodeId.get(node.id) ?? batchesByNodeId.get(node.id.replace("__", "::"))
+    if (!batches) return node
+    const status = evidenceBatchStatus(batches)
+    const nodeStatus: WorkflowNodeData["status"] =
+      status === "completed" ? "success" : status === "blocked" || status === "failed" ? "error" : "running"
+    return {
+      ...node,
+      data: {
+        ...node.data,
+        status: nodeStatus,
+        runtimeEvidenceBatches: batches,
+        runtimePreview: {
+          ...node.data.runtimePreview,
+          status: `evidence-${status}`,
+          runId: projection.runId,
+          traceId: projection.traceId,
+          diagnostic:
+            projection.missingSources
+              .filter((source) => workflowRuntimeCanvasNodeIds(source).includes(node.id))
+              .flatMap((source) => source.reasons)
+              .at(-1)?.message ?? node.data.runtimePreview?.diagnostic,
+        },
+      },
+    }
+  })
+
+  const nextEdges = edges.map((edge) => {
+    const batches = batchesByNodeId.get(edge.source) ?? batchesByNodeId.get(edge.source.replace("__", "::"))
+    if (!batches) return edge
+    return {
+      ...edge,
+      animated: evidenceBatchStatus(batches) === "partial",
+      data: {
+        ...edge.data,
+        runtimeEvidenceBatch: {
+          runId: projection.runId,
+          status: evidenceBatchStatus(batches),
+          batchIds: batches.map((batch) => batch.batchId),
+          itemCount: batches.reduce((sum, batch) => sum + batch.itemCount, 0),
+          recordCount: batches.reduce((sum, batch) => sum + batch.recordCount, 0),
+        },
+      },
+    }
+  })
+
+  return { nodes: nextNodes, edges: nextEdges }
+}
+
 function errorPatch(error: WorkflowCompileError): Partial<WorkflowNodeData> {
   return {
     status: "error",
@@ -131,10 +204,13 @@ function errorPatch(error: WorkflowCompileError): Partial<WorkflowNodeData> {
   }
 }
 
-function packageIdFromInternalNode(nodeId: string): string | null {
-  const separatorIndex = nodeId.indexOf("::")
-  if (separatorIndex <= 0) return null
-  return nodeId.slice(0, separatorIndex)
+function evidenceBatchStatus(batches: WorkflowEvidenceBatchSummary[]): WorkflowEvidenceBatchSummary["status"] {
+  if (batches.some((batch) => batch.status === "blocked")) return "blocked"
+  if (batches.some((batch) => batch.status === "failed")) return "failed"
+  if (batches.some((batch) => batch.status === "partial")) return "partial"
+  if (batches.some((batch) => batch.status === "running")) return "running"
+  if (batches.some((batch) => batch.status === "queued")) return "queued"
+  return "completed"
 }
 
 function readRecord(value: unknown): Record<string, unknown> | null {
@@ -144,6 +220,11 @@ function readRecord(value: unknown): Record<string, unknown> | null {
 
 function readString(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined
+}
+
+function readStringList(value: unknown): string[] | undefined {
+  if (!Array.isArray(value) || !value.every((entry) => typeof entry === "string")) return undefined
+  return value
 }
 
 function mergeStringLists(left: string[] | undefined, right: string[] | undefined): string[] | undefined {

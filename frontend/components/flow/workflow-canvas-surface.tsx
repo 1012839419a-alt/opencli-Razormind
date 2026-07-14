@@ -103,8 +103,10 @@ type WorkflowCanvasSurfaceProps = {
   onDrop: (event: DragEvent) => void
   onEdgesChange: OnEdgesChange<WorkflowEdge>
   onMouseMove: (event: ReactMouseEvent<HTMLDivElement>) => void
+  onNodeClick: NodeMouseHandler<WorkflowNode>
   onNodeContextMenu: NodeMouseHandler<WorkflowNode>
   onNodeDoubleClick: NodeMouseHandler<WorkflowNode>
+  onPaneContextMenu: (event: ReactMouseEvent<Element> | MouseEvent) => void
   onNodeDrag: OnNodeDrag<WorkflowNode>
   onNodeDragStop: OnNodeDrag<WorkflowNode>
   onNodesChange: OnNodesChange<WorkflowNode>
@@ -197,6 +199,7 @@ function NodeMenuOverlay({
   lockInternals,
   menu,
   primitiveMenuGroups,
+  showDopOperators,
   selectComponentFromMenu,
   settings,
   showNodeInfo,
@@ -212,6 +215,7 @@ function NodeMenuOverlay({
   lockInternals: (nodeId: string) => void
   menu: NodeMenuState | null
   primitiveMenuGroups: PrimitiveMenuGroup[]
+  showDopOperators: boolean
   selectComponentFromMenu: (nodeId: string) => void
   settings: CanvasSettings
   showNodeInfo: () => void
@@ -235,6 +239,7 @@ function NodeMenuOverlay({
       onShowParameters={showParameters}
       onUnlockInternals={unlockInternals}
       primitiveMenuGroups={primitiveMenuGroups}
+      showDopOperators={showDopOperators}
       wrapperElement={wrapperElement}
     />
   )
@@ -285,8 +290,10 @@ export function WorkflowCanvasSurface(props: WorkflowCanvasSurfaceProps) {
         onNodeDragStart={props.takeSnapshot}
         onNodeDrag={props.onNodeDrag}
         onNodeDragStop={props.onNodeDragStop}
+        onNodeClick={props.onNodeClick}
         onNodeDoubleClick={props.onNodeDoubleClick}
         onNodeContextMenu={props.onNodeContextMenu}
+        onPaneContextMenu={props.onPaneContextMenu}
         onDrop={props.onDrop}
         onDragOver={props.onDragOver}
         nodeTypes={nodeTypes}
@@ -327,6 +334,7 @@ export function WorkflowCanvasSurface(props: WorkflowCanvasSurfaceProps) {
         lockInternals={props.lockInternals}
         menu={props.nodeMenu}
         primitiveMenuGroups={props.primitiveMenuGroups}
+        showDopOperators={props.networkStack.length === 0}
         selectComponentFromMenu={props.selectComponentFromMenu}
         settings={props.settings}
         showNodeInfo={props.showNodeInfo}

@@ -37,6 +37,83 @@ export type WorkflowRunBatchReference = {
   manifestUri?: string | null
 }
 
+export type WorkflowEvidenceBatchSummary = WorkflowRunBatchReference & {
+  runId: string
+  traceId: string
+  nodeId: string
+  nodePath?: string[]
+  packageNodeId?: string | null
+  internalNodeId?: string | null
+  status: WorkflowRunStatus
+}
+
+export type WorkflowEvidenceBatchListResponse = {
+  runId: string
+  batches: WorkflowEvidenceBatchSummary[]
+  nextCursor?: string | null
+}
+
+export type WorkflowSourceCoverage = {
+  sourceGroup?: string | null
+  status: WorkflowRunStatus
+  batchCount: number
+  itemCount: number
+  recordCount: number
+}
+
+export type WorkflowEvidenceBatchDetail = {
+  runId: string
+  batch: WorkflowEvidenceBatchSummary
+  manifestUri?: string | null
+  odpRef?: string | null
+  recordCount: number
+  itemCount: number
+  sourceCoverage: WorkflowSourceCoverage
+}
+
+export type WorkflowMissingSource = {
+  nodeId: string
+  sourceGroup?: string | null
+  status: WorkflowRunStatus
+  reasons: WorkflowRunBlockReason[]
+}
+
+export type WorkflowEvidenceSummary = {
+  summaryId: string
+  sourceGroup?: string | null
+  status: WorkflowRunStatus
+  batchIds: string[]
+  itemCount: number
+  recordCount: number
+}
+
+export type WorkflowProjectionArtifact = {
+  artifactId: string
+  batchId: string
+  nodeId: string
+  manifestUri?: string | null
+  odpRef?: string | null
+}
+
+export type WorkflowEvidenceBatchProjection = {
+  runId: string
+  traceId: string
+  status: WorkflowRunStatus
+  nodes: WorkflowRunNodeState[]
+  clusters: Array<Record<string, unknown>>
+  missingSources: WorkflowMissingSource[]
+  summaries: WorkflowEvidenceSummary[]
+  conflicts: Array<Record<string, unknown>>
+  artifacts: WorkflowProjectionArtifact[]
+}
+
+const workflowRunEndpoint = (runId: string) => `/api/workflow/runs/${encodeURIComponent(runId)}`
+
+const workflowEvidenceBatchEndpoint = (runId: string, batchId?: string) => {
+  const root = `${workflowRunEndpoint(runId)}/evidence-batches`
+  return batchId ? `${root}/${encodeURIComponent(batchId)}` : root
+}
+
 export type WorkflowNodeRunEvent = {
   id: string
   sequence: number
@@ -44,6 +121,7 @@ export type WorkflowNodeRunEvent = {
   workflowRunId: string
   traceId: string
   nodeId: string
+  nodePath?: string[]
   eventType: WorkflowNodeRunEventType
   createdAt: string
   packageNodeId?: string | null
@@ -58,6 +136,7 @@ export type WorkflowNodeRunEvent = {
 export type WorkflowRunNodeState = {
   nodeId: string
   status: WorkflowRunStatus
+  nodePath?: string[]
   packageNodeId?: string | null
   internalNodeId?: string | null
   sourceGroups: string[]
@@ -148,7 +227,7 @@ export async function fetchWorkflowRunProjection(
   runId: string,
   options: { authorization?: string | null } = {},
 ): Promise<WorkflowRunProjection> {
-  const response = await fetch(`/api/workflow/runs/${encodeURIComponent(runId)}`, {
+  const response = await fetch(workflowRunEndpoint(runId), {
     headers: {
       ...(options.authorization ? { Authorization: options.authorization } : {}),
     },
@@ -161,7 +240,7 @@ export async function fetchWorkflowRunCheckpoint(
   runId: string,
   options: { authorization?: string | null } = {},
 ): Promise<WorkflowRunCheckpoint> {
-  const response = await fetch(`/api/workflow/runs/${encodeURIComponent(runId)}/checkpoint`, {
+  const response = await fetch(`${workflowRunEndpoint(runId)}/checkpoint`, {
     headers: {
       ...(options.authorization ? { Authorization: options.authorization } : {}),
     },
@@ -186,7 +265,7 @@ export async function queryWorkflowRunTrace(
   if (options.eventType) search.set("eventType", options.eventType)
   if (typeof options.limit === "number") search.set("limit", String(options.limit))
   const suffix = search.size > 0 ? `?${search.toString()}` : ""
-  const response = await fetch(`/api/workflow/runs/${encodeURIComponent(runId)}/trace${suffix}`, {
+  const response = await fetch(`${workflowRunEndpoint(runId)}/trace${suffix}`, {
     headers: {
       ...(options.authorization ? { Authorization: options.authorization } : {}),
     },
@@ -211,7 +290,7 @@ export async function fetchWorkflowRunEvents(
   if (options.eventType) search.set("eventType", options.eventType)
   if (typeof options.limit === "number") search.set("limit", String(options.limit))
   const suffix = search.size > 0 ? `?${search.toString()}` : ""
-  const response = await fetch(`/api/workflow/runs/${encodeURIComponent(runId)}/events${suffix}`, {
+  const response = await fetch(`${workflowRunEndpoint(runId)}/events${suffix}`, {
     headers: {
       ...(options.authorization ? { Authorization: options.authorization } : {}),
     },
@@ -225,7 +304,7 @@ export async function continueWorkflowRunWithSourceOutputs(
   sourceOutputs: Record<string, Array<Record<string, unknown>>>,
   options: { authorization?: string | null } = {},
 ): Promise<WorkflowRunProjection> {
-  const response = await fetch(`/api/workflow/runs/${encodeURIComponent(runId)}/source-outputs`, {
+  const response = await fetch(`${workflowRunEndpoint(runId)}/source-outputs`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -240,7 +319,7 @@ export async function replayWorkflowRunEventStream(
   runId: string,
   options: { authorization?: string | null } = {},
 ): Promise<WorkflowRunStreamReplay> {
-  const response = await fetch(`/api/workflow/runs/${encodeURIComponent(runId)}/events/stream`, {
+  const response = await fetch(`${workflowRunEndpoint(runId)}/events/stream`, {
     headers: {
       ...(options.authorization ? { Authorization: options.authorization } : {}),
     },
@@ -252,6 +331,68 @@ export async function replayWorkflowRunEventStream(
   }
   const text = await response.text()
   return parseWorkflowRunEventStream(text)
+}
+
+export async function fetchWorkflowEvidenceBatches(
+  runId: string,
+  options: {
+    authorization?: string | null
+    nodeId?: string
+    sourceGroup?: string
+    cursor?: string
+    limit?: number
+  } = {},
+): Promise<WorkflowEvidenceBatchListResponse> {
+  const search = new URLSearchParams()
+  if (options.nodeId) search.set("node_id", options.nodeId)
+  if (options.sourceGroup) search.set("source_group", options.sourceGroup)
+  if (options.cursor) search.set("cursor", options.cursor)
+  if (typeof options.limit === "number") search.set("limit", String(options.limit))
+  const suffix = search.size > 0 ? `?${search.toString()}` : ""
+  const response = await fetch(`${workflowEvidenceBatchEndpoint(runId)}${suffix}`, {
+    headers: {
+      ...(options.authorization ? { Authorization: options.authorization } : {}),
+    },
+    cache: "no-store",
+  })
+  return readApiResponse(response, "Workflow evidence batches failed")
+}
+
+export async function fetchWorkflowEvidenceBatchDetail(
+  runId: string,
+  batchId: string,
+  options: { authorization?: string | null } = {},
+): Promise<WorkflowEvidenceBatchDetail> {
+  const response = await fetch(workflowEvidenceBatchEndpoint(runId, batchId), {
+    headers: {
+      ...(options.authorization ? { Authorization: options.authorization } : {}),
+    },
+    cache: "no-store",
+  })
+  return readApiResponse(response, "Workflow evidence batch detail failed")
+}
+
+export async function fetchWorkflowEvidenceBatchProjection(
+  runId: string,
+  options: {
+    authorization?: string | null
+    nodeId?: string
+    sourceGroup?: string
+    include?: string[]
+  } = {},
+): Promise<WorkflowEvidenceBatchProjection> {
+  const search = new URLSearchParams()
+  if (options.nodeId) search.set("node_id", options.nodeId)
+  if (options.sourceGroup) search.set("source_group", options.sourceGroup)
+  for (const value of options.include ?? []) search.append("include", value)
+  const suffix = search.size > 0 ? `?${search.toString()}` : ""
+  const response = await fetch(`${workflowEvidenceBatchEndpoint(runId)}/projection${suffix}`, {
+    headers: {
+      ...(options.authorization ? { Authorization: options.authorization } : {}),
+    },
+    cache: "no-store",
+  })
+  return readApiResponse(response, "Workflow evidence batch projection failed")
 }
 
 export function parseWorkflowRunEventStream(text: string): WorkflowRunStreamReplay {
