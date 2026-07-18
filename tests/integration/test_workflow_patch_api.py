@@ -604,6 +604,160 @@ async def test_demand_draft_reports_missing_capability_for_unknown_source(client
 
 
 @pytest.mark.asyncio
+async def test_demand_draft_recognises_xhs_alias_and_en_keywords(client):
+    project = _valid_workflow_project()
+
+    response = await client.post(
+        "/api/v1/workflows/demand-draft",
+        json={
+            "project": project,
+            "text": "fetch xhs trending every 5 min",
+            "locale": "en-US",
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["valid"] is True
+    nodes = {node["id"]: node for node in data["project"]["nodes"]}
+    assert "source-xiaohongshu" in nodes
+    assert nodes["source-xiaohongshu"]["params"]["args"]["keyword"]
+    # Frequency hint must produce a schedule-cron node wired to the source.
+    assert "schedule-cron" in nodes
+    schedule = nodes["schedule-cron"]
+    assert schedule["params"]["frequency"] == "every-5m"
+    assert schedule["params"]["interval"] == "5m"
+    # Demand metadata is propagated.
+    assert nodes["source-xiaohongshu"]["params"]["demand"]["locale"] == "en-US"
+    assert nodes["source-xiaohongshu"]["params"]["demand"]["kind"] == "hot-search"
+
+
+@pytest.mark.asyncio
+async def test_demand_draft_extracts_topic_keyword_and_frequency(client):
+    project = _valid_workflow_project()
+
+    response = await client.post(
+        "/api/v1/workflows/demand-draft",
+        json={
+            "project": project,
+            "text": "抓小红书 AI 热帖 每 5 分钟",
+            "locale": "zh-CN",
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["valid"] is True
+    nodes = {node["id"]: node for node in data["project"]["nodes"]}
+    # AI is the topic keyword after stripping site/kind markers.
+    assert nodes["source-xiaohongshu"]["params"]["args"]["keyword"] == "AI"
+    assert nodes["source-xiaohongshu"]["params"]["args"]["topic"] == "AI"
+    assert nodes["source-xiaohongshu"]["params"]["args"]["kind"] == "hot-posts"
+    # Frequency hint attaches a cron schedule node.
+    assert "schedule-cron" in nodes
+    assert nodes["schedule-cron"]["params"]["frequency"] == "every-5m"
+    # And the cron schedule is wired to the source.
+    edges = {
+        (edge["source"], edge["target"])
+        for edge in data["project"]["edges"]
+    }
+    assert ("schedule-cron", "source-xiaohongshu") in edges
+
+
+@pytest.mark.asyncio
+async def test_demand_draft_frequency_hourly_emits_cron_schedule(client):
+    project = _valid_workflow_project()
+
+    response = await client.post(
+        "/api/v1/workflows/demand-draft",
+        json={
+            "project": project,
+            "text": "抓金十 新闻 每小时",
+            "locale": "zh-CN",
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["valid"] is True
+    nodes = {node["id"]: node for node in data["project"]["nodes"]}
+    # Hourly frequency produces a schedule-cron node with interval "1h".
+    assert "schedule-cron" in nodes
+    assert nodes["schedule-cron"]["params"]["interval"] == "1h"
+    assert nodes["schedule-cron"]["params"]["frequency"] == "hourly"
+    assert nodes["schedule-cron"]["params"]["cron"] == "0 * * * *"
+
+
+@pytest.mark.asyncio
+async def test_demand_draft_non_opencli_channel_emits_blocked_placeholder_node(client):
+    project = _valid_workflow_project()
+
+    response = await client.post(
+        "/api/v1/workflows/demand-draft",
+        json={
+            "project": project,
+            "text": "通过 RSS 订阅 BBC 新闻",
+            "locale": "zh-CN",
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["valid"] is True
+    nodes = {node["id"]: node for node in data["project"]["nodes"]}
+    # Placeholder for the RSS channel projection lands on Canvas.
+    assert "source-news-rss" in nodes
+    rss_node = nodes["source-news-rss"]
+    assert rss_node["ui"]["catalogId"] == "intelligence.source.channel.rss"
+    # Adapter binding is wired through a channel-prefixed adapter id.
+    adapter_ids = {adapter["id"] for adapter in data["project"]["adapters"]}
+    assert any(aid.startswith("channel-rss-") for aid in adapter_ids)
+    # Missing capability is reported at the patch level so the operator can
+    # resolve the resource gap, not silently bailed out of.
+    assert any(
+        item["capability"] == "channel.rss.config"
+        and "RSS DataSource" in (item.get("reason") or "")
+        for item in data["missing_capabilities"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_demand_draft_api_channel_emits_blocked_placeholder_with_required_config(client):
+    project = _valid_workflow_project()
+
+    response = await client.post(
+        "/api/v1/workflows/demand-draft",
+        json={
+            "project": project,
+            "text": "Hacker News 热门 每小时",
+            "locale": "en-US",
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["valid"] is True
+    nodes = {node["id"]: node for node in data["project"]["nodes"]}
+    # API channel projection lands on Canvas as a blocked placeholder.
+    assert "source-hackernews" in nodes
+    api_node = nodes["source-hackernews"]
+    assert api_node["ui"]["catalogId"] == "intelligence.source.channel.api"
+    assert api_node["params"]["channelType"] == "api"
+    # Required config is surfaced so the operator can fix it.
+    demand = api_node["params"]["demand"]
+    assert "base_url" in demand.get("requiredConfig", [])
+    assert "endpoint" in demand.get("requiredConfig", [])
+    # Hourly frequency hint still attaches a schedule-cron node wired to the
+    # API placeholder (the canonical design — schedule is the front door).
+    assert "schedule-cron" in nodes
+    edges = {
+        (edge["source"], edge["target"])
+        for edge in data["project"]["edges"]
+    }
+    assert ("schedule-cron", "source-hackernews") in edges
+
+
+@pytest.mark.asyncio
 async def test_langgraph_import_preserves_graph_as_opencli_capability_nodes(client):
     project = _valid_workflow_project()
     project["nodes"] = project["nodes"][:1]

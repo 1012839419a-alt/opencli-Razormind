@@ -36,6 +36,12 @@ from backend.workflow.turbopush_runtime import (
 OPENCLI_BINDING_ID = "iii.collector-opencli.snapshot"
 OPENCLI_WORKER = "collector-opencli"
 OPENCLI_FUNCTION_ID = "odp.collect::opencli_snapshot"
+RSS_CHANNEL_BINDING_ID = "iii.collector-rss.snapshot"
+RSS_CHANNEL_WORKER = "collector-rss-channel"
+RSS_CHANNEL_FUNCTION_ID = "odp.collect::rss_feed_snapshot"
+API_CHANNEL_BINDING_ID = "iii.collector-api.snapshot"
+API_CHANNEL_WORKER = "collector-api-channel"
+API_CHANNEL_FUNCTION_ID = "odp.collect::api_request_snapshot"
 DEMAND_DRAFT_BINDING_ID = "workflow.demand-draft.patch"
 SCHEDULE_TRIGGER_BINDING_ID = "workflow.trigger.schedule_tick"
 SOURCE_FETCH_BINDING_ID = "workflow.source.fetch"
@@ -110,6 +116,10 @@ def resolve_runtime_metadata(
         metadata = _resolve_turbopush_publish(node, adapter, node_id=resolved_node_id)
     elif _is_webhook_notifier(node, adapter):
         metadata = _resolve_webhook_notifier(node, adapter, node_id=resolved_node_id)
+    elif _is_rss_channel_source(node, adapter):
+        metadata = _resolve_rss_channel_source(node, adapter, node_id=resolved_node_id)
+    elif _is_api_channel_source(node, adapter):
+        metadata = _resolve_api_channel_source(node, adapter, node_id=resolved_node_id)
     elif _is_opencli_source(node, adapter):
         metadata = _resolve_opencli_source(node, adapter, node_id=resolved_node_id)
     elif _is_source_fetch_node(node, adapter):
@@ -191,6 +201,118 @@ def _resolve_opencli_source(
         adapterNodeId=adapter.id if adapter else None,
     ).model_dump()
     return {"binding": binding}
+
+
+def _resolve_channel_source_binding(
+    node: WorkflowProjectNode,
+    adapter: WorkflowAdapterBinding | None,
+    *,
+    node_id: str,
+    binding_id: str,
+    worker: str,
+    function_id: str,
+    channel_type: str,
+    required_config_fields: tuple[str, ...],
+) -> dict[str, Any]:
+    """Build a workflow binding for a DataSource-backed channel (RSS / API).
+
+    Mirrors the OpenCLI shape (runtime=iii, dedicated collector worker/function)
+    but reads its config from the adapter's ``config.channel_config`` rather
+    than node.params — DataSource-backed channels carry their feed_url /
+    base_url inside the saved channel_config, not the workflow node itself.
+    This is how the existing DataSource run path resolves them; projecting the
+    same shape here means a Canvas run for an RSS / API source / fetch node
+    can dispatch through the real channel runner rather than needing a separate
+    fixture/mock branch.
+
+    Channels are not browser-orchestrated so no resource_requirement is built
+    (no site / worker / session resolve); credential resolution happens inside
+    the channel itself through AuthManager when sourceId is present.
+    """
+    config = _read_dict(adapter.config) if adapter else {}
+    channel_config = _read_dict(config.get("channel_config")) or _read_dict(
+        config.get("channelConfig")
+    )
+    missing_config_fields = [
+        field_name
+        for field_name in required_config_fields
+        if not _read_string(channel_config.get(field_name))
+    ]
+    if missing_config_fields or not adapter:
+        return {
+            "missing_runtime": _dump_missing_runtime(
+                WorkflowMissingRuntime(
+                    code=MISSING_RUNTIME_PARAMETER,
+                    node_id=node_id,
+                    kind=node.kind,
+                    capability=node.capability,
+                    adapter_id=adapter.id if adapter else None,
+                    provider=adapter.provider if adapter else None,
+                    required_params=[
+                        f"adapter.config.channel.{field}"
+                        for field in missing_config_fields
+                    ],
+                    message=(
+                        f"{channel_type} channel binding requires adapter.config "
+                        f"with: {', '.join(required_config_fields)}"
+                    ),
+                )
+            )
+        }
+
+    binding = WorkflowRuntimeBinding(
+        binding_id=binding_id,
+        runtime="iii",
+        worker=worker,
+        function_id=function_id,
+        channel=channel_type,
+        input={
+            "channelType": channel_type,
+            "liveMode": adapter.mode if adapter else None,
+            "sourceId": _read_string(node.params.get("sourceId"))
+            or _read_string(node.params.get("dataSourceId")),
+            "channelConfig": channel_config,
+            "params": dict(node.params),
+            "outputPort": "items[]",
+        },
+    ).model_dump()
+    return {"binding": binding}
+
+
+def _resolve_rss_channel_source(
+    node: WorkflowProjectNode,
+    adapter: WorkflowAdapterBinding | None,
+    *,
+    node_id: str,
+) -> dict[str, Any]:
+    return _resolve_channel_source_binding(
+        node,
+        adapter,
+        node_id=node_id,
+        binding_id=RSS_CHANNEL_BINDING_ID,
+        worker=RSS_CHANNEL_WORKER,
+        function_id=RSS_CHANNEL_FUNCTION_ID,
+        channel_type="rss",
+        required_config_fields=("feed_url",),
+    )
+
+
+def _resolve_api_channel_source(
+    node: WorkflowProjectNode,
+    adapter: WorkflowAdapterBinding | None,
+    *,
+    node_id: str,
+) -> dict[str, Any]:
+    return _resolve_channel_source_binding(
+        node,
+        adapter,
+        node_id=node_id,
+        binding_id=API_CHANNEL_BINDING_ID,
+        worker=API_CHANNEL_WORKER,
+        function_id=API_CHANNEL_FUNCTION_ID,
+        channel_type="api",
+        required_config_fields=("base_url", "endpoint"),
+    )
 
 
 def _resolve_collection_need(node: WorkflowProjectNode, *, node_id: str) -> dict[str, Any]:
@@ -828,6 +950,47 @@ def _is_opencli_source(
         adapter.provider == "opencli"
         or _read_string(config.get("channel")) == "opencli"
         or _read_string(config.get("channel_type")) == "opencli"
+    )
+
+
+def _is_rss_channel_source(
+    node: WorkflowProjectNode,
+    adapter: WorkflowAdapterBinding | None,
+) -> bool:
+    """Match a source/fetch node whose adapter binds to the RSS DataSource
+    channel — Canvas catalog items generated from
+    ``intelligence.source.channel.rss`` carry ``adapter.provider == "rss"`` or
+    ``adapter.config.channel == "rss"`` after the projection. Same constraint
+    the OpenCLI predicate applies (kind/capability + adapter present)."""
+    if node.kind != "source" or node.capability != "fetch" or adapter is None:
+        return False
+    config = adapter.config
+    return (
+        adapter.provider == "rss"
+        or _read_string(config.get("channel")) == "rss"
+        or _read_string(config.get("channel_type")) == "rss"
+        or _read_string((node.ui or {}).get("catalogId"))
+        == "intelligence.source.channel.rss"
+    )
+
+
+def _is_api_channel_source(
+    node: WorkflowProjectNode,
+    adapter: WorkflowAdapterBinding | None,
+) -> bool:
+    """Same shape as the RSS predicate; the api channel needs base_url +
+    endpoint at compile time so an API source / fetch node with an api adapter
+    routes through the dedicated channel binding rather than the generic
+    workflow.source.fetch contract."""
+    if node.kind != "source" or node.capability != "fetch" or adapter is None:
+        return False
+    config = adapter.config
+    return (
+        adapter.provider == "api"
+        or _read_string(config.get("channel")) == "api"
+        or _read_string(config.get("channel_type")) == "api"
+        or _read_string((node.ui or {}).get("catalogId"))
+        == "intelligence.source.channel.api"
     )
 
 

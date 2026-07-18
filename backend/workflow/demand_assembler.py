@@ -1,8 +1,27 @@
-"""Assemble collection needs into reviewable WorkflowProject patches."""
+"""Assemble collection needs into reviewable WorkflowProject patches.
+
+The assembler parses a natural-language user need into structured intents via
+``intent_parser``, then projects those intents onto real backend
+source/channel/schedule capabilities.
+
+Design constraints (kept identical to the legacy path):
+- Never emit raw executor definitions or OpenCLI payloads; only assemble
+  packaged OpenCLI Admin nodes from the existing catalog.
+- For sites that map to ``channel=opencli``, emit native source/normalize/
+  merge/accept/sink nodes (the legacy ``_native_first_loop_operations``
+  behaviour).
+- For sites that map to a real but blocked channel (``web_scraper`` /
+  ``api`` / ``rss`` / ``cli`` / ``skill`` / ``crawl4ai``), still emit a
+  placeholder ``intelligence.source.channel.<type>`` source node plus a
+  ``request_missing_capability`` patch operation. The placeholder is visible
+  in the canvas so the operator can resolve the resource gap, not invisible.
+- When the parser finds a frequency hint, attach a Cron Schedule node to the
+  patch so the request to "每小时" / "每 5 分钟" routes to a real schedule
+  trigger.
+"""
 
 from __future__ import annotations
 
-import re
 from typing import Any
 
 from backend.schemas.workflow import (
@@ -14,19 +33,25 @@ from backend.schemas.workflow import (
     WorkflowProjectEdge,
     WorkflowProjectNode,
 )
+from backend.workflow.capability_projection import (
+    CHANNEL_BLOCKED_REASONS,
+    CHANNEL_DEFAULT_PARAMS,
+    CHANNEL_LABELS,
+    CHANNEL_REQUIRED_CONFIG,
+)
+from backend.workflow.intent_parser import (
+    ParsedNeed,
+    SourceIntent,
+    parse_collection_need,
+)
 from backend.workflow.patcher import preview_workflow_patch
 
 
 def draft_workflow_demand(body: WorkflowDemandDraftRequest) -> WorkflowPatchResponse:
-    """Translate a user collection need into reviewable native-node patches.
+    """Translate a user collection need into reviewable native-node patches."""
 
-    This is intentionally deterministic and conservative. It never emits raw
-    executors or OpenCLI payloads; it only assembles packaged OpenCLI Admin
-    capabilities that the Canvas can review before materialization.
-    """
-
-    sources = _source_slots_for_need(body.text)
-    if not sources:
+    parsed = parse_collection_need(body.text)
+    if not parsed.has_recognised_source:
         return preview_workflow_patch(
             body.project,
             [
@@ -41,24 +66,37 @@ def draft_workflow_demand(body: WorkflowDemandDraftRequest) -> WorkflowPatchResp
             ],
         )
 
-    operations = _native_first_loop_operations(body.project, sources, body.text, body.locale)
-    return preview_workflow_patch(body.project, operations)
+    return _assemble_operations(body.project, parsed, body.text, body.locale)
 
 
-def _native_first_loop_operations(
+# ── Operation assembly ──────────────────────────────────────────────────────
+
+
+def _assemble_operations(
     project: WorkflowProject,
-    sources: list[dict[str, Any]],
+    parsed: ParsedNeed,
     demand_text: str,
     locale: str | None,
-) -> list[WorkflowPatchOperation]:
+) -> WorkflowPatchResponse:
     operations: list[WorkflowPatchOperation] = []
+
     used_node_ids = {node.id for node in project.nodes}
     used_edge_ids = {edge.id for edge in project.edges}
     used_adapter_ids = {adapter.id for adapter in project.adapters}
+
+    opencli_sources: list[SourceIntent] = []
+    blocked_sources: list[SourceIntent] = []
+    for intent in parsed.sources:
+        if intent.channel == "opencli":
+            opencli_sources.append(intent)
+        else:
+            blocked_sources.append(intent)
+
     normalize_ids: list[str] = []
 
-    for index, source in enumerate(sources):
-        source_slug = _read_string(source.get("id")) or f"source-{index + 1}"
+    # Native opencli path — fan out through normalize → merge → accept → sink.
+    for index, intent in enumerate(opencli_sources):
+        source_slug = intent.site
         adapter_id = _unique_id(used_adapter_ids, f"opencli-{source_slug}")
         if adapter_id not in {adapter.id for adapter in project.adapters}:
             operations.append(
@@ -77,6 +115,7 @@ def _native_first_loop_operations(
         source_id = _unique_id(used_node_ids, f"source-{source_slug}")
         normalize_id = _unique_id(used_node_ids, f"normalize-{source_slug}")
         normalize_ids.append(normalize_id)
+        args = _args_for_opencli_source(intent, parsed)
         operations.extend(
             [
                 WorkflowPatchOperation(
@@ -87,19 +126,21 @@ def _native_first_loop_operations(
                         capability="fetch",
                         adapter=adapter_id,
                         params={
-                            "site": source["site"],
-                            "command": source["command"],
-                            "args": source.get("args", {}),
-                            "sourceGroup": source.get("sourceGroup"),
+                            "site": intent.site,
+                            "command": _command_for_kind(intent.kind),
+                            "sourceGroup": intent.source_group,
+                            "args": args,
                             "demand": {
                                 "text": demand_text,
                                 "locale": locale,
+                                "topic": parsed.topic,
+                                "kind": intent.kind,
                                 "source": "ai_plan_draft",
                             },
                         },
                         ui={
                             "catalogId": "intelligence.source.opencli-slot",
-                            "label": source.get("label", source_slug),
+                            "label": intent.label,
                             "position": {"x": 180, "y": 180 + index * 120},
                         },
                     ),
@@ -113,7 +154,7 @@ def _native_first_loop_operations(
                         params={"language": locale or "zh-CN", "preserveSourceRefs": True},
                         ui={
                             "catalogId": "intelligence.processing.normalize",
-                            "label": "Normalize",
+                            "label": f"Normalize {intent.label}",
                             "position": {"x": 440, "y": 180 + index * 120},
                         },
                     ),
@@ -131,158 +172,244 @@ def _native_first_loop_operations(
             ]
         )
 
-    merge_id = _unique_id(used_node_ids, "merge-candidates")
-    accept_id = _unique_id(used_node_ids, "accept-records")
-    sink_id = _unique_id(used_node_ids, "record-sink")
-    operations.extend(
-        [
-            WorkflowPatchOperation(
-                op="add_node",
-                node=WorkflowProjectNode(
-                    id=merge_id,
-                    kind="flow",
-                    capability="merge",
-                    params={
-                        "strategy": "concat",
-                        "preserveLineage": True,
-                        "inputType": "recordCandidate[]",
-                        "outputType": "recordCandidate[]",
-                    },
-                    ui={
-                        "catalogId": "intelligence.flow.merge",
-                        "label": "Merge Candidates",
-                        "position": {"x": 700, "y": 240},
-                    },
-                ),
-            ),
-            WorkflowPatchOperation(
-                op="add_node",
-                node=WorkflowProjectNode(
-                    id=accept_id,
-                    kind="control",
-                    capability="accept",
-                    params={
-                        "mode": "automatic_with_review",
-                        "schema": "record.v1",
-                        "dedupe": "required",
-                        "lineageRequired": True,
-                        "minQuality": 0,
-                    },
-                    ui={
-                        "catalogId": "intelligence.control.record-acceptance",
-                        "label": "Record Acceptance",
-                        "position": {"x": 960, "y": 240},
-                    },
-                ),
-            ),
-            WorkflowPatchOperation(
-                op="add_node",
-                node=WorkflowProjectNode(
-                    id=sink_id,
-                    kind="sink",
-                    capability="store",
-                    params={
-                        "target": "records",
-                        "writeMode": "append",
-                        "preserveLineage": True,
-                    },
-                    ui={
-                        "catalogId": "intelligence.sink.records",
-                        "label": "Records",
-                        "position": {"x": 1220, "y": 240},
-                    },
-                ),
-            ),
-        ]
-    )
-    for index, normalize_id in enumerate(normalize_ids, start=1):
+    # Non-opencli site projection — emit a placeholder source node flagged with
+    # the channel's existing blocked reason so the operator can fix the gap.
+    for index, intent in enumerate(blocked_sources):
+        source_slug = intent.site
+        adapter_id = _unique_id(used_adapter_ids, f"channel-{intent.channel}-{source_slug}")
+        if adapter_id not in {adapter.id for adapter in project.adapters}:
+            operations.append(
+                WorkflowPatchOperation(
+                    op="add_adapter",
+                    adapter=WorkflowAdapterBinding(
+                        id=adapter_id,
+                        type="source",
+                        provider=intent.channel,
+                        mode="live",
+                        config={
+                            "channel": intent.channel,
+                            "site": intent.site,
+                            **CHANNEL_DEFAULT_PARAMS.get(intent.channel, {}),
+                        },
+                    ),
+                )
+            )
+
+        source_id = _unique_id(used_node_ids, f"source-{source_slug}")
+        label = CHANNEL_LABELS.get(intent.channel, intent.channel.title())
         operations.append(
             WorkflowPatchOperation(
-                op="connect_nodes",
-                edge=WorkflowProjectEdge(
-                    id=_unique_id(used_edge_ids, f"e-{normalize_id}-{merge_id}"),
-                    source=normalize_id,
-                    target=merge_id,
-                    sourcePort="out",
-                    targetPort=f"in{index}",
+                op="add_node",
+                node=WorkflowProjectNode(
+                    id=source_id,
+                    kind="source",
+                    capability="fetch",
+                    adapter=adapter_id,
+                    params={
+                        "channelType": intent.channel,
+                        "site": intent.site,
+                        "args": CHANNEL_DEFAULT_PARAMS.get(intent.channel, {}),
+                        "demand": {
+                            "text": demand_text,
+                            "locale": locale,
+                            "topic": parsed.topic,
+                            "kind": intent.kind,
+                            "source": "ai_plan_draft",
+                            "blockedReason": CHANNEL_BLOCKED_REASONS.get(intent.channel),
+                            "requiredConfig": CHANNEL_REQUIRED_CONFIG.get(intent.channel, []),
+                        },
+                    },
+                    ui={
+                        "catalogId": f"intelligence.source.channel.{intent.channel}",
+                        "label": f"{label} ({intent.site})",
+                        "position": {"x": 180, "y": 180 + (len(opencli_sources) + index) * 120},
+                    },
+                    proposalState="draft",
                 ),
             )
         )
-    operations.extend(
-        [
+        operations.append(
             WorkflowPatchOperation(
-                op="connect_nodes",
-                edge=WorkflowProjectEdge(
-                    id=_unique_id(used_edge_ids, f"e-{merge_id}-{accept_id}"),
-                    source=merge_id,
-                    target=accept_id,
-                    sourcePort="out",
-                    targetPort="candidates",
+                op="request_missing_capability",
+                capability=f"channel.{intent.channel}.config",
+                reason=CHANNEL_BLOCKED_REASONS.get(
+                    intent.channel,
+                    f"{label} channel config required before this source can run.",
                 ),
-            ),
-            WorkflowPatchOperation(
-                op="connect_nodes",
-                edge=WorkflowProjectEdge(
-                    id=_unique_id(used_edge_ids, f"e-{accept_id}-{sink_id}"),
-                    source=accept_id,
-                    target=sink_id,
-                    sourcePort="records",
-                    targetPort="records",
-                ),
-            ),
-        ]
-    )
-    return operations
-
-
-def _source_slots_for_need(text: str) -> list[dict[str, Any]]:
-    normalized = text.lower()
-    slots: list[dict[str, Any]] = []
-    keyword = _keyword_from_need(text)
-
-    if any(token in normalized for token in ("小红书", "xiaohongshu", "xhs")):
-        slots.append(
-            {
-                "id": "xiaohongshu",
-                "label": "Xiaohongshu Search",
-                "sourceGroup": "social",
-                "site": "xiaohongshu",
-                "command": "search",
-                "args": {"keyword": keyword},
-                "resourceTags": ["browser-session:xiaohongshu"],
-            }
+            )
         )
 
-    if any(token in normalized for token in ("哔哩", "bilibili", "b站", "bili")):
-        slots.append(
-            {
-                "id": "bilibili",
-                "label": "Bilibili Search",
-                "sourceGroup": "video",
-                "site": "bilibili",
-                "command": "search",
-                "args": {"keyword": keyword},
-                "resourceTags": ["browser-session:bilibili"],
-            }
+    # Only build the native collect+accept tail when at least one opencli
+    # source is present. Blocked-only need still keeps its placeholder so the
+    # canvas is reviewable but not silently miscompiled.
+    if opencli_sources:
+        merge_id = _unique_id(used_node_ids, "merge-candidates")
+        accept_id = _unique_id(used_node_ids, "accept-records")
+        sink_id = _unique_id(used_node_ids, "record-sink")
+        operations.extend(
+            [
+                WorkflowPatchOperation(
+                    op="add_node",
+                    node=WorkflowProjectNode(
+                        id=merge_id,
+                        kind="flow",
+                        capability="merge",
+                        params={
+                            "strategy": "concat",
+                            "preserveLineage": True,
+                            "inputType": "recordCandidate[]",
+                            "outputType": "recordCandidate[]",
+                        },
+                        ui={
+                            "catalogId": "intelligence.flow.merge",
+                            "label": "Merge Candidates",
+                            "position": {"x": 700, "y": 240},
+                        },
+                    ),
+                ),
+                WorkflowPatchOperation(
+                    op="add_node",
+                    node=WorkflowProjectNode(
+                        id=accept_id,
+                        kind="control",
+                        capability="accept",
+                        params={
+                            "mode": "automatic_with_review",
+                            "schema": "record.v1",
+                            "dedupe": "required",
+                            "lineageRequired": True,
+                            "minQuality": 0,
+                        },
+                        ui={
+                            "catalogId": "intelligence.control.record-acceptance",
+                            "label": "Record Acceptance",
+                            "position": {"x": 960, "y": 240},
+                        },
+                    ),
+                ),
+                WorkflowPatchOperation(
+                    op="add_node",
+                    node=WorkflowProjectNode(
+                        id=sink_id,
+                        kind="sink",
+                        capability="store",
+                        params={
+                            "target": "records",
+                            "writeMode": "append",
+                            "preserveLineage": True,
+                        },
+                        ui={
+                            "catalogId": "intelligence.sink.records",
+                            "label": "Records",
+                            "position": {"x": 1220, "y": 240},
+                        },
+                    ),
+                ),
+            ]
+        )
+        for index, normalize_id in enumerate(normalize_ids, start=1):
+            operations.append(
+                WorkflowPatchOperation(
+                    op="connect_nodes",
+                    edge=WorkflowProjectEdge(
+                        id=_unique_id(used_edge_ids, f"e-{normalize_id}-{merge_id}"),
+                        source=normalize_id,
+                        target=merge_id,
+                        sourcePort="out",
+                        targetPort=f"in{index}",
+                    ),
+                )
+            )
+        operations.extend(
+            [
+                WorkflowPatchOperation(
+                    op="connect_nodes",
+                    edge=WorkflowProjectEdge(
+                        id=_unique_id(used_edge_ids, f"e-{merge_id}-{accept_id}"),
+                        source=merge_id,
+                        target=accept_id,
+                        sourcePort="out",
+                        targetPort="candidates",
+                    ),
+                ),
+                WorkflowPatchOperation(
+                    op="connect_nodes",
+                    edge=WorkflowProjectEdge(
+                        id=_unique_id(used_edge_ids, f"e-{accept_id}-{sink_id}"),
+                        source=accept_id,
+                        target=sink_id,
+                        sourcePort="records",
+                        targetPort="records",
+                    ),
+                ),
+            ]
         )
 
-    return slots
+    # Frequency hint → attach a Cron Schedule node at the head of the graph so
+    # the operator can see the request expressed as a real schedule trigger.
+    if parsed.frequency and parsed.frequency_hint:
+        schedule_id = _unique_id(used_node_ids, "schedule-cron")
+        # Wire the schedule to the first source node we just created
+        # (opencli or blocked) — schedule is always at the front door.
+        first_source_id = (
+            f"source-{opencli_sources[0].site}"
+            if opencli_sources
+            else f"source-{blocked_sources[0].site}"
+            if blocked_sources
+            else None
+        )
+        operations.append(
+            WorkflowPatchOperation(
+                op="add_node",
+                node=WorkflowProjectNode(
+                    id=schedule_id,
+                    kind="schedule",
+                    capability="trigger",
+                    params={
+                        "frequency": parsed.frequency,
+                        **parsed.frequency_hint,
+                    },
+                    ui={
+                        "catalogId": "intelligence.schedule.cron",
+                        "label": f"Cron {parsed.frequency}",
+                        "position": {"x": -40, "y": 220},
+                    },
+                )
+            )
+        )
+        if first_source_id:
+            operations.append(
+                WorkflowPatchOperation(
+                    op="connect_nodes",
+                    edge=WorkflowProjectEdge(
+                        id=_unique_id(used_edge_ids, f"e-{schedule_id}-{first_source_id}"),
+                        source=schedule_id,
+                        target=first_source_id,
+                        sourcePort="out",
+                        targetPort="in",
+                    ),
+                )
+            )
+
+    return preview_workflow_patch(project, operations)
 
 
-def _keyword_from_need(text: str) -> str:
-    value = text.strip()
-    for pattern in (
-        r"^(抓|采集|收集|监控|找|看)\s*",
-        r"(小红书|xiaohongshu|xhs|哔哩哔哩|哔哩|bilibili|b站|bili)",
-        r"(热帖|热门帖子|热门内容|hot posts?)",
-    ):
-        value = re.sub(pattern, " ", value, flags=re.IGNORECASE)
-    value = re.sub(r"\s+", " ", value).strip(" ，,。")
-    return value or "热门"
+# ── Helpers ─────────────────────────────────────────────────────────────────
 
 
-def _unique_node_id(project: WorkflowProject, base: str) -> str:
-    return _unique_id({node.id for node in project.nodes}, base)
+def _args_for_opencli_source(intent: SourceIntent, parsed: ParsedNeed) -> dict[str, Any]:
+    args: dict[str, Any] = {"keyword": parsed.topic, "topic": parsed.topic}
+    if parsed.kind:
+        args["kind"] = parsed.kind
+    return args
+
+
+def _command_for_kind(kind: str | None) -> str:
+    if kind in {"hot-search", "news", "finance", "tech"}:
+        return "search"
+    if kind in {"tweet", "article"}:
+        return "list"
+    return "search"
 
 
 def _unique_id(used: set[str], base: str) -> str:
@@ -293,7 +420,3 @@ def _unique_id(used: set[str], base: str) -> str:
         suffix += 1
     used.add(candidate)
     return candidate
-
-
-def _read_string(value: Any) -> str | None:
-    return value.strip() if isinstance(value, str) and value.strip() else None

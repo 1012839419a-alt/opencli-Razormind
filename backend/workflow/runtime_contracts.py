@@ -270,6 +270,30 @@ RUNTIME_IO_CONTRACTS: dict[str, RuntimeIOContract] = {
         event_shape=("tool_call_started", "partial:outputItemCount", "tool_call_completed"),
         fixture_coverage=("workflow-capabilities-api", "workflow-tool-capabilities-api"),
     ),
+    "iii.collector-rss.snapshot": RuntimeIOContract(
+        binding_id="iii.collector-rss.snapshot",
+        status="dispatch_only",
+        input_ports=(("in", "trigger"),),
+        output_ports=(("items", "items[]"),),
+        input_params=("channelType", "liveMode", "sourceId", "channelConfig", "params"),
+        output_artifacts=("items[]",),
+        permission_gate=("canFetchNetwork",),
+        config_gate=("feed_url",),
+        event_shape=("partial:itemCount", "completed"),
+        fixture_coverage=("happy-path", "missing-feed-url", "sse-parity"),
+    ),
+    "iii.collector-api.snapshot": RuntimeIOContract(
+        binding_id="iii.collector-api.snapshot",
+        status="dispatch_only",
+        input_ports=(("in", "trigger"),),
+        output_ports=(("items", "items[]"),),
+        input_params=("channelType", "liveMode", "sourceId", "channelConfig", "params"),
+        output_artifacts=("items[]",),
+        permission_gate=("canFetchNetwork",),
+        config_gate=("base_url", "endpoint"),
+        event_shape=("partial:itemCount", "completed"),
+        fixture_coverage=("happy-path", "missing-base-url", "missing-endpoint", "sse-parity"),
+    ),
 }
 
 

@@ -467,16 +467,36 @@ def _catalog_base_capabilities() -> list[WorkflowRuntimeCapability]:
             provider="webhook",
             notifier_type="webhook",
             runtime_binding=WEBHOOK_NOTIFY_BINDING_ID,
-            reason="Backend notifier and real workflow delivery path exist; "
-            "each run still requires send permission, an upstream EvidenceBatch "
-            "projection, and a configured webhook URL.",
-            missing=[
-                "evidencebatch_projection_input",
-                "send_permission",
-                "webhook_url_configuration",
-            ],
+            reason="Workflow webhook delivery projects an EvidenceBatch through "
+            "the guarded webhook notifier, gated by send permission and a "
+            "validated (non-loopback) webhook URL.",
+            missing=["evidencebatch_projection_input"],
             tags=["catalog", "notify", "webhook"],
-            source="backend.workflow.runtime_registry",
+            source="backend.workflow.webhook_delivery",
+            manifest=_manifest(
+                schema="capability.output.webhook.v1",
+                input_ports=[_port("in", "EvidenceBatch")],
+                output_ports=[_port("delivery", "webhookDeliveryAttempt")],
+                resources=[
+                    "evidencebatch_projection",
+                    "webhook_url_resource",
+                    "notifier_registry",
+                ],
+                permissions=["canSendNotifications"],
+                runtime_binding=WEBHOOK_NOTIFY_BINDING_ID,
+                trace_events=[
+                    "partial:webhookDeliveryAttempt",
+                    "completed",
+                    "blocked:missing_delivery_projection",
+                    "blocked:send_permission_missing",
+                    "blocked:webhook_url_missing",
+                ],
+                probes=[
+                    "webhook_notifier_registered",
+                    "webhook_url_validated",
+                    "send_permission_present",
+                ],
+            ),
         ),
         _capability(
             id="intelligence.output.turbopush-publish",
@@ -566,13 +586,39 @@ def _catalog_base_capabilities() -> list[WorkflowRuntimeCapability]:
             tags=["package", "hda", "opencli"],
             source="backend.workflow.opencli_hda_tracer",
         ),
-        _blocked_catalog(
-            "package.dispatch.fanout",
-            "Dispatch Fanout",
-            "notify",
-            "send",
+        _capability(
+            id="package.dispatch.fanout",
+            label="Dispatch Fanout",
+            surface="catalog",
+            status="runnable",
             backend_available=True,
-            missing=["workflow_notifier_sink_binding", "fanout_materializer"],
+            kind="notify",
+            capability="send",
+            provider="workflow",
+            runtime_binding=WEBHOOK_NOTIFY_BINDING_ID,
+            reason="execute_workflow_notifier_fanout fans an EvidenceBatch out "
+            "to every registered notifier target (webhook by default) and only "
+            "raises when *every* target fails.",
+            missing=["non_webhook_notifier_dispatch"],
+            tags=["package", "fanout", "notify"],
+            source="backend.workflow.webhook_delivery",
+            manifest=_manifest(
+                schema="capability.package.dispatch-fanout.v1",
+                input_ports=[_port("in", "EvidenceBatch")],
+                output_ports=[_port("attempts", "notifierAttempt[]")],
+                resources=["notifier_registry", "evidencebatch_projection"],
+                permissions=["canSendNotifications"],
+                runtime_binding=WEBHOOK_NOTIFY_BINDING_ID,
+                trace_events=[
+                    "partial:notifierAttempt",
+                    "completed",
+                    "blocked:fanout_empty",
+                ],
+                probes=[
+                    "notifier_targets_configured",
+                    "send_permission_present",
+                ],
+            ),
         ),
         _blocked_catalog(
             "package.intelligence.pipeline",
@@ -891,20 +937,16 @@ def _notifier_capabilities() -> list[WorkflowRuntimeCapability]:
                     id="notifier.webhook",
                     label="webhook notifier",
                     surface="notifier",
-                    status="blocked",
+                    status="runnable",
                     backend_available=True,
                     kind="notify",
                     capability="send",
                     provider="webhook",
                     notifier_type="webhook",
                     runtime_binding=WEBHOOK_NOTIFY_BINDING_ID,
-                    reason="The guarded webhook notifier is wired into workflow "
-                    "delivery; each run still requires projection input and URL "
-                    "configuration.",
-                    missing=[
-                        "evidencebatch_projection_input",
-                        "webhook_url_configuration",
-                    ],
+                    reason="The guarded webhook notifier is wired into the "
+                    "workflow webhook delivery and the multi-notifier fanout.",
+                    missing=[],
                     tags=["notifier", "output", "webhook"],
                     source="backend.notifiers.webhook_notifier",
                 )

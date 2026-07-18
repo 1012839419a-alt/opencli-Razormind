@@ -31,6 +31,9 @@ MISSING_TOOL_CAPABILITY_BINDING = "missing_tool_capability_binding"
 MISSING_TURBOPUSH_CONTENT_TYPE = "missing_turbopush_content_type"
 MISSING_TURBOPUSH_SERVICE = "missing_turbopush_service"
 SOURCE_OUTPUT_REQUIRED = "source_output_required"
+MISSING_BROWSER_RESOURCE = "missing_browser_resource"
+MISSING_SAVED_DATA_SOURCE = "missing_saved_data_source"
+MISSING_COOKIE_JAR = "missing_cookie_jar"
 
 
 @dataclass(frozen=True)
@@ -165,6 +168,36 @@ WORKFLOW_BLOCK_REASON_TAXONOMY: dict[str, WorkflowBlockReasonDefinition] = {
         volatile_fields=("message",),
         description="Fixture/mock source fetch needs source outputs before downstream execution.",
     ),
+    MISSING_BROWSER_RESOURCE: WorkflowBlockReasonDefinition(
+        code=MISSING_BROWSER_RESOURCE,
+        category="missing_runtime_resource",
+        stable_fields=("code", "source", "details.site", "details.resourceKind"),
+        volatile_fields=("message",),
+        description=(
+            "The channel declares browser resource affinity, but the required "
+            "browser pool slot, profile binding, or session snapshot is missing."
+        ),
+    ),
+    MISSING_SAVED_DATA_SOURCE: WorkflowBlockReasonDefinition(
+        code=MISSING_SAVED_DATA_SOURCE,
+        category="missing_config",
+        stable_fields=("code", "source", "details.channelType", "details.requiredConfig"),
+        volatile_fields=("message",),
+        description=(
+            "Source fetch is bound, but the channel needs a saved DataSource "
+            "row with required channel config fields."
+        ),
+    ),
+    MISSING_COOKIE_JAR: WorkflowBlockReasonDefinition(
+        code=MISSING_COOKIE_JAR,
+        category="missing_source_credential",
+        stable_fields=("code", "source", "details.domain", "details.credentialKind"),
+        volatile_fields=("message",),
+        description=(
+            "Source fetch is bound with cookie auth, but no encrypted cookie "
+            "jar entry exists for the target domain."
+        ),
+    ),
 }
 
 
@@ -197,6 +230,9 @@ __all__ = [
     "MISSING_TURBOPUSH_SERVICE",
     "SEND_PERMISSION_REQUIRED",
     "SOURCE_OUTPUT_REQUIRED",
+    "MISSING_BROWSER_RESOURCE",
+    "MISSING_SAVED_DATA_SOURCE",
+    "MISSING_COOKIE_JAR",
     "WORKFLOW_BLOCK_REASON_TAXONOMY",
     "WorkflowBlockReasonDefinition",
     "block_reason_category",
