@@ -18,10 +18,10 @@ jobs:
         working-directory: chrome/extension-src
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: "20"
           cache: npm
@@ -37,7 +37,7 @@ jobs:
         run: npm run build
 
       - name: Upload extension dist
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: success()
         with:
           name: extension-dist
@@ -48,12 +48,12 @@ jobs:
     name: Backend Quality
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
-          python-version: "3.11"
+          python-version-file: ".python-version"
 
       - name: Install dependencies
         run: |
@@ -73,7 +73,7 @@ jobs:
       # this floor incrementally (e.g. 70 -> 75 -> 80) instead of jumping
       # straight to the pyproject target.
       - name: Unit tests (with coverage report)
-        run: pytest tests/unit -m "not live" --cov=backend --cov-report=term-missing --cov-fail-under=0
+        run: python -m pytest tests/unit -m "not live" --cov=backend --cov-report=term-missing --cov-fail-under=0
 
   migrations:
     runs-on: ubuntu-latest
@@ -99,12 +99,12 @@ jobs:
       DATABASE_URL: postgresql+asyncpg://opencli:opencli_secret@localhost:5432/opencli_admin
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
-          python-version: "3.11"
+          python-version-file: ".python-version"
 
       - name: Install dependencies
         run: |
@@ -134,7 +134,7 @@ jobs:
       # is caught. --no-cov: this is a targeted single-test step, not a coverage
       # run (pyproject's addopts would otherwise fail it under the 80% gate).
       - name: cursor FOR UPDATE locking (Postgres)
-        run: pytest tests/unit/pipeline/test_db_cursor_store.py -k postgres --no-cov -p no:cacheprovider
+        run: python -m pytest tests/unit/pipeline/test_db_cursor_store.py -k postgres --no-cov -p no:cacheprovider
 
   cargo:
     runs-on: ubuntu-latest
@@ -144,7 +144,7 @@ jobs:
         working-directory: odp-rs
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -152,7 +152,7 @@ jobs:
           components: clippy
 
       - name: Cache cargo registry + target
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
