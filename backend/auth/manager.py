@@ -9,13 +9,79 @@ raw secrets.
 
 from __future__ import annotations
 
+import re
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.auth import crypto
 from backend.channels.base import AuthContext
 
+_CREDENTIAL_REFERENCE_RE = re.compile(
+    r"^credential://(?P<source_id>[A-Za-z0-9][A-Za-z0-9_-]{0,35})$"
+)
+
+
+class CredentialResolutionError(ValueError):
+    """A credential reference is invalid, absent, or cannot form runtime auth."""
+
+
+class CredentialResolutionUnavailableError(RuntimeError):
+    """The encrypted credential store could not be reached safely."""
+
 
 class AuthManager:
+    async def resolve_reference_context(
+        self,
+        credential_ref: str,
+        auth_kind: str,
+    ) -> AuthContext:
+        """Resolve an opaque collector credential reference to ephemeral auth.
+
+        Collector definitions persist only ``credential://...`` references. The
+        reference is parsed here, at the credential boundary, rather than being
+        passed to channels as a ``source_id``. Decrypted values exist only long
+        enough to build the in-memory ``AuthContext``.
+        """
+
+        match = _CREDENTIAL_REFERENCE_RE.fullmatch(credential_ref)
+        if match is None:
+            raise CredentialResolutionError(
+                "credential_resolution_failed: invalid credential reference"
+            )
+        try:
+            creds = await self.resolve(match.group("source_id"))
+        except Exception as exc:
+            raise CredentialResolutionUnavailableError(
+                "credential_resolution_unavailable: encrypted credential store unavailable"
+            ) from exc
+        if not creds:
+            raise CredentialResolutionError(
+                "credential_resolution_failed: credential reference not found"
+            )
+
+        from backend.auth.header_builder import build_auth_header
+
+        if auth_kind not in {"bearer", "api_key", "basic"}:
+            raise CredentialResolutionError(
+                "credential_resolution_failed: explicit credentialScheme is required"
+            )
+
+        canonical_creds = dict(creds)
+        for key, value in creds.items():
+            normalized = "".join(
+                character for character in key.lower() if character.isalnum()
+            )
+            if normalized in {"accesstoken", "bearertoken"}:
+                canonical_creds.setdefault("token", value)
+            elif normalized in {"apikey", "xapikey"}:
+                canonical_creds.setdefault("key", value)
+        headers = build_auth_header(auth_kind, canonical_creds)
+        if not headers:
+            raise CredentialResolutionError(
+                "credential_resolution_failed: credential auth fields are empty"
+            )
+        return AuthContext(kind=auth_kind, headers=headers)
+
     async def store(self, source_id: str, key_name: str, secret: str) -> None:
         """Encrypt ``secret`` and upsert it under ``(source_id, key_name)``.
 

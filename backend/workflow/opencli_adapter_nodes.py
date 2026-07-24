@@ -122,6 +122,59 @@ def resolve_opencli_adapter_node(adapter_node_id: str) -> WorkflowOpenCLIAdapter
     )
 
 
+def validate_opencli_adapter_arguments(
+    adapter_node: WorkflowOpenCLIAdapterNode,
+    arguments: dict[str, Any],
+) -> None:
+    """Fail closed on collector arguments before they reach CLI tokenization."""
+
+    declared = {argument.name: argument for argument in adapter_node.args}
+    unknown = sorted(set(arguments) - set(declared))
+    if unknown:
+        raise ValueError(
+            f"unknown_opencli_adapter_arguments:{','.join(unknown)}"
+        )
+
+    missing = sorted(
+        argument.name
+        for argument in adapter_node.args
+        if argument.required
+        and (
+            argument.name not in arguments
+            or arguments[argument.name] in (None, "")
+        )
+    )
+    if missing:
+        raise ValueError(
+            f"missing_opencli_adapter_arguments:{','.join(missing)}"
+        )
+
+    for name, value in arguments.items():
+        argument = declared[name]
+        if value is None:
+            raise ValueError(f"invalid_opencli_adapter_argument_type:{name}:null")
+        normalized_type = (argument.type or "").strip().lower()
+        valid_type = True
+        if normalized_type in {"str", "string"}:
+            valid_type = isinstance(value, str)
+        elif normalized_type in {"int", "integer"}:
+            valid_type = isinstance(value, int) and not isinstance(value, bool)
+        elif normalized_type in {"float", "number"}:
+            valid_type = isinstance(value, (int, float)) and not isinstance(value, bool)
+        elif normalized_type in {"bool", "boolean"}:
+            valid_type = isinstance(value, bool)
+        elif normalized_type in {"array", "list"}:
+            valid_type = isinstance(value, list)
+        elif normalized_type in {"object", "dict", "json"}:
+            valid_type = isinstance(value, dict)
+        if not valid_type:
+            raise ValueError(
+                f"invalid_opencli_adapter_argument_type:{name}:{normalized_type}"
+            )
+        if argument.choices and value not in argument.choices:
+            raise ValueError(f"invalid_opencli_adapter_argument_choice:{name}")
+
+
 def materialize_opencli_adapter_node(
     adapter_node_id: str,
     *,
@@ -217,7 +270,7 @@ def _load_opencli_catalog() -> tuple[dict[str, Any], ...]:
             result.stderr[:500],
         )
         return ()
-    raw = result.stdout
+    raw = result.stdout or ""
     json_start = next((idx for idx, char in enumerate(raw) if char in ("[", "{")), None)
     if json_start is None:
         logger.warning("opencli list -f json produced no JSON")

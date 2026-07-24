@@ -108,6 +108,111 @@ def _opencli_workflow_project() -> dict:
     return project
 
 
+@pytest.mark.parametrize(
+    ("catalog_id", "source"),
+    [
+        (
+            "collection.source.web",
+            {
+                "kind": "web",
+                "sourceId": "web-1",
+                "url": "https://example.com/articles",
+                "selector": "article",
+            },
+        ),
+        (
+            "collection.source.api",
+            {
+                "kind": "api",
+                "sourceId": "api-1",
+                "url": "https://api.example.com/items",
+                "query": {"limit": 20},
+                "credentialRef": "credential://api-example",
+                "credentialScheme": "bearer",
+            },
+        ),
+        (
+            "collection.source.rss",
+            {
+                "kind": "rss",
+                "sourceId": "rss-1",
+                "feedUrl": "https://example.com/feed.xml",
+                "itemLimit": 50,
+            },
+        ),
+        (
+            "collection.source.cli",
+            {
+                "kind": "cli",
+                "sourceId": "cli-1",
+                "adapterNodeId": "opencli.adapter.example.list",
+                "args": {"limit": 20},
+            },
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_compile_binds_collector_source_directly_to_variadic_merge(
+    client,
+    catalog_id,
+    source,
+):
+    project = _valid_workflow_project()
+    project["nodes"] = [
+        {
+            "id": "collector",
+            "kind": "source",
+            "capability": "fetch",
+            "params": {
+                "version": 1,
+                "execution": {
+                    "concurrency": 2,
+                    "timeoutMs": 10_000,
+                    "retry": {"maxAttempts": 2, "backoffMs": 250},
+                },
+                "sources": [source],
+            },
+            "ui": {"catalogId": catalog_id},
+        },
+        {
+            "id": "merge",
+            "kind": "flow",
+            "capability": "merge",
+            "params": {},
+            "ui": {"catalogId": "intelligence.flow.merge"},
+        },
+    ]
+    project["edges"] = [
+        {
+            "id": "collector-to-merge",
+            "source": "collector",
+            "target": "merge",
+            "sourcePort": "out",
+            "targetPort": "in",
+        }
+    ]
+    project["adapters"] = []
+
+    response = await client.post("/api/v1/workflows/compile", json={"project": project})
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["valid"] is True
+    nodes = {node["id"]: node for node in data["plan"]["runtime"]["nodes"]}
+    assert nodes["collector"]["runtime"]["origin"] == {
+        "kind": "node_library",
+        "catalog_id": catalog_id,
+        "notes": [],
+    }
+    assert nodes["collector"]["runtime"]["binding"]["binding_id"] == catalog_id
+    assert nodes["collector"]["adapter"] is None
+    assert data["plan"]["runtime"]["plan_ir"]["nodes"][1]["inputs"] == [
+        {"name": "in", "type": "CollectorMergeInputV1"},
+        {"name": "in1", "type": "CollectorMergeInputV1"},
+        {"name": "in2", "type": "CollectorMergeInputV1"},
+    ]
+
+
 def _nested_operator_project(depth: int = 4) -> dict:
     project = _valid_workflow_project()
     nested_node = {
@@ -446,8 +551,9 @@ async def test_compile_projects_native_first_loop_nodes_to_runtime_bindings(clie
     }
     assert plan_nodes["merge-candidates"]["kind"] == "merge"
     assert plan_nodes["merge-candidates"]["inputs"] == [
-        {"name": "in1", "type": "recordCandidate[]"},
-        {"name": "in2", "type": "recordCandidate[]"},
+        {"name": "in", "type": "CollectorMergeInputV1"},
+        {"name": "in1", "type": "CollectorMergeInputV1"},
+        {"name": "in2", "type": "CollectorMergeInputV1"},
     ]
     assert plan_nodes["accept-records"]["outputs"] == [
         {"name": "records", "type": "record[]"}

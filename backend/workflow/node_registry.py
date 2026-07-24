@@ -16,7 +16,17 @@ from backend.schemas.workflow import WorkflowProjectNode
 
 NodeOriginKind = Literal["node_library", "primitive_library", "n8n", "legacy"]
 
+COLLECTION_SOURCE_CATALOG_IDS = frozenset(
+    {
+        "collection.source.web",
+        "collection.source.api",
+        "collection.source.rss",
+        "collection.source.cli",
+    }
+)
+
 WORKFLOW_CATALOG_IDS = {
+    *COLLECTION_SOURCE_CATALOG_IDS,
     "intelligence.input.collection-need",
     "intelligence.schedule.cron",
     "intelligence.source.jin10",
@@ -250,7 +260,10 @@ def forbidden_node_definition_keys(node: WorkflowProjectNode) -> list[str]:
     keys.extend(
         _forbidden_param_paths(
             node.params,
-            allowed_paths=_native_intelligence_ref_allowed_paths(node),
+            allowed_paths=(
+                _native_intelligence_ref_allowed_paths(node)
+                | _collector_param_allowed_paths(node)
+            ),
         )
     )
     return keys
@@ -312,6 +325,15 @@ def _native_intelligence_ref_allowed_paths(
             )
         }
     )
+
+
+def _collector_param_allowed_paths(
+    node: WorkflowProjectNode,
+) -> frozenset[tuple[str, ...]]:
+    catalog_id = _read_string((node.ui or {}).get("catalogId"))
+    if catalog_id not in COLLECTION_SOURCE_CATALOG_IDS:
+        return frozenset()
+    return frozenset({("params", "execution", "concurrency")})
 
 
 def _read_string(value: Any) -> str | None:

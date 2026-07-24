@@ -53,6 +53,151 @@ export type WorkflowNodeCatalogItem = {
 
 export const COLLECTION_NEED_CATALOG_ID = "intelligence.input.collection-need"
 export const TURBOPUSH_PUBLISH_CATALOG_ID = "intelligence.output.turbopush-publish"
+export const COLLECTOR_NODE_CATALOG_IDS = [
+  "collection.source.web",
+  "collection.source.api",
+  "collection.source.rss",
+  "collection.source.cli",
+] as const
+
+export type CollectorSourceKind = "web" | "api" | "rss" | "cli"
+
+type CollectorSourceBase = {
+  sourceId: string
+  kind: CollectorSourceKind
+  name: string
+  enabled: boolean
+}
+
+export type WebCollectorSource = CollectorSourceBase & {
+  kind: "web"
+  url: string
+  fetchMode: "auto" | "http" | "browser"
+  selector?: string
+  extraction?: string
+  pagination?: string
+  timeWindow?: string
+}
+
+export type ApiCollectorSource = CollectorSourceBase & {
+  kind: "api"
+  url: string
+  method: "GET" | "HEAD"
+  credentialRef?: string
+  credentialScheme?: "bearer" | "api_key" | "basic"
+  query?: Record<string, unknown>
+  headers?: Record<string, string>
+  body?: unknown
+  pagination?: string
+  responseMapping?: string
+}
+
+export type RssCollectorSource = CollectorSourceBase & {
+  kind: "rss"
+  feedUrl: string
+  timeWindow?: string
+  itemLimit: number
+}
+
+export type CliCollectorSource = CollectorSourceBase & {
+  kind: "cli"
+  adapterNodeId: string
+  args: Record<string, unknown>
+}
+
+export type CollectorSourceDefinition =
+  | WebCollectorSource
+  | ApiCollectorSource
+  | RssCollectorSource
+  | CliCollectorSource
+
+export type CollectorNodeParams = {
+  version: 1
+  execution: {
+    concurrency?: number
+    timeoutMs?: number
+    retry?: {
+      maxAttempts: number
+      backoffMs?: number
+    }
+  }
+  sources: CollectorSourceDefinition[]
+}
+
+export type CollectedItemV1 = {
+  itemId: string
+  sourceId: string
+  sourceType: CollectorSourceKind
+  title?: string | null
+  url?: string | null
+  content?: string | null
+  data?: unknown
+  publishedAt: string | null
+  fetchedAt: string
+  lineage: Record<string, unknown>
+}
+
+export type CollectorSourceExecutionResult = {
+  sourceId: string
+  status: "completed" | "failed" | "skipped"
+  itemCount: number
+  attempts: number
+  startedAt: string
+  finishedAt: string
+  error?: {
+    code: string
+    message: string
+    retryable: boolean
+  }
+}
+
+export type CollectorOutputV1 = {
+  items: CollectedItemV1[]
+  sourceResults: CollectorSourceExecutionResult[]
+}
+
+export function collectorKindForCatalogId(catalogId: unknown): CollectorSourceKind | undefined {
+  if (typeof catalogId !== "string" || !catalogId.startsWith("collection.source.")) return undefined
+  const kind = catalogId.slice("collection.source.".length)
+  return kind === "web" || kind === "api" || kind === "rss" || kind === "cli" ? kind : undefined
+}
+
+export function isCollectorNodeParams(value: unknown, expectedKind?: CollectorSourceKind): value is CollectorNodeParams {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false
+  const params = value as Record<string, unknown>
+  if (params.version !== 1 || !params.execution || typeof params.execution !== "object" || Array.isArray(params.execution)) {
+    return false
+  }
+  if (!Array.isArray(params.sources)) return false
+  return params.sources.every((source) => {
+    if (!source || typeof source !== "object" || Array.isArray(source)) return false
+    const candidate = source as Record<string, unknown>
+    const kind = candidate.kind
+    return (
+      (kind === "web" || kind === "api" || kind === "rss" || kind === "cli") &&
+      (!expectedKind || kind === expectedKind) &&
+      typeof candidate.sourceId === "string" &&
+      candidate.sourceId.trim().length > 0 &&
+      typeof candidate.name === "string" &&
+      typeof candidate.enabled === "boolean"
+    )
+  })
+}
+
+export function createCollectorSource(kind: CollectorSourceKind, sourceId = `source-${Date.now()}`): CollectorSourceDefinition {
+  const base = { sourceId, kind, name: `新${collectorKindLabel(kind)}来源`, enabled: true }
+  if (kind === "web") return { ...base, kind, url: "https://example.com", fetchMode: "auto" }
+  if (kind === "api") return { ...base, kind, url: "https://api.example.com", method: "GET", query: {}, headers: {} }
+  if (kind === "rss") return { ...base, kind, feedUrl: "https://example.com/feed.xml", itemLimit: 20 }
+  return { ...base, kind, adapterNodeId: "", args: {} }
+}
+
+function collectorKindLabel(kind: CollectorSourceKind): string {
+  if (kind === "web") return "网页"
+  if (kind === "api") return "API"
+  if (kind === "rss") return "RSS"
+  return "CLI"
+}
 
 const JIN10_ADAPTER: AdapterBinding = {
   id: "jin10-kuaixun",
@@ -380,6 +525,78 @@ export const WORKFLOW_NODE_CATALOG: WorkflowNodeCatalogItem[] = [
     keywords: ["jin10", "金十", "source", "news", "kuaixun", "fetch"],
   },
   {
+    id: "collection.source.web",
+    idPrefix: "web-collector",
+    label: "网页采集",
+    description: "从多个网页配置采集内容，并保留逐来源状态与时间信息",
+    category: "source",
+    profile: "intelligence",
+    kind: "source",
+    capability: "fetch",
+    icon: "Globe",
+    color: "var(--chart-4)",
+    params: {
+      version: 1,
+      execution: { concurrency: 3, timeoutMs: 30000, retry: { maxAttempts: 2, backoffMs: 1000 } },
+      sources: [createCollectorSource("web", "web-1")],
+    },
+    keywords: ["web", "page", "crawler", "网页", "网站", "采集"],
+  },
+  {
+    id: "collection.source.api",
+    idPrefix: "api-collector",
+    label: "API 采集",
+    description: "从多个 HTTP API 采集结构化数据，并保留逐来源状态",
+    category: "source",
+    profile: "intelligence",
+    kind: "source",
+    capability: "fetch",
+    icon: "FileCode2",
+    color: "var(--chart-4)",
+    params: {
+      version: 1,
+      execution: { concurrency: 3, timeoutMs: 30000, retry: { maxAttempts: 2, backoffMs: 1000 } },
+      sources: [createCollectorSource("api", "api-1")],
+    },
+    keywords: ["api", "http", "json", "接口", "采集"],
+  },
+  {
+    id: "collection.source.rss",
+    idPrefix: "rss-collector",
+    label: "RSS 采集",
+    description: "从多个 RSS 或 Atom Feed 采集条目",
+    category: "source",
+    profile: "intelligence",
+    kind: "source",
+    capability: "fetch",
+    icon: "Radio",
+    color: "var(--chart-4)",
+    params: {
+      version: 1,
+      execution: { concurrency: 3, timeoutMs: 30000, retry: { maxAttempts: 2, backoffMs: 1000 } },
+      sources: [createCollectorSource("rss", "rss-1")],
+    },
+    keywords: ["rss", "atom", "feed", "订阅", "采集"],
+  },
+  {
+    id: "collection.source.cli",
+    idPrefix: "cli-collector",
+    label: "CLI 采集",
+    description: "从已注册 OpenCLI 工具目录选择只读工具并填写 typed arguments",
+    category: "source",
+    profile: "intelligence",
+    kind: "source",
+    capability: "fetch",
+    icon: "Terminal",
+    color: "var(--chart-4)",
+    params: {
+      version: 1,
+      execution: { concurrency: 3, timeoutMs: 30000, retry: { maxAttempts: 2, backoffMs: 1000 } },
+      sources: [],
+    },
+    keywords: ["cli", "opencli", "adapter", "typed args", "命令行", "采集"],
+  },
+  {
     id: "intelligence.processing.normalize",
     idPrefix: "normalize",
     label: "Normalize Items",
@@ -421,7 +638,7 @@ export const WORKFLOW_NODE_CATALOG: WorkflowNodeCatalogItem[] = [
     params: {
       strategy: "concat",
       preserveLineage: true,
-      inputType: "recordCandidate[]",
+      inputType: "CollectorMergeInputV1",
       outputType: "recordCandidate[]",
     },
     keywords: ["merge", "join", "fan-in", "lineage", "合并", "汇流"],
@@ -1009,7 +1226,12 @@ export function getWorkflowNodeCatalog(
   profile: WorkflowProfile,
   capabilities?: WorkflowCapabilitiesResponse | null,
 ): WorkflowNodeCatalogItem[] {
-  return WORKFLOW_NODE_CATALOG.filter((item) => item.profile === profile).map((item) => {
+  const collectorNodesEnabled = process.env.NEXT_PUBLIC_COLLECTION_L1_NODES !== "false"
+  return WORKFLOW_NODE_CATALOG.filter(
+    (item) =>
+      item.profile === profile &&
+      (collectorNodesEnabled || !COLLECTOR_NODE_CATALOG_IDS.includes(item.id as typeof COLLECTOR_NODE_CATALOG_IDS[number])),
+  ).map((item) => {
     const runtimeCapability = projectedCatalogRuntimeCapability(
       catalogRuntimeCapability(capabilities, item.id),
       item,

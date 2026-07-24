@@ -204,6 +204,7 @@ export async function startWorkflowRun(
     traceId?: string
     packageNodeId?: string
     sourceOutputs?: Record<string, Array<Record<string, unknown>>>
+    ephemeral?: boolean
   } = {},
 ): Promise<WorkflowRunProjection> {
   const response = await fetch("/api/workflow/run", {
@@ -214,6 +215,7 @@ export async function startWorkflowRun(
     },
     body: JSON.stringify({
       project,
+      ...(options.ephemeral ? { ephemeral: true } : {}),
       ...(options.runId ? { runId: options.runId } : {}),
       ...(options.traceId ? { traceId: options.traceId } : {}),
       ...(options.packageNodeId ? { packageNodeId: options.packageNodeId } : {}),

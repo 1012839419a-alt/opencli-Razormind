@@ -359,8 +359,7 @@ async def test_workflow_capabilities_project_real_backend_surfaces(client, monke
     assert catalog["intelligence.flow.merge"]["runtimeBinding"] == "workflow.flow.merge"
     merge_manifest = catalog["intelligence.flow.merge"]["manifest"]
     assert merge_manifest["ports"]["inputs"] == [
-        {"name": "in1", "type": "recordCandidate[]"},
-        {"name": "in2", "type": "recordCandidate[]"},
+        {"name": "in", "type": "recordCandidate[]", "cardinality": "many"},
     ]
     assert merge_manifest["trace"]["events"] == [
         "partial:mergedCandidateCount",
@@ -588,6 +587,23 @@ def test_opencli_adapter_nodes_refresh_after_opencli_catalog_changes(monkeypatch
     assert [node.id for node in first.nodes] == ["opencli.adapter.bbc.news"]
     assert [node.id for node in cached.nodes] == ["opencli.adapter.bbc.news"]
     assert [node.id for node in refreshed.nodes] == ["opencli.adapter.douyin.tophot"]
+    opencli_adapter_nodes.refresh_opencli_adapter_catalog()
+
+
+def test_opencli_adapter_nodes_tolerate_missing_subprocess_stdout(monkeypatch):
+    def fake_run(*args, **kwargs):
+        return subprocess.CompletedProcess(
+            args=args[0],
+            returncode=0,
+            stdout=None,
+            stderr=None,
+        )
+
+    monkeypatch.setattr(opencli_adapter_nodes, "resolve_opencli_bin", lambda: "opencli-test")
+    monkeypatch.setattr(opencli_adapter_nodes.subprocess, "run", fake_run)
+    opencli_adapter_nodes.refresh_opencli_adapter_catalog()
+
+    assert list_opencli_adapter_nodes(refresh=True).nodes == []
     opencli_adapter_nodes.refresh_opencli_adapter_catalog()
 
 

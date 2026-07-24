@@ -24,7 +24,7 @@ import type { ToolMode, WorkflowEdge, WorkflowNode } from "@/lib/flow/types"
 import type { WorkflowCapabilitiesResponse } from "@/lib/workflow/capabilities"
 import type { WorkflowNodeCatalogItem } from "@/lib/workflow/node-catalog"
 import type { WorkflowPrimitive } from "@/lib/workflow/node-primitives"
-import type { AgentProposal } from "@/lib/workflow/proposal"
+import type { AgentProposal, CollectorNodeProposal, CollectorProposalDecision } from "@/lib/workflow/proposal"
 import type { ProposalFocusTarget } from "@/lib/workflow/proposal-focus"
 import { cn } from "@/lib/utils"
 import { AgentDrawer } from "./agent-drawer"
@@ -72,10 +72,13 @@ type PrimitiveMenuGroup = {
 
 type WorkflowCanvasSurfaceProps = {
   acceptProposal: (proposal: AgentProposal) => void
+  acceptCollectorProposal: (proposal: CollectorNodeProposal) => void
   addDopNodeFromMenu: (item: WorkflowNodeCatalogItem) => void
   addPrimitiveFromMenu: (item: WorkflowPrimitive, itemIndex: number) => void
   agentDrawerOpen: boolean
   agentProposal: AgentProposal | undefined
+  collectorDecision: CollectorProposalDecision | undefined
+  collectorProposal: CollectorNodeProposal | undefined
   capabilities: WorkflowCapabilitiesResponse | null | undefined
   compactViewport: boolean
   diveIntoNetwork: (nodeId: string) => void
@@ -114,6 +117,7 @@ type WorkflowCanvasSurfaceProps = {
   primitiveMenuGroups: PrimitiveMenuGroup[]
   projectSettingsOpen: boolean
   rejectProposal: () => void
+  rejectCollectorProposal: (proposal: CollectorNodeProposal) => void
   runTraceOpen: boolean
   scissorTrail: CanvasPoint[]
   selectComponentFromMenu: (nodeId: string) => void
@@ -357,8 +361,12 @@ export function WorkflowCanvasSurface(props: WorkflowCanvasSurfaceProps) {
       <AgentDrawer
         open={props.agentDrawerOpen}
         proposal={props.agentProposal}
+        collectorProposal={props.collectorProposal}
+        collectorDecision={props.collectorDecision}
         onAccept={props.acceptProposal}
         onReject={props.rejectProposal}
+        onAcceptCollector={props.acceptCollectorProposal}
+        onRejectCollector={props.rejectCollectorProposal}
         onFocusOperation={props.focusProposalOperation}
         onClose={() => props.setAgentDrawerOpen(false)}
       />

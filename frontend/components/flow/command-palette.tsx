@@ -18,7 +18,10 @@ import {
 } from "lucide-react"
 import { NODE_PALETTE } from "@/lib/flow/palette"
 import type { PaletteItem } from "@/lib/flow/types"
-import type { WorkflowNodeCatalogItem } from "@/lib/workflow/node-catalog"
+import {
+  COLLECTOR_NODE_CATALOG_IDS,
+  type WorkflowNodeCatalogItem,
+} from "@/lib/workflow/node-catalog"
 import { getWorkflowPrimitives, type WorkflowPrimitive } from "@/lib/workflow/node-primitives"
 import { workflowNodeDepthFromNetworkStack, workflowNodeLayerAtDepth } from "@/lib/workflow/node-hierarchy"
 import { groupPrimitivesForNodeMenu } from "@/lib/workflow/node-menu"
@@ -686,13 +689,19 @@ function paletteTabForCatalogItem(item: WorkflowNodeCatalogItem): PaletteTab {
 
 function prioritizeCommonSources(items: WorkflowNodeCatalogItem[]): WorkflowNodeCatalogItem[] {
   return items
-    .map((item, index) => ({
-      item,
-      index,
-      rank: commonOpenCLISites.findIndex((site) =>
-        item.id.startsWith(`opencli.adapter.${site}.`),
-      ),
-    }))
+    .map((item, index) => {
+      const collectorRank = COLLECTOR_NODE_CATALOG_IDS.indexOf(item.id as typeof COLLECTOR_NODE_CATALOG_IDS[number])
+      const openCLIRank = commonOpenCLISites.findIndex((site) => item.id.startsWith(`opencli.adapter.${site}.`))
+      return {
+        item,
+        index,
+        rank: collectorRank >= 0
+          ? collectorRank
+          : openCLIRank >= 0
+            ? COLLECTOR_NODE_CATALOG_IDS.length + openCLIRank
+            : -1,
+      }
+    })
     .sort((left, right) => {
       const leftRank = left.rank < 0 ? Number.MAX_SAFE_INTEGER : left.rank
       const rightRank = right.rank < 0 ? Number.MAX_SAFE_INTEGER : right.rank

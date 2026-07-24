@@ -30,6 +30,7 @@ _AUTHOR_KEYS = (
     "user",     # generic
 )
 _DATE_KEYS = (
+    "publishedAt",  # CollectorOutputV1 (never derived from fetchedAt)
     "created_at",   # twitter, bilibili
     "create_time",  # douyin epoch seconds
     "published_at", # generic

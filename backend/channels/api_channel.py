@@ -93,7 +93,11 @@ class ApiChannel(AbstractChannel):
                 f"api channel URL rejected: {exc}", error_type="SSRFValidationError"
             ) from exc
 
-        headers = await self._resolve_auth_headers(auth_config, ctx.source_id, base_url)
+        headers = (
+            dict(ctx.auth.headers)
+            if ctx.auth is not None
+            else await self._resolve_auth_headers(auth_config, ctx.source_id, base_url)
+        )
         headers.update(extra_headers)
 
         # follow_redirects defaults to False on httpx.AsyncClient — a validated
@@ -103,7 +107,15 @@ class ApiChannel(AbstractChannel):
         # out of this file's boundary); the one-shot path is pinned via
         # guarded_async_client (DNS-rebinding TOCTOU closure, AUDIT B3).
         if ctx.http is not None:
-            response = await self._send(ctx.http, method, url, query_params, request_body, headers, timeout)
+            response = await self._send(
+                ctx.http,
+                method,
+                url,
+                query_params,
+                request_body,
+                headers,
+                timeout,
+            )
         else:
             try:
                 client, url = await guarded_async_client(url, timeout=timeout)
@@ -115,6 +127,12 @@ class ApiChannel(AbstractChannel):
                 response = await self._send(
                     opened_client, method, url, query_params, request_body, headers, timeout
                 )
+
+        if method == "HEAD":
+            return FetchResult(
+                items=[],
+                metadata={"url": url, "status_code": response.status_code},
+            )
 
         try:
             data = response.json()
@@ -146,8 +164,8 @@ class ApiChannel(AbstractChannel):
             response = await client.request(
                 method,
                 url,
-                params=query_params if method == "GET" else None,
-                json=request_body if method != "GET" else None,
+                params=query_params if method in {"GET", "HEAD"} else None,
+                json=request_body if method not in {"GET", "HEAD"} else None,
                 headers=headers,
                 timeout=timeout,
             )
@@ -185,7 +203,11 @@ class ApiChannel(AbstractChannel):
             from backend.auth.manager import AuthManager
 
             creds = await AuthManager().resolve(source_id)
-            headers = build_auth_header(auth_type, creds, header_name=auth.get("header", "X-API-Key"))
+            headers = build_auth_header(
+                auth_type,
+                creds,
+                header_name=auth.get("header", "X-API-Key"),
+            )
             if headers:
                 return headers
         return self._build_auth_headers(auth)

@@ -281,7 +281,16 @@ function EditorCanvas({
   const isScissors = toolMode === "scissors"
   const networkLocked = isNetworkLocked(networkStack, nodes)
   const exitCurrentNetwork = useExitCurrentNetwork({ exitNodeNetwork, fitView, showToast })
-  const { acceptProposal, agentProposal, focusProposalOperation, rejectProposal } = useWorkflowAgentProposal({
+  const {
+    acceptCollectorProposal,
+    acceptProposal,
+    agentProposal,
+    collectorDecision,
+    collectorProposal,
+    focusProposalOperation,
+    rejectCollectorProposal,
+    rejectProposal,
+  } = useWorkflowAgentProposal({
     clearPendingAgentProposal,
     clearProposalFocus,
     fitView,
@@ -322,10 +331,13 @@ function EditorCanvas({
       <div className="flex min-h-0 flex-1">
         <WorkflowCanvasSurface
           acceptProposal={acceptProposal}
+          acceptCollectorProposal={acceptCollectorProposal}
           addDopNodeFromMenu={addDopNodeFromMenu}
           addPrimitiveFromMenu={addPrimitiveFromMenu}
           agentDrawerOpen={agentDrawerOpen}
           agentProposal={agentProposal}
+          collectorDecision={collectorDecision}
+          collectorProposal={collectorProposal}
           capabilities={capabilities}
           compactViewport={compactViewport}
           diveIntoNetwork={diveIntoNetwork}
@@ -364,6 +376,7 @@ function EditorCanvas({
           primitiveMenuGroups={primitiveMenuGroups}
           projectSettingsOpen={projectSettingsOpen}
           rejectProposal={rejectProposal}
+          rejectCollectorProposal={rejectCollectorProposal}
           runTraceOpen={runTraceOpen}
           scissorTrail={scissorTrail}
           selectComponentFromMenu={selectComponentFromMenu}

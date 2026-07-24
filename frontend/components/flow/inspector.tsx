@@ -2,9 +2,20 @@
 
 import { useEffect, useState } from "react"
 import Link from "next/link"
-import { AlertTriangle, Database, ExternalLink, Plus, PlugZap, Trash2 } from "lucide-react"
+import {
+  AlertTriangle,
+  ChevronDown,
+  ChevronUp,
+  Database,
+  ExternalLink,
+  Plus,
+  PlugZap,
+  RefreshCw,
+  Trash2,
+} from "lucide-react"
 import { useFlowStore } from "@/lib/flow/store"
 import { useSources } from "@/lib/api/hooks"
+import { getApiAuthToken } from "@/lib/api/auth-token"
 import type { WorkflowNodeData, FieldConfig } from "@/lib/flow/types"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -25,9 +36,21 @@ import { blockedActionViewForRuntime } from "@/lib/workflow/capabilities"
 import { businessNodeName } from "@/lib/workflow/business-node-experience"
 import { buildCanonicalNodeViewContract } from "@/lib/workflow/canonical-node-contract"
 import {
+  collectorKindForCatalogId,
+  createCollectorSource,
+  isCollectorNodeParams,
   isOpenCLISourceSlotArray,
+  type CollectorNodeParams,
+  type CollectorOutputV1,
+  type CollectorSourceDefinition,
+  type CollectorSourceKind,
   type OpenCLISourceSlot,
 } from "@/lib/workflow/node-catalog"
+import { useOpenCLIAdapterCatalog } from "@/lib/workflow/use-opencli-adapter-catalog"
+import type {
+  WorkflowOpenCLIAdapterNode,
+  WorkflowOpenCLIAdapterNodeArg,
+} from "@/lib/workflow/backend-opencli-adapter-nodes"
 import {
   openCLISlotFromDataSource,
   SOURCE_ARGUMENT_LABELS,
@@ -42,8 +65,12 @@ import {
 import type {
   WorkflowCapability,
   WorkflowNodeKind,
+  WorkflowProject,
   WorkflowProjectNode,
 } from "@/lib/workflow/schema"
+import { draftCollectorNodeDemand } from "@/lib/workflow/backend-demand-draft"
+import { runCollectorSourceTest } from "@/lib/workflow/collector-test-run"
+import { presentCollectorNodeProposal } from "./workflow-agent-proposal"
 import { MonoRow, PanelShell, SectionCaption } from "./inspector-shell"
 import { cn } from "@/lib/utils"
 
@@ -220,7 +247,13 @@ export function Inspector() {
   /* ---- node parameter interface ---- */
   const node = selected[0]
   const data = node.data as WorkflowNodeData
-  const canonical = data.canonical as { kind?: string; capability?: string; adapter?: string; params?: Record<string, unknown> } | undefined
+  const canonical = data.canonical as {
+    kind?: string
+    capability?: string
+    adapter?: string
+    catalogId?: string
+    params?: Record<string, unknown>
+  } | undefined
   const projectNode = hydrateProjectNodeIdentity(
     workflowProject.nodes.find((candidate) => candidate.id === node.id),
     data,
@@ -487,6 +520,10 @@ export function Inspector() {
     : parameterGroups[0]?.id
   const activeParameterFields = parameterInterfaceView?.fields.filter((field) => field.groupId === activeParameterGroupId) ?? []
   const blockedAction = blockedActionViewForRuntime(data)
+  const collectorKind = collectorKindForCatalogId(configurationNode?.ui?.catalogId ?? canonical?.catalogId)
+  const collectorParams = collectorKind && isCollectorNodeParams(configurationNode?.params, collectorKind)
+    ? configurationNode.params
+    : undefined
   const openCLISources = isOpenCLISourceSlotArray(configurationNode?.params.sources)
     ? configurationNode.params.sources
     : undefined
@@ -543,6 +580,7 @@ export function Inspector() {
         ) : nodeTab === "run" ? (
           <div className="space-y-3">
             <SectionCaption>Run Result</SectionCaption>
+            {collectorKind ? <CollectorRunPreview output={readCollectorOutput(data.runtimeLatestEvent?.details)} /> : null}
             <div className="rounded-md border bg-card p-3 text-[11px] leading-relaxed text-muted-foreground">
               Explicit run results live in Run Trace. This node is ready for deterministic simulation.
             </div>
@@ -639,6 +677,16 @@ export function Inspector() {
           <OpenCLISourceEditor
             sources={openCLISources}
             onChange={(sources) => updateWorkflowNodeParams(configurationNodeId, { sources })}
+          />
+        ) : null}
+
+        {collectorKind && collectorParams ? (
+          <CollectorSourceEditor
+            kind={collectorKind}
+            nodeId={configurationNodeId}
+            params={collectorParams}
+            project={workflowProject}
+            onChange={(params) => updateWorkflowNodeParams(configurationNodeId, params)}
           />
         ) : null}
 
@@ -876,6 +924,515 @@ function findImplementationNode(node: WorkflowProjectNode | undefined): Workflow
     if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return false
     return (candidate as { id?: unknown }).id === implementationNodeId
   })
+}
+
+function CollectorSourceEditor({
+  kind,
+  nodeId,
+  params,
+  project,
+  onChange,
+}: {
+  kind: CollectorSourceKind
+  nodeId: string
+  params: CollectorNodeParams
+  project: WorkflowProject
+  onChange: (params: CollectorNodeParams) => void
+}) {
+  const adapterCatalog = useOpenCLIAdapterCatalog(kind === "cli")
+  const cliAdapters = (adapterCatalog.response?.nodes ?? []).filter((adapter) => adapter.access === "read")
+  const [validation, setValidation] = useState<Record<string, CollectorSourceTestState>>({})
+  const [testOutput, setTestOutput] = useState<CollectorOutputV1 | null>(null)
+  const [testError, setTestError] = useState("")
+  const [agentDemand, setAgentDemand] = useState("")
+  const [agentDrafting, setAgentDrafting] = useState(false)
+  const [agentError, setAgentError] = useState("")
+
+  const updateSource = (index: number, source: CollectorSourceDefinition) => {
+    onChange({ ...params, sources: params.sources.map((candidate, sourceIndex) => sourceIndex === index ? source : candidate) })
+  }
+  const patchSource = (index: number, patch: Partial<CollectorSourceDefinition>) => {
+    updateSource(index, { ...params.sources[index], ...patch } as CollectorSourceDefinition)
+  }
+  const moveSource = (index: number, offset: -1 | 1) => {
+    const target = index + offset
+    if (target < 0 || target >= params.sources.length) return
+    const sources = [...params.sources]
+    ;[sources[index], sources[target]] = [sources[target], sources[index]]
+    onChange({ ...params, sources })
+  }
+  const addSource = (adapterNodeId?: string | null) => {
+    const sourceId = nextCollectorSourceId(kind, params.sources)
+    if (kind === "cli") {
+      const adapter = cliAdapters.find((candidate) => candidate.id === adapterNodeId)
+      if (!adapter) return
+      onChange({
+        ...params,
+        sources: [...params.sources, cliSourceFromAdapter(adapter, sourceId)],
+      })
+      return
+    }
+    onChange({ ...params, sources: [...params.sources, createCollectorSource(kind, sourceId)] })
+  }
+  const testSources = async (sources: CollectorSourceDefinition[]) => {
+    if (sources.length === 0) return
+    setTestError("")
+    setValidation((current) => ({
+      ...current,
+      ...Object.fromEntries(sources.map((source) => [source.sourceId, { status: "running" as const }])),
+    }))
+    try {
+      const token = getApiAuthToken()
+      const authorization = token ? `Bearer ${token}` : null
+      const output = await runCollectorSourceTest(project, nodeId, params, sources, { authorization })
+      setTestOutput(output)
+      const results = new Map(output.sourceResults.map((result) => [result.sourceId, result]))
+      setValidation((current) => ({
+        ...current,
+        ...Object.fromEntries(sources.map((source) => {
+          const result = results.get(source.sourceId)
+          return [
+            source.sourceId,
+            {
+              status: result?.status === "completed" || result?.status === "skipped" ? "pass" as const : "fail" as const,
+              message: result?.error?.message ?? (result ? `${result.itemCount} items, ${result.attempts} attempts` : "No source result returned"),
+            },
+          ]
+        })),
+      }))
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Collector source test failed"
+      setTestError(message)
+      setValidation((current) => ({
+        ...current,
+        ...Object.fromEntries(sources.map((source) => [source.sourceId, { status: "fail" as const, message }])),
+      }))
+    }
+  }
+
+  const requestAgentProposal = async () => {
+    const demand = agentDemand.trim()
+    if (!demand || agentDrafting) return
+    setAgentDrafting(true)
+    setAgentError("")
+    try {
+      const token = getApiAuthToken()
+      const authorization = token ? `Bearer ${token}` : null
+      const proposal = await draftCollectorNodeDemand(project, nodeId, demand, { authorization })
+      presentCollectorNodeProposal(proposal)
+    } catch (error) {
+      setAgentError(error instanceof Error ? error.message : "Collector proposal draft failed")
+    } finally {
+      setAgentDrafting(false)
+    }
+  }
+
+  return (
+    <section className="overflow-hidden rounded-[3px] border border-[#20242a] bg-[#101216]/84">
+      <div className="space-y-3 border-b border-[#24282f] bg-[#171a1f] p-3">
+        <div className="space-y-2 rounded-[3px] border border-[#343a43] bg-[#0d0f12] p-2.5">
+          <SectionCaption>Agent 节点提案</SectionCaption>
+          <Textarea
+            rows={2}
+            value={agentDemand}
+            onChange={(event) => setAgentDemand(event.target.value)}
+            placeholder="例如：增加一个新闻来源并把并发调到 4"
+            className={houdiniTextareaClass}
+          />
+          <button
+            type="button"
+            onClick={() => void requestAgentProposal()}
+            disabled={agentDrafting || !agentDemand.trim()}
+            className="inline-flex h-7 items-center rounded-[2px] border border-[#343a43] px-2 text-[10px] text-muted-foreground hover:text-foreground disabled:opacity-50"
+          >
+            {agentDrafting ? "正在生成…" : "生成可审查 Diff"}
+          </button>
+          {agentError ? <p className="text-[10px] text-[#f87171]">{agentError}</p> : null}
+        </div>
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <SectionCaption>{collectorKindTitle(kind)}</SectionCaption>
+            <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+              {kind === "cli"
+                ? "只能选择已注册的只读工具；参数由工具目录声明，不接受自由 Shell 文本。"
+                : "同一节点可维护多个同类型来源，配置按列表顺序保存。"}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => void testSources(params.sources)}
+            className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-[2px] border border-[#343a43] px-2 text-[10px] text-muted-foreground hover:border-[#5f6976] hover:text-foreground"
+          >
+            测试全部
+          </button>
+          {Object.values(validation).some((result) => result.status === "fail") ? (
+            <button
+              type="button"
+              onClick={() => void testSources(params.sources.filter((source) => validation[source.sourceId]?.status === "fail"))}
+              className="inline-flex h-7 shrink-0 items-center gap-1 rounded-[2px] border border-[#7f1d1d] px-2 text-[10px] text-[#fca5a5]"
+            >
+              <RefreshCw className="size-3" />
+              重试失败来源
+            </button>
+          ) : null}
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          <CollectorNumberField
+            label="并发数"
+            value={params.execution.concurrency ?? 3}
+            min={1}
+            onChange={(concurrency) => onChange({ ...params, execution: { ...params.execution, concurrency } })}
+          />
+          <CollectorNumberField
+            label="超时(ms)"
+            value={params.execution.timeoutMs ?? 30000}
+            min={1000}
+            onChange={(timeoutMs) => onChange({ ...params, execution: { ...params.execution, timeoutMs } })}
+          />
+        </div>
+        {kind === "cli" ? (
+          <Select onValueChange={addSource} disabled={adapterCatalog.loading || cliAdapters.length === 0}>
+            <SelectTrigger aria-label="添加已注册 CLI 工具" className="h-8 rounded-[2px] border-[#343a43] bg-[#111317] text-[11px] focus:ring-0">
+              <Plus className="size-3" />
+              <SelectValue placeholder={adapterCatalog.loading ? "加载工具目录…" : "添加已注册 CLI 工具"} />
+            </SelectTrigger>
+            <SelectContent>
+              {cliAdapters.map((adapter) => <SelectItem key={adapter.id} value={adapter.id}>{adapter.label}</SelectItem>)}
+            </SelectContent>
+          </Select>
+        ) : (
+          <button
+            type="button"
+            onClick={() => addSource()}
+            className="inline-flex h-8 w-full items-center justify-center gap-1.5 rounded-[2px] border border-[#343a43] bg-[#111317] text-[11px] text-muted-foreground hover:border-[#5f6976] hover:text-foreground"
+          >
+            <Plus className="size-3" />
+            添加{collectorKindTitle(kind)}来源
+          </button>
+        )}
+        {kind === "cli" && adapterCatalog.error ? (
+          <p className="text-[10px] text-[#fca5a5]">OpenCLI 工具目录暂不可用：{adapterCatalog.error}</p>
+        ) : null}
+      </div>
+      <div className="space-y-2 p-2">
+        {params.sources.length === 0 ? (
+          <p className="rounded-[3px] border border-dashed border-[#343a43] p-4 text-center text-[11px] text-muted-foreground">
+            暂无来源，请添加至少一个{collectorKindTitle(kind)}来源。
+          </p>
+        ) : null}
+        {params.sources.map((source, index) => {
+          const adapter = source.kind === "cli"
+            ? cliAdapters.find((candidate) => candidate.id === source.adapterNodeId)
+            : undefined
+          return (
+            <div key={source.sourceId} className="rounded-[3px] border border-[#252a31] bg-[#090a0c]/70">
+              <div className="flex items-center gap-2 border-b border-[#20242a] p-2.5">
+                <Switch
+                  checked={source.enabled}
+                  onCheckedChange={(enabled) => patchSource(index, { enabled })}
+                  aria-label={`${source.name} 启用状态`}
+                />
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-xs font-medium text-foreground">{source.name}</p>
+                  <p className="truncate text-[10px] text-muted-foreground">
+                    {collectorSourceSummary(source)} · 认证 {source.kind === "api" && source.credentialRef ? "已引用" : "无需/未设置"} · 验证 {collectorTestStatusLabel(validation[source.sourceId]?.status)}
+                  </p>
+                </div>
+                <button type="button" aria-label="上移来源" disabled={index === 0} onClick={() => moveSource(index, -1)} className="inline-flex size-7 items-center justify-center text-muted-foreground disabled:opacity-25">
+                  <ChevronUp className="size-3.5" />
+                </button>
+                <button type="button" aria-label="下移来源" disabled={index === params.sources.length - 1} onClick={() => moveSource(index, 1)} className="inline-flex size-7 items-center justify-center text-muted-foreground disabled:opacity-25">
+                  <ChevronDown className="size-3.5" />
+                </button>
+                <button type="button" aria-label={`删除来源 ${source.name}`} onClick={() => onChange({ ...params, sources: params.sources.filter((_, sourceIndex) => sourceIndex !== index) })} className="inline-flex size-7 items-center justify-center text-muted-foreground hover:text-[#f87171]">
+                  <Trash2 className="size-3.5" />
+                </button>
+              </div>
+              <div className="grid gap-2 p-2.5">
+                <CollectorTextField label="来源名称" value={source.name} onChange={(name) => patchSource(index, { name })} />
+                {source.kind === "web" ? (
+                  <>
+                    <CollectorTextField label="URL" value={source.url} onChange={(url) => updateSource(index, { ...source, url })} />
+                    <Select value={source.fetchMode} onValueChange={(fetchMode) => fetchMode && updateSource(index, { ...source, fetchMode: fetchMode as "auto" | "http" | "browser" })}>
+                      <SelectTrigger aria-label="抓取模式" className={houdiniSelectTriggerClass}><SelectValue /></SelectTrigger>
+                      <SelectContent><SelectItem value="auto">自动选择</SelectItem><SelectItem value="http">HTTP 抓取</SelectItem><SelectItem value="browser">浏览器抓取</SelectItem></SelectContent>
+                    </Select>
+                    <CollectorTextField label="选择器/提取规则" value={source.selector ?? ""} onChange={(selector) => updateSource(index, { ...source, selector })} />
+                    <CollectorTextField label="分页或时间窗口" value={source.pagination ?? source.timeWindow ?? ""} onChange={(pagination) => updateSource(index, { ...source, pagination })} />
+                  </>
+                ) : source.kind === "api" ? (
+                  <>
+                    <CollectorTextField label="URL" value={source.url} onChange={(url) => updateSource(index, { ...source, url })} />
+                    <Select value={source.method} onValueChange={(method) => method && updateSource(index, { ...source, method: method as typeof source.method })}>
+                      <SelectTrigger aria-label="HTTP 方法" className={houdiniSelectTriggerClass}><SelectValue /></SelectTrigger>
+                      <SelectContent>{["GET", "HEAD"].map((method) => <SelectItem key={method} value={method}>{method}</SelectItem>)}</SelectContent>
+                    </Select>
+                    <CollectorJsonField label="查询参数" value={source.query ?? {}} onCommit={(query) => updateSource(index, { ...source, query })} />
+                    <CollectorJsonField label="Header 模板" value={source.headers ?? {}} onCommit={(headers) => updateSource(index, { ...source, headers: headers as Record<string, string> })} />
+                    <CollectorJsonField label="Body 模板" value={source.body ?? {}} onCommit={(body) => updateSource(index, { ...source, body })} />
+                    <CollectorTextField label="分页" value={source.pagination ?? ""} onChange={(pagination) => updateSource(index, { ...source, pagination })} />
+                    <CollectorTextField label="响应映射" value={source.responseMapping ?? ""} onChange={(responseMapping) => updateSource(index, { ...source, responseMapping })} />
+                  </>
+                ) : source.kind === "rss" ? (
+                  <>
+                    <CollectorTextField label="Feed URL" value={source.feedUrl} onChange={(feedUrl) => updateSource(index, { ...source, feedUrl })} />
+                    <CollectorTextField label="时间窗口" value={source.timeWindow ?? ""} onChange={(timeWindow) => updateSource(index, { ...source, timeWindow })} />
+                    <CollectorNumberField label="条目限制" value={source.itemLimit} min={1} onChange={(itemLimit) => updateSource(index, { ...source, itemLimit })} />
+                  </>
+                ) : (
+                  <>
+                    <Select value={source.adapterNodeId} onValueChange={(adapterNodeId) => {
+                      const selectedAdapter = cliAdapters.find((candidate) => candidate.id === adapterNodeId)
+                      if (selectedAdapter) updateSource(index, cliSourceFromAdapter(
+                        selectedAdapter,
+                        source.sourceId,
+                        source.enabled,
+                      ))
+                    }}>
+                      <SelectTrigger aria-label="已注册 adapterNodeId" className={houdiniSelectTriggerClass}>
+                        <SelectValue placeholder="选择已注册工具" />
+                      </SelectTrigger>
+                      <SelectContent>{cliAdapters.map((candidate) => <SelectItem key={candidate.id} value={candidate.id}>{candidate.label}</SelectItem>)}</SelectContent>
+                    </Select>
+                    {adapter ? adapter.args.map((argument) => (
+                      <CollectorTypedArgument
+                        key={argument.name}
+                        argument={argument}
+                        value={source.args[argument.name]}
+                        onChange={(value) => updateSource(index, { ...source, args: { ...source.args, [argument.name]: value } })}
+                      />
+                    )) : <p className="text-[10px] text-muted-foreground">请选择工具以加载 typed arguments。</p>}
+                  </>
+                )}
+                {source.kind === "api" ? (
+                  <>
+                    <CollectorTextField
+                      label="凭证引用"
+                      value={source.credentialRef ?? ""}
+                      onChange={(credentialRef) => patchSource(index, credentialRef
+                        ? { credentialRef }
+                        : { credentialRef: undefined, credentialScheme: undefined })}
+                    />
+                    {source.credentialRef ? (
+                      <Select
+                        value={source.credentialScheme}
+                        onValueChange={(credentialScheme) => credentialScheme && patchSource(index, {
+                          credentialScheme: credentialScheme as "bearer" | "api_key" | "basic",
+                        })}
+                      >
+                        <SelectTrigger aria-label="凭证类型" className={houdiniSelectTriggerClass}>
+                          <SelectValue placeholder="选择凭证类型" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="bearer">Bearer Token</SelectItem>
+                          <SelectItem value="api_key">API Key</SelectItem>
+                          <SelectItem value="basic">Basic Auth</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    ) : null}
+                  </>
+                ) : null}
+                <div className="flex gap-2">
+                  <button type="button" onClick={() => void testSources([source])} disabled={validation[source.sourceId]?.status === "running"} className="h-7 rounded-[2px] border border-[#343a43] px-2 text-[10px] text-muted-foreground hover:text-foreground disabled:opacity-50">测试此来源</button>
+                  {validation[source.sourceId]?.status === "fail" ? (
+                    <button type="button" onClick={() => void testSources([source])} className="inline-flex h-7 items-center gap-1 rounded-[2px] border border-[#7f1d1d] px-2 text-[10px] text-[#fca5a5]">
+                      <RefreshCw className="size-3" />重试失败项
+                    </button>
+                  ) : null}
+                </div>
+                {validation[source.sourceId]?.message ? (
+                  <p className={cn("text-[10px]", validation[source.sourceId]?.status === "fail" ? "text-[#f87171]" : "text-muted-foreground")}>
+                    {validation[source.sourceId]?.message}
+                  </p>
+                ) : null}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+      {testError ? <div className="border-t border-[#7f1d1d] bg-[#120707] px-3 py-2 text-[10px] text-[#fca5a5]">{testError}</div> : null}
+      {testOutput ? <div className="border-t border-[#24282f] p-2"><CollectorRunPreview output={testOutput} /></div> : null}
+      <div className="border-t border-[#24282f] bg-[#0d0f12] px-3 py-2 text-[10px] text-muted-foreground">
+        配置会随工作流自动保存；运行前会按节点类型执行确定性校验。
+      </div>
+    </section>
+  )
+}
+
+type CollectorSourceTestState = {
+  status: "running" | "pass" | "fail"
+  message?: string
+}
+
+function collectorTestStatusLabel(status: CollectorSourceTestState["status"] | undefined): string {
+  if (status === "running") return "运行中"
+  if (status === "pass") return "通过"
+  if (status === "fail") return "失败"
+  return "未测试"
+}
+
+function CollectorTextField({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
+  return (
+    <div className="space-y-1">
+      <Label className="font-mono text-[9px] uppercase tracking-wider text-muted-foreground">{label}</Label>
+      <Input value={value} onChange={(event) => onChange(event.target.value)} className={houdiniInputClass} />
+    </div>
+  )
+}
+
+function CollectorNumberField({ label, value, min, onChange }: { label: string; value: number; min: number; onChange: (value: number) => void }) {
+  return (
+    <div className="space-y-1">
+      <Label className="font-mono text-[9px] uppercase tracking-wider text-muted-foreground">{label}</Label>
+      <Input type="number" min={min} value={value} onChange={(event) => onChange(Number(event.target.value))} className={houdiniInputClass} />
+    </div>
+  )
+}
+
+function CollectorJsonField({ label, value, onCommit }: { label: string; value: unknown; onCommit: (value: Record<string, unknown>) => void }) {
+  const serialized = JSON.stringify(value, null, 2)
+  const [draft, setDraft] = useState(serialized)
+  const [error, setError] = useState("")
+  useEffect(() => { setDraft(serialized); setError("") }, [serialized])
+  const commit = () => {
+    try {
+      const parsed = JSON.parse(draft) as unknown
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error()
+      setError("")
+      onCommit(parsed as Record<string, unknown>)
+    } catch {
+      setError("必须是 JSON 对象")
+    }
+  }
+  return (
+    <div className="space-y-1">
+      <Label className="font-mono text-[9px] uppercase tracking-wider text-muted-foreground">{label}</Label>
+      <Textarea rows={3} value={draft} onChange={(event) => setDraft(event.target.value)} onBlur={commit} className={cn(houdiniTextareaClass, error && "border-[#7f1d1d]")} />
+      {error ? <p className="text-[10px] text-[#f87171]">{error}</p> : null}
+    </div>
+  )
+}
+
+function CollectorTypedArgument({
+  argument,
+  value,
+  onChange,
+}: {
+  argument: WorkflowOpenCLIAdapterNodeArg
+  value: unknown
+  onChange: (value: unknown) => void
+}) {
+  const label = `${argument.name}${argument.required ? " *" : ""}`
+  if (argument.choices.length > 0) {
+    const selected = value === undefined ? "" : String(value)
+    return (
+      <div className="space-y-1">
+        <Label className="font-mono text-[9px] uppercase tracking-wider text-muted-foreground">{label}</Label>
+        <Select value={selected} onValueChange={onChange}>
+          <SelectTrigger className={houdiniSelectTriggerClass}><SelectValue placeholder="请选择" /></SelectTrigger>
+          <SelectContent>{argument.choices.map((choice) => <SelectItem key={String(choice)} value={String(choice)}>{String(choice)}</SelectItem>)}</SelectContent>
+        </Select>
+      </div>
+    )
+  }
+  const normalizedType = argument.type?.toLowerCase() ?? ""
+  if (normalizedType.includes("bool")) {
+    return <div className="flex items-center justify-between"><Label className="text-[10px] text-muted-foreground">{label}</Label><Switch checked={value === true} onCheckedChange={onChange} /></div>
+  }
+  return (
+    <CollectorTextField
+      label={label}
+      value={value === undefined || value === null ? "" : String(value)}
+      onChange={(nextValue) => onChange(normalizedType.includes("int") || normalizedType.includes("float") || normalizedType.includes("number") ? Number(nextValue) : nextValue)}
+    />
+  )
+}
+
+function CollectorRunPreview({ output }: { output: CollectorOutputV1 | null }) {
+  if (!output) {
+    return <div className="rounded-md border border-dashed bg-card p-3 text-[11px] text-muted-foreground">尚无采集预览。运行节点后将在此展示最多 50 条结果及逐来源状态。</div>
+  }
+  const items = output.items.slice(0, 50)
+  const succeeded = output.sourceResults.filter((result) => result.status === "completed").length
+  const failed = output.sourceResults.filter((result) => result.status === "failed").length
+  return (
+    <div className="space-y-2 rounded-[3px] border border-[#20242a] bg-[#101216]/84 p-3">
+      <div className="grid grid-cols-3 gap-2">
+        <MonoRow k="成功来源" v={succeeded} />
+        <MonoRow k="失败来源" v={failed} />
+        <MonoRow k="预览条目" v={`${items.length}/${output.items.length}`} />
+      </div>
+      <div className="space-y-1">
+        {output.sourceResults.map((result) => (
+          <div key={result.sourceId} className="flex items-center justify-between gap-2 rounded-[2px] border border-[#252a31] px-2 py-1 text-[10px]">
+            <span className="truncate">{result.sourceId}</span>
+            <span className={result.status === "failed" ? "text-[#f87171]" : result.status === "completed" ? "text-[#4ade80]" : "text-muted-foreground"}>
+              {result.status} · {result.itemCount} 条 · {result.attempts} 次
+            </span>
+          </div>
+        ))}
+      </div>
+      <div className="max-h-64 space-y-1 overflow-y-auto">
+        {items.map((item) => (
+          <div key={item.itemId} className="rounded-[2px] border border-[#252a31] p-2 text-[10px]">
+            <p className="truncate text-foreground">{item.title || item.url || item.itemId}</p>
+            <p className="mt-1 text-muted-foreground">
+              {item.sourceId} · publishedAt {item.publishedAt ?? "null"} · fetchedAt {item.fetchedAt}
+            </p>
+          </div>
+        ))}
+      </div>
+      {output.items.length > 50 ? <p className="text-[10px] text-muted-foreground">预览已限制为前 50 条。</p> : null}
+    </div>
+  )
+}
+
+function readCollectorOutput(details: Record<string, unknown> | undefined): CollectorOutputV1 | null {
+  if (!details) return null
+  const candidates = [details.collectorOutput, details.output, details.result, details]
+  for (const candidate of candidates) {
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) continue
+    const record = candidate as Record<string, unknown>
+    if (!Array.isArray(record.items) || !Array.isArray(record.sourceResults)) continue
+    return { items: record.items as CollectorOutputV1["items"], sourceResults: record.sourceResults as CollectorOutputV1["sourceResults"] }
+  }
+  return null
+}
+
+function cliSourceFromAdapter(
+  adapter: WorkflowOpenCLIAdapterNode,
+  sourceId: string,
+  enabled = true,
+): CollectorSourceDefinition {
+  return {
+    sourceId,
+    kind: "cli",
+    name: adapter.label,
+    enabled,
+    adapterNodeId: adapter.id,
+    args: Object.fromEntries(adapter.args.flatMap((argument) => argument.default === undefined ? [] : [[argument.name, argument.default]])),
+  }
+}
+
+function nextCollectorSourceId(kind: CollectorSourceKind, sources: CollectorSourceDefinition[]): string {
+  const used = new Set(sources.map((source) => source.sourceId))
+  let index = sources.length + 1
+  while (used.has(`${kind}-${index}`)) index += 1
+  return `${kind}-${index}`
+}
+
+function collectorKindTitle(kind: CollectorSourceKind): string {
+  if (kind === "web") return "网页采集"
+  if (kind === "api") return "API 采集"
+  if (kind === "rss") return "RSS 采集"
+  return "CLI 采集"
+}
+
+function collectorSourceSummary(source: CollectorSourceDefinition): string {
+  if (source.kind === "web") return source.url || "未设置 URL"
+  if (source.kind === "api") return `${source.method} ${source.url || "未设置 URL"}`
+  if (source.kind === "rss") return source.feedUrl || "未设置 Feed URL"
+  return source.adapterNodeId || "未选择工具"
 }
 
 function OpenCLISourceEditor({

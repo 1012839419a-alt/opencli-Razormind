@@ -34,6 +34,37 @@ def _bounded_run_id(scenario: str, backend_name: str) -> str:
     return run_id
 
 
+@pytest.mark.asyncio
+async def test_ephemeral_run_persists_no_user_graph(event_spine_api):
+    backend_name, client, db_session = event_spine_api
+    run_id = _bounded_run_id("ephemeral", backend_name)
+    response = await client.post(
+        "/api/v1/workflows/runs",
+        json={
+            "project": workflow_conformance_project(),
+            "runId": run_id,
+            "traceId": f"trace-{run_id}",
+            "ephemeral": True,
+            "sourceOutputs": workflow_conformance_source_outputs(),
+        },
+    )
+
+    assert response.status_code == 202
+    row = await db_session.get(WorkflowRun, run_id)
+    assert row is not None
+    assert row.request["ephemeral"] is True
+    assert len(row.request["project"]["nodes"]) == 1
+    redacted_node = row.request["project"]["nodes"][0]
+    assert redacted_node["id"] == "ephemeral-redacted"
+    assert redacted_node["params"] == {}
+    assert redacted_node["ui"] == {}
+    assert row.request["project"]["edges"] == []
+    assert row.request["project"]["adapters"] == []
+    assert row.request["sourceOutputs"] == {}
+    assert row.request["input"]["payload"] == {}
+    assert "sourceId" not in row.request["input"] or row.request["input"]["sourceId"] is None
+
+
 @pytest.fixture(
     params=(
         pytest.param("sqlite", id="sqlite"),

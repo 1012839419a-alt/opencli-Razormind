@@ -256,8 +256,14 @@ def _check_port_type_mismatches(
         tgt_port = next((p for p in tgt.inputs if p.name == e.target_port), None)
         if src_port is None or tgt_port is None:
             continue  # already reported as unknown_source_port / unknown_target_port
-        if src_port.type != tgt_port.type and not (
-            {"any", "unknown"} & {src_port.type, tgt_port.type}
+        compatible_sum_type = (
+            tgt_port.type == "CollectorMergeInputV1"
+            and src_port.type in {"CollectorOutputV1", "recordCandidate[]"}
+        )
+        if (
+            src_port.type != tgt_port.type
+            and not compatible_sum_type
+            and not ({"any", "unknown"} & {src_port.type, tgt_port.type})
         ):
             errors.append(
                 PlanValidationError(

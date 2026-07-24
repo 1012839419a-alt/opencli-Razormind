@@ -29,6 +29,16 @@ def test_normalize_item_alternate_keys():
     assert normalized["content"] == "Full text"
 
 
+def test_collector_published_at_does_not_fall_back_to_fetched_at():
+    normalized, _ = normalize_item(
+        {"title": "Fresh item", "publishedAt": None, "fetchedAt": "2026-07-24T12:00:00Z"},
+        "collector",
+    )
+
+    assert normalized["published_at"] == ""
+    assert normalized["extra_fetchedAt"] == "2026-07-24T12:00:00Z"
+
+
 def test_normalize_item_extra_fields():
     raw = {"title": "Test", "url": "https://ex.com", "custom_score": 42}
     normalized, _ = normalize_item(raw, "src")

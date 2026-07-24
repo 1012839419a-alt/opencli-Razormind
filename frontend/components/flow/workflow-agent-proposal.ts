@@ -1,10 +1,24 @@
 import { useCallback, useEffect, useState, type Dispatch, type SetStateAction } from "react"
 
 import { useFlowStore } from "@/lib/flow/store"
-import { acceptAgentProposal, type AgentProposal } from "@/lib/workflow/proposal"
+import {
+  acceptAgentProposal,
+  acceptCollectorNodeProposal,
+  previewCollectorNodeProposal,
+  rejectCollectorNodeProposal,
+  type AgentProposal,
+  type CollectorNodeProposal,
+  type CollectorProposalDecision,
+} from "@/lib/workflow/proposal"
 import type { ProposalFocusTarget } from "@/lib/workflow/proposal-focus"
 
 type FitView = (options?: { padding?: number; duration?: number; nodes?: { id: string }[] }) => unknown
+
+const COLLECTOR_PROPOSAL_EVENT = "opencli:collector-proposal"
+
+export function presentCollectorNodeProposal(proposal: CollectorNodeProposal): void {
+  window.dispatchEvent(new CustomEvent(COLLECTOR_PROPOSAL_EVENT, { detail: proposal }))
+}
 
 export function useWorkflowAgentProposal(options: {
   clearPendingAgentProposal: () => void
@@ -27,6 +41,8 @@ export function useWorkflowAgentProposal(options: {
     showToast,
   } = options
   const [agentProposal, setAgentProposal] = useState<AgentProposal | undefined>(undefined)
+  const [collectorProposal, setCollectorProposal] = useState<CollectorNodeProposal | undefined>(undefined)
+  const [collectorDecision, setCollectorDecision] = useState<CollectorProposalDecision | undefined>(undefined)
 
   const acceptProposal = useCallback(
     (proposal: AgentProposal) => {
@@ -49,6 +65,33 @@ export function useWorkflowAgentProposal(options: {
     setAgentProposal(undefined)
   }, [clearProposalFocus, setAgentDrawerOpen, showToast])
 
+  const acceptCollectorProposal = useCallback(
+    (proposal: CollectorNodeProposal) => {
+      const decision = acceptCollectorNodeProposal(useFlowStore.getState().workflowProject, proposal)
+      setCollectorDecision(decision)
+      if (decision.status === "conflict") {
+        showToast(decision.conflicts[0] ?? "Collector proposal conflicts with newer node edits")
+        return
+      }
+      importWorkflowProject(decision.project)
+      showToast(decision.status === "rebased" ? "Collector proposal safely rebased and accepted" : "Collector proposal accepted")
+      setAgentDrawerOpen(false)
+      setCollectorProposal(undefined)
+    },
+    [importWorkflowProject, setAgentDrawerOpen, showToast],
+  )
+
+  const rejectCollectorProposal = useCallback(
+    (proposal: CollectorNodeProposal) => {
+      setCollectorDecision(rejectCollectorNodeProposal(useFlowStore.getState().workflowProject, proposal))
+      showToast("Collector proposal rejected")
+      clearProposalFocus()
+      setAgentDrawerOpen(false)
+      setCollectorProposal(undefined)
+    },
+    [clearProposalFocus, setAgentDrawerOpen, showToast],
+  )
+
   const presentAgentProposal = useCallback(
     (proposal: AgentProposal) => {
       setAgentProposal(proposal)
@@ -57,6 +100,32 @@ export function useWorkflowAgentProposal(options: {
     },
     [setAgentDrawerOpen, showToast],
   )
+
+  const presentCollectorNodeProposal = useCallback(
+    (proposal: CollectorNodeProposal) => {
+      const project = useFlowStore.getState().workflowProject
+      setCollectorDecision({
+        status: "accepted",
+        project,
+        proposal,
+        differences: previewCollectorNodeProposal(project, proposal),
+        conflicts: [],
+        changed: false,
+      })
+      setCollectorProposal(proposal)
+      setAgentDrawerOpen(true)
+      showToast("Collector node proposal ready")
+    },
+    [setAgentDrawerOpen, showToast],
+  )
+
+  useEffect(() => {
+    const handleCollectorProposal = (event: Event) => {
+      presentCollectorNodeProposal((event as CustomEvent<CollectorNodeProposal>).detail)
+    }
+    window.addEventListener(COLLECTOR_PROPOSAL_EVENT, handleCollectorProposal)
+    return () => window.removeEventListener(COLLECTOR_PROPOSAL_EVENT, handleCollectorProposal)
+  }, [presentCollectorNodeProposal])
 
   useEffect(() => {
     if (!pendingAgentProposal) return
@@ -74,5 +143,15 @@ export function useWorkflowAgentProposal(options: {
     [fitView, focusProposalTargets],
   )
 
-  return { acceptProposal, agentProposal, focusProposalOperation, rejectProposal }
+  return {
+    acceptCollectorProposal,
+    acceptProposal,
+    agentProposal,
+    collectorDecision,
+    collectorProposal,
+    focusProposalOperation,
+    presentCollectorNodeProposal,
+    rejectCollectorProposal,
+    rejectProposal,
+  }
 }

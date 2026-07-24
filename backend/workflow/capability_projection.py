@@ -12,6 +12,7 @@ from collections import Counter
 from backend.channels.registry import list_channel_types
 from backend.notifiers.registry import list_notifier_types
 from backend.schemas.workflow import (
+    COLLECTOR_NODE_KIND_BY_CATALOG_ID,
     WorkflowCapabilitiesResponse,
     WorkflowCapability,
     WorkflowCapabilityStatus,
@@ -174,6 +175,40 @@ def _catalog_capabilities() -> list[WorkflowRuntimeCapability]:
         native_package_missing.append("missing_native_intelligence_action_set")
     native_package_missing = sorted(set(native_package_missing))
     return [
+        *[
+            _capability(
+                id=catalog_id,
+                label=f"{collector_kind.upper()} Collector",
+                surface="catalog",
+                status="runnable",
+                backend_available=True,
+                kind="source",
+                capability="fetch",
+                provider="workflow",
+                runtime_binding=catalog_id,
+                reason="OpenCLI Admin owns this typed multi-source collector "
+                "binding and emits CollectorOutputV1 with per-source lineage.",
+                tags=["source", "collector", collector_kind, "lineage"],
+                source="backend.workflow.runtime_registry",
+                manifest=_manifest(
+                    schema=f"capability.collection.source.{collector_kind}.v1",
+                    input_ports=[_port("in", "trigger")],
+                    output_ports=[_port("out", "CollectorOutputV1")],
+                    resources=[],
+                    permissions=["canFetchNetwork"],
+                    runtime_binding=catalog_id,
+                    trace_events=[
+                        "source_started",
+                        "source_completed",
+                        "source_failed",
+                        "partial:itemCount",
+                        "completed",
+                    ],
+                    probes=[f"{collector_kind}_sources_valid"],
+                ),
+            )
+            for catalog_id, collector_kind in COLLECTOR_NODE_KIND_BY_CATALOG_ID.items()
+        ],
         _capability(
             id="intelligence.input.collection-need",
             label="Collection Need",
@@ -362,8 +397,7 @@ def _catalog_capabilities() -> list[WorkflowRuntimeCapability]:
             manifest=_manifest(
                 schema="capability.flow.merge.v1",
                 input_ports=[
-                    _port("in1", "recordCandidate[]"),
-                    _port("in2", "recordCandidate[]"),
+                    _port("in", "recordCandidate[]", cardinality="many"),
                 ],
                 output_ports=[_port("out", "recordCandidate[]")],
                 resources=[],
@@ -602,7 +636,10 @@ def _catalog_capabilities() -> list[WorkflowRuntimeCapability]:
             capability="normalize",
             provider="workflow",
             runtime_binding=DEDUPE_BINDING_ID,
-            reason="Expands into native normalize, deterministic dedupe, and Record acceptance nodes.",
+            reason=(
+                "Expands into native normalize, deterministic dedupe, and "
+                "Record acceptance nodes."
+            ),
             missing=[],
             tags=["package", "hda", "normalize", "dedupe", "record-acceptance"],
             source="backend.workflow.runtime_registry",
@@ -752,8 +789,16 @@ def _manifest(
     }
 
 
-def _port(name: str, type: str) -> dict[str, str]:
-    return {"name": name, "type": type}
+def _port(
+    name: str,
+    type: str,
+    *,
+    cardinality: str | None = None,
+) -> dict[str, str]:
+    port = {"name": name, "type": type}
+    if cardinality is not None:
+        port["cardinality"] = cardinality
+    return port
 
 
 def _blocked_catalog(

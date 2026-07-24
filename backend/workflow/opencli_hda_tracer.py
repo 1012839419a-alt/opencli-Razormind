@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from dataclasses import dataclass
@@ -21,6 +22,7 @@ from backend.models.source import DataSource
 from backend.models.task import CollectionTask
 from backend.models.workflow_run import WorkflowRun as WorkflowRunRow
 from backend.models.workflow_run import WorkflowRunEvent as WorkflowRunEventRow
+from backend.pipeline.error_taxonomy import effective_error_type, is_retryable
 from backend.pipeline.normalizer import normalize_item
 from backend.pipeline.storer import store_records
 from backend.schemas.workflow import (
@@ -33,6 +35,7 @@ from backend.schemas.workflow import (
     WorkflowOpenCLIHDATraceDispatch,
     WorkflowOpenCLIHDATraceResponse,
     WorkflowProject,
+    WorkflowProjectNode,
     WorkflowRunBatchReference,
     WorkflowRunBlockReason,
     WorkflowRunCheckpoint,
@@ -75,6 +78,7 @@ from backend.workflow.realtime_market_executor import (
 )
 from backend.workflow.runtime_registry import (
     COLLECTION_OUTPUT_BINDING_ID,
+    COLLECTOR_BINDING_PREFIX,
     DEDUPE_BINDING_ID,
     EXTERNAL_TOOL_BINDING_ID,
     INBOX_STORE_BINDING_ID,
@@ -112,6 +116,27 @@ from backend.workflow.webhook_delivery import (
     execute_workflow_webhook_delivery,
 )
 from backend.workflow.workflow_run_events import append_workflow_run_events
+
+_COLLECTOR_MAX_SOURCES = 64
+_COLLECTOR_MAX_CONCURRENCY = 16
+_COLLECTOR_MAX_ATTEMPTS = 5
+_COLLECTOR_MAX_TIMEOUT_MS = 120_000
+_COLLECTOR_MAX_BACKOFF_MS = 30_000
+_COLLECTOR_MAX_SOURCE_BUDGET_MS = 600_000
+_COLLECTOR_SENSITIVE_KEYS = {
+    "accesstoken",
+    "apikey",
+    "authorization",
+    "authtoken",
+    "bearertoken",
+    "clientsecret",
+    "cookie",
+    "password",
+    "refreshtoken",
+    "secret",
+    "token",
+    "xapikey",
+}
 
 
 @dataclass
@@ -319,6 +344,7 @@ async def start_workflow_run(
     }
     blocked_by_package: dict[str, list[WorkflowRunBlockReason]] = {}
     outputs_by_node: dict[str, list[dict[str, Any]]] = {}
+    source_results_by_node: dict[str, list[dict[str, Any]]] = {}
     materialized_source_tasks: dict[str, tuple[str, str]] = {}
 
     for node in runtime_nodes:
@@ -459,11 +485,55 @@ async def start_workflow_run(
         if _is_workflow_source_fetch_node(node):
             reason = _source_fetch_block_reason(node, body.project.agentPermissions)
             emitter.emit(node, "started", message="Workflow source fetch binding started")
+            if reason is None:
+                output_items, source_results = await _execute_collector_source_node(node)
+                source_results_by_node[node.id] = source_results
+                outputs_by_node[node.id] = output_items
+                failed = [result for result in source_results if result["status"] == "failed"]
+                completed = [
+                    result for result in source_results if result["status"] == "completed"
+                ]
+                skipped = [result for result in source_results if result["status"] == "skipped"]
+                details = {
+                    "bindingId": _binding_id(node) or SOURCE_FETCH_BINDING_ID,
+                    "items": output_items[:50],
+                    "sourceResults": source_results,
+                    "itemCount": len(output_items),
+                    "completedSourceCount": len(completed),
+                    "failedSourceCount": len(failed),
+                    "skippedSourceCount": len(skipped),
+                    "previewTruncated": len(output_items) > 50,
+                    "outputPort": "items[]",
+                }
+                if completed or (skipped and not failed):
+                    emitter.emit(
+                        node,
+                        "partial",
+                        message=(
+                            "Collector sources completed with partial failures"
+                            if failed
+                            else "Collector sources completed"
+                        ),
+                        details=details,
+                    )
+                    emitter.emit(node, "completed", message="Workflow source fetch completed")
+                    continue
+                reason = WorkflowRunBlockReason(
+                    code="collector_all_enabled_sources_failed",
+                    message="All enabled collector sources failed.",
+                    source="workflow_source",
+                    details=details,
+                )
             emitter.emit(
                 node,
-                "blocked",
+                (
+                    "failed"
+                    if reason.code == "collector_all_enabled_sources_failed"
+                    else "blocked"
+                ),
                 message=reason.message,
                 block_reason=reason,
+                details=reason.details,
             )
             for ancestor_id in _package_ancestor_ids(node):
                 blocked_by_package.setdefault(ancestor_id, []).append(reason)
@@ -540,6 +610,26 @@ async def start_workflow_run(
                 continue
 
         if _is_first_loop_native_node(node):
+            failed_dependencies = (
+                _failed_dependency_ids(node, emitter.events)
+                if _binding_id(node) == MERGE_BINDING_ID
+                else []
+            )
+            if failed_dependencies:
+                reason = WorkflowRunBlockReason(
+                    code="upstream_source_failed",
+                    message="Merge is blocked because an upstream source node failed.",
+                    source="workflow_runtime",
+                    details={"upstreamNodeIds": failed_dependencies},
+                )
+                emitter.emit(
+                    node,
+                    "blocked",
+                    message=reason.message,
+                    block_reason=reason,
+                    details=reason.details,
+                )
+                continue
             emitter.emit(node, "started", message=_native_node_started_message(node))
             if _is_external_tool_node(node):
                 emitter.emit(
@@ -563,6 +653,7 @@ async def start_workflow_run(
                 details, output_items = await _execute_native_node(
                     node,
                     outputs_by_node,
+                    source_results_by_node,
                     run_id,
                     workflow_id=body.project.id,
                     trace_id=trace_id,
@@ -625,6 +716,13 @@ async def start_workflow_run(
                     await commit_session(session)
                 continue
             outputs_by_node[node.id] = output_items
+            propagated_source_results = details.get("sourceResults")
+            if isinstance(propagated_source_results, list):
+                source_results_by_node[node.id] = [
+                    dict(result)
+                    for result in propagated_source_results
+                    if isinstance(result, dict)
+                ]
             emitter.emit(
                 node,
                 "partial",
@@ -634,7 +732,7 @@ async def start_workflow_run(
                         body.project.id,
                         run_id,
                         node,
-                        item_count=int(details.get("inputItemCount", 0)),
+                        item_count=_detail_int(details, "inputItemCount"),
                         record_count=len(output_items),
                     )
                     if _binding_id(node) == NORMALIZE_BINDING_ID
@@ -979,7 +1077,30 @@ async def _store_workflow_run(
         row.status = projection.status
         row.valid = projection.valid
         row.package_node_id = projection.packageNodeId
-        row.request = request.model_dump(mode="json")
+        persisted_request = request
+        if request.ephemeral:
+            persisted_request = request.model_copy(
+                update={
+                    "project": WorkflowProject(
+                        id="ephemeral-redacted",
+                        name="Ephemeral run",
+                        profile=request.project.profile,
+                        nodes=[
+                            WorkflowProjectNode(
+                                id="ephemeral-redacted",
+                                kind="source",
+                                capability="fetch",
+                                params={},
+                                ui={},
+                            )
+                        ],
+                    ),
+                    "sourceOutputs": {},
+                    "input": type(request.input)(),
+                },
+                deep=True,
+            )
+        row.request = persisted_request.model_dump(mode="json")
         row.projection = projection.model_dump(mode="json")
 
         append_result = await append_workflow_run_events(
@@ -1549,7 +1670,10 @@ def _is_turbopush_publish_node(node: CompiledWorkflowNode) -> bool:
 
 
 def _is_workflow_source_fetch_node(node: CompiledWorkflowNode) -> bool:
-    return _binding_id(node) == SOURCE_FETCH_BINDING_ID
+    binding_id = _binding_id(node)
+    return binding_id == SOURCE_FETCH_BINDING_ID or bool(
+        binding_id and binding_id.startswith(COLLECTOR_BINDING_PREFIX)
+    )
 
 
 def _is_workflow_notify_node(node: CompiledWorkflowNode) -> bool:
@@ -1710,6 +1834,7 @@ def _bound_source_id_from_items(items: list[dict[str, Any]]) -> str | None:
 async def _execute_native_node(
     node: CompiledWorkflowNode,
     outputs_by_node: dict[str, list[dict[str, Any]]],
+    source_results_by_node: dict[str, list[dict[str, Any]]],
     run_id: str,
     *,
     workflow_id: str,
@@ -1777,18 +1902,26 @@ async def _execute_native_node(
             deduplicated,
         )
     if binding_id == MERGE_BINDING_ID:
+        if not node.depends_on:
+            raise ValueError("merge_input_required")
         binding = _read_dict(node.runtime.get("binding"))
         binding_input = _read_dict(binding.get("input"))
-        merged = [_append_lineage(item, node, step="merge", run_id=run_id) for item in input_items]
+        merged = [dict(item) for item in input_items]
+        source_results = [
+            dict(result)
+            for upstream_id in node.depends_on
+            for result in source_results_by_node.get(upstream_id, [])
+        ]
         return (
             {
                 "bindingId": binding_id,
                 "strategy": binding_input.get("strategy", "concat"),
-                "inputType": binding_input.get("inputType", "recordCandidate[]"),
+                "inputType": binding_input.get("inputType", "CollectorMergeInputV1"),
                 "outputType": binding_input.get("outputType", "recordCandidate[]"),
                 "preserveLineage": binding_input.get("preserveLineage", True),
                 "inputCandidateCount": len(input_items),
                 "mergedCandidateCount": len(merged),
+                "sourceResults": source_results,
                 "lineage": _lineage_pointer(node),
             },
             merged,
@@ -2425,7 +2558,7 @@ def _normalize_runtime_items(
     for index, item in enumerate(input_items):
         raw = _read_dict(item.get("raw")) or _read_dict(item)
         normalized, content_hash = normalize_item(raw, source_id)
-        lineage = list(_read_dict_list(item.get("lineage")))
+        lineage = _lineage_entries(item.get("lineage"))
         lineage.append(
             {
                 "nodeId": node.id,
@@ -2454,7 +2587,7 @@ def _append_lineage(
     run_id: str,
 ) -> dict[str, Any]:
     updated = dict(item)
-    lineage = list(_read_dict_list(updated.get("lineage")))
+    lineage = _lineage_entries(updated.get("lineage"))
     lineage.append({"nodeId": node.id, "step": step, "runId": run_id})
     updated["lineage"] = lineage
     return updated
@@ -2649,9 +2782,10 @@ def _source_credential_configured(binding_input: dict[str, Any]) -> bool:
 def _source_fetch_block_reason(
     node: CompiledWorkflowNode,
     permissions: object,
-) -> WorkflowRunBlockReason:
+) -> WorkflowRunBlockReason | None:
     binding = _read_dict(node.runtime.get("binding"))
     binding_input = _read_dict(binding.get("input"))
+    binding_id = _binding_id(node) or SOURCE_FETCH_BINDING_ID
     if not bool(getattr(permissions, "canFetchNetwork", False)):
         return WorkflowRunBlockReason(
             code=FETCH_PERMISSION_REQUIRED,
@@ -2661,7 +2795,7 @@ def _source_fetch_block_reason(
             source="workflow_permissions",
             details={
                 "nodeId": node.id,
-                "bindingId": SOURCE_FETCH_BINDING_ID,
+                "bindingId": binding_id,
                 "requiredPermission": "canFetchNetwork",
             },
         )
@@ -2677,7 +2811,7 @@ def _source_fetch_block_reason(
             source="workflow_source_credentials",
             details={
                 "nodeId": node.id,
-                "bindingId": SOURCE_FETCH_BINDING_ID,
+                "bindingId": binding_id,
                 "provider": binding_input.get("provider"),
                 "channelType": binding_input.get("channelType"),
                 "requiredCredentialKey": credential_key,
@@ -2695,10 +2829,13 @@ def _source_fetch_block_reason(
             source="workflow_source",
             details={
                 "nodeId": node.id,
-                "bindingId": SOURCE_FETCH_BINDING_ID,
+                "bindingId": binding_id,
                 "liveMode": live_mode,
             },
         )
+
+    if _collector_binding_type(binding_input) is not None:
+        return None
 
     return WorkflowRunBlockReason(
         code="live_source_executor_pending",
@@ -2709,11 +2846,433 @@ def _source_fetch_block_reason(
         source="workflow_source",
         details={
             "nodeId": node.id,
-            "bindingId": SOURCE_FETCH_BINDING_ID,
+            "bindingId": binding_id,
             "provider": binding_input.get("provider"),
             "channelType": binding_input.get("channelType"),
         },
     )
+
+
+async def _execute_collector_source_node(
+    node: CompiledWorkflowNode,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    binding = _read_dict(node.runtime.get("binding"))
+    binding_input = _read_dict(binding.get("input"))
+    sources = _read_dict_list(binding_input.get("sources"))
+    collector_type = _collector_binding_type(binding_input)
+    if not sources and collector_type == "cli":
+        legacy = _legacy_cli_source(binding_input)
+        if legacy:
+            sources = [legacy]
+    if len(sources) > _COLLECTOR_MAX_SOURCES:
+        raise ValueError("collector_source_limit_exceeded")
+
+    execution = _read_dict(binding_input.get("execution"))
+    concurrency = _positive_int(
+        execution.get("concurrency"),
+        default=min(max(1, len(sources)), _COLLECTOR_MAX_CONCURRENCY),
+    )
+    retry = _read_dict(execution.get("retry"))
+    max_attempts = _positive_int(retry.get("maxAttempts"), default=1)
+    backoff_ms = max(0, _nonnegative_int(retry.get("backoffMs"), default=0))
+    timeout_ms = _positive_int(execution.get("timeoutMs"), default=60_000)
+    if concurrency > _COLLECTOR_MAX_CONCURRENCY:
+        raise ValueError("collector_concurrency_limit_exceeded")
+    if max_attempts > _COLLECTOR_MAX_ATTEMPTS:
+        raise ValueError("collector_attempt_limit_exceeded")
+    if timeout_ms > _COLLECTOR_MAX_TIMEOUT_MS:
+        raise ValueError("collector_timeout_limit_exceeded")
+    if backoff_ms > _COLLECTOR_MAX_BACKOFF_MS:
+        raise ValueError("collector_backoff_limit_exceeded")
+    retry_delay_ms = sum(
+        min(backoff_ms * (2**attempt), _COLLECTOR_MAX_BACKOFF_MS)
+        for attempt in range(max(0, max_attempts - 1))
+    )
+    if max_attempts * timeout_ms + retry_delay_ms > _COLLECTOR_MAX_SOURCE_BUDGET_MS:
+        raise ValueError("collector_source_budget_exceeded")
+    semaphore = asyncio.Semaphore(concurrency)
+
+    async def execute(source: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        async with semaphore:
+            return await _execute_collector_source(
+                node,
+                source,
+                collector_type=collector_type,
+                max_attempts=max_attempts,
+                backoff_ms=backoff_ms,
+                timeout_ms=timeout_ms,
+            )
+
+    pairs = await asyncio.gather(*(execute(source) for source in sources))
+    items = [item for source_items, _ in pairs for item in source_items]
+    results = [result for _, result in pairs]
+    return items, results
+
+
+async def _execute_collector_source(
+    node: CompiledWorkflowNode,
+    source: dict[str, Any],
+    *,
+    collector_type: str | None,
+    max_attempts: int,
+    backoff_ms: int,
+    timeout_ms: int,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    source_id = _read_string(source.get("sourceId")) or _stable_id(
+        "collector-source", node.id, json.dumps(source, sort_keys=True, default=str)
+    )
+    source_type = _read_string(source.get("kind")) or collector_type or ""
+    started_at = _utcnow()
+    if source.get("enabled") is False:
+        finished_at = _utcnow()
+        return [], {
+            "sourceId": source_id,
+            "status": "skipped",
+            "itemCount": 0,
+            "attempts": 0,
+            "startedAt": started_at,
+            "finishedAt": finished_at,
+        }
+
+    attempts = 0
+    last_error: dict[str, Any] | None = None
+    while attempts < max_attempts:
+        attempts += 1
+        try:
+            raw_items = await asyncio.wait_for(
+                _collect_source_once(source, source_type),
+                timeout=timeout_ms / 1000,
+            )
+        except Exception as exc:
+            error_type = effective_error_type(exc)
+            retryable = is_retryable(error_type)
+            last_error = {
+                "code": error_type or type(exc).__name__,
+                "message": str(exc),
+                "retryable": retryable,
+            }
+            if not retryable or attempts >= max_attempts:
+                break
+            if backoff_ms:
+                delay_ms = min(
+                    backoff_ms * (2 ** (attempts - 1)),
+                    _COLLECTOR_MAX_BACKOFF_MS,
+                )
+                await asyncio.sleep(delay_ms / 1000)
+            continue
+
+        fetched_at = _utcnow()
+        items = [
+            _collector_item(
+                node,
+                _sanitize_collector_output(raw),
+                source_id=source_id,
+                source_type=source_type,
+                fetched_at=fetched_at,
+                index=index,
+            )
+            for index, raw in enumerate(raw_items)
+        ]
+        return items, {
+            "sourceId": source_id,
+            "status": "completed",
+            "itemCount": len(items),
+            "attempts": attempts,
+            "startedAt": started_at,
+            "finishedAt": _utcnow(),
+        }
+
+    return [], {
+        "sourceId": source_id,
+        "status": "failed",
+        "itemCount": 0,
+        "attempts": attempts,
+        "startedAt": started_at,
+        "finishedAt": _utcnow(),
+        "error": last_error
+        or {
+            "code": "collector_source_failed",
+            "message": "Collector source failed.",
+            "retryable": False,
+        },
+    }
+
+
+async def _collect_source_once(
+    source: dict[str, Any],
+    source_type: str,
+) -> list[dict[str, Any]]:
+    from backend.auth.manager import AuthManager
+    from backend.channels.base import AuthContext, FetchContext
+    from backend.channels.registry import get_channel
+
+    config = _collector_channel_config(source, source_type)
+    parameters = _read_dict(source.get("arguments")) or _read_dict(source.get("args"))
+    credential_ref = _read_string(source.get("credentialRef"))
+    credential_scheme = _read_string(source.get("credentialScheme"))
+    auth = (
+        await AuthManager().resolve_reference_context(
+            credential_ref,
+            credential_scheme or "",
+        )
+        if credential_ref
+        else AuthContext()
+    )
+    channel_type = {
+        "web": "web_scraper",
+        "api": "api",
+        "rss": "rss",
+        "cli": "opencli",
+    }.get(source_type)
+    if channel_type is None:
+        raise ValueError(f"unsupported_collector_source_type:{source_type}")
+    channel = get_channel(channel_type)
+    result = await channel.fetch(
+        FetchContext(
+            config=config,
+            params=parameters,
+            auth=auth,
+        )
+    )
+    return [dict(item) for item in result.items if isinstance(item, dict)]
+
+
+def _collector_channel_config(source: dict[str, Any], source_type: str) -> dict[str, Any]:
+    sensitive_paths = _find_collector_sensitive_paths(
+        {
+            key: value
+            for key, value in source.items()
+            if key not in {"credentialRef", "credentialScheme"}
+        }
+    )
+    if sensitive_paths:
+        raise ValueError(
+            "collector_plaintext_credential_forbidden:" + ",".join(sensitive_paths)
+        )
+    config = _read_dict(source.get("config"))
+    safe = {
+        key: value
+        for key, value in {**source, **config}.items()
+        if key
+        not in {
+            "config",
+            "credentialRef",
+            "credentialScheme",
+            "credentialId",
+            "authRef",
+            "secretRef",
+            "enabled",
+            "sourceId",
+            "kind",
+        }
+    }
+    if source_type == "web":
+        safe["url"] = _read_string(safe.get("url")) or ""
+        extraction = _read_dict(safe.get("extraction"))
+        if extraction and "selectors" not in safe:
+            safe["selectors"] = extraction
+        selector = _read_string(safe.get("selector"))
+        if selector and "list_selector" not in safe:
+            safe["list_selector"] = selector
+    elif source_type == "api":
+        method = (_read_string(safe.get("method")) or "GET").upper()
+        if method not in {"GET", "HEAD"}:
+            raise ValueError(f"collector_api_method_not_allowed:{method}")
+        safe["method"] = method
+        url = _read_string(safe.get("url"))
+        if url and not _read_string(safe.get("base_url")):
+            safe["base_url"] = url
+            safe["endpoint"] = ""
+        if "query" in safe and "params" not in safe:
+            safe["params"] = _read_dict(safe.get("query"))
+        response_mapping = _read_dict(safe.get("responseMapping"))
+        result_path = _read_string(response_mapping.get("resultPath")) or _read_string(
+            response_mapping.get("path")
+        )
+        if result_path:
+            safe["result_path"] = result_path
+    elif source_type == "rss":
+        safe["feed_url"] = (
+            _read_string(safe.get("feed_url"))
+            or _read_string(safe.get("feedUrl"))
+            or _read_string(safe.get("url"))
+            or ""
+        )
+        item_limit = safe.get("itemLimit", safe.get("limit"))
+        if item_limit is not None and "max_entries" not in safe:
+            safe["max_entries"] = item_limit
+    elif source_type == "cli":
+        adapter_id = _read_string(source.get("adapterNodeId"))
+        if adapter_id:
+            from backend.workflow.opencli_adapter_nodes import (
+                resolve_opencli_adapter_node,
+                validate_opencli_adapter_arguments,
+            )
+
+            adapter = resolve_opencli_adapter_node(adapter_id)
+            if adapter is None:
+                raise ValueError(f"unknown_opencli_adapter_node:{adapter_id}")
+            if adapter.access != "read":
+                raise ValueError(f"opencli_adapter_write_access_forbidden:{adapter_id}")
+            arguments = (
+                _read_dict(source.get("arguments"))
+                or _read_dict(source.get("args"))
+            )
+            validate_opencli_adapter_arguments(adapter, arguments)
+            safe["site"] = adapter.site
+            safe["command"] = adapter.command
+        safe.setdefault(
+            "args",
+            _read_dict(source.get("arguments")) or _read_dict(source.get("args")),
+        )
+        safe.setdefault("format", "json")
+    return safe
+
+
+def _collector_item(
+    node: CompiledWorkflowNode,
+    raw: dict[str, Any],
+    *,
+    source_id: str,
+    source_type: str,
+    fetched_at: str,
+    index: int,
+) -> dict[str, Any]:
+    published_at = _first_source_value(
+        raw,
+        ("publishedAt", "published_at", "published", "created_at", "date", "time"),
+    )
+    title = _first_source_value(raw, ("title", "name", "headline"))
+    url = _first_source_value(raw, ("url", "link", "href", "permalink"))
+    content = _first_source_value(raw, ("content", "text", "body", "summary", "description"))
+    lineage = {
+        "nodeId": node.id,
+        "sourceId": source_id,
+        "sourceType": source_type,
+        "index": index,
+    }
+    return {
+        "itemId": _stable_id(
+            "collector-item",
+            node.id,
+            source_id,
+            str(index),
+            json.dumps(raw, sort_keys=True, ensure_ascii=False, default=str),
+        ),
+        "sourceId": source_id,
+        "sourceType": source_type,
+        "title": title,
+        "url": url,
+        "content": content,
+        "data": raw,
+        "publishedAt": published_at,
+        "fetchedAt": fetched_at,
+        "lineage": lineage,
+    }
+
+
+def _first_source_value(raw: dict[str, Any], keys: tuple[str, ...]) -> Any:
+    for key in keys:
+        if key in raw and raw[key] is not None:
+            value = raw[key]
+            if isinstance(value, str) and not value.strip():
+                continue
+            return value
+    return None
+
+
+def _sanitize_collector_output(value: Any) -> Any:
+    if isinstance(value, list):
+        return [_sanitize_collector_output(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    return {
+        str(key): _sanitize_collector_output(item)
+        for key, item in value.items()
+        if _normalized_sensitive_key(key) not in _COLLECTOR_SENSITIVE_KEYS
+    }
+
+
+def _normalized_sensitive_key(value: object) -> str:
+    return "".join(character for character in str(value).lower() if character.isalnum())
+
+
+def _find_collector_sensitive_paths(
+    value: object,
+    path: tuple[str, ...] = (),
+) -> list[str]:
+    matches: list[str] = []
+    if isinstance(value, dict):
+        for key, item in value.items():
+            nested_path = (*path, str(key))
+            if _normalized_sensitive_key(key) in _COLLECTOR_SENSITIVE_KEYS:
+                matches.append(".".join(nested_path))
+            matches.extend(_find_collector_sensitive_paths(item, nested_path))
+    elif isinstance(value, list | tuple):
+        for index, item in enumerate(value):
+            matches.extend(
+                _find_collector_sensitive_paths(item, (*path, str(index)))
+            )
+    return matches
+
+
+def _lineage_entries(value: object) -> list[dict[str, Any]]:
+    if isinstance(value, dict):
+        return [dict(value)]
+    return _read_dict_list(value)
+
+
+def _failed_dependency_ids(
+    node: CompiledWorkflowNode,
+    events: list[WorkflowNodeRunEvent],
+) -> list[str]:
+    failed: list[str] = []
+    for upstream_id in node.depends_on:
+        latest = next(
+            (event for event in reversed(events) if event.nodeId == upstream_id),
+            None,
+        )
+        if latest is not None and latest.eventType in {"failed", "blocked"}:
+            failed.append(upstream_id)
+    return failed
+
+
+def _collector_binding_type(binding_input: dict[str, Any]) -> str | None:
+    value = _read_string(binding_input.get("collectorType"))
+    return value if value in {"web", "api", "rss", "cli"} else None
+
+
+def _legacy_cli_source(binding_input: dict[str, Any]) -> dict[str, Any]:
+    params = _read_dict(binding_input.get("params"))
+    site = _read_string(params.get("site"))
+    command = _read_string(params.get("command"))
+    if not site or not command:
+        return {}
+    return {
+        "sourceId": _read_string(params.get("sourceId")) or f"legacy:{site}:{command}",
+        "kind": "cli",
+        "site": site,
+        "command": command,
+        "args": _read_dict(params.get("args")),
+        "enabled": True,
+    }
+
+
+def _positive_int(value: object, *, default: int) -> int:
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return value
+    return default
+
+
+def _detail_int(details: dict[str, object], key: str) -> int:
+    value = details.get(key)
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def _nonnegative_int(value: object, *, default: int) -> int:
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return value
+    return default
 
 
 def _notify_send_block_reason(

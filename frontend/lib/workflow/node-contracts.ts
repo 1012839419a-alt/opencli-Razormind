@@ -4,6 +4,8 @@ export type PortDirection = "input" | "output"
 export type PortDataType =
   | "trigger"
   | "items[]"
+  | "CollectorOutputV1"
+  | "CollectorMergeInputV1"
   | "recordCandidate[]"
   | "record[]"
   | "runtimeArtifact[]"
@@ -22,6 +24,9 @@ export type PortContract = {
   type: PortDataType
   required: boolean
   description: string
+  cardinality?: "one" | "many"
+  minConnections?: number
+  legacyIds?: string[]
 }
 
 export type ParamContract = {
@@ -138,6 +143,10 @@ const CONTRACTS: Record<string, NodeContract> = {
     ],
     ["source adapter must be registered", "items[] output must include stable item ids"],
   ),
+  "collection.source.web": collectorContract("web", "网页采集"),
+  "collection.source.api": collectorContract("api", "API 采集"),
+  "collection.source.rss": collectorContract("rss", "RSS 采集"),
+  "collection.source.cli": collectorContract("cli", "CLI 采集"),
   "intelligence.source.opencli-slot": contract(
     "intelligence.source.opencli-slot",
     "OpenCLI Source Slot",
@@ -211,10 +220,13 @@ const CONTRACTS: Record<string, NodeContract> = {
   "intelligence.flow.merge": contract(
     "intelligence.flow.merge",
     "Merge",
-    "recordCandidate[] + recordCandidate[] -> recordCandidate[]",
+    "CollectorMergeInputV1* -> recordCandidate[]",
     [
-      port("in1", "input", "recordCandidate[]", true, "Consumes the first candidate stream."),
-      port("in2", "input", "recordCandidate[]", true, "Consumes another candidate stream."),
+      port("in", "input", "CollectorMergeInputV1", true, "Consumes collector envelopes or candidate streams.", {
+        cardinality: "many",
+        minConnections: 1,
+        legacyIds: ["in1", "in2"],
+      }),
     ],
     [port("out", "output", "recordCandidate[]", true, "Emits merged candidates with lineage preserved.")],
     [
@@ -231,7 +243,8 @@ const CONTRACTS: Record<string, NodeContract> = {
       }),
     ],
     [
-      "merge requires at least two compatible upstream inputs",
+      "merge requires at least one compatible upstream input",
+      "legacy in1/in2 edges remain load-compatible",
       "lineage must be preserved for every output item",
     ],
   ),
@@ -556,7 +569,7 @@ export function resolveEdgeContract(project: WorkflowProject, edge: WorkflowProj
   const outputs = sourceContract?.ports.filter((port) => port.direction === "output") ?? []
   const inputs = targetContract?.ports.filter((port) => port.direction === "input") ?? []
   const targetPort = edge.targetPort
-    ? inputs.find((port) => port.id === edge.targetPort) ?? null
+    ? inputs.find((port) => port.id === edge.targetPort || port.legacyIds?.includes(edge.targetPort ?? "")) ?? null
     : inferTargetPort(inputs)
   const sourcePort = edge.sourcePort
     ? outputs.find((port) => port.id === edge.sourcePort) ?? null
@@ -588,7 +601,7 @@ export function validateNodeContract(node: WorkflowProjectNode, adapter?: Adapte
     }]
   }
 
-  return contract.params.flatMap((paramSpec) => {
+  const paramFindings = contract.params.flatMap((paramSpec) => {
     const value = readParamValue(node, adapter, paramSpec)
     if ((value === undefined || value === "") && paramSpec.required) {
       return [finding(node.id, contract.id, "fail", `Required param "${paramSpec.id}" is missing.`, { param: paramSpec })]
@@ -613,6 +626,87 @@ export function validateNodeContract(node: WorkflowProjectNode, adapter?: Adapte
     }
     return []
   })
+  return [...paramFindings, ...validateCollectorNode(node, contract)]
+}
+
+function collectorContract(kind: "web" | "api" | "rss" | "cli", title: string): NodeContract {
+  return contract(
+    `collection.source.${kind}`,
+    title,
+    "trigger -> CollectorOutputV1 { items[], sourceResults[] }",
+    [port("in", "input", "trigger", false, "Optionally consumes a workflow trigger.")],
+    [port("out", "output", "CollectorOutputV1", true, "Emits items and sourceResults as one typed envelope.")],
+    [
+      param("version", "params", "number", true, 1, { min: 1, max: 1, description: "Collector node contract version." }),
+      param("execution", "params", "object", true, {}, { description: "Concurrency, timeout, and retry policy." }),
+      param("sources", "params", "object[]", true, [], { description: `Ordered ${kind} source definitions with stable sourceId values.` }),
+    ],
+    [
+      `every source kind must be ${kind}`,
+      "disabled sources are preserved and reported as skipped",
+      "publishedAt and fetchedAt must remain distinct",
+      ...(kind === "cli"
+        ? ["CLI sources select registered adapterNodeId values and structured typed args; free shell text is forbidden"]
+        : []),
+    ],
+  )
+}
+
+const FORBIDDEN_COLLECTOR_KEYS = new Set([
+  "shell",
+  "commandline",
+  "scripttext",
+  "rawcommand",
+  "token",
+  "password",
+  "cookie",
+  "authorization",
+])
+
+function validateCollectorNode(node: WorkflowProjectNode, contract: NodeContract): NodeContractFinding[] {
+  const prefix = "collection.source."
+  if (!contract.id.startsWith(prefix)) return []
+  const expectedKind = contract.id.slice(prefix.length)
+  const sources = node.params.sources
+  if (!Array.isArray(sources)) return []
+  const findings: NodeContractFinding[] = []
+  const sourceIds = new Set<string>()
+  sources.forEach((source, index) => {
+    const evidence = { index, source }
+    if (!source || typeof source !== "object" || Array.isArray(source)) return
+    const candidate = source as Record<string, unknown>
+    if (candidate.kind !== expectedKind) {
+      findings.push(finding(node.id, contract.id, "fail", `Source ${index + 1} must have kind "${expectedKind}".`, evidence))
+    }
+    const sourceId = typeof candidate.sourceId === "string" ? candidate.sourceId.trim() : ""
+    if (!sourceId) {
+      findings.push(finding(node.id, contract.id, "fail", `Source ${index + 1} needs a stable sourceId.`, evidence))
+    } else if (sourceIds.has(sourceId)) {
+      findings.push(finding(node.id, contract.id, "fail", `Source id "${sourceId}" is duplicated.`, evidence))
+    } else {
+      sourceIds.add(sourceId)
+    }
+    if (containsForbiddenCollectorKey(candidate)) {
+      findings.push(finding(node.id, contract.id, "fail", `Source "${sourceId || index + 1}" contains a forbidden secret or free-command field.`, evidence))
+    }
+    if (expectedKind === "cli") {
+      if (typeof candidate.adapterNodeId !== "string" || !candidate.adapterNodeId.trim()) {
+        findings.push(finding(node.id, contract.id, "fail", `CLI source "${sourceId || index + 1}" must select adapterNodeId.`, evidence))
+      }
+      if (!candidate.args || typeof candidate.args !== "object" || Array.isArray(candidate.args)) {
+        findings.push(finding(node.id, contract.id, "fail", `CLI source "${sourceId || index + 1}" must use structured typed args.`, evidence))
+      }
+    }
+  })
+  return findings
+}
+
+function containsForbiddenCollectorKey(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false
+  if (Array.isArray(value)) return value.some(containsForbiddenCollectorKey)
+  return Object.entries(value as Record<string, unknown>).some(
+    ([key, nested]) => FORBIDDEN_COLLECTOR_KEYS.has(key.toLowerCase()) || containsForbiddenCollectorKey(nested),
+  )
 }
 
 function contract(
@@ -627,8 +721,15 @@ function contract(
   return { id, title, dataModel, ports: [...inputs, ...outputs], params, assertions }
 }
 
-function port(id: string, direction: PortDirection, type: PortDataType, required: boolean, description: string): PortContract {
-  return { id, direction, type, required, description }
+function port(
+  id: string,
+  direction: PortDirection,
+  type: PortDataType,
+  required: boolean,
+  description: string,
+  options: Pick<PortContract, "cardinality" | "minConnections" | "legacyIds"> = {},
+): PortContract {
+  return { id, direction, type, required, description, ...options }
 }
 
 function param(
@@ -705,6 +806,10 @@ function inferSourcePort(
 
 function portTypesCompatible(source: PortDataType, target: PortDataType): boolean {
   if (source === target) return true
+  if (
+    target === "CollectorMergeInputV1" &&
+    (source === "CollectorOutputV1" || source === "recordCandidate[]")
+  ) return true
   if (source === "unknown" || target === "unknown") return true
   return false
 }

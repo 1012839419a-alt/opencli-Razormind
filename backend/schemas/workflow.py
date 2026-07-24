@@ -8,6 +8,9 @@ validate and preview execution without persisting or dispatching work.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from copy import deepcopy
+from hashlib import sha256
 from typing import Annotated, Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -88,6 +91,338 @@ WorkflowCapabilitySurface = Literal[
     "resource",
 ]
 WorkflowCapabilityStatus = Literal["runnable", "blocked", "preview_only", "design_only"]
+CollectorSourceKind = Literal["web", "api", "rss", "cli"]
+
+COLLECTOR_NODE_KIND_BY_CATALOG_ID: dict[str, CollectorSourceKind] = {
+    "collection.source.web": "web",
+    "collection.source.api": "api",
+    "collection.source.rss": "rss",
+    "collection.source.cli": "cli",
+}
+
+_COLLECTOR_PLAINTEXT_CREDENTIAL_FIELDS = frozenset(
+    {
+        "accesstoken",
+        "apikey",
+        "authorization",
+        "authtoken",
+        "bearertoken",
+        "clientsecret",
+        "cookie",
+        "password",
+        "secret",
+        "token",
+        "xapikey",
+    }
+)
+_COLLECTOR_CLI_COMMAND_FIELDS = frozenset(
+    {"commandline", "rawcommand", "scripttext", "shell"}
+)
+
+
+def _normalized_config_key(value: object) -> str:
+    return "".join(character for character in str(value).lower() if character.isalnum())
+
+
+def _find_forbidden_collector_fields(
+    value: object,
+    *,
+    cli: bool,
+    path: tuple[str, ...] = (),
+) -> list[str]:
+    forbidden = set(_COLLECTOR_PLAINTEXT_CREDENTIAL_FIELDS)
+    if cli:
+        forbidden.update(_COLLECTOR_CLI_COMMAND_FIELDS)
+    matches: list[str] = []
+    if isinstance(value, Mapping):
+        for key, nested_value in value.items():
+            nested_path = (*path, str(key))
+            if _normalized_config_key(key) in forbidden:
+                matches.append(".".join(nested_path))
+            matches.extend(
+                _find_forbidden_collector_fields(
+                    nested_value,
+                    cli=cli,
+                    path=nested_path,
+                )
+            )
+    elif isinstance(value, list | tuple):
+        for index, nested_value in enumerate(value):
+            matches.extend(
+                _find_forbidden_collector_fields(
+                    nested_value,
+                    cli=cli,
+                    path=(*path, str(index)),
+                )
+            )
+    return matches
+
+
+class CollectorRetryPolicy(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    maxAttempts: int = Field(..., ge=1, le=5)
+    backoffMs: Optional[int] = Field(None, ge=0, le=30_000)
+
+
+class CollectorExecutionOptions(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    concurrency: Optional[int] = Field(None, ge=1, le=16)
+    timeoutMs: Optional[int] = Field(None, ge=1, le=120_000)
+    retry: Optional[CollectorRetryPolicy] = None
+
+    @model_validator(mode="after")
+    def validate_total_source_budget(self) -> CollectorExecutionOptions:
+        attempts = self.retry.maxAttempts if self.retry else 1
+        timeout_ms = self.timeoutMs or 60_000
+        backoff_ms = (self.retry.backoffMs or 0) if self.retry else 0
+        retry_delay_ms = sum(
+            min(backoff_ms * (2**attempt), 30_000)
+            for attempt in range(max(0, attempts - 1))
+        )
+        if attempts * timeout_ms + retry_delay_ms > 600_000:
+            raise ValueError("collector per-source execution budget must not exceed 600000ms")
+        return self
+
+
+class CollectorSourceBase(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    sourceId: str = Field(..., min_length=1, max_length=128)
+    name: Optional[str] = Field(None, min_length=1, max_length=200)
+    enabled: bool = True
+    credentialRef: Optional[str] = Field(
+        None,
+        min_length=1,
+        max_length=200,
+        pattern=r"^credential://[A-Za-z0-9][A-Za-z0-9_-]{0,35}$",
+    )
+    credentialScheme: Optional[Literal["bearer", "api_key", "basic"]] = None
+
+    @model_validator(mode="after")
+    def validate_credential_pair(self):
+        if bool(self.credentialRef) != bool(self.credentialScheme):
+            raise ValueError(
+                "credentialRef and credentialScheme must be configured together"
+            )
+        if getattr(self, "kind", None) != "api" and self.credentialRef:
+            raise ValueError(
+                "credential references are currently supported only for api collectors"
+            )
+        return self
+
+
+class WebSourceDefinition(CollectorSourceBase):
+    kind: Literal["web"]
+    url: str = Field(..., min_length=1)
+    fetchMode: Literal["auto", "http", "browser"] = "auto"
+    selector: Optional[str] = None
+    extraction: dict[str, Any] = Field(default_factory=dict)
+    pagination: Optional[dict[str, Any]] = None
+    timeWindow: Optional[dict[str, Any]] = None
+
+
+class APISourceDefinition(CollectorSourceBase):
+    kind: Literal["api"]
+    url: str = Field(..., min_length=1)
+    method: Literal["GET", "HEAD"] = "GET"
+    query: dict[str, Any] = Field(default_factory=dict)
+    headers: dict[str, Any] = Field(default_factory=dict)
+    body: Any = None
+    pagination: Optional[dict[str, Any]] = None
+    responseMapping: dict[str, Any] = Field(default_factory=dict)
+
+
+class RSSSourceDefinition(CollectorSourceBase):
+    kind: Literal["rss"]
+    feedUrl: str = Field(..., min_length=1)
+    timeWindow: Optional[dict[str, Any]] = None
+    itemLimit: Optional[int] = Field(None, ge=1, le=10_000)
+
+
+class CLISourceDefinition(CollectorSourceBase):
+    kind: Literal["cli"]
+    adapterNodeId: str = Field(..., min_length=1)
+    args: dict[str, Any] = Field(default_factory=dict)
+
+
+CollectorSourceDefinition = Annotated[
+    WebSourceDefinition | APISourceDefinition | RSSSourceDefinition | CLISourceDefinition,
+    Field(discriminator="kind"),
+]
+
+
+class CollectorNodeParams(BaseModel):
+    """Versioned, persistable parameters shared by all L1 collector nodes."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    version: Literal[1] = 1
+    execution: CollectorExecutionOptions = Field(
+        default_factory=lambda: CollectorExecutionOptions(
+            concurrency=None,
+            timeoutMs=None,
+            retry=None,
+        )
+    )
+    sources: list[CollectorSourceDefinition] = Field(default_factory=list, max_length=64)
+
+    @model_validator(mode="after")
+    def validate_source_ids_and_sensitive_fields(self) -> CollectorNodeParams:
+        source_ids = [source.sourceId for source in self.sources]
+        if len(source_ids) != len(set(source_ids)):
+            raise ValueError("collector sourceId values must be unique within a node")
+        for source in self.sources:
+            forbidden = _find_forbidden_collector_fields(
+                source.model_dump(mode="python", exclude_none=True),
+                cli=source.kind == "cli",
+            )
+            if forbidden:
+                raise ValueError(
+                    "collector source contains forbidden persisted fields: "
+                    + ", ".join(sorted(forbidden))
+                )
+        return self
+
+
+class CollectedItemV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    itemId: str = Field(..., min_length=1)
+    sourceId: str = Field(..., min_length=1)
+    sourceType: CollectorSourceKind
+    title: Optional[str] = None
+    url: Optional[str] = None
+    content: Optional[str] = None
+    data: Any = None
+    publishedAt: Optional[str] = None
+    fetchedAt: str = Field(..., min_length=1)
+    lineage: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("publishedAt", mode="before")
+    @classmethod
+    def normalize_blank_published_at(cls, value: object) -> object:
+        return None if isinstance(value, str) and not value.strip() else value
+
+
+class CollectorSourceError(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    code: str = Field(..., min_length=1)
+    message: str = Field(..., min_length=1)
+    retryable: bool
+
+
+class SourceExecutionResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    sourceId: str = Field(..., min_length=1)
+    status: Literal["completed", "failed", "skipped"]
+    itemCount: int = Field(..., ge=0)
+    attempts: int = Field(..., ge=0)
+    startedAt: str = Field(..., min_length=1)
+    finishedAt: str = Field(..., min_length=1)
+    error: Optional[CollectorSourceError] = None
+
+    @model_validator(mode="after")
+    def validate_status_error(self) -> SourceExecutionResult:
+        if self.status == "failed" and self.error is None:
+            raise ValueError("failed collector source result requires error details")
+        if self.status != "failed" and self.error is not None:
+            raise ValueError("only failed collector source results may contain error details")
+        return self
+
+
+class CollectorOutputV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[CollectedItemV1] = Field(default_factory=list)
+    sourceResults: list[SourceExecutionResult] = Field(default_factory=list)
+
+
+def validate_collector_node_params(
+    catalog_id: str,
+    params: CollectorNodeParams | Mapping[str, Any],
+) -> CollectorNodeParams:
+    """Validate collector params against the concrete L1 collector node type."""
+
+    expected_kind = COLLECTOR_NODE_KIND_BY_CATALOG_ID.get(catalog_id)
+    if expected_kind is None:
+        raise ValueError(f"unsupported collector catalog id: {catalog_id}")
+    validated = (
+        params
+        if isinstance(params, CollectorNodeParams)
+        else CollectorNodeParams.model_validate(params)
+    )
+    mismatched = [
+        source.sourceId for source in validated.sources if source.kind != expected_kind
+    ]
+    if mismatched:
+        raise ValueError(
+            f"{catalog_id} only accepts {expected_kind} sources; mismatched sourceIds: "
+            + ", ".join(mismatched)
+        )
+    return validated
+
+
+def normalize_collector_node_params(
+    catalog_id: str,
+    params: Mapping[str, Any],
+) -> CollectorNodeParams:
+    """Return runtime params without mutating legacy or current saved graph data.
+
+    Legacy OpenCLI ``site + command`` params are projected to one CLI source whose
+    adapter id matches the existing OpenCLI catalog convention. The legacy fields
+    are deliberately absent from the returned persistable v1 contract.
+    """
+
+    copied = deepcopy(dict(params))
+    if "sources" in copied or "version" in copied:
+        return validate_collector_node_params(catalog_id, copied)
+    if catalog_id != "collection.source.cli":
+        return validate_collector_node_params(catalog_id, copied)
+
+    site = copied.get("site")
+    command = copied.get("command")
+    if not isinstance(site, str) or not site.strip():
+        raise ValueError("legacy CLI collector params require non-empty site")
+    if not isinstance(command, str) or not command.strip():
+        raise ValueError("legacy CLI collector params require non-empty command")
+
+    def safe_id(value: str) -> str:
+        normalized = "".join(
+            character if character.isalnum() else "-" for character in value.strip().lower()
+        )
+        return "-".join(part for part in normalized.split("-") if part) or "adapter"
+
+    legacy_identity = f"{site.strip()}\0{command.strip()}".encode()
+    source_id = f"legacy-{sha256(legacy_identity).hexdigest()[:16]}"
+    args = copied.get("args")
+    if args is None:
+        args = {}
+    if not isinstance(args, dict):
+        raise ValueError("legacy CLI collector args must be an object")
+    normalized = {
+        "version": 1,
+        "execution": deepcopy(copied.get("execution", {})),
+        "sources": [
+            {
+                "kind": "cli",
+                "sourceId": source_id,
+                "name": f"{site.strip()} · {command.strip()}",
+                "enabled": copied.get("enabled", True),
+                "adapterNodeId": (
+                    f"opencli.adapter.{safe_id(site)}.{safe_id(command)}"
+                ),
+                "args": deepcopy(args),
+            }
+        ],
+    }
+    credential_ref = copied.get("credentialRef")
+    if isinstance(credential_ref, str) and credential_ref:
+        normalized["sources"][0]["credentialRef"] = credential_ref
+    return validate_collector_node_params(catalog_id, normalized)
 
 
 class WorkflowSourceAnchor(BaseModel):
@@ -175,6 +510,13 @@ class WorkflowProjectNode(BaseModel):
         if WORKFLOW_NODE_PATH_SEPARATOR in value or "__" in value:
             raise ValueError('node id must not contain reserved path separators "::" or "__"')
         return value
+
+    @model_validator(mode="after")
+    def validate_collector_params(self) -> WorkflowProjectNode:
+        catalog_id = (self.ui or {}).get("catalogId")
+        if isinstance(catalog_id, str) and catalog_id in COLLECTOR_NODE_KIND_BY_CATALOG_ID:
+            normalize_collector_node_params(catalog_id, self.params)
+        return self
 
 
 class WorkflowSemanticLink(BaseModel):
@@ -610,6 +952,7 @@ class WorkflowRunInput(BaseModel):
 
 class WorkflowRunStartRequest(BaseModel):
     project: WorkflowProject
+    ephemeral: bool = False
     packageNodeId: Optional[str] = None
     runId: Optional[RunId] = None
     traceId: Optional[str] = None

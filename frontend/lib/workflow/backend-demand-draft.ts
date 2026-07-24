@@ -1,4 +1,11 @@
-import type { AgentProposal, AgentProposalOperation } from "./proposal"
+import {
+  getCollectorNodeRevision,
+  parseCollectorNodeProposal,
+  type AgentProposal,
+  type AgentProposalOperation,
+  type CollectorNodeProposal,
+  type CollectorPatchOperation,
+} from "./proposal"
 import type { WorkflowProject, WorkflowProjectEdge, WorkflowProjectNode } from "./schema"
 
 type ApiResponse<T> = {
@@ -32,6 +39,25 @@ export async function draftWorkflowDemand(
   text: string,
   options: { authorization?: string | null; locale?: string | null } = {},
 ): Promise<AgentProposal> {
+  const payload = await requestWorkflowDemand(project, text, options)
+  return toAgentProposal(payload, text)
+}
+
+export async function draftCollectorNodeDemand(
+  project: WorkflowProject,
+  nodeId: string,
+  text: string,
+  options: { authorization?: string | null; locale?: string | null } = {},
+): Promise<CollectorNodeProposal> {
+  const payload = await requestWorkflowDemand(project, text, options)
+  return toCollectorNodeProposal(payload, project, nodeId, text)
+}
+
+async function requestWorkflowDemand(
+  project: WorkflowProject,
+  text: string,
+  options: { authorization?: string | null; locale?: string | null },
+): Promise<BackendWorkflowPatchResponse> {
   const response = await fetch("/api/workflow/demand-draft", {
     method: "POST",
     headers: {
@@ -48,7 +74,7 @@ export async function draftWorkflowDemand(
   if (!response.ok || !payload?.data) {
     throw new Error(payload?.message ?? payload?.error ?? `Workflow demand draft failed (${response.status})`)
   }
-  return toAgentProposal(payload.data, text)
+  return payload.data
 }
 
 function toAgentProposal(response: BackendWorkflowPatchResponse, text: string): AgentProposal {
@@ -91,4 +117,126 @@ function toAgentOperation(operation: BackendPatchOperation): AgentProposalOperat
     return [{ type: "addEdge", edge: operation.edge }]
   }
   return []
+}
+
+function toCollectorNodeProposal(
+  response: BackendWorkflowPatchResponse,
+  project: WorkflowProject,
+  nodeId: string,
+  text: string,
+): CollectorNodeProposal {
+  const node = project.nodes.find((candidate) => candidate.id === nodeId)
+  if (!node) throw new Error(`Collector proposal target "${nodeId}" does not exist`)
+
+  const parameterPatches = response.patch.operations.filter(
+    (operation) => operation.op === "update_parameters" && operation.nodeId === nodeId,
+  )
+  if (parameterPatches.length === 0) {
+    throw new Error(`Demand draft did not return a structured patch for collector node "${nodeId}"`)
+  }
+  const desiredParams = Object.assign({}, ...parameterPatches.map((operation) => operation.params ?? {}))
+  const operations = collectorOperationsFromParams(node.params, desiredParams)
+  if (operations.length === 0) {
+    throw new Error("Demand draft did not change any Agent-editable collector fields")
+  }
+  return parseCollectorNodeProposal({
+    proposalId: `collector-demand-${Date.now()}`,
+    nodeId,
+    baseRevision: getCollectorNodeRevision(node),
+    summary: `Update collector: ${text.slice(0, 64)}`,
+    operations,
+  })
+}
+
+function collectorOperationsFromParams(
+  currentParams: Record<string, unknown>,
+  desiredParams: Record<string, unknown>,
+): CollectorPatchOperation[] {
+  const operations: CollectorPatchOperation[] = []
+  if ("sources" in desiredParams) {
+    if (!Array.isArray(desiredParams.sources)) {
+      throw new Error("Collector demand patch params.sources must be an array")
+    }
+    const currentSources = Array.isArray(currentParams.sources)
+      ? currentParams.sources.map(asRecord)
+      : []
+    const desiredSources = desiredParams.sources.map(asRecord)
+    const desiredIds = new Set(desiredSources.map(sourceId))
+    for (const source of currentSources) {
+      const id = sourceId(source)
+      if (!desiredIds.has(id)) {
+        operations.push({ type: "removeSource", sourceId: id, expectedSource: source })
+      }
+    }
+    for (const desired of desiredSources) {
+      const id = sourceId(desired)
+      const current = currentSources.find((source) => sourceId(source) === id)
+      if (!current) {
+        operations.push({ type: "addSource", source: desired })
+        continue
+      }
+      const changes: Record<string, unknown> = {}
+      const expected: Record<string, { exists: boolean; value?: unknown }> = {}
+      for (const [key, value] of Object.entries(desired)) {
+        if (key === "sourceId" || key === "kind" || deepEqual(current[key], value)) continue
+        changes[key] = value
+        expected[key] = key in current ? { exists: true, value: current[key] } : { exists: false }
+      }
+      if (Object.keys(changes).length > 0) {
+        operations.push({ type: "updateSource", sourceId: id, changes, expected })
+      }
+    }
+
+    const simulatedOrder = currentSources
+      .map(sourceId)
+      .filter((id) => desiredIds.has(id))
+    for (const desired of desiredSources) {
+      const id = sourceId(desired)
+      if (!simulatedOrder.includes(id)) simulatedOrder.push(id)
+    }
+    desiredSources.map(sourceId).forEach((id, toIndex) => {
+      const expectedIndex = simulatedOrder.indexOf(id)
+      if (expectedIndex === toIndex) return
+      operations.push({ type: "moveSource", sourceId: id, expectedIndex, toIndex })
+      simulatedOrder.splice(expectedIndex, 1)
+      simulatedOrder.splice(toIndex, 0, id)
+    })
+  }
+
+  if ("execution" in desiredParams) {
+    const desiredExecution = asRecord(desiredParams.execution)
+    const currentExecution = isRecord(currentParams.execution) ? currentParams.execution : {}
+    for (const field of ["concurrency", "timeoutMs", "retry"] as const) {
+      if (!(field in desiredExecution) || deepEqual(currentExecution[field], desiredExecution[field])) continue
+      operations.push({
+        type: "setExecution",
+        field,
+        value: desiredExecution[field],
+        expected: field in currentExecution
+          ? { exists: true, value: currentExecution[field] }
+          : { exists: false },
+      })
+    }
+  }
+  return operations
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  if (!isRecord(value)) throw new Error("Collector demand patch contains a non-object structured value")
+  return value
+}
+
+function sourceId(source: Record<string, unknown>): string {
+  if (typeof source.sourceId !== "string" || source.sourceId.length === 0) {
+    throw new Error("Collector demand patch source requires a stable sourceId")
+  }
+  return source.sourceId
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value)
+}
+
+function deepEqual(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right)
 }

@@ -25,6 +25,7 @@ from backend.workflow.native_intelligence_executor import (
     NATIVE_INTELLIGENCE_ACTION_BY_TOOL_ID,
 )
 from backend.workflow.node_registry import (
+    COLLECTION_SOURCE_CATALOG_IDS,
     forbidden_node_definition_keys,
     resolve_node_origin,
 )
@@ -60,6 +61,13 @@ _PORT_CONTRACTS: dict[str, tuple[list[_PortContract], list[_PortContract]]] = {
         [_PortContract("in", "input", "trigger", required=False)],
         [_PortContract("out", "output", "trigger")],
     ),
+    **{
+        catalog_id: (
+            [_PortContract("in", "input", "trigger", required=False)],
+            [_PortContract("out", "output", "CollectorOutputV1")],
+        )
+        for catalog_id in COLLECTION_SOURCE_CATALOG_IDS
+    },
     "intelligence.processing.normalize": (
         [_PortContract("in", "input", "items[]")],
         [_PortContract("out", "output", "recordCandidate[]")],
@@ -70,8 +78,9 @@ _PORT_CONTRACTS: dict[str, tuple[list[_PortContract], list[_PortContract]]] = {
     ),
     "intelligence.flow.merge": (
         [
-            _PortContract("in1", "input", "recordCandidate[]"),
-            _PortContract("in2", "input", "recordCandidate[]"),
+            _PortContract("in", "input", "CollectorMergeInputV1"),
+            _PortContract("in1", "input", "CollectorMergeInputV1"),
+            _PortContract("in2", "input", "CollectorMergeInputV1"),
         ],
         [_PortContract("out", "output", "recordCandidate[]")],
     ),
@@ -339,6 +348,9 @@ def _validate_project(project: WorkflowProject) -> list[WorkflowCompileError]:
 
 
 def _requires_adapter(node: WorkflowProjectNode) -> bool:
+    catalog_id = _read_string((node.ui or {}).get("catalogId"))
+    if catalog_id in COLLECTION_SOURCE_CATALOG_IDS:
+        return False
     return node.kind == "source" or node.capability in {"fetch", "send"}
 
 
@@ -430,7 +442,11 @@ def _validate_typed_edges(
                 )
             )
             continue
-        if not _port_types_compatible(source_port.type, target_port.type):
+        if not _port_types_compatible(
+            source_port.type,
+            target_port.type,
+            target_node=target_node,
+        ):
             errors.append(
                 WorkflowCompileError(
                     code="incompatible_edge_ports",
@@ -564,8 +580,18 @@ def _resolve_input_port(
     return next((port for port in inputs if port.required), inputs[0] if inputs else None)
 
 
-def _port_types_compatible(source_type: str, target_type: str) -> bool:
+def _port_types_compatible(
+    source_type: str,
+    target_type: str,
+    *,
+    target_node: WorkflowProjectNode | None = None,
+) -> bool:
     if source_type == target_type:
+        return True
+    if target_type == "CollectorMergeInputV1" and source_type in {
+        "CollectorOutputV1",
+        "recordCandidate[]",
+    }:
         return True
     return source_type in {"any", "unknown"} or target_type in {"any", "unknown"}
 
@@ -1303,8 +1329,9 @@ def _plan_ports_for_node(
     if catalog_id == "intelligence.flow.merge":
         return (
             [
-                PlanPort(name="in1", type="recordCandidate[]"),
-                PlanPort(name="in2", type="recordCandidate[]"),
+                PlanPort(name="in", type="CollectorMergeInputV1"),
+                PlanPort(name="in1", type="CollectorMergeInputV1"),
+                PlanPort(name="in2", type="CollectorMergeInputV1"),
             ],
             [PlanPort(name="out", type="recordCandidate[]")],
         )
