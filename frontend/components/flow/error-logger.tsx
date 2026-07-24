@@ -12,7 +12,6 @@ export function ErrorLogger() {
         return
       }
       seen.first = true
-      // eslint-disable-next-line no-console
       console.error(`[ErrorLogger:${label}] FIRST ERROR`, detail)
     }
 
@@ -54,7 +53,6 @@ export function ErrorLogger() {
       po = new PerformanceObserver((list) => {
         for (const entry of list.getEntries()) {
           if (entry.duration > 500) {
-            // eslint-disable-next-line no-console
             console.warn("[ErrorLogger:longtask]", {
               duration: Math.round(entry.duration),
               startTime: Math.round(entry.startTime),
@@ -66,7 +64,6 @@ export function ErrorLogger() {
       po.observe({ entryTypes: ["longtask"] })
     } catch {}
 
-    // eslint-disable-next-line no-console
     console.info("[ErrorLogger] armed")
 
     return () => {

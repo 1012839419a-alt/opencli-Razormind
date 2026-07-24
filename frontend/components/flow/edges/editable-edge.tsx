@@ -1,6 +1,6 @@
 "use client"
 
-import { memo, useCallback, useRef } from "react"
+import { memo, useCallback, useMemo, useRef } from "react"
 import {
   BaseEdge,
   EdgeLabelRenderer,
@@ -49,7 +49,7 @@ function EditableEdgeComponent({
   const onEdgesChange = useFlowStore((s) => s.onEdgesChange)
   const draggingRef = useRef<number | null>(null)
 
-  const waypoints = data?.waypoints ?? []
+  const waypoints = useMemo(() => data?.waypoints ?? [], [data?.waypoints])
   const points: XYPosition[] = [{ x: sourceX, y: sourceY }, ...waypoints, { x: targetX, y: targetY }]
   const path = buildPath(points)
   const labelPoint = points[Math.floor(points.length / 2)]
