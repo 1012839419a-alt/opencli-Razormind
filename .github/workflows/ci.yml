@@ -43,6 +43,39 @@ jobs:
           name: extension-dist
           path: chrome/extension-src/dist
 
+  frontend:
+    runs-on: ubuntu-latest
+    name: Next Frontend
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+
+      - name: Install dependencies
+        run: |
+          corepack enable
+          corepack prepare pnpm@11.10.0 --activate
+          pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Typecheck
+        run: pnpm exec tsc --noEmit
+
+      - name: Workflow regressions
+        run: pnpm check:workflow-regressions
+
+      - name: Production build
+        run: pnpm build
+
   backend:
     runs-on: ubuntu-latest
     name: Backend Quality
