@@ -1,4 +1,4 @@
-FROM python:3.12-slim-bookworm
+FROM python:3.13-slim-bookworm
 WORKDIR /app
 COPY workers/collector-discord/pyproject.toml workers/collector-discord/src ./worker/
 COPY lib ./lib
