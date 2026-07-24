@@ -84,6 +84,12 @@ jobs:
       - name: Production build
         run: pnpm build
 
+      - name: Install Chromium
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Browser smoke test
+        run: pnpm test:smoke
+
   backend:
     runs-on: ubuntu-latest
     name: Backend Quality
