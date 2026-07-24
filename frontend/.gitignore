@@ -14,6 +14,8 @@ node_modules
 .next/
 .DS_Store
 tsconfig.tsbuildinfo
+test-results/
+playwright-report/
 *.log
 .tmp-*.log
 .mcp.json

@@ -19,12 +19,9 @@ export class ErrorBoundary extends Component<Props, State> {
 
   componentDidCatch(error: Error, info: ErrorInfo) {
     const tag = this.props.label ? `[ErrorBoundary:${this.props.label}]` : "[ErrorBoundary]"
-    // eslint-disable-next-line no-console
     console.error(`${tag} ${error.name}: ${error.message}`)
-    // eslint-disable-next-line no-console
     console.error(`${tag} stack:\n${error.stack ?? "(no stack)"}`)
     if (info.componentStack) {
-      // eslint-disable-next-line no-console
       console.error(`${tag} componentStack:${info.componentStack}`)
     }
   }
