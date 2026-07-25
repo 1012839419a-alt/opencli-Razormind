@@ -12,6 +12,10 @@ from backend.schemas.workflow import (
     WorkflowProjectEdge,
     WorkflowProjectNode,
 )
+from backend.workflow.dataflow_compat import (
+    DATAFLOW_COMPAT_SHA,
+    translate_dataflow_alias,
+)
 from backend.workflow.patcher import preview_workflow_patch
 
 EXTERNAL_TOOL_CAPABILITY_ID = "external.tool.capability"
@@ -23,6 +27,13 @@ def import_external_workflow(body: WorkflowExternalImportRequest) -> WorkflowPat
     LangGraph/LangChain remain provenance only. Imported nodes always reference
     OpenCLI Admin catalog capabilities and never carry external executors.
     """
+
+    if body.runtime == "dataflow":
+        source_sha = _read_string(body.graph.get("sourceSha"))
+        if source_sha != DATAFLOW_COMPAT_SHA:
+            raise ValueError(
+                f"DataFlow graph.sourceSha must equal {DATAFLOW_COMPAT_SHA}"
+            )
 
     external_nodes = _extract_nodes(body.graph)
     external_edges = _extract_edges(body.graph)
@@ -95,6 +106,14 @@ def _to_workflow_node(
     graph_name: str | None,
     index: int,
 ) -> WorkflowProjectNode:
+    if runtime == "dataflow":
+        return _to_dataflow_node(
+            external_node,
+            node_id=node_id,
+            graph_name=graph_name,
+            index=index,
+        )
+
     external_id = _node_id(external_node)
     external_type = _node_type(external_node)
     catalog_id, kind, capability, params = _native_capability_for_external_node(
@@ -127,6 +146,73 @@ def _to_workflow_node(
             },
         },
     )
+
+
+def _to_dataflow_node(
+    external_node: dict[str, Any],
+    *,
+    node_id: str,
+    graph_name: str | None,
+    index: int,
+) -> WorkflowProjectNode:
+    external_id = _node_id(external_node)
+    source_id = _dataflow_source_id(external_node)
+    if "config" in external_node:
+        raise ValueError(
+            f'DataFlow node "{external_id}" must use initConfig/runConfig, not config'
+        )
+    invocation = translate_dataflow_alias(
+        source_id,
+        external_node.get("initConfig"),
+        external_node.get("runConfig"),
+    )
+    provenance = {
+        "runtime": "dataflow",
+        "sourceSha": DATAFLOW_COMPAT_SHA,
+        "sourceId": invocation.source_id,
+    }
+    return WorkflowProjectNode(
+        id=node_id,
+        kind="agent",
+        capability="normalize",
+        params={
+            "operatorId": invocation.operator_id,
+            "packVersion": invocation.pack_version,
+            "config": invocation.config,
+        },
+        ui={
+            "catalogId": f"intelligence.data.{invocation.kind}",
+            "label": _node_label(external_node),
+            "position": {"x": 180 + (index % 4) * 260, "y": 180 + (index // 4) * 140},
+            "externalWorkflow": {
+                "runtime": "dataflow",
+                "graphName": graph_name,
+                "nodeId": external_id,
+                **provenance,
+            },
+        },
+    )
+
+
+def _dataflow_source_id(external_node: dict[str, Any]) -> str:
+    source_id = _read_string(external_node.get("sourceId"))
+    if source_id is None:
+        module = _read_string(external_node.get("module"))
+        class_name = _read_string(external_node.get("class"))
+        if module is None or class_name is None:
+            raise ValueError(
+                f'DataFlow node "{_node_id(external_node)}" requires sourceId or module+class'
+            )
+        source_id = (
+            f"dataflow@{DATAFLOW_COMPAT_SHA}::"
+            f"dataflow.operators.{module}.{class_name}"
+        )
+    if not source_id.startswith(f"dataflow@{DATAFLOW_COMPAT_SHA}::"):
+        raise ValueError(
+            f'DataFlow node "{_node_id(external_node)}" sourceId must use '
+            f"DataFlow SHA {DATAFLOW_COMPAT_SHA}"
+        )
+    return source_id
 
 
 def _tool_capability_params(external_node: dict[str, Any]) -> dict[str, Any]:

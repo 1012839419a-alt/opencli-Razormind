@@ -8,7 +8,10 @@ import type {
 } from "./schema"
 import { parseWorkflowProject } from "./schema"
 import { getNodeInternals } from "./node-internals"
-import { createParameterInterfaceFromInternals } from "./parameter-interface"
+import {
+  createDataOperatorParameterInterface,
+  createParameterInterfaceFromInternals,
+} from "./parameter-interface"
 import {
   catalogRuntimeCapability,
   projectedCatalogRuntimeCapability,
@@ -313,6 +316,62 @@ export const WORKFLOW_NODE_CATALOG: WorkflowNodeCatalogItem[] = [
     color: "var(--chart-2)",
     params: { key: "title+source+publishedAt", window: "24h" },
     keywords: ["dedupe", "duplicate", "去重", "重复"],
+  },
+  {
+    id: "intelligence.data.generate",
+    idPrefix: "data-generate",
+    label: "Generate Data",
+    description: "从后端 Data Operator Pack 选择生成节点，用于 chunk、QA 和训练数据生成",
+    category: "processing",
+    profile: "intelligence",
+    kind: "agent",
+    capability: "normalize",
+    icon: "WandSparkles",
+    color: "var(--chart-2)",
+    params: { operatorId: "core.generate.instruction-pairs", packVersion: "1.0.0", config: {} },
+    keywords: ["data", "generate", "chunk", "qa", "生成", "切块"],
+  },
+  {
+    id: "intelligence.data.filter",
+    idPrefix: "data-filter",
+    label: "Filter Data",
+    description: "从后端 Data Operator Pack 选择规则过滤、质量过滤或去重节点",
+    category: "processing",
+    profile: "intelligence",
+    kind: "agent",
+    capability: "normalize",
+    icon: "Filter",
+    color: "var(--chart-2)",
+    params: { operatorId: "core.filter.quality", packVersion: "1.0.0", config: {} },
+    keywords: ["data", "filter", "quality", "deduplicate", "过滤", "去重"],
+  },
+  {
+    id: "intelligence.data.evaluate",
+    idPrefix: "data-evaluate",
+    label: "Evaluate Data",
+    description: "从后端 Data Operator Pack 选择质量和统计评估节点",
+    category: "processing",
+    profile: "intelligence",
+    kind: "agent",
+    capability: "normalize",
+    icon: "ClipboardCheck",
+    color: "var(--chart-3)",
+    params: { operatorId: "core.evaluate.quality", packVersion: "1.0.0", config: {} },
+    keywords: ["data", "evaluate", "statistics", "quality", "评估", "统计"],
+  },
+  {
+    id: "intelligence.data.refine",
+    idPrefix: "data-refine",
+    label: "Refine Data",
+    description: "从后端 Data Operator Pack 选择清洗、投影和训练格式转换节点",
+    category: "processing",
+    profile: "intelligence",
+    kind: "agent",
+    capability: "normalize",
+    icon: "PencilLine",
+    color: "var(--chart-3)",
+    params: { operatorId: "core.refine.text", packVersion: "1.0.0", config: {} },
+    keywords: ["data", "refine", "clean", "project", "format", "清洗", "转换"],
   },
   {
     id: "intelligence.flow.merge",
@@ -739,7 +798,12 @@ export function createWorkflowNodeFromCatalog(
   id: string,
   position: { x: number; y: number },
 ): WorkflowProjectNode {
-  const parameterInterface = createParameterInterfaceFromInternals(
+  const parameterInterface = createDataOperatorParameterInterface(
+    id,
+    item.id,
+    item.params,
+    item.runtimeCapability,
+  ) ?? createParameterInterfaceFromInternals(
     id,
     getNodeInternals({
       id,

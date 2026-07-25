@@ -41,7 +41,13 @@ def draft_workflow_demand(body: WorkflowDemandDraftRequest) -> WorkflowPatchResp
             ],
         )
 
-    operations = _native_first_loop_operations(body.project, sources, body.text, body.locale)
+    operations = _native_first_loop_operations(
+        body.project,
+        sources,
+        body.text,
+        body.locale,
+        data_operators=_data_operators_for_need(body.text),
+    )
     return preview_workflow_patch(body.project, operations)
 
 
@@ -50,6 +56,8 @@ def _native_first_loop_operations(
     sources: list[dict[str, Any]],
     demand_text: str,
     locale: str | None,
+    *,
+    data_operators: list[dict[str, Any]],
 ) -> list[WorkflowPatchOperation]:
     operations: list[WorkflowPatchOperation] = []
     used_node_ids = {node.id for node in project.nodes}
@@ -132,8 +140,13 @@ def _native_first_loop_operations(
         )
 
     merge_id = _unique_id(used_node_ids, "merge-candidates")
+    operator_node_ids = [
+        _unique_id(used_node_ids, f"{operator['id']}-data")
+        for operator in data_operators
+    ]
     accept_id = _unique_id(used_node_ids, "accept-records")
     sink_id = _unique_id(used_node_ids, "record-sink")
+    accept_x = 960 + len(operator_node_ids) * 260
     operations.extend(
         [
             WorkflowPatchOperation(
@@ -171,7 +184,7 @@ def _native_first_loop_operations(
                     ui={
                         "catalogId": "intelligence.control.record-acceptance",
                         "label": "Record Acceptance",
-                        "position": {"x": 960, "y": 240},
+                        "position": {"x": accept_x, "y": 240},
                     },
                 ),
             ),
@@ -189,12 +202,35 @@ def _native_first_loop_operations(
                     ui={
                         "catalogId": "intelligence.sink.records",
                         "label": "Records",
-                        "position": {"x": 1220, "y": 240},
+                        "position": {"x": accept_x + 260, "y": 240},
                     },
                 ),
             ),
         ]
     )
+    for index, (operator, operator_node_id) in enumerate(
+        zip(data_operators, operator_node_ids, strict=True)
+    ):
+        operations.append(
+            WorkflowPatchOperation(
+                op="add_node",
+                node=WorkflowProjectNode(
+                    id=operator_node_id,
+                    kind="agent",
+                    capability="normalize",
+                    params={
+                        "operatorId": operator["operatorId"],
+                        "packVersion": operator["packVersion"],
+                        "config": operator.get("config", {}),
+                    },
+                    ui={
+                        "catalogId": operator["catalogId"],
+                        "label": operator["label"],
+                        "position": {"x": 960 + index * 260, "y": 240},
+                    },
+                ),
+            )
+        )
     for index, normalize_id in enumerate(normalize_ids, start=1):
         operations.append(
             WorkflowPatchOperation(
@@ -208,13 +244,46 @@ def _native_first_loop_operations(
                 ),
             )
         )
+    terminal_id = operator_node_ids[-1] if operator_node_ids else merge_id
+    if operator_node_ids:
+        operations.append(
+            WorkflowPatchOperation(
+                op="connect_nodes",
+                edge=WorkflowProjectEdge(
+                    id=_unique_id(
+                        used_edge_ids,
+                        f"e-{merge_id}-{operator_node_ids[0]}",
+                    ),
+                    source=merge_id,
+                    target=operator_node_ids[0],
+                    sourcePort="out",
+                    targetPort="in",
+                ),
+            )
+        )
+        for source_id, target_id in zip(
+            operator_node_ids,
+            operator_node_ids[1:],
+        ):
+            operations.append(
+                WorkflowPatchOperation(
+                    op="connect_nodes",
+                    edge=WorkflowProjectEdge(
+                        id=_unique_id(used_edge_ids, f"e-{source_id}-{target_id}"),
+                        source=source_id,
+                        target=target_id,
+                        sourcePort="out",
+                        targetPort="in",
+                    ),
+                )
+            )
     operations.extend(
         [
             WorkflowPatchOperation(
                 op="connect_nodes",
                 edge=WorkflowProjectEdge(
-                    id=_unique_id(used_edge_ids, f"e-{merge_id}-{accept_id}"),
-                    source=merge_id,
+                    id=_unique_id(used_edge_ids, f"e-{terminal_id}-{accept_id}"),
+                    source=terminal_id,
                     target=accept_id,
                     sourcePort="out",
                     targetPort="candidates",
@@ -233,6 +302,117 @@ def _native_first_loop_operations(
         ]
     )
     return operations
+
+
+def _data_operators_for_need(text: str) -> list[dict[str, Any]]:
+    normalized = text.lower()
+    dataflow_compat = "dataflow" in normalized
+    training_data = any(
+        token in normalized
+        for token in ("训练数据", "sft", "instruction", "instruction data", "微调数据")
+    )
+    quality_work = training_data or any(
+        token in normalized
+        for token in (
+            "dataflow",
+            "数据准备",
+            "数据清洗",
+            "清洗",
+            "quality",
+            "filter",
+            "evaluate",
+            "refine",
+            "质量",
+            "过滤",
+            "评估",
+            "筛选",
+        )
+    )
+    if not quality_work:
+        return []
+
+    operators = [
+        {
+            "id": "chunk",
+            "catalogId": "intelligence.data.generate",
+            "operatorId": "data.chunk",
+            "packVersion": "1.0.0",
+            "label": "Chunk Data",
+        },
+        {
+            "id": "clean",
+            "catalogId": "intelligence.data.refine",
+            "operatorId": "text.clean",
+            "packVersion": "1.1.0" if dataflow_compat else "1.0.0",
+            "config": (
+                {
+                    "fields": ["content"],
+                    "operations": [
+                        "removeEmoji",
+                        "htmlUrlRemover",
+                        "removeExtraSpaces",
+                    ],
+                }
+                if dataflow_compat
+                else {}
+            ),
+            "label": "Clean Text",
+        },
+        {
+            "id": "deduplicate",
+            "catalogId": "intelligence.data.filter",
+            "operatorId": "text.deduplicate",
+            "packVersion": "1.1.0" if dataflow_compat else "1.0.0",
+            "config": (
+                {
+                    "fields": ["content"],
+                    "mode": "exact",
+                    "hashFunction": "md5",
+                }
+                if dataflow_compat
+                else {}
+            ),
+            "label": "Deduplicate Text",
+        },
+        {
+            "id": "rule-filter",
+            "catalogId": "intelligence.data.filter",
+            "operatorId": "text.rule-filter",
+            "packVersion": "1.1.0" if dataflow_compat else "1.0.0",
+            "config": (
+                {
+                    "fields": ["content"],
+                    "rules": [
+                        {
+                            "type": "contentNull",
+                            "outputKey": "content_null_filter_label",
+                        }
+                    ],
+                }
+                if dataflow_compat
+                else {}
+            ),
+            "label": "Filter Text Rules",
+        },
+        {
+            "id": "statistics",
+            "catalogId": "intelligence.data.evaluate",
+            "operatorId": "text.statistics",
+            "packVersion": "1.0.0",
+            "label": "Text Statistics",
+        },
+    ]
+    if training_data:
+        operators.append(
+            {
+                "id": "generate",
+                "catalogId": "intelligence.data.generate",
+                "operatorId": "core.generate.instruction-pairs",
+                "packVersion": "1.0.0",
+                "label": "Generate Instruction Pairs",
+            }
+        )
+    return operators
 
 
 def _source_slots_for_need(text: str) -> list[dict[str, Any]]:

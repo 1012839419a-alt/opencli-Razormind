@@ -208,6 +208,10 @@ const CONTRACTS: Record<string, NodeContract> = {
     ],
     ["dedupe key must be explicit"],
   ),
+  "intelligence.data.generate": dataOperatorContract("intelligence.data.generate", "Generate Data"),
+  "intelligence.data.filter": dataOperatorContract("intelligence.data.filter", "Filter Data"),
+  "intelligence.data.evaluate": dataOperatorContract("intelligence.data.evaluate", "Evaluate Data"),
+  "intelligence.data.refine": dataOperatorContract("intelligence.data.refine", "Refine Data"),
   "intelligence.flow.merge": contract(
     "intelligence.flow.merge",
     "Merge",
@@ -625,6 +629,31 @@ function contract(
   assertions: string[],
 ): NodeContract {
   return { id, title, dataModel, ports: [...inputs, ...outputs], params, assertions }
+}
+
+function dataOperatorContract(id: string, title: string): NodeContract {
+  return contract(
+    id,
+    title,
+    "recordCandidate[] -> recordCandidate[]",
+    [port("in", "input", "recordCandidate[]", true, "Consumes record candidates with lineage.")],
+    [port("out", "output", "recordCandidate[]", true, "Emits transformed candidates with lineage.")],
+    [
+      param("operatorId", "params", "string", true, "", {
+        description: "Versioned operator id selected from the backend capability manifest.",
+      }),
+      param("packVersion", "params", "string", true, "", {
+        description: "Pinned operator pack version; persisted workflows never auto-upgrade it.",
+      }),
+      param("config", "params", "object", false, {}, {
+        description: "Operator-specific JSON configuration.",
+      }),
+    ],
+    [
+      "operatorId must resolve to a backend manifest operator of the matching kind",
+      "candidate lineage must survive the operator boundary",
+    ],
+  )
 }
 
 function port(id: string, direction: PortDirection, type: PortDataType, required: boolean, description: string): PortContract {

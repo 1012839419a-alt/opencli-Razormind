@@ -169,9 +169,12 @@ async def draft_demand_workflow(
 async def import_external_runtime_workflow(
     body: workflow_schemas.WorkflowExternalImportRequest,
 ) -> ApiResponse[workflow_schemas.WorkflowPatchResponse]:
-    """Import LangGraph/LangChain graphs as OpenCLI Admin native nodes."""
+    """Import supported external graphs as reviewable OpenCLI Admin native nodes."""
 
-    return ApiResponse.ok(import_external_workflow(body))
+    try:
+        return ApiResponse.ok(import_external_workflow(body))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post(
