@@ -1155,6 +1155,9 @@ async def test_fetch_returns_items_via_mocked_subprocess(channel):
         result = await channel.fetch(ctx)
 
     assert result.items == [{"title": "test"}]
+    # Metadata passthrough matters for opencli specifically (node_url /
+    # chrome_mode reach the runner through FetchResult.metadata).
+    assert result.metadata.get("chrome_mode") == "cdp"
 
 
 @pytest.mark.asyncio
@@ -1279,3 +1282,9 @@ async def test_run_channel_builds_rate_limited_client_for_opencli(
 
     assert result.items == [{"title": "news"}]
     mock_rlc.assert_called_once()
+    from backend.pipeline.http_client import TokenBucket, parse_rate
+
+    bucket = mock_rlc.call_args.args[1]
+    assert isinstance(bucket, TokenBucket)
+    assert bucket.rate == parse_rate(OpenCLIChannel().capabilities.default_rate)
+    assert bucket.rate == parse_rate("60/min")

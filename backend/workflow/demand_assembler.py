@@ -540,11 +540,10 @@ def _catalog_slots_for_need(text: str) -> list[dict[str, Any]]:
 
 
 def _catalog_match_tier(normalized: str, node: Any) -> int | None:
+    # Command names (node.command) repeat across unrelated sites, so a
+    # command-only hit must never claim the exact-site tier.
     site = node.site.lower()
-    command = (node.command or "").lower()
-    if (len(site) >= 2 and site in normalized) or (
-        len(command) >= 2 and command in normalized
-    ):
+    if len(site) >= 2 and site in normalized:
         return 0
     for alias in _CATALOG_SITE_ALIASES.get(site, ()):
         if alias.lower() in normalized:

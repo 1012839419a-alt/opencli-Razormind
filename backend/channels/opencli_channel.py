@@ -17,7 +17,6 @@ import yaml
 from backend.channels.base import (
     AbstractChannel,
     Capabilities,
-    ChannelFetchError,
     ChannelResult,
     FetchContext,
     FetchResult,
@@ -823,8 +822,8 @@ class OpenCLIChannel(AbstractChannel):
 
         ``collect()`` remains the single source of truth for site/command routing
         (direct subprocess vs. LAN-agent HTTP vs. WS-agent dispatch, browser-pool
-        acquisition, CDP tab snapshot/cleanup) — this body is intentionally just
-        the inherited default's, because unlike ``BrowserActChannel`` there is no
+        acquisition, CDP tab snapshot/cleanup) — this override delegates straight
+        to the inherited default, because unlike ``BrowserActChannel`` there is no
         ``ctx.source_id``-driven credential lookup to thread through: opencli has
         no per-source encrypted-credential path (``capabilities.auth_kind`` stays
         "none", so ``run_channel`` resolves ``AuthContext`` without a DB hit).
@@ -839,13 +838,7 @@ class OpenCLIChannel(AbstractChannel):
         runner builds but this channel never reads is one Python object for the
         run's duration, not an open socket.
         """
-        result = await self.collect(ctx.config, ctx.params)
-        if not result.success:
-            raise ChannelFetchError(
-                result.error or f"{self.channel_type} collect failed",
-                error_type=result.error_type,
-            )
-        return FetchResult(items=result.items, metadata=result.metadata)
+        return await AbstractChannel.fetch(self, ctx)
 
     async def validate_config(self, config: dict[str, Any]) -> list[str]:
         errors: list[str] = []
