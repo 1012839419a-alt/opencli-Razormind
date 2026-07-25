@@ -65,7 +65,7 @@ import { getWorkflowNodeCatalog, type WorkflowNodeCatalogItem } from '@/lib/work
 import { localizeNodeText } from '@/lib/workflow/node-i18n'
 import { useWorkflowCapabilities } from '@/lib/workflow/use-workflow-capabilities'
 
-type PluginPageTab = 'installed' | 'marketplace'
+type PluginPageTab = 'installed' | 'capabilities' | 'marketplace'
 type PluginCategoryFilter = 'all' | PluginProviderCategory
 type ProviderState = 'ready' | 'partial' | 'configuration' | 'unavailable' | 'marketplace'
 type RegistryPluginProvider = PluginProvider & {
@@ -110,7 +110,7 @@ const BUNDLED_PROVIDER_ID_BY_KEY: Record<string, string> = {
 }
 
 function isPluginPageTab(value: string | null): value is PluginPageTab {
-  return value === 'installed' || value === 'marketplace'
+  return value === 'installed' || value === 'capabilities' || value === 'marketplace'
 }
 
 function isPluginCategory(value: string | null): value is PluginCategoryFilter {
@@ -168,6 +168,7 @@ function PluginPageTabs({
       <div className="inline-flex min-w-max items-center gap-1 rounded-lg bg-muted p-1">
         {([
           ['installed', '已安装'],
+          ['capabilities', '节点能力'],
           ['marketplace', '探索市场'],
         ] as const).map(([key, label]) => {
           const selected = active === key
@@ -542,19 +543,20 @@ export default function PluginHubPage() {
   }
 
   const availableProviders = useMemo(() => {
-    const source: RegistryPluginProvider[] = activeTab === 'installed'
-      ? installations
-        ? [
-            ...(nodeCatalog?.nodes.length ? [backendNodeCatalogProvider(nodeCatalog)] : []),
-            ...installations.map(backendProviderFromInstallation),
-          ]
-        : pluginError
-          ? PLUGIN_PROVIDERS.filter((provider) => provider.bundled).map((provider) => ({
-              ...provider,
-              backendUnavailable: true,
-            }))
+    const source: RegistryPluginProvider[] = activeTab === 'marketplace'
+      ? PLUGIN_PROVIDERS.filter((provider) => provider.marketplace)
+      : activeTab === 'capabilities'
+        ? nodeCatalog?.nodes.length
+          ? [backendNodeCatalogProvider(nodeCatalog)]
           : []
-      : PLUGIN_PROVIDERS.filter((provider) => provider.marketplace)
+        : installations
+          ? installations.map(backendProviderFromInstallation)
+          : pluginError
+            ? PLUGIN_PROVIDERS.filter((provider) => provider.bundled).map((provider) => ({
+                ...provider,
+                backendUnavailable: true,
+              }))
+            : []
     return source
   }, [activeTab, installations, nodeCatalog, pluginError])
 
@@ -582,8 +584,12 @@ export default function PluginHubPage() {
     : pluginProviderCategoryLabel(activeCategory)
   const sectionTitle = activeTab === 'installed'
     ? `${activeCategoryLabel} · 已安装`
-    : `${activeCategoryLabel} · 市场`
-  const sectionDescription = activeCategory === 'bundle'
+    : activeTab === 'capabilities'
+      ? '节点能力 · 插件中心'
+      : `${activeCategoryLabel} · 市场`
+  const sectionDescription = activeTab === 'capabilities'
+    ? '查看插件注册的节点功能实现、运行绑定、输入输出与依赖状态；Studio 使用同一份后端能力目录。'
+    : activeCategory === 'bundle'
     ? '预制包封装重复流程；打开后可查看包含的能力，并在 Studio 中直接使用。'
     : activeTab === 'installed'
       ? '按 Provider 管理能力、运行状态和配置。具体节点在 Studio 中选择。'
@@ -656,8 +662,8 @@ export default function PluginHubPage() {
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
                 className="min-h-10 pl-9"
-                placeholder="搜索插件"
-                aria-label="搜索插件"
+                placeholder={activeTab === 'capabilities' ? '搜索节点能力或 Provider' : '搜索插件'}
+                aria-label={activeTab === 'capabilities' ? '搜索节点能力或 Provider' : '搜索插件'}
               />
             </div>
           </div>
@@ -681,7 +687,7 @@ export default function PluginHubPage() {
             </div>
           ) : null}
 
-          {nodeCatalog ? (
+          {activeTab === 'capabilities' && nodeCatalog ? (
             <section aria-label="后端节点能力摘要" className="mb-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
               <CapabilityMetric label="节点总数" value={nodeCatalog.summary.total} detail={`${nodeCatalog.categories.length} 个分类`} />
               <CapabilityMetric label="可运行" value={nodeCatalogCounts.runnable} detail="已验证运行绑定" />
@@ -738,7 +744,9 @@ export default function PluginHubPage() {
                 ? pluginError
                   ? '插件注册表不可用'
                   : `${activeCategoryLabel}中没有匹配项`
-                : `${activeCategoryLabel}暂未上架`}
+                : activeTab === 'capabilities'
+                  ? '暂无已登记的节点能力'
+                  : `${activeCategoryLabel}暂未上架`}
               description={query
                 ? '清除搜索词或切换分类后再试。'
                 : '切换到其他分类，或通过“安装插件包”接入本地 Provider。'}
@@ -841,7 +849,13 @@ function backendNodeCatalogProvider(
     description: '后端统一登记的原生、组合、插件与兼容节点；Plugin Center 和 Studio 使用同一份目录。',
     icon: 'puzzle',
     nodeIds: catalog.nodes.map((node) => node.id),
-    tags: ['node', 'capability', 'dify', ...catalog.categories.map((category) => category.label)],
+    tags: [
+      'node',
+      'capability',
+      'dify',
+      ...catalog.categories.map((category) => category.label),
+      ...catalog.nodes.flatMap((node) => [node.id, node.label]),
+    ],
     bundled: true,
     nodeCatalog: true,
   }

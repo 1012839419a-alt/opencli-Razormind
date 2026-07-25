@@ -75,7 +75,6 @@ export default function StudioTemplatesPage() {
               const active = category === item
               return <button key={item} type="button" aria-pressed={active} aria-current={active ? 'true' : undefined} onClick={() => setCategory(item)} className={`flex min-h-11 w-full items-center justify-between rounded-xs px-3 py-2 text-left text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 ${active ? 'bg-foreground text-background' : 'text-muted-foreground hover:bg-muted hover:text-foreground'}`}><span>{item}</span>{item === '全部' ? <span className="font-mono text-3xs">{STUDIO_TEMPLATES.length}</span> : null}</button>
             })}</nav>
-            <Link href={workspaceId ? `/studio/new?workspace=${workspaceId}` : '/studio/new'} className="mt-8 flex min-h-11 items-center gap-2 border-t px-3 pt-4 text-xs text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"><Workflow aria-hidden="true" className="size-3.5" />改用 Agent 创建</Link>
           </aside>
           <section className="min-w-0 flex-1">
             <div className="sticky top-0 z-10 grid min-w-0 gap-3 border-b bg-background/90 p-4 backdrop-blur-xl">

@@ -24,10 +24,7 @@ import type { ToolMode, WorkflowEdge, WorkflowNode } from "@/lib/flow/types"
 import type { WorkflowCapabilitiesResponse } from "@/lib/workflow/capabilities"
 import type { WorkflowNodeCatalogItem } from "@/lib/workflow/node-catalog"
 import type { WorkflowPrimitive } from "@/lib/workflow/node-primitives"
-import type { AgentProposal } from "@/lib/workflow/proposal"
-import type { ProposalFocusTarget } from "@/lib/workflow/proposal-focus"
 import { cn } from "@/lib/utils"
-import { AgentDrawer } from "./agent-drawer"
 import { Collaboration } from "./collaboration"
 import { DrawingLayer } from "./drawing-layer"
 import EditableEdge from "./edges/editable-edge"
@@ -72,18 +69,14 @@ type PrimitiveMenuGroup = {
 }
 
 type WorkflowCanvasSurfaceProps = {
-  acceptProposal: (proposal: AgentProposal) => void
   addDopNodeFromMenu: (item: WorkflowNodeCatalogItem) => void
   addPrimitiveFromMenu: (item: WorkflowPrimitive, itemIndex: number) => void
-  agentDrawerOpen: boolean
-  agentProposal: AgentProposal | undefined
   capabilities: WorkflowCapabilitiesResponse | null | undefined
   compactViewport: boolean
   diveIntoNetwork: (nodeId: string) => void
   dopNodeMenuItems: WorkflowNodeCatalogItem[]
   edges: WorkflowEdge[]
   exitCurrentNetwork: () => void
-  focusProposalOperation: (focus: ProposalFocusTarget) => void
   helperLines: FlowState["helperLines"]
   inspectorOpen: boolean
   isDraw: boolean
@@ -118,11 +111,9 @@ type WorkflowCanvasSurfaceProps = {
   onProfileChange: FlowState["updateWorkflowProfile"]
   primitiveMenuGroups: PrimitiveMenuGroup[]
   projectSettingsOpen: boolean
-  rejectProposal: () => void
   runTraceOpen: boolean
   runRequestId: number
   scissorTrail: CanvasPoint[]
-  setAgentDrawerOpen: (open: boolean) => void
   setNodeManagementOpen: (open: boolean) => void
   settings: CanvasSettings
   settingsOpen: boolean
@@ -326,22 +317,11 @@ export function WorkflowCanvasSurface(props: WorkflowCanvasSurfaceProps) {
 
       {props.workbenchMode ? (
         <WorkflowWorkbenchPanel
-          mode={props.workbenchMode}
           nodes={props.nodes}
           edges={props.edges}
-          onModeChange={props.onChangeWorkbenchMode}
           onClose={() => props.onChangeWorkbenchMode(null)}
         />
       ) : null}
-
-      <AgentDrawer
-        open={props.agentDrawerOpen}
-        proposal={props.agentProposal}
-        onAccept={props.acceptProposal}
-        onReject={props.rejectProposal}
-        onFocusOperation={props.focusProposalOperation}
-        onClose={() => props.setAgentDrawerOpen(false)}
-      />
 
       <WorkflowToast message={props.toast} />
     </div>

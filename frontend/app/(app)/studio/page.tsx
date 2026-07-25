@@ -1,6 +1,6 @@
 'use client'
 
-import { Bot, Building2, ChevronDown, FileText, FileUp, FolderKanban, MessageCircle, Plus, Search, Sparkles, Trash2, Workflow } from 'lucide-react'
+import { Building2, ChevronDown, FileText, FileUp, FolderKanban, MessageCircle, Plus, Search, Sparkles, Trash2, Workflow } from 'lucide-react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { useEffect, useMemo, useRef, useState } from 'react'
@@ -176,7 +176,7 @@ export default function StudioPage() {
         <DropdownMenu>
           <DropdownMenuTrigger render={<Button className="min-h-11" disabled={!workspaceId} />}><Plus className="size-4" />创建<ChevronDown className="size-3.5" /></DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-48">
-            <DropdownMenuItem onClick={() => router.push(`/studio/new?workspace=${workspaceId}`)}><Bot className="size-4" />与 Agent 创建</DropdownMenuItem>
+            <DropdownMenuItem onClick={() => { setCreateTemplate('blank'); setProjectName('未命名项目') }}><Plus className="size-4" />创建空白工作流</DropdownMenuItem>
             <DropdownMenuItem onClick={() => router.push(`/studio/templates?workspace=${workspaceId}`)}>从模板创建</DropdownMenuItem>
             <DropdownMenuItem onClick={() => importInputRef.current?.click()}><FileUp className="size-4" />导入 DSL</DropdownMenuItem>
           </DropdownMenuContent>
@@ -255,11 +255,11 @@ export default function StudioPage() {
       ) : (
         <div className="flex min-h-[420px] items-center justify-center rounded-xl border border-dashed bg-muted/10 px-4">
           <div className="w-full max-w-xl text-center">
-            <div className="mx-auto grid size-11 place-items-center rounded-xl border bg-background"><Bot className="size-5 text-muted-foreground" /></div>
+            <div className="mx-auto grid size-11 place-items-center rounded-xl border bg-background"><FolderKanban className="size-5 text-muted-foreground" /></div>
             <h2 className="mt-4 text-sm font-medium">创建你的第一个项目</h2>
-            <p className="mt-1 text-xs text-muted-foreground">从模板开始、让 Agent 创建，或者导入现有工作流。</p>
+            <p className="mt-1 text-xs text-muted-foreground">创建空白工作流、从模板开始，或者导入现有工作流。Agent 始终在顶部可用。</p>
             <div className="mt-5 grid gap-2 text-left">
-              <CreateChoice title="与 Agent 创建项目" description="描述目标，由 Agent 生成第一版节点工作流。" href={workspaceId ? `/studio/new?workspace=${workspaceId}` : undefined} icon={Bot} />
+              <CreateChoice title="创建空白工作流" description="从需求节点开始，自由添加业务能力。" onClick={workspaceId ? () => { setCreateTemplate('blank'); setProjectName('未命名项目') } : undefined} icon={Plus} />
               <CreateChoice title="从应用模板创建" description="选择预设的数据链路，最快体验 OpenCLI。" href={workspaceId ? `/studio/templates?workspace=${workspaceId}` : undefined} icon={Sparkles} />
               <div className="my-0.5 flex items-center gap-3 text-3xs text-muted-foreground before:h-px before:flex-1 before:bg-border after:h-px after:flex-1 after:bg-border">或</div>
               <CreateChoice title="导入 DSL 文件" description="兼容迁移 Dify、n8n 和 OpenCLI 工作流。" onClick={workspaceId ? () => importInputRef.current?.click() : undefined} icon={FileUp} />

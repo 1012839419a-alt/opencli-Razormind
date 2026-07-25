@@ -21,7 +21,7 @@ test('Next View Transition integration is enabled and stays locally opt-in', asy
 test('persistent application chrome stays outside the routed animation boundary', async () => {
   const shell = await read('components/shell/app-shell.tsx')
   const sidebarIndex = shell.indexOf('<AppSidebar />')
-  const headerIndex = shell.indexOf('<AppHeader ')
+  const headerIndex = shell.indexOf('<AppHeader')
   const transitionIndex = shell.indexOf('<AppRouteTransition>')
 
   assert.ok(sidebarIndex >= 0, 'AppSidebar should remain mounted')
@@ -42,6 +42,7 @@ test('sidebar consolidates tasks, notifications, automation, and agents into cle
     '概览',
     '任务与通知',
     '项目',
+    '插件中心',
     '自动化与 Agent',
     '执行资源',
     '成果与数据',
@@ -105,20 +106,28 @@ test('task and automation sibling routes share their consolidated route tabs', a
   }
 })
 
-test('studio creation choices route through dedicated guided pages', async () => {
-  const [studio, templates, blank] = await Promise.all([
+test('studio uses ordinary creation choices while Agent stays global', async () => {
+  const [studio, templates, shell, header, agentDock] = await Promise.all([
     read('app/(app)/studio/page.tsx'),
     read('app/(app)/studio/templates/page.tsx'),
-    read('app/(app)/studio/new/page.tsx'),
+    read('components/shell/app-shell.tsx'),
+    read('components/shell/app-header.tsx'),
+    read('components/shell/global-agent-dock.tsx'),
   ])
 
   assert.match(studio, /\/studio\/templates\?workspace=/)
-  assert.match(studio, /\/studio\/new\?workspace=/)
+  assert.match(studio, /创建空白工作流/)
+  assert.match(studio, /setCreateTemplate\('blank'\)/)
+  assert.doesNotMatch(studio, /与 Agent 创建/)
+  assert.doesNotMatch(studio, /\/studio\/new\?workspace=/)
   assert.match(templates, /搜索模板、节点或用途/)
   assert.match(templates, /可复用的执行链路/)
-  assert.match(blank, /OpenCLI 项目 Agent/)
-  assert.match(blank, /Agent 工作流方案/)
-  assert.match(blank, /guide=blank/)
+  assert.doesNotMatch(templates, /改用 Agent 创建/)
+  assert.match(shell, /<GlobalAgentDock open=\{agentOpen\}/)
+  assert.match(header, /打开全局 Agent/)
+  assert.match(agentDock, /当前上下文/)
+  assert.match(agentDock, /\/chat\/confirm/)
+  assert.match(agentDock, /queryClient\.invalidateQueries/)
 })
 
 test('SSGOI boundary is pathname-keyed, interruptible, and reduced-motion safe', async () => {

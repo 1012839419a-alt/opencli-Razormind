@@ -1,21 +1,16 @@
 "use client"
 
-import { memo, useEffect, useState, type MouseEvent as ReactMouseEvent } from "react"
+import { memo, useEffect } from "react"
 import { Handle, Position, useStore, useUpdateNodeInternals, type NodeProps } from "@xyflow/react"
-import { Loader2, Wand2 } from "lucide-react"
 import type { WorkflowNode as WorkflowNodeType } from "@/lib/flow/types"
-import { getApiAuthToken } from "@/lib/api/auth-token"
 import { useFlowStore } from "@/lib/flow/store"
 import { useSettingsStore } from "@/lib/flow/settings-store"
-import { draftWorkflowDemand } from "@/lib/workflow/backend-demand-draft"
-import { COLLECTION_NEED_CATALOG_ID } from "@/lib/workflow/node-catalog"
 import { getNodeDisplayId, localizeNodeText, type WorkflowLanguage } from "@/lib/workflow/node-i18n"
 import { getNodeVisualSignature } from "@/lib/workflow/node-visuals"
 import { runtimeStatusLabel, runtimeStatusTone } from "@/lib/workflow/capabilities"
 import { buildCanonicalNodeViewContract } from "@/lib/workflow/canonical-node-contract"
 import { findWorkflowProjectNodeByCanvasId } from "@/lib/workflow/node-path"
 import { businessNodeName } from "@/lib/workflow/business-node-experience"
-import type { AgentProposal } from "@/lib/workflow/proposal"
 import type {
   WorkflowCapability,
   WorkflowNodeKind,
@@ -257,56 +252,6 @@ function implementationParams(node: WorkflowProjectNode | undefined): Record<str
   return implementation?.params
 }
 
-function isCollectionNeedData(data: WorkflowNodeType["data"]): boolean {
-  const canonical = readCanonical(data)
-  if (canonical?.catalogId === COLLECTION_NEED_CATALOG_ID) return true
-  if (canonical?.kind !== "schedule" || canonical.capability !== "trigger") return false
-  if (canonical.params?.mode === "demand-draft") return true
-  return hasNeedShape(canonical?.params) && !hasScheduleShape(canonical?.params)
-}
-
-function hasNeedShape(params: Record<string, unknown> | undefined): boolean {
-  return typeof params?.text === "string" || typeof params?.locale === "string"
-}
-
-function hasScheduleShape(params: Record<string, unknown> | undefined): boolean {
-  return typeof params?.interval === "string" || typeof params?.timezone === "string"
-}
-
-function stringParam(params: Record<string, unknown> | undefined, key: string, fallback = "") {
-  const value = params?.[key]
-  return typeof value === "string" ? value : fallback
-}
-
-function withDemandNodeUpdate(
-  proposal: AgentProposal,
-  nodeId: string,
-  text: string,
-  locale: string,
-): AgentProposal {
-  return {
-    ...proposal,
-    title: `Assemble from Collection Need: ${text.slice(0, 36)}`,
-    validationEvidence: [
-      {
-        id: "collection-need-node-input",
-        label: "Collection Need node input",
-        passed: true,
-        details: "User demand is captured on the Canvas node; runtime resources remain implicit.",
-      },
-      ...proposal.validationEvidence,
-    ],
-    operations: [
-      {
-        type: "updateNodeParams",
-        nodeId,
-        params: { text, locale, mode: "demand-draft" },
-      },
-      ...proposal.operations,
-    ],
-  }
-}
-
 function MiniNetworkPreview({ data }: { data: WorkflowNodeType["data"] }) {
   const miniNetwork = data.miniNetwork
   if (!miniNetwork || typeof miniNetwork !== "object") return null
@@ -344,8 +289,6 @@ function WorkflowNodeComponent({ id, data, selected }: NodeProps<WorkflowNodeTyp
   const internalDraft = data.internalDraft === true
   const workflowProject = useFlowStore((s) => s.workflowProject)
   const networkStackLength = useFlowStore((s) => s.networkStack.length)
-  const updateWorkflowNodeParams = useFlowStore((s) => s.updateWorkflowNodeParams)
-  const queueAgentProposal = useFlowStore((s) => s.queueAgentProposal)
   const contextualZoom = useSettingsStore((s) => s.contextualZoom)
   const language = useSettingsStore((s) => s.language)
   const zoom = useStore((s) => s.transform[2])
@@ -355,17 +298,6 @@ function WorkflowNodeComponent({ id, data, selected }: NodeProps<WorkflowNodeTyp
   const nodeViewContract = buildCanonicalNodeViewContract(projectNode, data, id)
   const isBusinessLevel = networkStackLength === 0
   const displayId = getNodeDisplayId(data)
-  const isCollectionNeed = displayId === COLLECTION_NEED_CATALOG_ID || isCollectionNeedData(data)
-  const demandParams = canonical?.params
-  const demandTextValue = stringParam(demandParams, "text", "抓小红书热帖")
-  const demandLocale = stringParam(demandParams, "locale", "zh-CN")
-  const [draftText, setDraftText] = useState(demandTextValue)
-  const [draftStatus, setDraftStatus] = useState<"idle" | "running" | "error">("idle")
-  const [draftError, setDraftError] = useState<string | null>(null)
-
-  useEffect(() => {
-    setDraftText(demandTextValue)
-  }, [demandTextValue])
   // Contextual Zoom: <0.5 = icon only, 0.5-1 = compact, >1 = full
   const detail: "low" | "mid" | "high" = !contextualZoom
     ? "high"
@@ -454,41 +386,6 @@ function WorkflowNodeComponent({ id, data, selected }: NodeProps<WorkflowNodeTyp
     inputs.length === 1
       ? { left: "50%" }
       : { left: `${((i + 1) / (inputs.length + 1)) * 100}%` }
-
-  const assembleCollectionNeed = async (event: ReactMouseEvent<HTMLButtonElement>) => {
-    event.preventDefault()
-    event.stopPropagation()
-    const text = draftText.trim()
-    if (!text) {
-      setDraftStatus("error")
-      setDraftError("Need is required")
-      return
-    }
-
-    setDraftStatus("running")
-    setDraftError(null)
-    const locale = demandLocale || "zh-CN"
-    const projectForDraft = {
-      ...workflowProject,
-      nodes: workflowProject.nodes.map((node) =>
-        node.id === id
-          ? { ...node, params: { ...node.params, text, locale, mode: "demand-draft" } }
-          : node,
-      ),
-    }
-
-    try {
-      updateWorkflowNodeParams(id, { text, locale, mode: "demand-draft" })
-      const token = getApiAuthToken()
-      const authorization = token ? `Bearer ${token}` : null
-      const proposal = await draftWorkflowDemand(projectForDraft, text, { authorization, locale })
-      queueAgentProposal(withDemandNodeUpdate(proposal, id, text, locale))
-      setDraftStatus("idle")
-    } catch (error) {
-      setDraftStatus("error")
-      setDraftError(error instanceof Error ? error.message : "Demand assembly failed")
-    }
-  }
 
   if (detail === "low") {
     return (
@@ -585,26 +482,6 @@ function WorkflowNodeComponent({ id, data, selected }: NodeProps<WorkflowNodeTyp
             <code className="mt-1 block truncate font-mono text-[10px] leading-tight text-muted-foreground">
               {summary}
             </code>
-          ) : null}
-
-          {detail === "high" && isCollectionNeed && !prefersCustomLabel ? (
-            <div className="nodrag nopan mt-2 space-y-1.5" onPointerDown={(event) => event.stopPropagation()}>
-              <div className="rounded-[3px] border border-border/70 bg-background/45 px-2 py-1.5">
-                <p className="line-clamp-2 font-mono text-[10px] leading-snug text-foreground">{draftText}</p>
-              </div>
-              <button
-                type="button"
-                onClick={assembleCollectionNeed}
-                disabled={draftStatus === "running"}
-                className="flex h-6 w-full items-center justify-center gap-1.5 rounded-[3px] border border-border bg-background/80 font-mono text-[9px] uppercase tracking-[0.08em] text-foreground transition-colors hover:border-foreground/40 hover:bg-accent disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {draftStatus === "running" ? <Loader2 className="size-3 animate-spin" /> : <Wand2 className="size-3" />}
-                Assemble
-              </button>
-              {draftError ? (
-                <p className="line-clamp-2 font-mono text-[9px] leading-snug text-destructive">{draftError}</p>
-              ) : null}
-            </div>
           ) : null}
 
           {detail === "high" && mapBadges.length > 0 ? (

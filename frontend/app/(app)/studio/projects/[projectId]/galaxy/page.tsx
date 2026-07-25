@@ -4,7 +4,7 @@ import { use } from 'react'
 
 import { ProjectGraphExplorer } from '@/components/records/project-graph-explorer'
 
-export default function ProjectEvidencePage({
+export default function ProjectGalaxyPage({
   params,
 }: {
   params: Promise<{ projectId: string }>

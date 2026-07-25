@@ -910,14 +910,16 @@ test('EvidenceBatch workbench consumes projection, list, selection, and detail s
 })
 
 test('backend Preview traces OpenCLI HDA only when the workflow contains that package', async () => {
-  const panel = await readSource('components/flow/run-trace-panel.tsx')
+  const [panel, helper] = await Promise.all([
+    readSource('components/flow/run-trace-panel.tsx'),
+    readSource('lib/workflow/backend-opencli-hda-trace.ts'),
+  ])
   const preview = sourceSection(panel, 'const runBackendPreview = async () => {', 'const resetRun = () => {')
 
   assert.match(preview, /const openCLIPackageNodeId = findOpenCLIHDAWorkflowPackageNodeId\(workflowProject\)/)
   assert.match(preview, /compile\.valid && openCLIPackageNodeId/)
   assert.match(preview, /traceOpenCLIHDAWorkflow\(workflowProject, \{[\s\S]*packageNodeId: openCLIPackageNodeId/)
-  assert.match(panel, /value === "package\.opencli\.multi-source-hda"/)
-  assert.match(panel, /value === "opencli-multi-source"/)
+  assert.match(helper, /params\?\.template === "opencli-multi-source"/)
 })
 
 test('L2-L4 network edits persist in the canonical workflow graph across scope re-entry', async () => {

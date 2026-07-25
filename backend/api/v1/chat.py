@@ -1,6 +1,6 @@
-"""Agent 对话坞后端端点.
+"""全局 Agent 对话坞后端端点.
 
-采集网络 (`/labs/topology`) 的改动入口。用户用自然语言说话, agent (复用已有
+应用 Shell 的统一操作入口。用户用自然语言说话, agent (复用已有
 provider/模型网关 + OpenAI tool-calling) 决定调工具:
 
   - 只读工具 (list_sources) 直接执行, 喂回结果让 agent 继续推理。
@@ -35,8 +35,8 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 
 MAX_TOOL_STEPS = 5
 
-SYSTEM_PROMPT = """你是 opencli-admin「采集网络」控制台的助手。用户在看一张只读的采集拓扑图\
-(采集项目→计划→任务→处理器→记录→通知)。你的职责: 帮用户看懂采集逻辑, 并按用户意图改动后端配置。
+SYSTEM_PROMPT = """你是 opencli-admin 的全局操作助手。用户可能位于任意产品页面。\
+你的职责: 根据当前页面和对象上下文解释系统状态，并在已有工具覆盖范围内按用户意图查询或修改后端配置。
 
 规则:
 - 需要知道有哪些数据源时, 调 list_sources。
@@ -154,7 +154,7 @@ class ChatMessage(BaseModel):
 class ChatRequest(BaseModel):
     messages: list[ChatMessage]
     provider_id: Optional[str] = None
-    # 选中的画布节点上下文 (kind/id/title), 注入给 agent 当指代背景
+    # 当前页面、项目或选中对象上下文，注入给 agent 当指代背景
     context: Optional[dict[str, Any]] = None
 
 
@@ -353,7 +353,7 @@ async def chat(body: ChatRequest, db: AsyncSession = Depends(get_db)) -> ApiResp
 
     system = SYSTEM_PROMPT
     if body.context:
-        system += f"\n\n当前用户选中的画布节点上下文 (JSON): {json.dumps(body.context, ensure_ascii=False)}"
+        system += f"\n\n当前用户操作上下文 (JSON): {json.dumps(body.context, ensure_ascii=False)}"
 
     if _is_xml_tool_model(model):
         return await _chat_xml(client, model, system, body, db)

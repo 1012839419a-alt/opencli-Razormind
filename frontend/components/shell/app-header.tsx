@@ -1,7 +1,7 @@
 'use client'
 
 import Link from 'next/link'
-import { LogOut, Search } from 'lucide-react'
+import { Bot, LogOut, Search } from 'lucide-react'
 import { usePathname, useRouter } from 'next/navigation'
 import { Fragment } from 'react'
 
@@ -38,7 +38,13 @@ function resolveLabels(pathname: string): string[] {
   const match = Object.keys(ROUTE_LABELS).find((href) => pathname.startsWith(`${href}/`))
   return match ? [ROUTE_LABELS[match]] : []
 }
-export function AppHeader({ onOpenCommand }: { onOpenCommand?: () => void }) {
+export function AppHeader({
+  onOpenAgent,
+  onOpenCommand,
+}: {
+  onOpenAgent?: () => void
+  onOpenCommand?: () => void
+}) {
   const pathname = usePathname()
   const router = useRouter()
   const { identity, signOut } = useAuth()
@@ -72,6 +78,24 @@ export function AppHeader({ onOpenCommand }: { onOpenCommand?: () => void }) {
       </Breadcrumb>
 
       <div className="ml-auto flex items-center gap-1.5">
+        <Button
+          variant="outline"
+          size="sm"
+          className="hidden gap-2 sm:flex"
+          onClick={onOpenAgent}
+        >
+          <Bot />
+          <span>Agent</span>
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="sm:hidden"
+          aria-label="打开全局 Agent"
+          onClick={onOpenAgent}
+        >
+          <Bot />
+        </Button>
         <Button
           variant="outline"
           size="sm"

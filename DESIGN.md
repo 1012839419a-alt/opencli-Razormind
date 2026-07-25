@@ -3,8 +3,8 @@
 ## Source of truth
 
 - Status: Active
-- Last refreshed: 2026-07-23
-- Primary product surfaces: 概览、任务与通知、项目、工作流编排、项目数据工作台、逻辑与证据、插件中心、自动化与 Agent、成果与数据、执行资源、模型与连接。
+- Last refreshed: 2026-07-25
+- Primary product surfaces: 概览、任务与通知、项目、工作流编排、项目数据工作台、3D 逻辑与证据、插件中心、自动化与 Agent、成果与数据、执行资源、模型与连接。
 - Authority order:
   1. 本文档定义产品体验、信息架构和交互决策。
   2. `docs/DESIGN_SYSTEM.md` 定义锁定的视觉 token、组件纪律和动效约束。
@@ -86,8 +86,11 @@
   - `/studio`: 项目与工作流入口，管理业务上下文和版本生命周期。
   - `/studio/workflow`: 可执行数据流/控制流编排；默认展示业务级 Operator/Package 节点。
   - `/studio/projects/[projectId]/data`: 项目数据工作台；以数据集、字段剖析和文件处理三个渐进视图检查工作流真实产物。
-  - `/studio/projects/[projectId]/evidence`: 逻辑与证据；以运行轨迹、决策图和证据关系三个视图解释项目结果与来源链路。
-  - `/plugins`: 能力发现、安装、升级、权限、连接、健康和可用节点说明。
+  - `/studio/projects/[projectId]/evidence`: 逻辑与证据的主入口，默认使用 Obsidian Graph View 式 3D Galaxy 探索项目、工作流、运行、来源、记录和实体关系。
+  - `/studio/projects/[projectId]/relationships`: 适合精确追踪双向证据链的 2D 力导向关系图。
+  - `/studio/projects/[projectId]/galaxy`: 3D Galaxy 的显式深链，与 `/evidence` 使用同一项目证据图契约。
+  - `/plugins`: 能力发现、安装、升级、权限、连接、健康和节点能力说明；节点实现与预设只作为插件中心内的 Capability Catalog 投影，不再称为“因子”或设立独立一级入口。
+  - `/factors`: 仅保留兼容重定向，进入 `/plugins?tab=capabilities`。
   - `/sources`、`/schedules`、`/agents`、`/skills`: 自动化资源与 Agent 配置，不作为画布节点本体。
   - `/inbox`、`/tasks`、`/notifications`: 待处理工作、运行异常和通知。
   - `/records`: 被准入并持久化的成果数据。
@@ -166,6 +169,9 @@
   - `frontend/components/shell/*` 的 AppShell、AppSidebar、AppHeader、CommandPalette 和数据状态组件。
   - `frontend/components/flow/*` 的 WorkflowCanvasSurface、WorkflowNode、CommandPalette、Inspector、RunTracePanel、PanelShell、SectionCaption。
 - New/changed components:
+  - Plugin node capabilities：插件中心内的“节点能力”页签复用 Studio 的同一份后端 Capability Catalog，展示 Provider、运行绑定、端口、依赖和可用状态；不得在页面硬编码第二份节点清单。
+  - Project graph explorer：`ProjectGraphExplorer` 统一 2D 证据关系与 3D Galaxy 的查询、搜索、选中和检查器；`ProjectGalaxyForceGraph` 承载 Obsidian Graph View 式空间探索、相机聚焦、质量档位和生命周期清理。
+  - Global Agent Dock：由 AppShell 持有会话，在所有产品页面从固定 Header 入口打开；当前路由和查询上下文随消息发送。读取动作可直接执行，所有写动作继续使用 proposal → diff → 人工确认，不再把“与 Agent 创建”作为独立创建模式。
   - Canvas context action menu：右键不再直接展开节点全集，也不在菜单内嵌 DOP/primitive 多级目录。空白画布和节点都先提供短动作菜单：`添加节点`、`添加注释`、`测试运行`、`导入应用`；节点右键再以“当前节点”分组提供进入内部网络、选择流程分支、参数与节点信息。
   - Node picker：由原来的“⌘K + 所有操作/节点混排”改为渐进式目录，顶部固定 `节点 / 工具 / 开始` 三个入口和当前入口专属搜索。`节点` 按业务/逻辑/数据/输出等真实 catalog 分类展示，`工具` 聚合 OpenCLI、插件与运行工具并提供来源筛选，`开始` 承载 AI 生成、导入应用和画布起始动作；目录项仍只消费后端能力投影与现有节点定义。
   - Context-to-picker placement：右键位置只决定新节点落点；选择器自身保持居中、可滚动且不随画布边缘裁切。通过顶部“添加节点”打开时，落点为当前视口中心。

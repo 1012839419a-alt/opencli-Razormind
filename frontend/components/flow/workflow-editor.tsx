@@ -31,7 +31,6 @@ import {
   type ShakeState,
 } from "./workflow-canvas-interactions"
 import { useWorkflowNodeMenuActions, type NodeMenuState } from "./workflow-node-menu-actions"
-import { useWorkflowAgentProposal } from "./workflow-agent-proposal"
 import { selectEditorCanvasState } from "./workflow-editor-selectors"
 import { WorkflowCanvasSurface } from "./workflow-canvas-surface"
 import type { WorkflowWorkbenchMode } from "./workflow-workbench-panel"
@@ -63,8 +62,6 @@ function EditorCanvas({
     attachToParent,
     autoLayout,
     clearHelperLines,
-    clearPendingAgentProposal,
-    clearProposalFocus,
     copy,
     cut,
     deleteSelected,
@@ -74,10 +71,8 @@ function EditorCanvas({
     edges,
     enterNodeNetwork,
     exitNodeNetwork,
-    focusProposalTargets,
     groupSelection,
     helperLines,
-    importWorkflowProject,
     lockNodeInternals,
     networkStack,
     nodes,
@@ -85,7 +80,6 @@ function EditorCanvas({
     onEdgesChange,
     onNodesChange,
     paste,
-    pendingAgentProposal,
     redo,
     removeEdgesByIds,
     resizeGroupToFit,
@@ -120,7 +114,6 @@ function EditorCanvas({
   const [projectSettingsOpen, setProjectSettingsOpen] = useState(false)
   const [runTraceOpen, setRunTraceOpen] = useState(false)
   const [runRequestId, setRunRequestId] = useState(0)
-  const [agentDrawerOpen, setAgentDrawerOpen] = useState(false)
   const [nodeManagementOpen, setNodeManagementOpen] = useState(false)
   const [workbenchMode, setWorkbenchMode] = useState<WorkflowWorkbenchMode | null>(null)
   const [zoom, setZoom] = useState(1)
@@ -314,17 +307,6 @@ function EditorCanvas({
   const isScissors = toolMode === "scissors"
   const networkLocked = isNetworkLocked(networkStack, nodes)
   const exitCurrentNetwork = useExitCurrentNetwork({ exitNodeNetwork, fitView, showToast })
-  const { acceptProposal, agentProposal, focusProposalOperation, rejectProposal } = useWorkflowAgentProposal({
-    clearPendingAgentProposal,
-    clearProposalFocus,
-    fitView,
-    focusProposalTargets,
-    importWorkflowProject,
-    pendingAgentProposal,
-    setAgentDrawerOpen,
-    showToast,
-  })
-
   const onCanvasMouseMove = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
     mousePos.current = { x: event.clientX, y: event.clientY }
   }, [])
@@ -356,8 +338,6 @@ function EditorCanvas({
         onToggleProjectSettings={() => setProjectSettingsOpen((v) => !v)}
         runTraceOpen={runTraceOpen}
         onToggleRunTrace={() => setRunTraceOpen((v) => !v)}
-        agentDrawerOpen={agentDrawerOpen}
-        onToggleAgentDrawer={() => setAgentDrawerOpen((v) => !v)}
         nodeManagementOpen={nodeManagementOpen}
         onToggleNodeManagement={() => setNodeManagementOpen((v) => !v)}
         workbenchMode={workbenchMode}
@@ -365,18 +345,14 @@ function EditorCanvas({
       />
       <div className="flex min-h-0 flex-1">
         <WorkflowCanvasSurface
-          acceptProposal={acceptProposal}
           addDopNodeFromMenu={addDopNodeFromMenu}
           addPrimitiveFromMenu={addPrimitiveFromMenu}
-          agentDrawerOpen={agentDrawerOpen}
-          agentProposal={agentProposal}
           capabilities={capabilities}
           compactViewport={compactViewport}
           diveIntoNetwork={diveIntoNetwork}
           dopNodeMenuItems={dopNodeMenuItems}
           edges={edges}
           exitCurrentNetwork={exitCurrentNetwork}
-          focusProposalOperation={focusProposalOperation}
           helperLines={helperLines}
           inspectorOpen={inspectorOpen}
           isDraw={isDraw}
@@ -411,11 +387,9 @@ function EditorCanvas({
           onProfileChange={updateWorkflowProfile}
           primitiveMenuGroups={primitiveMenuGroups}
           projectSettingsOpen={projectSettingsOpen}
-          rejectProposal={rejectProposal}
           runTraceOpen={runTraceOpen}
           runRequestId={runRequestId}
           scissorTrail={scissorTrail}
-          setAgentDrawerOpen={setAgentDrawerOpen}
           setNodeManagementOpen={setNodeManagementOpen}
           settings={settings}
           settingsOpen={settingsOpen}

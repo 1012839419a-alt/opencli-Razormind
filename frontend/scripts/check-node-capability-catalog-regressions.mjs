@@ -161,3 +161,23 @@ test('Plugin Center and Studio consume the same backend catalog projection', asy
   assert.match(palette, /workflowCatalogIsBackendNode/)
   assert.match(palette, /插件与后端工具/)
 })
+
+test('node capabilities live inside Plugin Center and legacy factor links redirect there', async () => {
+  const [plugins, legacyPage, navigation] = await Promise.all([
+    readFrontendSource('app/(app)/plugins/page.tsx'),
+    readFrontendSource('app/(app)/factors/page.tsx'),
+    readFrontendSource('lib/navigation.ts'),
+  ])
+
+  assert.match(plugins, /\['capabilities', '节点能力'\]/)
+  assert.match(plugins, /nodeCatalog\?\.nodes\.length/)
+  assert.match(plugins, /提供的工作流能力/)
+  assert.match(plugins, /activeTab === 'capabilities' && nodeCatalog/)
+  assert.doesNotMatch(
+    plugins,
+    /\.\.\.\(nodeCatalog\?\.nodes\.length \? \[backendNodeCatalogProvider\(nodeCatalog\)\]/,
+  )
+  assert.match(legacyPage, /redirect\('\/plugins\?tab=capabilities'\)/)
+  assert.doesNotMatch(navigation, /\/factors|因子库/)
+  assert.doesNotMatch(plugins, /市场动量|收益率|量化因子/)
+})

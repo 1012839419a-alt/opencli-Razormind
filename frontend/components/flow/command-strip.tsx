@@ -21,9 +21,7 @@ import {
   Settings,
   SlidersHorizontal,
   Play,
-  Bot,
   BrainCircuit,
-  Database,
   ListTree,
   Magnet,
   Scissors,
@@ -115,8 +113,6 @@ export function CommandStrip({
   onToggleProjectSettings,
   runTraceOpen,
   onToggleRunTrace,
-  agentDrawerOpen,
-  onToggleAgentDrawer,
   nodeManagementOpen,
   onToggleNodeManagement,
   workbenchMode,
@@ -134,8 +130,6 @@ export function CommandStrip({
   onToggleProjectSettings?: () => void
   runTraceOpen?: boolean
   onToggleRunTrace?: () => void
-  agentDrawerOpen?: boolean
-  onToggleAgentDrawer?: () => void
   nodeManagementOpen?: boolean
   onToggleNodeManagement?: () => void
   workbenchMode?: WorkflowWorkbenchMode | null
@@ -379,7 +373,6 @@ export function CommandStrip({
 
       <div className="hidden shrink-0 items-center rounded-lg border bg-card/60 p-1 xl:flex" aria-label="画布工作视图">
         <button type="button" aria-pressed={!workbenchMode} onClick={() => onChangeWorkbenchMode?.(null)} className={cn("min-h-8 rounded-md px-2.5 text-[11px] transition-colors", !workbenchMode ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground")}>编排</button>
-        <button type="button" aria-pressed={workbenchMode === "data"} onClick={() => onChangeWorkbenchMode?.("data")} className={cn("flex min-h-8 items-center gap-1.5 rounded-md px-2.5 text-[11px] transition-colors", workbenchMode === "data" ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground")}><Database className="size-3.5" />数据</button>
         <button type="button" aria-pressed={workbenchMode === "evidence"} onClick={() => onChangeWorkbenchMode?.("evidence")} className={cn("flex min-h-8 items-center gap-1.5 rounded-md px-2.5 text-[11px] transition-colors", workbenchMode === "evidence" ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground")}><BrainCircuit className="size-3.5" />证据</button>
       </div>
 
@@ -503,10 +496,6 @@ export function CommandStrip({
                 <Play className="size-3.5" />
                 {runTraceOpen ? "关闭运行记录" : "运行记录与结果"}
               </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => onChangeWorkbenchMode?.(workbenchMode === "data" ? null : "data")}>
-                <Database className="size-3.5" />
-                {workbenchMode === "data" ? "关闭节点数据工作台" : "节点数据工作台"}
-              </DropdownMenuItem>
               <DropdownMenuItem onClick={() => onChangeWorkbenchMode?.(workbenchMode === "evidence" ? null : "evidence")}>
                 <BrainCircuit className="size-3.5" />
                 {workbenchMode === "evidence" ? "关闭逻辑证据工作台" : "逻辑证据工作台"}
@@ -514,10 +503,6 @@ export function CommandStrip({
               <DropdownMenuItem onClick={onToggleProjectSettings}>
                 <SlidersHorizontal className="size-3.5" />
                 {projectSettingsOpen ? "关闭工作流设置" : "工作流设置"}
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={onToggleAgentDrawer}>
-                <Bot className="size-3.5" />
-                {agentDrawerOpen ? "关闭 AI 修改建议" : "AI 修改建议"}
               </DropdownMenuItem>
               <DropdownMenuItem onClick={onToggleNodeManagement}>
                 <ListTree className="size-3.5" />

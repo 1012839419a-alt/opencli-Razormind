@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react"
 import Link from "next/link"
-import { AlertTriangle, Bot, CheckCircle2, Database, ExternalLink, Loader2, Plus, PlugZap, Trash2 } from "lucide-react"
+import { AlertTriangle, Database, ExternalLink, Plus, PlugZap, Trash2 } from "lucide-react"
 import { useFlowStore } from "@/lib/flow/store"
 import { useSources } from "@/lib/api/hooks"
 import type {
@@ -30,7 +30,6 @@ import { blockedActionViewForRuntime } from "@/lib/workflow/capabilities"
 import { businessNodeName } from "@/lib/workflow/business-node-experience"
 import { buildCanonicalNodeViewContract } from "@/lib/workflow/canonical-node-contract"
 import { findWorkflowProjectNodeByCanvasId } from "@/lib/workflow/node-path"
-import { requestWorkflowNodeEditDraft, type WorkflowNodeEditDraft } from "@/lib/workflow/node-edit-draft"
 import {
   isOpenCLISourceSlotArray,
   type OpenCLISourceSlot,
@@ -92,12 +91,6 @@ const houdiniDetailsClass = "overflow-hidden rounded-[3px] border border-[#20242
 const houdiniSummaryClass =
   "flex cursor-pointer list-none items-center justify-between gap-3 bg-[#171a1f] px-3 py-2 font-mono text-[10px] uppercase tracking-[0.16em] text-muted-foreground transition-colors hover:text-foreground"
 
-type NodeAiEditState =
-  | { status: "idle"; result: null; error: null }
-  | { status: "loading"; result: null; error: null }
-  | { status: "ready"; result: WorkflowNodeEditDraft; error: null }
-  | { status: "error"; result: null; error: string }
-
 type ProjectNodeWithIdentity = {
   params: Record<string, unknown>
   ui?: Record<string, unknown>
@@ -149,24 +142,14 @@ export function Inspector() {
   const toggleEdgeAnimated = useFlowStore((s) => s.toggleEdgeAnimated)
   const updateWorkflowNodeParams = useFlowStore((s) => s.updateWorkflowNodeParams)
   const updateParameterInterfaceField = useFlowStore((s) => s.updateParameterInterfaceField)
-  const importWorkflowProject = useFlowStore((s) => s.importWorkflowProject)
   const takeSnapshot = useFlowStore((s) => s.takeSnapshot)
   const setNodes = useFlowStore((s) => s.setNodes)
   const onEdgesChange = useFlowStore((s) => s.onEdgesChange)
   const [nodeTab, setNodeTab] = useState<"config" | "prompt" | "run" | "trace">("config")
   const [parameterGroupTab, setParameterGroupTab] = useState("")
-  const [aiEditMessage, setAiEditMessage] = useState("")
-  const [aiEditState, setAiEditState] = useState<NodeAiEditState>({ status: "idle", result: null, error: null })
 
   const selected = nodes.filter((n) => n.selected)
   const selectedEdges = edges.filter((e) => e.selected)
-  const selectedNodeId = selected.length === 1 ? selected[0].id : null
-
-  useEffect(() => {
-    setAiEditMessage("")
-    setAiEditState({ status: "idle", result: null, error: null })
-  }, [selectedNodeId])
-
   const deselectAll = () => {
     setNodes((ns) => ns.map((n) => (n.selected ? { ...n, selected: false } : n)))
     onEdgesChange(edges.filter((e) => e.selected).map((e) => ({ id: e.id, type: "select" as const, selected: false })))
@@ -657,24 +640,6 @@ export function Inspector() {
     : parameterGroups[0]?.id
   const activeParameterFields = parameterInterfaceView?.fields.filter((field) => field.groupId === activeParameterGroupId) ?? []
   const blockedAction = blockedActionViewForRuntime(data)
-  const requestAiEdit = async () => {
-    const message = aiEditMessage.trim()
-    if (!message) return
-    setAiEditState({ status: "loading", result: null, error: null })
-    try {
-      const result = await requestWorkflowNodeEditDraft(workflowProject, node.id.replaceAll("__", "::"), message)
-      setAiEditState({ status: "ready", result, error: null })
-    } catch (error) {
-      setAiEditState({ status: "error", result: null, error: error instanceof Error ? error.message : "节点 AI 编辑失败" })
-    }
-  }
-  const applyAiEdit = () => {
-    const project = aiEditState.status === "ready" ? aiEditState.result.patch?.project : null
-    if (!project) return
-    importWorkflowProject(project)
-    setAiEditState({ status: "idle", result: null, error: null })
-    setAiEditMessage("")
-  }
   const openCLISources = isOpenCLISourceSlotArray(configurationNode?.params.sources)
     ? configurationNode.params.sources
     : undefined
@@ -764,43 +729,6 @@ export function Inspector() {
           </div>
         ) : (
           <>
-        <section className="overflow-hidden rounded-[3px] border border-[#2f4055] bg-[#0b121c]" aria-label="与 AI 对话编辑节点">
-          <div className="flex items-center gap-2 border-b border-[#26394d] bg-[#101b29] px-3 py-2">
-            <Bot className="size-3.5 text-[#a0c3ec]" />
-            <SectionCaption>与 AI 对话编辑此节点</SectionCaption>
-          </div>
-          <div className="space-y-2.5 p-3">
-            <p className="text-[11px] leading-relaxed text-muted-foreground">基于已绑定的对话模型生成参数变更提案；不会自动保存，需先审阅再应用。</p>
-            <Textarea
-              value={aiEditMessage}
-              onChange={(event) => setAiEditMessage(event.target.value)}
-              rows={3}
-              placeholder="例如：把最大条数改为 50，并保留来源引用"
-              className={houdiniTextareaClass}
-              aria-label="告诉 AI 如何编辑当前节点"
-            />
-            <Button type="button" size="sm" className="w-full" onClick={() => void requestAiEdit()} disabled={!aiEditMessage.trim() || aiEditState.status === "loading"}>
-              {aiEditState.status === "loading" ? <Loader2 className="size-3.5 animate-spin" /> : <Bot className="size-3.5" />}
-              生成编辑提案
-            </Button>
-            {aiEditState.status === "error" ? <p className="text-[11px] leading-relaxed text-destructive">{aiEditState.error}</p> : null}
-            {aiEditState.status === "ready" ? (
-              <div className="space-y-2 rounded-[2px] border border-[#314864] bg-[#0a1018] p-2.5">
-                <p className="text-[11px] leading-relaxed text-foreground">{aiEditState.result.reply}</p>
-                {aiEditState.result.patch?.patch.operations.length ? (
-                  <>
-                    <p className="font-mono text-[10px] text-muted-foreground">{aiEditState.result.patch.patch.operations.length} 项参数变更 · {aiEditState.result.patch.valid ? "已通过校验" : "未通过校验"}</p>
-                    {aiEditState.result.patch.valid && aiEditState.result.patch.project ? (
-                      <Button type="button" size="sm" variant="outline" className="w-full" onClick={applyAiEdit}>
-                        <CheckCircle2 className="size-3.5" />应用到草稿
-                      </Button>
-                    ) : null}
-                  </>
-                ) : <p className="font-mono text-[10px] text-muted-foreground">未生成可安全应用的参数变更。</p>}
-              </div>
-            ) : null}
-          </div>
-        </section>
         <section className="space-y-3 rounded-[3px] border border-[#20242a] bg-[#101216]/84 p-3">
           <div>
             <SectionCaption>业务配置</SectionCaption>

@@ -154,19 +154,48 @@ test('records graph is project-scoped, bounded and rendered through a client-onl
   assert.match(hooks, /\['project-record-graph'/)
 })
 
-test('project record surfaces distinguish source freshness from ingestion time', async () => {
-  const [evidencePage, dataPage, types] = await Promise.all([
-    read('app/(app)/studio/projects/[projectId]/evidence/page.tsx'),
+test('project data surface distinguishes source freshness from ingestion time', async () => {
+  const [dataPage, types] = await Promise.all([
     read('app/(app)/studio/projects/[projectId]/data/page.tsx'),
     read('lib/api/types.ts'),
   ])
 
   assert.match(types, /source_published_at: string \| null/)
-  assert.match(evidencePage, /源发布时间/)
-  assert.match(evidencePage, /数据新鲜度/)
-  assert.match(evidencePage, /采集时间/)
-  assert.doesNotMatch(evidencePage, /Fact label="创建时间"/)
   assert.match(dataPage, /源发布时间/)
   assert.doesNotMatch(dataPage, /<TableHead>更新时间<\/TableHead>/)
   assert.doesNotMatch(dataPage, /formatRelative\(record\.updated_at\)/)
+})
+
+test('project evidence opens the recovered 3D Galaxy and keeps a 2D relationship view', async () => {
+  const [
+    evidencePage,
+    galaxyPage,
+    relationshipPage,
+    explorer,
+    galaxy,
+    galaxyControls,
+    navigation,
+  ] = await Promise.all([
+    read('app/(app)/studio/projects/[projectId]/evidence/page.tsx'),
+    read('app/(app)/studio/projects/[projectId]/galaxy/page.tsx'),
+    read('app/(app)/studio/projects/[projectId]/relationships/page.tsx'),
+    read('components/records/project-graph-explorer.tsx'),
+    read('components/records/project-galaxy-force-graph.tsx'),
+    read('components/records/project-galaxy-control-panel.tsx'),
+    read('components/studio/project-navigation.tsx'),
+  ])
+
+  assert.match(evidencePage, /mode="galaxy"/)
+  assert.match(galaxyPage, /mode="galaxy"/)
+  assert.match(relationshipPage, /mode="relationships"/)
+  assert.match(explorer, /ProjectGalaxyForceGraph/)
+  assert.match(explorer, /ProjectRelationshipForceGraph/)
+  assert.match(galaxy, /ForceGraph3D/)
+  assert.match(galaxy, /cameraPosition/)
+  assert.match(galaxy, /UnrealBloomPass/)
+  assert.match(galaxy, /postProcessingComposer/)
+  assert.match(galaxyControls, /光晕强度/)
+  assert.match(galaxyControls, /移动画质自动关闭/)
+  assert.match(navigation, /label: '逻辑与证据'/)
+  assert.doesNotMatch(navigation, /label: '3D 星图'|label: '证据关系'/)
 })

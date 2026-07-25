@@ -58,7 +58,7 @@ const NODE_INTERNALS: Record<string, NodeInternals> = {
           order: 2,
         }),
       ]),
-      step("review", "Proposal review", "review", "Applies the accepted patch through the Canvas proposal drawer.", "AgentDrawer patch", "ready"),
+      step("review", "Proposal review", "review", "Applies accepted changes through the global Agent confirmation flow.", "Global Agent patch", "ready"),
     ],
   },
   "intelligence.schedule.cron": {

@@ -4,11 +4,11 @@ import { use } from 'react'
 
 import { ProjectGraphExplorer } from '@/components/records/project-graph-explorer'
 
-export default function ProjectEvidencePage({
+export default function ProjectRelationshipsPage({
   params,
 }: {
   params: Promise<{ projectId: string }>
 }) {
   const { projectId } = use(params)
-  return <ProjectGraphExplorer projectId={projectId} mode="galaxy" />
+  return <ProjectGraphExplorer projectId={projectId} mode="relationships" />
 }
