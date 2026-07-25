@@ -781,7 +781,7 @@ def _resolve_external_tool_capability(node: WorkflowProjectNode, *, node_id: str
             "channel": "tool-capability",
             "input": {
                 "toolCapabilityId": capability_id,
-                "toolCapabilityVersionPin": tool.versionPin.model_dump(),
+                "toolCapabilityVersionPin": tool.versionPin.model_dump() if tool.versionPin else None,
                 "executorMode": executor_mode,
                 "toolLabel": tool.label,
                 "inputPort": (
@@ -807,7 +807,7 @@ def _resolve_external_tool_capability(node: WorkflowProjectNode, *, node_id: str
             "binding_id": resolved_binding_id,
             "dispatch": "opencli_admin_tool_capability",
             "toolCapabilityId": capability_id,
-            "versionPin": tool.versionPin.model_dump(),
+            "versionPin": tool.versionPin.model_dump() if tool.versionPin else None,
         },
     }
 

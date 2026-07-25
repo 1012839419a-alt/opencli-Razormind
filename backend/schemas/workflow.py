@@ -445,7 +445,9 @@ class WorkflowToolCapability(BaseModel):
     inputPorts: list[WorkflowToolCapabilityPort] = Field(default_factory=list)
     outputPorts: list[WorkflowToolCapabilityPort] = Field(default_factory=list)
     executor: WorkflowToolCapabilityExecutor
-    versionPin: WorkflowCapabilityVersionPin
+    # None means the capability's registry entry does not declare a pinned
+    # package version, so workflow-side pin enforcement is skipped for it.
+    versionPin: Optional[WorkflowCapabilityVersionPin] = None
     tags: list[str] = Field(default_factory=list)
     manifest: dict[str, Any] = Field(default_factory=dict)
 

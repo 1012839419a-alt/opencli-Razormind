@@ -36,7 +36,6 @@ from backend.api.v1 import (
     tasks,
     webhooks,
     workers,
-    workflow_assets,
     workflows,
     workspaces,
 )
@@ -69,7 +68,6 @@ v1_router.include_router(skill_bridge.router)
 v1_router.include_router(skill_record.router)
 v1_router.include_router(webhooks.router)
 v1_router.include_router(workflows.router)
-v1_router.include_router(workflow_assets.router)
 v1_router.include_router(dify_imports.router)
 v1_router.include_router(notifications.router)
 v1_router.include_router(operations_inbox.router)

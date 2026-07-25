@@ -241,7 +241,7 @@ def _pin_registered_tool_capability(binding: dict[str, Any]) -> dict[str, Any]:
     tool = resolve_workflow_tool_capability(capability_id or "")
     if tool is None:
         return binding
-    return {**binding, "versionPin": tool.versionPin.model_dump()}
+    return {**binding, "versionPin": tool.versionPin.model_dump() if tool.versionPin else None}
 
 
 def _native_capability_for_external_node(

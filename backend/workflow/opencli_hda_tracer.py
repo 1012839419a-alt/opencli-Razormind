@@ -368,6 +368,7 @@ async def start_workflow_run(
             projection=projection,
             events=stored_events,
             session=session,
+            workflow_version_id=workflow_version_id,
         )
         return projection
 
@@ -390,6 +391,7 @@ async def start_workflow_run(
             projection=queued_projection,
             events=prior_events,
             session=session,
+            workflow_version_id=workflow_version_id,
         )
     should_trace_opencli = any(
         _binding_id(node) == OPENCLI_BINDING_ID for node in runtime_nodes
@@ -981,6 +983,34 @@ async def start_workflow_run(
                 await _persist_emitter_events(run_id, emitter, session=session)
                 continue
             except (IntelligenceStoreError, ValueError) as exc:
+                if _binding_id(node) in _DATA_OPERATOR_BINDING_IDS and not isinstance(
+                    exc, IntelligenceStoreError
+                ):
+                    # Data-operator config/runtime errors must surface with the
+                    # data_operator_execution_failed contract, not the native
+                    # intelligence block shape this handler emits.
+                    binding_input = _read_dict(
+                        _read_dict(node.runtime.get("binding")).get("input")
+                    )
+                    reason = WorkflowRunBlockReason(
+                        code="data_operator_execution_failed",
+                        message="Data operator execution failed",
+                        source="data_operator_runtime",
+                        details={
+                            "bindingId": _binding_id(node),
+                            "operatorId": binding_input.get("operatorId"),
+                            "errorType": type(exc).__name__,
+                        },
+                    )
+                    emitter.emit(
+                        node,
+                        "failed",
+                        message=reason.message,
+                        block_reason=reason,
+                        details=reason.details,
+                    )
+                    await _persist_emitter_events(run_id, emitter, session=session)
+                    continue
                 if session is not None and _is_native_intelligence_node(node):
                     await rollback_session_preserving_primary(session, exc)
                 code = getattr(exc, "code", None) or str(exc) or "native_intelligence_error"
@@ -1288,6 +1318,7 @@ async def start_workflow_run(
                 projection=projection,
                 events=stored.events,
                 session=session,
+                workflow_version_id=workflow_version_id,
             )
     return projection
 
@@ -1391,7 +1422,7 @@ async def _store_workflow_run(
     projection: WorkflowRunProjection,
     events: list[WorkflowNodeRunEvent],
     session: AsyncSession | None,
-    workflow_version_id: str | None,
+    workflow_version_id: str | None = None,
 ) -> None:
     events_to_mirror = list(events)
     stored_events = list(events)

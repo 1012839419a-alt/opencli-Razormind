@@ -51,6 +51,10 @@ def validate_workflow_tool_capability_version_pin(
     """Validate a node pin against the installed Tool Capability registry."""
 
     tool = resolve_workflow_tool_capability(tool_id)
+    if tool is not None and tool.versionPin is None:
+        # Registry entry declares no pinned version (e.g. native intelligence
+        # tools) — pin enforcement does not apply to this capability.
+        return None
     if tool is None:
         return WorkflowCapabilityPinIssue(
             code="unknown_tool_capability",
