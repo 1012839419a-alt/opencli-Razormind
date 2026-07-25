@@ -1,7 +1,7 @@
 # Generated capability exposure ledger. Review decisions in pull requests; tests detect drift.
 version: 1
 source: "backend.main.app.openapi"
-openapi_operation_count: 169
+openapi_operation_count: 168
 allowed_dispositions:
   - operator_ui
   - studio_binding
@@ -1724,15 +1724,6 @@ operations:
     frontend_route: "/studio"
     wrapper: null
     decision: "Expose Dify workflow import through Workflow Studio."
-    target_epic: "Epic 8"
-    capability_id: "studio.workflow"
-  - method: "POST"
-    path: "/api/v1/workflows/node-edit-draft"
-    operation_id: "draft_node_edit_api_v1_workflows_node_edit_draft_post"
-    disposition: "studio_binding"
-    frontend_route: "/studio"
-    wrapper: null
-    decision: "Bind AI-assisted node draft editing to Workflow Studio."
     target_epic: "Epic 8"
     capability_id: "studio.workflow"
   - method: "GET"

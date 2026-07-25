@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any
 
@@ -14,7 +15,10 @@ from backend.schemas.workflow import (
     WorkflowProjectEdge,
     WorkflowProjectNode,
 )
+from backend.workflow.opencli_adapter_nodes import list_opencli_adapter_nodes
 from backend.workflow.patcher import preview_workflow_patch
+
+logger = logging.getLogger(__name__)
 
 
 def draft_workflow_demand(body: WorkflowDemandDraftRequest) -> WorkflowPatchResponse:
@@ -41,7 +45,13 @@ def draft_workflow_demand(body: WorkflowDemandDraftRequest) -> WorkflowPatchResp
             ],
         )
 
-    operations = _native_first_loop_operations(body.project, sources, body.text, body.locale)
+    operations = _native_first_loop_operations(
+        body.project,
+        sources,
+        body.text,
+        body.locale,
+        data_operators=_data_operators_for_need(body.text),
+    )
     return preview_workflow_patch(body.project, operations)
 
 
@@ -50,6 +60,8 @@ def _native_first_loop_operations(
     sources: list[dict[str, Any]],
     demand_text: str,
     locale: str | None,
+    *,
+    data_operators: list[dict[str, Any]],
 ) -> list[WorkflowPatchOperation]:
     operations: list[WorkflowPatchOperation] = []
     used_node_ids = {node.id for node in project.nodes}
@@ -132,8 +144,13 @@ def _native_first_loop_operations(
         )
 
     merge_id = _unique_id(used_node_ids, "merge-candidates")
+    operator_node_ids = [
+        _unique_id(used_node_ids, f"{operator['id']}-data")
+        for operator in data_operators
+    ]
     accept_id = _unique_id(used_node_ids, "accept-records")
     sink_id = _unique_id(used_node_ids, "record-sink")
+    accept_x = 960 + len(operator_node_ids) * 260
     operations.extend(
         [
             WorkflowPatchOperation(
@@ -171,7 +188,7 @@ def _native_first_loop_operations(
                     ui={
                         "catalogId": "intelligence.control.record-acceptance",
                         "label": "Record Acceptance",
-                        "position": {"x": 960, "y": 240},
+                        "position": {"x": accept_x, "y": 240},
                     },
                 ),
             ),
@@ -189,12 +206,35 @@ def _native_first_loop_operations(
                     ui={
                         "catalogId": "intelligence.sink.records",
                         "label": "Records",
-                        "position": {"x": 1220, "y": 240},
+                        "position": {"x": accept_x + 260, "y": 240},
                     },
                 ),
             ),
         ]
     )
+    for index, (operator, operator_node_id) in enumerate(
+        zip(data_operators, operator_node_ids, strict=True)
+    ):
+        operations.append(
+            WorkflowPatchOperation(
+                op="add_node",
+                node=WorkflowProjectNode(
+                    id=operator_node_id,
+                    kind="agent",
+                    capability="normalize",
+                    params={
+                        "operatorId": operator["operatorId"],
+                        "packVersion": operator["packVersion"],
+                        "config": operator.get("config", {}),
+                    },
+                    ui={
+                        "catalogId": operator["catalogId"],
+                        "label": operator["label"],
+                        "position": {"x": 960 + index * 260, "y": 240},
+                    },
+                ),
+            )
+        )
     for index, normalize_id in enumerate(normalize_ids, start=1):
         operations.append(
             WorkflowPatchOperation(
@@ -208,13 +248,46 @@ def _native_first_loop_operations(
                 ),
             )
         )
+    terminal_id = operator_node_ids[-1] if operator_node_ids else merge_id
+    if operator_node_ids:
+        operations.append(
+            WorkflowPatchOperation(
+                op="connect_nodes",
+                edge=WorkflowProjectEdge(
+                    id=_unique_id(
+                        used_edge_ids,
+                        f"e-{merge_id}-{operator_node_ids[0]}",
+                    ),
+                    source=merge_id,
+                    target=operator_node_ids[0],
+                    sourcePort="out",
+                    targetPort="in",
+                ),
+            )
+        )
+        for source_id, target_id in zip(
+            operator_node_ids,
+            operator_node_ids[1:],
+        ):
+            operations.append(
+                WorkflowPatchOperation(
+                    op="connect_nodes",
+                    edge=WorkflowProjectEdge(
+                        id=_unique_id(used_edge_ids, f"e-{source_id}-{target_id}"),
+                        source=source_id,
+                        target=target_id,
+                        sourcePort="out",
+                        targetPort="in",
+                    ),
+                )
+            )
     operations.extend(
         [
             WorkflowPatchOperation(
                 op="connect_nodes",
                 edge=WorkflowProjectEdge(
-                    id=_unique_id(used_edge_ids, f"e-{merge_id}-{accept_id}"),
-                    source=merge_id,
+                    id=_unique_id(used_edge_ids, f"e-{terminal_id}-{accept_id}"),
+                    source=terminal_id,
                     target=accept_id,
                     sourcePort="out",
                     targetPort="candidates",
@@ -235,7 +308,128 @@ def _native_first_loop_operations(
     return operations
 
 
+def _data_operators_for_need(text: str) -> list[dict[str, Any]]:
+    normalized = text.lower()
+    dataflow_compat = "dataflow" in normalized
+    training_data = any(
+        token in normalized
+        for token in ("训练数据", "sft", "instruction", "instruction data", "微调数据")
+    )
+    quality_work = training_data or any(
+        token in normalized
+        for token in (
+            "dataflow",
+            "数据准备",
+            "数据清洗",
+            "清洗",
+            "quality",
+            "filter",
+            "evaluate",
+            "refine",
+            "质量",
+            "过滤",
+            "评估",
+            "筛选",
+        )
+    )
+    if not quality_work:
+        return []
+
+    operators = [
+        {
+            "id": "chunk",
+            "catalogId": "intelligence.data.generate",
+            "operatorId": "data.chunk",
+            "packVersion": "1.0.0",
+            "label": "Chunk Data",
+        },
+        {
+            "id": "clean",
+            "catalogId": "intelligence.data.refine",
+            "operatorId": "text.clean",
+            "packVersion": "1.1.0" if dataflow_compat else "1.0.0",
+            "config": (
+                {
+                    "fields": ["content"],
+                    "operations": [
+                        "removeEmoji",
+                        "htmlUrlRemover",
+                        "removeExtraSpaces",
+                    ],
+                }
+                if dataflow_compat
+                else {}
+            ),
+            "label": "Clean Text",
+        },
+        {
+            "id": "deduplicate",
+            "catalogId": "intelligence.data.filter",
+            "operatorId": "text.deduplicate",
+            "packVersion": "1.1.0" if dataflow_compat else "1.0.0",
+            "config": (
+                {
+                    "fields": ["content"],
+                    "mode": "exact",
+                    "hashFunction": "md5",
+                }
+                if dataflow_compat
+                else {}
+            ),
+            "label": "Deduplicate Text",
+        },
+        {
+            "id": "rule-filter",
+            "catalogId": "intelligence.data.filter",
+            "operatorId": "text.rule-filter",
+            "packVersion": "1.1.0" if dataflow_compat else "1.0.0",
+            "config": (
+                {
+                    "fields": ["content"],
+                    "rules": [
+                        {
+                            "type": "contentNull",
+                            "outputKey": "content_null_filter_label",
+                        }
+                    ],
+                }
+                if dataflow_compat
+                else {}
+            ),
+            "label": "Filter Text Rules",
+        },
+        {
+            "id": "statistics",
+            "catalogId": "intelligence.data.evaluate",
+            "operatorId": "text.statistics",
+            "packVersion": "1.0.0",
+            "label": "Text Statistics",
+        },
+    ]
+    if training_data:
+        operators.append(
+            {
+                "id": "generate",
+                "catalogId": "intelligence.data.generate",
+                "operatorId": "core.generate.instruction-pairs",
+                "packVersion": "1.0.0",
+                "label": "Generate Instruction Pairs",
+            }
+        )
+    return operators
+
+
 def _source_slots_for_need(text: str) -> list[dict[str, Any]]:
+    """Resolve a collection need to native OpenCLI source slots.
+
+    Stable aliases win when they are explicit in the request. Otherwise the
+    OpenCLI adapter catalog can match any catalog-known site. Catalog access
+    is best-effort and never raises.
+    """
+    return _legacy_keyword_slots_for_need(text) or _catalog_slots_for_need(text)
+
+
+def _legacy_keyword_slots_for_need(text: str) -> list[dict[str, Any]]:
     normalized = text.lower()
     slots: list[dict[str, Any]] = []
     keyword = _keyword_from_need(text)
@@ -277,6 +471,98 @@ def _keyword_from_need(text: str) -> str:
         value = re.sub(pattern, " ", value, flags=re.IGNORECASE)
     value = re.sub(r"\s+", " ", value).strip(" ，,。")
     return value or "热门"
+
+
+# --- OpenCLI adapter catalog matching --------------------------------------
+#
+# Chinese aliases for catalog sites that are commonly typed in Chinese rather
+# than by their OpenCLI site slug. An alias for a site that isn't present in
+# the loaded catalog is harmless -- it simply never matches anything.
+_CATALOG_SITE_ALIASES: dict[str, tuple[str, ...]] = {
+    "xiaohongshu": ("小红书", "xiaohongshu", "xhs"),
+    "bilibili": ("哔哩", "bilibili", "b站", "bili"),
+}
+
+_CATALOG_SLOT_CAP = 3
+_CATALOG_TOKEN_PATTERN = re.compile(r"[a-zA-Z一-鿿]+")
+
+
+def _catalog_slots_for_need(text: str) -> list[dict[str, Any]]:
+    """Match a need against the OpenCLI adapter catalog.
+
+    Deterministic, no LLM. Scores each read-access catalog site against the
+    need text by (a) exact site id/name token, (b) Chinese alias substring,
+    (c) description/domain/strategy keyword -- in that priority -- and keeps
+    only the best-scoring tier per site. Never raises: any catalog access
+    failure (missing binary, subprocess error, decode error, ...) is caught
+    and treated as "no catalog available", returning an empty list so the
+    caller can fall back to the legacy keyword floor.
+    """
+    try:
+        nodes = list_opencli_adapter_nodes(include_write=False).nodes
+    except Exception:
+        logger.debug(
+            "opencli adapter catalog unavailable for demand matching", exc_info=True
+        )
+        return []
+
+    normalized = text.strip().lower()
+    if not normalized or not nodes:
+        return []
+
+    keyword = _keyword_from_need(text)
+    best: dict[str, tuple[int, int, str]] = {}
+    for index, node in enumerate(nodes):
+        tier = _catalog_match_tier(normalized, node)
+        if tier is None:
+            continue
+        current = best.get(node.site)
+        if current is None or tier < current[0]:
+            best[node.site] = (tier, index, node.command)
+
+    ordered_sites = sorted(best.items(), key=lambda item: (item[1][0], item[1][1]))
+    slots: list[dict[str, Any]] = []
+    for site, (_tier, _index, command) in ordered_sites[:_CATALOG_SLOT_CAP]:
+        slots.append(
+            {
+                "id": _catalog_slot_id(site),
+                "label": f"{site.title()} {command.title()}".strip(),
+                "sourceGroup": "opencli",
+                "site": site,
+                "command": command,
+                "args": {"keyword": keyword},
+            }
+        )
+    return slots
+
+
+def _catalog_match_tier(normalized: str, node: Any) -> int | None:
+    # Command names (node.command) repeat across unrelated sites, so a
+    # command-only hit must never claim the exact-site tier.
+    site = node.site.lower()
+    if len(site) >= 2 and site in normalized:
+        return 0
+    for alias in _CATALOG_SITE_ALIASES.get(site, ()):
+        if alias.lower() in normalized:
+            return 1
+    if any(token in normalized for token in _catalog_description_tokens(node)):
+        return 2
+    return None
+
+
+def _catalog_description_tokens(node: Any) -> list[str]:
+    haystack = " ".join(
+        value for value in (node.description, node.domain, node.strategy) if value
+    )
+    return [
+        token.lower()
+        for token in _CATALOG_TOKEN_PATTERN.findall(haystack)
+        if len(token) >= 2
+    ]
+
+
+def _catalog_slot_id(site: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", site.strip().lower()).strip("-") or "source"
 
 
 def _unique_node_id(project: WorkflowProject, base: str) -> str:

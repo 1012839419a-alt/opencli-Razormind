@@ -727,6 +727,120 @@ async def test_langchain_import_accepts_dict_nodes_and_edge_only_nodes(client):
 
 
 @pytest.mark.asyncio
+async def test_dataflow_import_maps_sha_locked_aliases_to_native_data_nodes(client):
+    project = _valid_workflow_project()
+    project["nodes"] = project["nodes"][:1]
+    project["edges"] = []
+    source_sha = "f62aa1349e0ff14cb737a4cbda1945d04fde85bb"
+    source_id = (
+        f"dataflow@{source_sha}::dataflow.operators.general_text.refine."
+        "remove_emoji_refiner.RemoveEmojiRefiner"
+    )
+
+    response = await client.post(
+        "/api/v1/workflows/import/external-runtime",
+        json={
+            "project": project,
+            "runtime": "dataflow",
+            "name": "pinned-cleaning",
+            "graph": {
+                "sourceSha": source_sha,
+                "nodes": [
+                    {
+                        "id": "lowercase",
+                        "module": "general_text.refine.lowercase_refiner",
+                        "class": "LowercaseRefiner",
+                        "runConfig": {"input_key": "content"},
+                    },
+                    {
+                        "id": "emoji",
+                        "sourceId": source_id,
+                        "runConfig": {"input_key": "content"},
+                    },
+                ],
+                "edges": [{"source": "lowercase", "target": "emoji"}],
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["valid"] is True
+    nodes = {node["id"]: node for node in data["project"]["nodes"]}
+    for node_id, operation in (
+        ("lowercase", "lowercase"),
+        ("emoji", "removeEmoji"),
+    ):
+        node = nodes[node_id]
+        assert node["kind"] == "agent"
+        assert node["capability"] == "normalize"
+        assert node["ui"]["catalogId"] == "intelligence.data.refine"
+        assert set(node["params"]) == {
+            "operatorId",
+            "packVersion",
+            "config",
+        }
+        assert node["params"]["operatorId"] == "text.clean"
+        assert node["params"]["packVersion"] == "1.1.0"
+        assert node["params"]["config"] == {
+            "fields": ["content"],
+            "operations": [operation],
+        }
+        assert node["ui"]["externalWorkflow"]["sourceSha"] == source_sha
+        assert node["ui"]["externalWorkflow"]["runtime"] == "dataflow"
+        assert "toolCapability" not in node["params"]
+        assert node["ui"]["catalogId"] != "external.tool.capability"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("source_sha", "node", "detail"),
+    [
+        (
+            "deadbeef",
+            {
+                "module": "general_text.refine.lowercase_refiner",
+                "class": "LowercaseRefiner",
+                "runConfig": {"input_key": "content"},
+            },
+            "DataFlow graph.sourceSha must equal",
+        ),
+        (
+            "f62aa1349e0ff14cb737a4cbda1945d04fde85bb",
+            {
+                "module": "general_text.refine.semantic_refiner",
+                "class": "SemanticRefiner",
+                "runConfig": {"input_key": "content"},
+            },
+            "dataflow_operator_unsupported",
+        ),
+    ],
+)
+async def test_dataflow_import_fails_closed_for_unpinned_or_unsupported_nodes(
+    client,
+    source_sha,
+    node,
+    detail,
+):
+    project = _valid_workflow_project()
+    project["nodes"] = project["nodes"][:1]
+    project["edges"] = []
+    node["id"] = "unsupported"
+
+    response = await client.post(
+        "/api/v1/workflows/import/external-runtime",
+        json={
+            "project": project,
+            "runtime": "dataflow",
+            "graph": {"sourceSha": source_sha, "nodes": [node]},
+        },
+    )
+
+    assert response.status_code == 400
+    assert detail in response.json()["detail"]
+
+
+@pytest.mark.asyncio
 async def test_imported_external_tool_runs_through_opencli_tool_capability_binding(client):
     project = {
         "id": "wf-external-tool-runtime",

@@ -1,0 +1,533 @@
+{
+  "fixtureSchemaVersion": 1,
+  "sourceSha": "f62aa1349e0ff14cb737a4cbda1945d04fde85bb",
+  "packId": "builtin.text-cleaning",
+  "packVersion": "1.1.0",
+  "aliases": [
+    {
+      "alias": "ColonEnd",
+      "dotted": "dataflow.operators.general_text.filter.rule_based_filter.ColonEndFilter",
+      "initConfig": {},
+      "runConfig": {"input_key": "content"},
+      "operatorId": "text.rule-filter",
+      "kind": "filter",
+      "config": {
+        "fields": ["content"],
+        "rules": [{"type": "colonEnd", "outputKey": "colonendfilter_label"}]
+      }
+    },
+    {
+      "alias": "LineEndWithEllipsis",
+      "dotted": "dataflow.operators.general_text.filter.rule_based_filter.LineEndWithEllipsisFilter",
+      "initConfig": {"threshold": 0.3},
+      "runConfig": {"input_key": "content"},
+      "operatorId": "text.rule-filter",
+      "kind": "filter",
+      "config": {
+        "fields": ["content"],
+        "rules": [
+          {
+            "type": "lineEndWithEllipsis",
+            "threshold": 0.3,
+            "outputKey": "line_end_with_ellipsis_filter_label"
+          }
+        ]
+      }
+    },
+    {
+      "alias": "SymbolWordRatio",
+      "dotted": "dataflow.operators.general_text.filter.rule_based_filter.SymbolWordRatioFilter",
+      "initConfig": {"threshold": 0.4},
+      "runConfig": {"input_key": "content"},
+      "operatorId": "text.rule-filter",
+      "kind": "filter",
+      "config": {
+        "fields": ["content"],
+        "rules": [
+          {
+            "type": "symbolWordRatio",
+            "threshold": 0.4,
+            "outputKey": "symbol_word_ratio_filter_label"
+          }
+        ]
+      }
+    },
+    {
+      "alias": "AlphaWords",
+      "dotted": "dataflow.operators.general_text.filter.rule_based_filter.AlphaWordsFilter",
+      "initConfig": {"threshold": 0.5, "use_tokenizer": false},
+      "runConfig": {"input_key": "content"},
+      "operatorId": "text.rule-filter",
+      "kind": "filter",
+      "config": {
+        "fields": ["content"],
+        "rules": [
+          {
+            "type": "alphaWords",
+            "threshold": 0.5,
+            "useTokenizer": false,
+            "outputKey": "alpha_words_filter_label"
+          }
+        ]
+      }
+    },
+    {
+      "alias": "HtmlEntityFilter",
+      "dotted": "dataflow.operators.general_text.filter.rule_based_filter.HtmlEntityFilter",
+      "initConfig": {},
+      "runConfig": {"input_key": "content"},
+      "operatorId": "text.rule-filter",
+      "kind": "filter",
+      "config": {
+        "fields": ["content"],
+        "rules": [
+          {"type": "htmlEntity", "outputKey": "html_entity_filter_label"}
+        ]
+      }
+    },
+    {
+      "alias": "IDCard",
+      "dotted": "dataflow.operators.general_text.filter.rule_based_filter.IDCardFilter",
+      "initConfig": {"threshold": 3},
+      "runConfig": {"input_key": "content"},
+      "operatorId": "text.rule-filter",
+      "kind": "filter",
+      "config": {
+        "fields": ["content"],
+        "rules": [
+          {
+            "type": "idCard",
+            "threshold": 3,
+            "outputKey": "id_card_filter_label"
+          }
+        ]
+      }
+    },
+    {
+      "alias": "NoPunc",
+      "dotted": "dataflow.operators.general_text.filter.rule_based_filter.NoPuncFilter",
+      "initConfig": {"threshold": 112},
+      "runConfig": {"input_key": "content"},
+      "operatorId": "text.rule-filter",
+      "kind": "filter",
+      "config": {
+        "fields": ["content"],
+        "rules": [
+          {
+            "type": "noPunc",
+            "threshold": 112,
+            "outputKey": "no_punc_filter_label"
+          }
+        ]
+      }
+    },
+    {
+      "alias": "SpecialCharacter",
+      "dotted": "dataflow.operators.general_text.filter.rule_based_filter.SpecialCharacterFilter",
+      "initConfig": {},
+      "runConfig": {"input_key": "content"},
+      "operatorId": "text.rule-filter",
+      "kind": "filter",
+      "config": {
+        "fields": ["content"],
+        "rules": [
+          {
+            "type": "specialCharacter",
+            "outputKey": "special_character_filter_label"
+          }
+        ]
+      }
+    },
+    {
+      "alias": "Watermark",
+      "dotted": "dataflow.operators.general_text.filter.rule_based_filter.WatermarkFilter",
+      "initConfig": {
+        "watermarks": ["Copyright", "Watermark", "Confidential"]
+      },
+      "runConfig": {"input_key": "content"},
+      "operatorId": "text.rule-filter",
+      "kind": "filter",
+      "config": {
+        "fields": ["content"],
+        "rules": [
+          {
+            "type": "watermark",
+            "watermarks": ["Copyright", "Watermark", "Confidential"],
+            "outputKey": "watermark_filter_label"
+          }
+        ]
+      }
+    },
+    {
+      "alias": "MeanWordLength",
+      "dotted": "dataflow.operators.general_text.filter.rule_based_filter.MeanWordLengthFilter",
+      "initConfig": {"min_length": 3, "max_length": 10},
+      "runConfig": {"input_key": "content"},
+      "operatorId": "text.rule-filter",
+      "kind": "filter",
+      "config": {
+        "fields": ["content"],
+        "rules": [
+          {
+            "type": "meanWordLength",
+            "minLength": 3,
+            "maxLength": 10,
+            "outputKey": "mean_word_length_filter_label"
+          }
+        ]
+      }
+    },
+    {
+      "alias": "StopWord",
+      "dotted": "dataflow.operators.general_text.filter.rule_based_filter.StopWordFilter",
+      "initConfig": {"threshold": 0.5, "use_tokenizer": false},
+      "runConfig": {"input_key": "content"},
+      "operatorId": "text.rule-filter",
+      "kind": "filter",
+      "config": {
+        "fields": ["content"],
+        "rules": [
+          {
+            "type": "stopWord",
+            "threshold": 0.5,
+            "useTokenizer": false,
+            "outputKey": "stop_word_filter_label"
+          }
+        ]
+      }
+    },
+    {
+      "alias": "CurlyBracket",
+      "dotted": "dataflow.operators.general_text.filter.rule_based_filter.CurlyBracketFilter",
+      "initConfig": {"threshold": 0.025},
+      "runConfig": {"input_key": "content"},
+      "operatorId": "text.rule-filter",
+      "kind": "filter",
+      "config": {
+        "fields": ["content"],
+        "rules": [
+          {
+            "type": "curlyBracket",
+            "threshold": 0.025,
+            "outputKey": "curly_bracket_filter_label"
+          }
+        ]
+      }
+    },
+    {
+      "alias": "CapitalWords",
+      "dotted": "dataflow.operators.general_text.filter.rule_based_filter.CapitalWordsFilter",
+      "initConfig": {"threshold": 0.2, "use_tokenizer": false},
+      "runConfig": {"input_key": "content"},
+      "operatorId": "text.rule-filter",
+      "kind": "filter",
+      "config": {
+        "fields": ["content"],
+        "rules": [
+          {
+            "type": "capitalWords",
+            "threshold": 0.2,
+            "useTokenizer": false,
+            "outputKey": "capital_words_filter"
+          }
+        ]
+      }
+    },
+    {
+      "alias": "LoremIpsum",
+      "dotted": "dataflow.operators.general_text.filter.rule_based_filter.LoremIpsumFilter",
+      "initConfig": {"threshold": 0.00000003},
+      "runConfig": {"input_key": "content"},
+      "operatorId": "text.rule-filter",
+      "kind": "filter",
+      "config": {
+        "fields": ["content"],
+        "rules": [
+          {
+            "type": "loremIpsum",
+            "threshold": 0.00000003,
+            "outputKey": "loremipsum_filter_label"
+          }
+        ]
+      }
+    },
+    {
+      "alias": "LineStartWithBulletpoint",
+      "dotted": "dataflow.operators.general_text.filter.rule_based_filter.LineStartWithBulletpointFilter",
+      "initConfig": {"threshold": 0.9},
+      "runConfig": {"input_key": "content"},
+      "operatorId": "text.rule-filter",
+      "kind": "filter",
+      "config": {
+        "fields": ["content"],
+        "rules": [
+          {
+            "type": "lineStartWithBulletpoint",
+            "threshold": 0.9,
+            "outputKey": "line_start_with_bullet_point_filter_label"
+          }
+        ]
+      }
+    },
+    {
+      "alias": "LineWithJavascript",
+      "dotted": "dataflow.operators.general_text.filter.rule_based_filter.LineWithJavascriptFilter",
+      "initConfig": {"threshold": 3},
+      "runConfig": {"input_key": "content"},
+      "operatorId": "text.rule-filter",
+      "kind": "filter",
+      "config": {
+        "fields": ["content"],
+        "rules": [
+          {
+            "type": "lineWithJavascript",
+            "threshold": 3,
+            "outputKey": "line_with_javascript_filter_label"
+          }
+        ]
+      }
+    },
+    {
+      "alias": "TextNormalization",
+      "dotted": "dataflow.operators.general_text.refine.text_normalization_refiner.TextNormalizationRefiner",
+      "initConfig": {},
+      "runConfig": {"input_key": "content"},
+      "operatorId": "text.clean",
+      "kind": "refine",
+      "config": {
+        "fields": ["content"],
+        "operations": ["textNormalization"]
+      }
+    },
+    {
+      "alias": "RemoveImageRefs",
+      "dotted": "dataflow.operators.general_text.refine.remove_image_ref_refiner.RemoveImageRefsRefiner",
+      "initConfig": {},
+      "runConfig": {"input_key": "content"},
+      "operatorId": "text.clean",
+      "kind": "refine",
+      "config": {
+        "fields": ["content"],
+        "operations": ["removeImageRefs"]
+      }
+    },
+    {
+      "alias": "Blocklist",
+      "dotted": "dataflow.operators.general_text.filter.blocklist_filter.BlocklistFilter",
+      "initConfig": {
+        "language": "en",
+        "threshold": 1,
+        "use_tokenizer": false
+      },
+      "runConfig": {"input_key": "content"},
+      "operatorId": "text.rule-filter",
+      "kind": "filter",
+      "config": {
+        "fields": ["content"],
+        "rules": [
+          {
+            "type": "blocklist",
+            "language": "en",
+            "threshold": 1,
+            "useTokenizer": false,
+            "outputKey": "blocklist_filter_label"
+          }
+        ]
+      }
+    },
+    {
+      "alias": "NgramHashDeduplicate",
+      "dotted": "dataflow.operators.general_text.filter.ngramhash_deduplicate_filter.NgramHashDeduplicateFilter",
+      "initConfig": {"n_gram": 3, "hash_func": "md5", "diff_size": 1},
+      "runConfig": {"input_key": "content"},
+      "operatorId": "text.deduplicate",
+      "kind": "filter",
+      "config": {
+        "fields": ["content"],
+        "mode": "ngramHash",
+        "nGram": 3,
+        "hashFunction": "md5",
+        "diffSize": 1,
+        "outputKey": "minhash_deduplicated_label"
+      }
+    }
+  ],
+  "ruleBoundaryCases": [
+    {
+      "id": "colon-end",
+      "alias": "ColonEnd",
+      "initConfig": {},
+      "accepted": ["sentence."],
+      "rejected": ["heading:"]
+    },
+    {
+      "id": "line-end-ellipsis-exclusive-threshold",
+      "alias": "LineEndWithEllipsis",
+      "initConfig": {"threshold": 0.5},
+      "accepted": ["first.\nsecond."],
+      "rejected": ["first...\nsecond."]
+    },
+    {
+      "id": "symbol-word-ratio-exclusive-threshold",
+      "alias": "SymbolWordRatio",
+      "initConfig": {"threshold": 0.5},
+      "accepted": ["alpha beta"],
+      "rejected": ["# alpha"]
+    },
+    {
+      "id": "alpha-words-exclusive-threshold",
+      "alias": "AlphaWords",
+      "initConfig": {"threshold": 0.5, "use_tokenizer": false},
+      "accepted": ["abc 123 def"],
+      "rejected": ["abc 123"]
+    },
+    {
+      "id": "html-entity-detection",
+      "alias": "HtmlEntityFilter",
+      "initConfig": {},
+      "accepted": ["plain text"],
+      "rejected": ["bad&nbsp;entity"]
+    },
+    {
+      "id": "id-card-inclusive-threshold",
+      "alias": "IDCard",
+      "initConfig": {"threshold": 2},
+      "accepted": ["ID card"],
+      "rejected": ["ID card and identity"]
+    },
+    {
+      "id": "no-punctuation-inclusive-threshold",
+      "alias": "NoPunc",
+      "initConfig": {"threshold": 3},
+      "accepted": ["one two three"],
+      "rejected": ["one two three four"]
+    },
+    {
+      "id": "special-character-pattern",
+      "alias": "SpecialCharacter",
+      "initConfig": {},
+      "accepted": ["plain text"],
+      "rejected": ["bad u200e marker"]
+    },
+    {
+      "id": "watermark-case-sensitive",
+      "alias": "Watermark",
+      "initConfig": {"watermarks": ["Copyright"]},
+      "accepted": ["copyright notice"],
+      "rejected": ["Copyright notice"]
+    },
+    {
+      "id": "mean-word-length-half-open-range",
+      "alias": "MeanWordLength",
+      "initConfig": {"min_length": 3, "max_length": 5},
+      "accepted": ["cat dog"],
+      "rejected": ["abcde"]
+    },
+    {
+      "id": "stop-word-count-and-ratio-boundaries",
+      "alias": "StopWord",
+      "initConfig": {"threshold": 0.5, "use_tokenizer": false},
+      "accepted": ["the and or data"],
+      "rejected": ["the and data"]
+    },
+    {
+      "id": "curly-bracket-exclusive-threshold",
+      "alias": "CurlyBracket",
+      "initConfig": {"threshold": 0.25},
+      "accepted": ["abcd{"],
+      "rejected": ["abc{"]
+    },
+    {
+      "id": "capital-words-inclusive-threshold",
+      "alias": "CapitalWords",
+      "initConfig": {"threshold": 0.5, "use_tokenizer": false},
+      "accepted": ["UPPER lower"],
+      "rejected": ["UPPER ALSO lower"]
+    },
+    {
+      "id": "lorem-ipsum-inclusive-threshold",
+      "alias": "LoremIpsum",
+      "initConfig": {"threshold": 0.0},
+      "accepted": ["ordinary text"],
+      "rejected": ["lorem ipsum"]
+    },
+    {
+      "id": "bulletpoint-inclusive-threshold",
+      "alias": "LineStartWithBulletpoint",
+      "initConfig": {"threshold": 0.5},
+      "accepted": ["\u2022 one\nplain"],
+      "rejected": ["\u2022 one\n\u2022 two"]
+    },
+    {
+      "id": "javascript-line-count-boundary",
+      "alias": "LineWithJavascript",
+      "initConfig": {"threshold": 3},
+      "accepted": ["javascript\nclean one\nclean two\nclean three"],
+      "rejected": ["javascript\njavascript\nclean one\nclean two"]
+    }
+  ],
+  "cleanGoldenCases": [
+    {
+      "id": "text-normalization-date-and-currency",
+      "alias": "TextNormalization",
+      "input": "On 1/2/2024 and January 5, 2024 pay $ 42.",
+      "expected": "On 2024-2-1 and 2024-01-05 pay 42 USD."
+    },
+    {
+      "id": "remove-image-refs-pinned-regex",
+      "alias": "RemoveImageRefs",
+      "input": "Keep ![](images/a.jpg) abc1234 tail",
+      "expected": "Keep   tail"
+    }
+  ],
+  "blocklistCases": [
+    {
+      "id": "blocklist-en-inclusive-threshold",
+      "language": "en",
+      "threshold": 1,
+      "accepted": ["ass neutral"],
+      "rejected": ["ass asshole", ""]
+    },
+    {
+      "id": "blocklist-zh-inclusive-threshold",
+      "language": "zh",
+      "threshold": 1,
+      "accepted": ["\u4e0b\u8d31 \u6b63\u5e38"],
+      "rejected": ["\u4e0b\u8d31 \u4ec6\u8857", ""]
+    }
+  ],
+  "ngramHashCases": [
+    {
+      "id": "ngram-first-wins",
+      "nGram": 3,
+      "diffSize": 1,
+      "contents": ["abcdef", "abcdef"],
+      "selectedIndexes": [0],
+      "rejectedIndexes": [1]
+    },
+    {
+      "id": "ngram-one-shared-gram-is-duplicate-at-one",
+      "nGram": 3,
+      "diffSize": 1,
+      "contents": ["abcdef", "abXXYY"],
+      "selectedIndexes": [0],
+      "rejectedIndexes": [1]
+    },
+    {
+      "id": "ngram-one-shared-gram-is-distinct-at-two",
+      "nGram": 3,
+      "diffSize": 2,
+      "contents": ["abcdef", "abXXYY"],
+      "selectedIndexes": [0, 1],
+      "rejectedIndexes": []
+    },
+    {
+      "id": "ngram-empty-text-first-wins",
+      "nGram": 3,
+      "diffSize": 1,
+      "contents": ["", ""],
+      "selectedIndexes": [0],
+      "rejectedIndexes": [1]
+    }
+  ]
+}

@@ -58,7 +58,7 @@ export type SemanticLinkMeta = {
 
 export type ProposalState = "draft" | "proposed" | "accepted"
 
-export type ParameterFieldType = "text" | "textarea" | "number" | "slider" | "select" | "boolean" | "tokens"
+export type ParameterFieldType = "text" | "textarea" | "json" | "number" | "slider" | "select" | "boolean" | "tokens"
 
 export type ParameterBinding = {
   nodeId: string
@@ -81,6 +81,8 @@ export type ParameterInterfaceField = {
   description?: string
   order?: number
   readonly?: boolean
+  optional?: boolean
+  allowCustom?: boolean
   value?: unknown
   placeholder?: string
   min?: number

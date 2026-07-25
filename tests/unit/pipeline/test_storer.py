@@ -26,12 +26,18 @@ async def test_store_new_records(db_session):
     triples = [
         (
             {"title": "Article 1"},
-            {"title": "Article 1", "url": "", "content": "", "author": "", "published_at": "", "source_id": source.id},
+            {
+                "title": "Article 1", "url": "", "content": "", "author": "",
+                "published_at": "", "source_id": source.id,
+            },
             "hash_abc123_1",
         ),
         (
             {"title": "Article 2"},
-            {"title": "Article 2", "url": "", "content": "", "author": "", "published_at": "", "source_id": source.id},
+            {
+                "title": "Article 2", "url": "", "content": "", "author": "",
+                "published_at": "", "source_id": source.id,
+            },
             "hash_abc123_2",
         ),
     ]
@@ -60,7 +66,10 @@ async def test_store_deduplication(db_session):
 
     triple = (
         {"title": "Same Article"},
-        {"title": "Same", "url": "", "content": "", "author": "", "published_at": "", "source_id": source.id},
+        {
+            "title": "Same", "url": "", "content": "", "author": "",
+            "published_at": "", "source_id": source.id,
+        },
         "same_hash_xyz",
     )
 
@@ -73,6 +82,115 @@ async def test_store_deduplication(db_session):
     records2, skipped2 = await store_records(db_session, task.id, source.id, [triple])
     assert len(records2) == 0
     assert skipped2 == 1
+
+
+@pytest.mark.asyncio
+async def test_store_dedup_within_single_batch(db_session):
+    """Two triples in the SAME store_records() call sharing a content_hash,
+    neither previously stored (no identity involved): only one row lands,
+    same net result as test_store_deduplication's cross-run case above but
+    within one call — e.g. a channel returning the same item twice in one
+    fetch (pagination overlap, a feed listing an entry twice).
+
+    Two layers cooperate to guarantee this, both already covered elsewhere:
+    the in-memory ``seen_in_batch`` fast path (this test's primary target)
+    skips the second triple before it ever reaches flush(); if that guard
+    were bypassed, the (source_id, content_hash) unique constraint plus the
+    per-record retry-on-IntegrityError path (test_store_survives_concurrent_
+    race_on_flush) would still catch it at flush() — confirmed empirically
+    by temporarily disabling seen_in_batch and observing this test still
+    pass via that path. This test pins the end-to-end guarantee; it does not
+    by itself distinguish which layer fired."""
+    from backend.models.source import DataSource
+    from backend.models.task import CollectionTask
+
+    source = DataSource(
+        name="Batch Dedup Source",
+        channel_type="rss",
+        channel_config={"feed_url": "https://example.com/feed.xml"},
+    )
+    db_session.add(source)
+    await db_session.flush()
+
+    task = CollectionTask(source_id=source.id, trigger_type="manual", parameters={})
+    db_session.add(task)
+    await db_session.flush()
+
+    triples = [
+        (
+            {"title": "Same Article"},
+            {
+                "title": "Same", "url": "", "content": "", "author": "",
+                "published_at": "", "source_id": source.id,
+            },
+            "batch_dup_hash",
+        ),
+        (
+            {"title": "Same Article (repeat)"},
+            {
+                "title": "Same", "url": "", "content": "", "author": "",
+                "published_at": "", "source_id": source.id,
+            },
+            "batch_dup_hash",
+        ),
+    ]
+
+    new_records, skipped = await store_records(db_session, task.id, source.id, triples)
+    assert len(new_records) == 1
+    assert skipped == 1
+
+    from sqlalchemy import select as sa_select
+
+    from backend.models.record import CollectedRecord
+
+    rows = (
+        await db_session.execute(
+            sa_select(CollectedRecord).where(CollectedRecord.source_id == source.id)
+        )
+    ).scalars().all()
+    assert len(rows) == 1  # DB agrees: one row, not two
+    assert rows[0].content_hash == "batch_dup_hash"
+
+
+@pytest.mark.asyncio
+async def test_store_distinct_items_in_one_batch_all_land(db_session):
+    """Sanity complement to the dedup tests above: several genuinely distinct
+    items in one batch are all stored, none mistaken for duplicates of each
+    other (proves the guards above key on content_hash equality, not on
+    batch position or count)."""
+    from backend.models.source import DataSource
+    from backend.models.task import CollectionTask
+
+    source = DataSource(
+        name="Distinct Items Source",
+        channel_type="rss",
+        channel_config={"feed_url": "https://example.com/feed.xml"},
+    )
+    db_session.add(source)
+    await db_session.flush()
+
+    task = CollectionTask(source_id=source.id, trigger_type="manual", parameters={})
+    db_session.add(task)
+    await db_session.flush()
+
+    triples = [
+        (
+            {"title": f"Article {i}"},
+            {
+                "title": f"Article {i}", "url": "", "content": "", "author": "",
+                "published_at": "", "source_id": source.id,
+            },
+            f"distinct_hash_{i}",
+        )
+        for i in range(3)
+    ]
+
+    new_records, skipped = await store_records(db_session, task.id, source.id, triples)
+    assert skipped == 0
+    assert len(new_records) == 3
+    assert {r.content_hash for r in new_records} == {
+        "distinct_hash_0", "distinct_hash_1", "distinct_hash_2",
+    }
 
 
 @pytest.mark.asyncio
@@ -118,12 +236,18 @@ async def test_store_survives_concurrent_race_on_flush(db_session):
     triples = [
         (
             {"title": "Loser"},
-            {"title": "Loser", "url": "", "content": "", "author": "", "published_at": "", "source_id": source.id},
+            {
+                "title": "Loser", "url": "", "content": "", "author": "",
+                "published_at": "", "source_id": source.id,
+            },
             "race_hash",
         ),
         (
             {"title": "Clean"},
-            {"title": "Clean", "url": "", "content": "", "author": "", "published_at": "", "source_id": source.id},
+            {
+                "title": "Clean", "url": "", "content": "", "author": "",
+                "published_at": "", "source_id": source.id,
+            },
             "clean_hash",
         ),
     ]

@@ -20,6 +20,7 @@ from backend.workflow.block_reasons import (
     MISSING_TURBOPUSH_CONTENT_TYPE,
     MISSING_TURBOPUSH_SERVICE,
 )
+from backend.workflow.data_operators import resolve_data_operator
 from backend.workflow.dify_graphon_client import (
     DIFY_GRAPHON_BINDING_ID,
     DIFY_GRAPHON_COMMIT,
@@ -52,6 +53,12 @@ SOURCE_POOL_BINDING_ID = "workflow.source-pool.parallel-fanout"
 COLLECTION_OUTPUT_BINDING_ID = "workflow.collection-output.items"
 NORMALIZE_BINDING_ID = "workflow.transform.normalize"
 DEDUPE_BINDING_ID = "workflow.transform.dedupe"
+DATA_OPERATOR_CATALOG_BINDINGS = {
+    "intelligence.data.generate": "workflow.data.generate",
+    "intelligence.data.filter": "workflow.data.filter",
+    "intelligence.data.evaluate": "workflow.data.evaluate",
+    "intelligence.data.refine": "workflow.data.refine",
+}
 MERGE_BINDING_ID = "workflow.flow.merge"
 ROUTER_ROUTE_BINDING_ID = "workflow.router.route"
 RECORD_ACCEPTANCE_BINDING_ID = "workflow.gate.record-acceptance"
@@ -68,6 +75,7 @@ SUPPORTED_TOOL_EXECUTOR_MODES = {
     "swarm_simulation",
     "native_intelligence",
 }
+_LEGACY_DATA_OPERATOR_PACK_VERSION = "1.0.0"
 
 
 class WorkflowRuntimeBinding(BaseModel):
@@ -116,6 +124,8 @@ def resolve_runtime_metadata(
         metadata = _resolve_source_pool(node, node_id=resolved_node_id)
     elif _is_collection_output(node):
         metadata = _resolve_collection_output(node, node_id=resolved_node_id)
+    elif _is_data_operator_node(node):
+        metadata = _resolve_data_operator_node(node, node_id=resolved_node_id)
     elif _is_normalize_node(node):
         metadata = _resolve_normalize_node(node, node_id=resolved_node_id)
     elif _is_dedupe_node(node):
@@ -458,6 +468,91 @@ def _resolve_dedupe_node(node: WorkflowProjectNode, *, node_id: str) -> dict[str
             "node_id": node_id,
             "candidate_port": "recordCandidate[]",
             "evidence_ports": ["rejected[]", "metrics"],
+        },
+    }
+
+
+def _resolve_data_operator_node(
+    node: WorkflowProjectNode,
+    *,
+    node_id: str,
+) -> dict[str, Any]:
+    operator_id = _read_string(node.params.get("operatorId"))
+    pack_version_provided = "packVersion" in node.params
+    requested_pack_version = _read_string(node.params.get("packVersion"))
+    resolved_pack_version = (
+        requested_pack_version or _LEGACY_DATA_OPERATOR_PACK_VERSION
+    )
+    spec = (
+        resolve_data_operator(operator_id, resolved_pack_version)
+        if operator_id and (requested_pack_version or not pack_version_provided)
+        else None
+    )
+    known_spec = resolve_data_operator(operator_id) if operator_id else None
+    catalog_id = _read_string((node.ui or {}).get("catalogId"))
+    binding_id = DATA_OPERATOR_CATALOG_BINDINGS.get(catalog_id or "")
+    catalog_kind = binding_id.rsplit(".", 1)[-1] if binding_id else None
+    if spec is None or spec.kind != catalog_kind:
+        code = (
+            "missing_data_operator_id"
+            if operator_id is None
+            else "unsupported_data_operator_version"
+            if pack_version_provided and known_spec is not None
+            else "unknown_data_operator"
+            if spec is None
+            else "data_operator_kind_mismatch"
+        )
+        return {
+            "missing_runtime": _dump_missing_runtime(
+                WorkflowMissingRuntime(
+                    code=code,
+                    node_id=node_id,
+                    kind=node.kind,
+                    capability=node.capability,
+                    required_params=["operatorId"],
+                    message=(
+                        "Data operator node requires a registered operatorId matching "
+                        f'catalog kind "{catalog_kind or "unknown"}".'
+                    ),
+                )
+            )
+        }
+
+    flat_config = {
+        key: value
+        for key, value in node.params.items()
+        if key not in {"operatorId", "packVersion", "config"}
+    }
+    nested_config = node.params.get("config")
+    config: Any = (
+        {**flat_config, **nested_config}
+        if isinstance(nested_config, dict)
+        else flat_config
+        if nested_config is None
+        else nested_config
+    )
+    return {
+        "binding": {
+            "status": "bound",
+            "binding_id": binding_id,
+            "runtime": "workflow",
+            "channel": "data-operator",
+            "input": {
+                "operatorId": operator_id,
+                "operatorKind": spec.kind,
+                "packId": spec.pack_id,
+                "packVersion": spec.pack_version,
+                "config": config,
+                "inputPort": "recordCandidate[]",
+                "outputPort": "recordCandidate[]",
+            },
+        },
+        "data_operator": {
+            "node_id": node_id,
+            "operator_id": operator_id,
+            "operator_kind": spec.kind,
+            "pack_id": spec.pack_id,
+            "pack_version": spec.pack_version,
         },
     }
 
@@ -992,6 +1087,16 @@ def _is_dedupe_node(node: WorkflowProjectNode) -> bool:
     ) == "intelligence.processing.dedupe" or (
         node.kind == "agent" and node.capability == "dedupe"
     )
+
+
+def _is_data_operator_node(node: WorkflowProjectNode) -> bool:
+    return _data_operator_kind(node) is not None
+
+
+def _data_operator_kind(node: WorkflowProjectNode) -> str | None:
+    catalog_id = _read_string((node.ui or {}).get("catalogId"))
+    binding_id = DATA_OPERATOR_CATALOG_BINDINGS.get(catalog_id or "")
+    return binding_id.rsplit(".", 1)[-1] if binding_id else None
 
 
 def _is_merge_node(node: WorkflowProjectNode) -> bool:

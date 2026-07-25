@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react"
 import Link from "next/link"
 import { AlertTriangle, Database, ExternalLink, Plus, PlugZap, Trash2 } from "lucide-react"
-import { useFlowStore } from "@/lib/flow/store"
+import { clearParameterDraftEntry, useFlowStore } from "@/lib/flow/store"
 import { useSources } from "@/lib/api/hooks"
 import type {
   FieldConfig,
@@ -25,7 +25,11 @@ import {
 } from "@/components/ui/select"
 import type { NodeInternalStatus } from "@/lib/workflow/node-internals"
 import { getNodeTemplate } from "@/lib/workflow/node-templates"
-import { buildParameterInterfaceView, type ParameterInterfaceViewField } from "@/lib/workflow/parameter-interface"
+import {
+  buildParameterInterfaceView,
+  parseJsonParameterValue,
+  type ParameterInterfaceViewField,
+} from "@/lib/workflow/parameter-interface"
 import { blockedActionViewForRuntime } from "@/lib/workflow/capabilities"
 import { businessNodeName } from "@/lib/workflow/business-node-experience"
 import { buildCanonicalNodeViewContract } from "@/lib/workflow/canonical-node-contract"
@@ -147,6 +151,8 @@ export function Inspector() {
   const onEdgesChange = useFlowStore((s) => s.onEdgesChange)
   const [nodeTab, setNodeTab] = useState<"config" | "prompt" | "run" | "trace">("config")
   const [parameterGroupTab, setParameterGroupTab] = useState("")
+  const [jsonDrafts, setJsonDrafts] = useState<Record<string, string>>({})
+  const [jsonErrors, setJsonErrors] = useState<Record<string, string>>({})
 
   const selected = nodes.filter((n) => n.selected)
   const selectedEdges = edges.filter((e) => e.selected)
@@ -420,9 +426,18 @@ export function Inspector() {
 
   const updateParameterField = (field: ParameterInterfaceViewField, value: unknown) => {
     if (field.readonly) return
+    if (field.binding.source === "params" && field.binding.fieldId === "operatorId") {
+      const configField = parameterInterfaceView?.fields.find(
+        (candidate) => candidate.binding.source === "params" && candidate.binding.fieldId === "config",
+      )
+      if (configField) {
+        setJsonDrafts((drafts) => clearParameterDraftEntry(drafts, configurationNodeId, configField.id))
+        setJsonErrors((errors) => clearParameterDraftEntry(errors, configurationNodeId, configField.id))
+      }
+    }
     if (parameterInterfaceView?.mode === "template") {
-        if (field.binding.source === "adapter") {
-          if (field.binding.fieldId === "mode") {
+      if (field.binding.source === "adapter") {
+        if (field.binding.fieldId === "mode") {
           updateWorkflowNodeParams(configurationNodeId, {}, { mode: value as never })
           return
         }
@@ -467,6 +482,47 @@ export function Inspector() {
         <div className="min-w-0">{control}</div>
       </div>
     )
+
+    if (field.type === "json") {
+      const draftKey = `${configurationNodeId}:${field.id}`
+      const value = jsonDrafts[draftKey] ?? formatJsonParameterValue(raw)
+      const error = jsonErrors[draftKey]
+      return row(
+        <div className="space-y-1">
+          <Textarea
+            id={fieldId}
+            rows={5}
+            readOnly={field.readonly}
+            className={cn(houdiniTextareaClass, error && "border-[#f87171]/70")}
+            value={value}
+            onChange={(event) => {
+              const next = event.target.value
+              setJsonDrafts((drafts) => ({ ...drafts, [draftKey]: next }))
+              const parsed = parseJsonParameterValue(next)
+              if (!parsed.ok) {
+                setJsonErrors((errors) => ({ ...errors, [draftKey]: parsed.error }))
+                return
+              }
+              setJsonErrors((errors) => {
+                const updated = { ...errors }
+                delete updated[draftKey]
+                return updated
+              })
+              updateParameterField(field, parsed.value)
+            }}
+            onBlur={() => {
+              if (jsonErrors[draftKey]) return
+              setJsonDrafts((drafts) => {
+                const updated = { ...drafts }
+                delete updated[draftKey]
+                return updated
+              })
+            }}
+          />
+          {error ? <p role="alert" className="font-mono text-[10px] text-[#f87171]">{error}</p> : null}
+        </div>,
+      )
+    }
 
     if (field.type === "boolean") {
       const checked = raw === true || raw === "true"
@@ -534,9 +590,17 @@ export function Inspector() {
             ? raw.split(",").map((value) => value.trim()).filter(Boolean)
             : [],
       )
+      const options = field.options ?? []
+      const optionValues = new Set(options.map((option) => option.value))
+      const visibleOptions = [
+        ...options,
+        ...Array.from(selectedValues)
+          .filter((value) => !optionValues.has(value))
+          .map((value) => ({ value, label: value })),
+      ]
       return row(
-        <div className="flex flex-wrap gap-1">
-          {(field.options ?? []).map((option) => {
+        <div className="flex flex-wrap items-center gap-1">
+          {visibleOptions.map((option) => {
             const selectedToken = selectedValues.has(option.value)
             return (
               <button
@@ -560,6 +624,21 @@ export function Inspector() {
               </button>
             )
           })}
+          {field.allowCustom ? (
+            <Input
+              disabled={field.readonly}
+              placeholder="Add value"
+              className={cn(houdiniInputClass, "h-6 w-28 px-2 text-[10px]")}
+              onKeyDown={(event) => {
+                if (event.key !== "Enter" && event.key !== ",") return
+                event.preventDefault()
+                const value = event.currentTarget.value.trim().replace(/,$/, "")
+                if (!value) return
+                updateParameterField(field, [...selectedValues, value])
+                event.currentTarget.value = ""
+              }}
+            />
+          ) : null}
         </div>,
       )
     }
@@ -599,7 +678,12 @@ export function Inspector() {
     }
 
     if (field.type === "number") {
-      const value = typeof raw === "number" ? raw : Number(raw ?? 0)
+      const value =
+        typeof raw === "number"
+          ? raw
+          : typeof raw === "string" && raw.trim()
+            ? Number(raw)
+            : undefined
       return row(
           <Input
             id={fieldId}
@@ -608,8 +692,14 @@ export function Inspector() {
             max={field.max}
             step={field.step}
             readOnly={field.readonly}
-            value={Number.isFinite(value) ? value : 0}
-            onChange={(e) => updateParameterField(field, Number(e.target.value))}
+            value={typeof value === "number" && Number.isFinite(value) ? value : field.optional ? "" : 0}
+            onChange={(e) => {
+              if (field.optional && !e.target.value) {
+                updateParameterField(field, undefined)
+                return
+              }
+              updateParameterField(field, Number(e.target.value))
+            }}
             className={houdiniInputClass}
           />,
       )
@@ -1339,4 +1429,9 @@ function SourceArgsEditor({
       {error ? <p className="text-[10px] text-[#f87171]">{error}</p> : null}
     </div>
   )
+}
+
+function formatJsonParameterValue(value: unknown): string {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return "{}"
+  return JSON.stringify(value, null, 2)
 }

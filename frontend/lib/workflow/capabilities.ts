@@ -71,6 +71,20 @@ export type WorkflowCapabilitiesIndex = {
   primitives: Map<string, WorkflowRuntimeCapability>
 }
 
+export type DataOperatorKind = "generate" | "filter" | "evaluate" | "refine"
+
+export type DataOperatorManifestEntry = {
+  id: string
+  kind: DataOperatorKind
+  label: string
+  pack: string
+  version: string
+  status: string
+  readiness: string
+  configKeys: string[]
+  configSchema?: Record<string, unknown>
+}
+
 type WorkflowRunBlockReasonLike = {
   message?: string | null
   details?: Record<string, unknown>
@@ -172,6 +186,31 @@ export function runtimeContractForCapability(
     },
     canvas: { exposeResourceInternals: canvas?.exposeResourceInternals === true },
   }
+}
+
+export function dataOperatorsForCapability(
+  capability: WorkflowRuntimeCapability | null | undefined,
+  kind?: DataOperatorKind,
+): DataOperatorManifestEntry[] {
+  const manifest = readRecord(capability?.manifest)
+  if (!Array.isArray(manifest?.operators)) return []
+  return manifest.operators.flatMap((value) => {
+    const operator = readRecord(value)
+    const id = readString(operator?.id) ?? readString(operator?.operatorId)
+    const operatorKind = readString(operator?.kind)
+    if (!id || !isDataOperatorKind(operatorKind) || (kind && operatorKind !== kind)) return []
+    return [{
+      id,
+      kind: operatorKind,
+      label: readString(operator?.label) ?? id,
+      pack: readString(operator?.pack) ?? readString(operator?.packId) ?? "unknown-pack",
+      version: readString(operator?.version) ?? readString(operator?.packVersion) ?? "unknown",
+      status: readString(operator?.status) ?? capability?.status ?? "unknown",
+      readiness: readString(operator?.readiness) ?? readString(operator?.status) ?? capability?.status ?? "unknown",
+      configKeys: readStrings(operator?.configKeys),
+      configSchema: readRecord(operator?.configSchema),
+    }]
+  })
 }
 
 export function isUserFacingRuntimeParam(value: string): boolean {
@@ -289,6 +328,10 @@ function isRuntimeContractStatus(value: string | undefined): value is WorkflowRu
     value === "projection_only" ||
     value === "blocked_until_preconditions"
   )
+}
+
+function isDataOperatorKind(value: string | undefined): value is DataOperatorKind {
+  return value === "generate" || value === "filter" || value === "evaluate" || value === "refine"
 }
 
 function readRecord(value: unknown): Record<string, unknown> | undefined {

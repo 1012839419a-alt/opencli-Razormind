@@ -17,12 +17,21 @@ SQLAlchemy 模型：[`backend/models/record.py`](../backend/models/record.py)
 | `normalized_data` | JSON | **下游应消费的标准字段**，详见下表 |
 | `ai_enrichment` | JSON / NULL | AI processor 写回的 enrichment；schema 由 processor + prompt 决定，无强制契约 |
 | `content_hash` | TEXT (sha256) | `(source_id, content_hash)` 唯一约束用于去重 |
+| `identity_key` | TEXT / NULL | 渠道 `identity()` 提供的稳定原生 id（RSS entry id、tweet id...）；NULL 表示渠道未实现 `identity()`。补充去重键，非 `content_hash` 的替代——同一 identity 命中且内容变化时就地更新该行，而不是插入新行 |
 | `status` | TEXT | `raw` → `normalized` → `ai_processed` → `notified`；失败为 `error` |
 | `error_message` | TEXT / NULL | `status='error'` 时填错误描述 |
 | `created_at` | DATETIME | 入库时间 |
 | `updated_at` | DATETIME | 末次更新（含 AI 回填） |
 
-唯一约束：`uq_source_content (source_id, content_hash)`。
+唯一约束：`uq_source_content (source_id, content_hash)`。非唯一索引：`ix_collected_records_source_identity (source_id, identity_key)`。
+
+### 去重保证
+
+按数据源去重是**入库层的强制保证**，不是可选的工作流节点：任何 source（不论通过 `POST /sources` 直接创建，还是工作流编排）在写入这张表时都会经过同一条路径——`backend/pipeline/normalizer.py` 对每条 item 无条件计算 `content_hash`，`backend/pipeline/storer.py` 在写入前按 `source_id` 查重（含同一批次内部去重），并由上面的唯一约束在 DB 层兜底并发竞争。跳过的条数经由 `SinkResult.duplicates` 一路传导到 `SourceMeasurement.duplicates`/`duplicate_rate`（见 [`CONTROL_THEORY_ARCHITECTURE.md`](CONTROL_THEORY_ARCHITECTURE.md)）。
+
+工作流图上的 `text.deduplicate` 算子（`backend/workflow/demand_assembler.py`，仅在需求文本命中质量类关键词时才挂载）是完全独立的另一层：面向已入库内容的 AI 语料整理（exact/SimHash 近似去重可配置字段），不是入库去重的前提条件——没有它，入库去重依然生效。
+
+写入路径由 `write_strategy` 决定（`backend/pipeline/sinks/strategy.py`）：默认 `legacy` 和 `odp_shadow`/`odp_dual_required`/`odp_primary`（`DualSink`，legacy leg 为准）都会经过上述去重路径；只有 `odp_only`（不落这张表）把去重交给独立的 Rust ODP ingest 服务，语义由该服务自行保证，不在本文档范围内。
 
 ## `normalized_data` JSON 内的标准字段
 

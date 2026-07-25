@@ -134,7 +134,7 @@ class WorkflowParameterInterfaceField(BaseModel):
     id: str = Field(..., min_length=1)
     label: str = Field(..., min_length=1)
     groupId: str = Field(..., min_length=1)
-    type: Literal["text", "textarea", "number", "slider", "select", "boolean", "tokens"]
+    type: Literal["text", "textarea", "json", "number", "slider", "select", "boolean", "tokens"]
     binding: WorkflowParameterBinding
     description: Optional[str] = None
     order: Optional[float] = None
@@ -284,22 +284,7 @@ class WorkflowDemandDraftRequest(BaseModel):
     locale: Optional[str] = None
 
 
-class WorkflowNodeEditDraftRequest(BaseModel):
-    """A bounded, reviewable AI edit request for one existing workflow node."""
-
-    project: WorkflowProject
-    nodeId: str = Field(..., min_length=1)
-    message: str = Field(..., min_length=1, max_length=4000)
-
-
-class WorkflowNodeEditDraftResponse(BaseModel):
-    """The assistant explanation plus an optional validated patch preview."""
-
-    reply: str = ""
-    patch: Optional[WorkflowPatchResponse] = None
-
-
-ExternalWorkflowRuntime = Literal["langgraph", "langchain"]
+ExternalWorkflowRuntime = Literal["langgraph", "langchain", "dataflow"]
 
 
 class WorkflowExternalImportRequest(BaseModel):

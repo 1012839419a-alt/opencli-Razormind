@@ -6,7 +6,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from backend.channels.base import ChannelResult
+from backend.channels.base import (
+    AbstractChannel,
+    ChannelFetchError,
+    ChannelResult,
+    FetchContext,
+)
 from backend.channels.opencli_channel import (
     OpenCLIChannel,
     _collect_via_agent,
@@ -19,6 +24,7 @@ from backend.channels.opencli_channel import (
     _parse_yaml,
     _run_opencli,
 )
+from backend.pipeline.error_taxonomy import effective_error_type, is_retryable
 
 
 def _sessionmaker(db_engine):
@@ -1108,3 +1114,177 @@ async def test_collect_subprocess_exception(channel):
 
     assert result.success is False
     assert "Failed to run" in result.error
+
+
+# ── fetch(): thick-contract migration ───────────────────────────────────────
+#
+# OpenCLIChannel migrates onto fetch() via the same narrow-override pattern as
+# BrowserActChannel (backend.channels.browser_act_channel): fetch() delegates
+# straight to collect() — the internal transport (subprocess / LAN-agent HTTP /
+# WS-agent dispatch) is unchanged and unmocked-transport-wise identical to the
+# collect() tests above; only the entry point differs.
+
+
+def test_opencli_channel_fetch_is_migrated():
+    """channel_runner.run_channel's migration check
+    (`type(chan).fetch is not AbstractChannel.fetch`) must recognize
+    OpenCLIChannel as migrated now that fetch() is overridden."""
+    assert OpenCLIChannel.fetch is not AbstractChannel.fetch
+
+
+@pytest.mark.asyncio
+async def test_fetch_returns_items_via_mocked_subprocess(channel):
+    """fetch() — the entry point run_channel actually calls in production —
+    returns items from opencli's real collection machinery, mocked at the same
+    seam (_run_opencli) the collect() tests above use. Never a real subprocess."""
+    mock_pool = _make_mock_pool(mode="cdp")
+    mock_settings = _make_mock_settings(collection_mode="local")
+
+    with (
+        patch("backend.browser_pool.get_pool", return_value=mock_pool),
+        patch("backend.config.get_settings", return_value=mock_settings),
+        patch(
+            "backend.channels.opencli_channel._run_opencli",
+            new=AsyncMock(return_value=(0, '[{"title": "test"}]', "")),
+        ),
+    ):
+        ctx = FetchContext(
+            config={"site": "example.com", "command": "list", "format": "json"},
+            params={},
+        )
+        result = await channel.fetch(ctx)
+
+    assert result.items == [{"title": "test"}]
+    # Metadata passthrough matters for opencli specifically (node_url /
+    # chrome_mode reach the runner through FetchResult.metadata).
+    assert result.metadata.get("chrome_mode") == "cdp"
+
+
+@pytest.mark.asyncio
+async def test_fetch_transport_timeout_classifies_as_retryable(channel):
+    """A subprocess timeout's error_type ("TimeoutError", set by
+    _collect_with_opencli_subprocess) must reach error_taxonomy as retryable —
+    proves fetch()'s ChannelFetchError(error_type=...) plumbing carries the
+    classification through, not just that collect() sets it right internally."""
+    mock_pool = _make_mock_pool(mode="cdp")
+    mock_settings = _make_mock_settings(collection_mode="local")
+
+    with (
+        patch("backend.browser_pool.get_pool", return_value=mock_pool),
+        patch("backend.config.get_settings", return_value=mock_settings),
+        patch(
+            "backend.channels.opencli_channel._run_opencli",
+            new=AsyncMock(side_effect=TimeoutError()),
+        ),
+    ):
+        ctx = FetchContext(config={"site": "example.com", "command": "list"}, params={})
+        with pytest.raises(ChannelFetchError) as exc_info:
+            await channel.fetch(ctx)
+
+    assert exc_info.value.error_type == "TimeoutError"
+    assert is_retryable(effective_error_type(exc_info.value)) is True
+
+
+@pytest.mark.asyncio
+async def test_fetch_binary_not_found_classifies_as_permanent(channel):
+    """FileNotFoundError's error_type ("FileNotFoundError") must classify as
+    permanent through the same fetch()->ChannelFetchError->error_taxonomy path —
+    retrying a missing binary can't ever succeed."""
+    mock_pool = _make_mock_pool(mode="cdp")
+    mock_settings = _make_mock_settings(collection_mode="local")
+
+    with (
+        patch("backend.browser_pool.get_pool", return_value=mock_pool),
+        patch("backend.config.get_settings", return_value=mock_settings),
+        patch(
+            "backend.channels.opencli_channel._run_opencli",
+            new=AsyncMock(side_effect=FileNotFoundError("binary not found")),
+        ),
+    ):
+        ctx = FetchContext(config={"site": "example.com", "command": "list"}, params={})
+        with pytest.raises(ChannelFetchError) as exc_info:
+            await channel.fetch(ctx)
+
+    assert exc_info.value.error_type == "FileNotFoundError"
+    assert is_retryable(effective_error_type(exc_info.value)) is False
+
+
+@pytest.mark.asyncio
+async def test_collect_does_not_route_through_fetch(channel):
+    """Legacy path guard: collect() must stay the single source of truth for
+    site-routing (unlike api_channel/crawl4ai_channel's inverted
+    collect()-calls-fetch() pattern) — migrating fetch() must not silently
+    become a rewrite of collect()'s dispatch logic. Same mocked seam and config
+    as test_collect_local_cdp_success, plus a spy proving fetch() is never
+    called from inside collect()."""
+    mock_pool = _make_mock_pool(mode="cdp")
+    mock_settings = _make_mock_settings(collection_mode="local")
+
+    with (
+        patch("backend.browser_pool.get_pool", return_value=mock_pool),
+        patch("backend.config.get_settings", return_value=mock_settings),
+        patch(
+            "backend.channels.opencli_channel._run_opencli",
+            new=AsyncMock(return_value=(0, '[{"title": "test"}]', "")),
+        ),
+        patch.object(
+            channel,
+            "fetch",
+            new=AsyncMock(side_effect=AssertionError("collect() must not call fetch()")),
+        ) as mock_fetch,
+    ):
+        result = await channel.collect(
+            {"site": "example.com", "command": "list", "format": "json"}, {}
+        )
+
+    assert result.success is True
+    assert result.items == [{"title": "test"}]
+    mock_fetch.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_run_channel_builds_rate_limited_client_for_opencli(
+    opencli_manifest_mocks,
+):
+    """End-to-end proof of the migration through the real runner entry point
+    (mirrors test_channel_runner.py's
+    test_migrated_channel_still_builds_rate_limited_client_when_none_injected,
+    and test_rss_fetch.py's test_run_channel_drives_rss_and_persists_cursor, but
+    with the real OpenCLIChannel): a migrated channel gets a RateLimitedClient
+    built from its declared default_rate when the caller injects no http of its
+    own — even though opencli's fetch() never reads ctx.http (documented
+    accepted trade-off, same as BrowserActChannel)."""
+    from types import SimpleNamespace
+
+    from backend.pipeline.channel_runner import run_channel
+    from backend.pipeline.cursor_store import InMemoryCursorStore
+
+    opencli_manifest_mocks["requires_browser"] = False
+    mock_settings = _make_mock_settings(collection_mode="local")
+    source = SimpleNamespace(
+        id="src-opencli-1",
+        channel_type="opencli",
+        channel_config={"site": "bbc", "command": "news", "format": "json"},
+    )
+
+    with (
+        patch("backend.config.get_settings", return_value=mock_settings),
+        patch(
+            "backend.channels.opencli_channel._run_opencli",
+            new=AsyncMock(return_value=(0, '[{"title": "news"}]', "")),
+        ),
+        patch("backend.pipeline.channel_runner.RateLimitedClient") as mock_rlc,
+    ):
+        mock_rlc.return_value.aclose = AsyncMock()
+        result = await run_channel(
+            source, {}, channel=OpenCLIChannel(), cursor_store=InMemoryCursorStore()
+        )
+
+    assert result.items == [{"title": "news"}]
+    mock_rlc.assert_called_once()
+    from backend.pipeline.http_client import TokenBucket, parse_rate
+
+    bucket = mock_rlc.call_args.args[1]
+    assert isinstance(bucket, TokenBucket)
+    assert bucket.rate == parse_rate(OpenCLIChannel().capabilities.default_rate)
+    assert bucket.rate == parse_rate("60/min")

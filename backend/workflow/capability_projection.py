@@ -20,6 +20,7 @@ from backend.schemas.workflow import (
     WorkflowNodeKind,
     WorkflowRuntimeCapability,
 )
+from backend.workflow.data_operators import list_data_operator_specs
 from backend.workflow.dify_graphon_client import DIFY_GRAPHON_BINDING_ID
 from backend.workflow.native_intelligence_executor import (
     NATIVE_INTELLIGENCE_LIFECYCLE_ACTIONS,
@@ -29,6 +30,7 @@ from backend.workflow.opencli_adapter_nodes import get_opencli_adapter_node_summ
 from backend.workflow.runtime_contracts import runtime_io_contract_manifest
 from backend.workflow.runtime_registry import (
     COLLECTION_OUTPUT_BINDING_ID,
+    DATA_OPERATOR_CATALOG_BINDINGS,
     DEDUPE_BINDING_ID,
     DEMAND_DRAFT_BINDING_ID,
     EXTERNAL_TOOL_BINDING_ID,
@@ -444,6 +446,7 @@ def _catalog_capabilities(*, dify_runtime_ready: bool) -> list[WorkflowRuntimeCa
                 probes=["typed_port_contract_registered"],
             ),
         ),
+        *_data_operator_capabilities(),
         _blocked_catalog(
             "intelligence.agent.summary",
             "LLM Summary",
@@ -889,6 +892,85 @@ def _plugin_node_shape(
     if family == "agent_strategy":
         return "agent", "summarize"
     return "action", "store"
+
+
+def _data_operator_capabilities() -> list[WorkflowRuntimeCapability]:
+    specs_by_kind: dict[str, list[object]] = {}
+    for spec in list_data_operator_specs():
+        specs_by_kind.setdefault(spec.kind, []).append(spec)
+
+    rows: list[WorkflowRuntimeCapability] = []
+    for catalog_id, binding_id in DATA_OPERATOR_CATALOG_BINDINGS.items():
+        operator_kind = catalog_id.rsplit(".", 1)[-1]
+        specs = sorted(
+            specs_by_kind.get(operator_kind, []),
+            key=lambda spec: spec.operator_id,
+        )
+        if not specs:
+            continue
+        operators = [
+            {
+                "id": spec.operator_id,
+                "operatorId": spec.operator_id,
+                "kind": spec.kind,
+                "label": spec.label,
+                "description": spec.description,
+                "pack": spec.pack_id,
+                "packId": spec.pack_id,
+                "version": spec.pack_version,
+                "packVersion": spec.pack_version,
+                "status": "runnable",
+                "readiness": "ready",
+                "configKeys": list(spec.config_keys),
+            }
+            for spec in specs
+        ]
+        rows.append(
+            _capability(
+                id=catalog_id,
+                label=f"Data {operator_kind.title()}",
+                surface="catalog",
+                status="runnable",
+                backend_available=True,
+                kind="agent",
+                capability="normalize",
+                provider="workflow",
+                runtime_binding=binding_id,
+                reason="Registered versioned data operators execute on Record Candidates.",
+                tags=["data", "operator", operator_kind],
+                source="backend.workflow.data_operators",
+                manifest={
+                    **_manifest(
+                        schema=f"capability.data.{operator_kind}.v1",
+                        input_ports=[_port("in", "recordCandidate[]")],
+                        output_ports=[_port("out", "recordCandidate[]")],
+                        runtime_binding=binding_id,
+                        trace_events=[
+                            "partial:outputItemCount",
+                            "completed",
+                            "failed",
+                        ],
+                        probes=["data_operator_registry"],
+                    ),
+                    "operatorIds": list(
+                        dict.fromkeys(operator["id"] for operator in operators)
+                    ),
+                    "operators": operators,
+                    "packs": sorted({operator["packId"] for operator in operators}),
+                    "params": list(
+                        dict.fromkeys(
+                            key for spec in specs for key in spec.config_keys
+                        )
+                    ),
+                    "artifacts": [
+                        "recordCandidate[]",
+                        "metrics",
+                        "rejectedCandidateIds",
+                    ],
+                },
+            )
+        )
+    return rows
 
 
 def _manifest(

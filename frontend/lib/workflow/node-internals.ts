@@ -14,6 +14,8 @@ export type NodeInternalExposedParam = {
   order?: number
   groupOrder?: number
   readonly?: boolean
+  optional?: boolean
+  allowCustom?: boolean
   value?: unknown
   placeholder?: string
   min?: number
@@ -220,6 +222,10 @@ const NODE_INTERNALS: Record<string, NodeInternals> = {
       step("coverage", "Drop coverage", "validate", "Records dropped item evidence.", "dropped ids", "future"),
     ],
   },
+  "intelligence.data.generate": dataOperatorInternals("Generate Data", "core.generate.instruction-pairs"),
+  "intelligence.data.filter": dataOperatorInternals("Filter Data", "core.filter.quality"),
+  "intelligence.data.evaluate": dataOperatorInternals("Evaluate Data", "core.evaluate.quality"),
+  "intelligence.data.refine": dataOperatorInternals("Refine Data", "core.refine.text"),
   "intelligence.agent.score": {
     title: "Scoring Internals",
     summary: "Turns raw items into ranked signals with an explainable threshold.",
@@ -647,6 +653,21 @@ const NODE_INTERNALS: Record<string, NodeInternals> = {
   },
 }
 
+const DATA_OPERATOR_KIND_BY_OPERATOR_ID: Record<string, string> = {
+  "core.generate.instruction-pairs": "generate",
+  "core.filter.quality": "filter",
+  "core.evaluate.quality": "evaluate",
+  "core.refine.text": "refine",
+  "text.clean": "refine",
+  "text.rule-filter": "filter",
+  "text.deduplicate": "filter",
+  "text.statistics": "evaluate",
+  "data.project": "refine",
+  "data.chunk": "generate",
+  "data.qa-extract": "generate",
+  "data.training-format": "refine",
+}
+
 export function getNodeInternals(node: WorkflowProjectNode | undefined): NodeInternals | undefined {
   if (!node) return undefined
   const catalogId = typeof node.ui?.catalogId === "string" ? node.ui.catalogId : undefined
@@ -658,6 +679,10 @@ export function getNodeInternals(node: WorkflowProjectNode | undefined): NodeInt
   if (node.kind === "source" && node.adapter === "rss-feed") return NODE_INTERNALS["intelligence.source.rss"]
   if (node.kind === "source" && node.adapter?.startsWith("opencli-")) return NODE_INTERNALS["intelligence.source.opencli-slot"]
   if (node.kind === "agent" && node.capability === "normalize" && node.params.fanout === "parallel") return NODE_INTERNALS["intelligence.source.pool"]
+  if (node.kind === "agent" && typeof node.params.operatorId === "string") {
+    const kind = DATA_OPERATOR_KIND_BY_OPERATOR_ID[node.params.operatorId]
+    if (kind && NODE_INTERNALS[`intelligence.data.${kind}`]) return NODE_INTERNALS[`intelligence.data.${kind}`]
+  }
   if (node.kind === "agent" && node.capability === "normalize") return NODE_INTERNALS["intelligence.processing.normalize"]
   if (node.kind === "agent" && node.capability === "dedupe") return NODE_INTERNALS["intelligence.processing.dedupe"]
   if (node.kind === "agent" && node.capability === "summarize") return NODE_INTERNALS["intelligence.agent.summary"]
@@ -682,6 +707,24 @@ function step(
   exposedParams?: NodeInternalExposedParam[],
 ): NodeInternalStep {
   return { id, label, capability, description, evidence, status, exposedParams }
+}
+
+function dataOperatorInternals(title: string, operatorId: string): NodeInternals {
+  return {
+    title: `${title} Internals`,
+    summary: "Runs a backend-projected Data Operator Pack implementation while preserving candidate lineage.",
+    steps: [
+      step("operator", "Operator binding", "dispatch", "Selects a same-kind operator from the backend capability manifest.", operatorId, "ready", [
+        exposedParam("operatorId", "Operator", "operator", "Data Operator", "text", operatorId, { order: 1 }),
+        exposedParam("config", "Config (JSON)", "operator", "Data Operator", "json", {}, {
+          description: "Operator-specific configuration object.",
+          order: 2,
+        }),
+      ]),
+      step("lineage", "Lineage guard", "validate", "Preserves input candidate lineage on every emitted candidate.", "recordCandidate[]", "ready"),
+      step("metrics", "Metrics projection", "evidence", "Projects metrics and rejected candidate ids into the runtime trace.", "metrics", "ready"),
+    ],
+  }
 }
 
 function exposedParam(
