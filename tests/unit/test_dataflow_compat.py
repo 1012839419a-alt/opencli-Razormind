@@ -7,6 +7,7 @@ import pytest
 from backend.workflow.dataflow_compat import (
     COMPAT_EXECUTORS,
     COMPAT_OPERATOR_DEFINITIONS,
+    COMPAT_PACK_VERSION,
     DATAFLOW_ALIAS_SOURCE_IDS,
     DataFlowInvocation,
     translate_dataflow_alias,
@@ -299,3 +300,31 @@ def test_unsupported_alias_configs_fail_closed(
 ) -> None:
     with pytest.raises(ValueError, match="dataflow_operator_unsupported"):
         translate_dataflow_alias(DATAFLOW_ALIAS_SOURCE_IDS[alias], init, run)
+
+
+@pytest.mark.parametrize("fields", [[], ["title", "text"]])
+def test_rule_filter_requires_exactly_one_field(fields: list[str]) -> None:
+    executor = COMPAT_EXECUTORS[("text.rule-filter", COMPAT_PACK_VERSION)]
+    items = [_candidate("only", text="hello world")]
+    with pytest.raises(ValueError, match="dataflow_operator_unsupported"):
+        executor(items, {"fields": fields})
+
+
+def test_deduplicate_requires_at_least_one_field() -> None:
+    executor = COMPAT_EXECUTORS[("text.deduplicate", COMPAT_PACK_VERSION)]
+    with pytest.raises(ValueError, match="dataflow_operator_unsupported"):
+        executor([_candidate("only", text="x")], {"fields": []})
+
+
+def test_deduplicate_treats_missing_fields_as_empty_text() -> None:
+    executor = COMPAT_EXECUTORS[("text.deduplicate", COMPAT_PACK_VERSION)]
+    items = [
+        _candidate("first", title="T"),
+        _candidate("second", title="T"),
+        _candidate("third", title="T", content="body"),
+    ]
+    output, metrics, rejected = executor(items, {"fields": ["title", "content"]})
+
+    assert [item["candidateId"] for item in output] == ["first", "third"]
+    assert rejected == ["second"]
+    assert metrics["duplicateCount"] == 1

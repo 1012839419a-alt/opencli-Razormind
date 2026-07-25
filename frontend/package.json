@@ -10,6 +10,7 @@
     "check:navigation-transitions": "node --test scripts/check-navigation-transition-regressions.mjs",
     "check:control-plane": "node --test scripts/check-control-plane-regressions.mjs scripts/check-dashboard-regressions.mjs scripts/check-inbox-regressions.mjs",
     "test:workflow-contracts": "node scripts/assert-workflow-contracts.mjs",
+    "test:data-operator-nodes": "node scripts/test-data-operator-nodes.mjs",
     "start": "next start",
     "lint": "eslint ."
   },

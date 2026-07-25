@@ -559,6 +559,21 @@ const NODE_INTERNALS: Record<string, NodeInternals> = {
   },
 }
 
+const DATA_OPERATOR_KIND_BY_OPERATOR_ID: Record<string, string> = {
+  "core.generate.instruction-pairs": "generate",
+  "core.filter.quality": "filter",
+  "core.evaluate.quality": "evaluate",
+  "core.refine.text": "refine",
+  "text.clean": "refine",
+  "text.rule-filter": "filter",
+  "text.deduplicate": "filter",
+  "text.statistics": "evaluate",
+  "data.project": "refine",
+  "data.chunk": "generate",
+  "data.qa-extract": "generate",
+  "data.training-format": "refine",
+}
+
 export function getNodeInternals(node: WorkflowProjectNode | undefined): NodeInternals | undefined {
   if (!node) return undefined
   const catalogId = typeof node.ui?.catalogId === "string" ? node.ui.catalogId : undefined
@@ -570,7 +585,7 @@ export function getNodeInternals(node: WorkflowProjectNode | undefined): NodeInt
   if (node.kind === "source" && node.adapter?.startsWith("opencli-")) return NODE_INTERNALS["intelligence.source.opencli-slot"]
   if (node.kind === "agent" && node.capability === "normalize" && node.params.fanout === "parallel") return NODE_INTERNALS["intelligence.source.pool"]
   if (node.kind === "agent" && typeof node.params.operatorId === "string") {
-    const kind = node.params.operatorId.split(".")[1]
+    const kind = DATA_OPERATOR_KIND_BY_OPERATOR_ID[node.params.operatorId]
     if (kind && NODE_INTERNALS[`intelligence.data.${kind}`]) return NODE_INTERNALS[`intelligence.data.${kind}`]
   }
   if (node.kind === "agent" && node.capability === "normalize") return NODE_INTERNALS["intelligence.processing.normalize"]

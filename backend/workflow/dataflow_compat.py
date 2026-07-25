@@ -558,6 +558,10 @@ def _text_rule_filter(
     _validate_items(items)
     _only_keys(config, {"fields", "rules"}, "text.rule-filter")
     fields = _string_list(config.get("fields", ["content"]), "fields")
+    if len(fields) != 1:
+        _unsupported(
+            "text.rule-filter supports exactly one field per invocation"
+        )
     rules = config.get(
         "rules",
         [{"type": "contentNull", "outputKey": "content_null_filter_label"}],
@@ -600,6 +604,8 @@ def _text_deduplicate(
         "text.deduplicate",
     )
     fields = _string_list(config.get("fields", ["title", "content"]), "fields")
+    if not fields:
+        _unsupported("text.deduplicate requires at least one field")
     mode = config.get("mode", "exact")
     if mode not in {"exact", "ngramHash"}:
         _unsupported("text.deduplicate mode must be exact or ngramHash")
@@ -631,9 +637,11 @@ def _text_deduplicate(
     for item in copy.deepcopy(items):
         normalized = _normalized(item)
         if len(fields) > 1:
-            text = "\n".join(f"{field}:\n{normalized[field]}" for field in fields)
+            text = "\n".join(
+                f"{field}:\n{_string_field(normalized, field)}" for field in fields
+            )
         else:
-            text = normalized[fields[0]]
+            text = _string_field(normalized, fields[0])
         if mode == "ngramHash":
             gram_length = len(text) // n_gram
             digests = {
@@ -1070,6 +1078,11 @@ def _string_list(value: Any, name: str) -> list[str]:
     ):
         _unsupported(f"{name} must be a list of non-empty strings")
     return list(value)
+
+
+def _string_field(normalized: Mapping[str, Any], field: str) -> str:
+    value = normalized.get(field)
+    return value if isinstance(value, str) else ""
 
 
 def _integer(value: Any, name: str) -> int:
