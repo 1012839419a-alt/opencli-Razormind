@@ -793,9 +793,9 @@ async def test_capabilities_publish_one_aggregated_manifest_per_data_operator_ki
             for operator in row["manifest"]["operators"]
         ]
         assert operators == expected
-        assert row["manifest"]["operatorIds"] == [
-            operator["operatorId"] for operator in expected
-        ]
+        assert row["manifest"]["operatorIds"] == list(
+            dict.fromkeys(operator["operatorId"] for operator in expected)
+        )
         assert row["manifest"]["packs"] == sorted(
             {operator["packId"] for operator in expected}
         )

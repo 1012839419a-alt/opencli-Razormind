@@ -90,10 +90,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
+      # frontend/pnpm-workspace.yaml is a pnpm 10 config store (allowBuilds,
+      # overrides, no `packages` field) — pnpm 9 rejects it outright.
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: 9
+          version: 10
 
       # test-data-operator-nodes.mjs imports the real .ts sources via
       # node:module registerHooks + stripTypeScriptTypes (needs Node >= 22.15).
