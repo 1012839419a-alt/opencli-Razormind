@@ -12,6 +12,7 @@ import type { DataSource } from '@/lib/api/types'
 import { formatRelative } from '@/lib/format'
 import { BACKEND_HINT, EmptyState, ErrorState, LoadingState } from '@/components/shell/data-states'
 import { PageContainer } from '@/components/shell/page-container'
+import { AUTOMATION_TABS, RouteTabs } from '@/components/shell/route-tabs'
 import { StatusBadge } from '@/components/shell/status-badge'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -39,8 +40,13 @@ const CHANNEL_LABEL: Record<DataSource['channel_type'], string> = {
 
 export default function SourcesPage() {
   const [enabledFilter, setEnabledFilter] = useState<'all' | 'enabled' | 'disabled'>('all')
+  const [page, setPage] = useState(1)
   const queryClient = useQueryClient()
-  const params = enabledFilter === 'all' ? undefined : { enabled: enabledFilter === 'enabled' }
+  const params = {
+    page,
+    limit: 50,
+    ...(enabledFilter === 'all' ? {} : { enabled: enabledFilter === 'enabled' }),
+  }
   const { data, isLoading, isError, error } = useSources(params)
 
   const toggle = useMutation({
@@ -63,6 +69,7 @@ export default function SourcesPage() {
   })
 
   const sources = data?.data ?? []
+  const pagination = data?.meta
 
   const filters: { key: typeof enabledFilter; label: string }[] = [
     { key: 'all', label: '全部' },
@@ -72,8 +79,10 @@ export default function SourcesPage() {
 
   return (
     <PageContainer
-      title="数据源"
-      description="采集入口配置，管理渠道、凭证与运行控制"
+      eyebrow="Automation"
+      title="自动化与 Agent"
+      description="从数据入口、触发调度到 Agent 处理和技能执行，集中管理完整自动化链路。"
+      tabs={<RouteTabs tabs={AUTOMATION_TABS} />}
       actions={
         <div className="flex items-center gap-1 rounded-md border p-0.5">
           {filters.map((f) => (
@@ -82,7 +91,10 @@ export default function SourcesPage() {
               size="sm"
               variant={enabledFilter === f.key ? 'secondary' : 'ghost'}
               className="h-7"
-              onClick={() => setEnabledFilter(f.key)}
+              onClick={() => {
+                setEnabledFilter(f.key)
+                setPage(1)
+              }}
             >
               {f.label}
             </Button>
@@ -167,6 +179,31 @@ export default function SourcesPage() {
               ))}
             </TableBody>
           </Table>
+          {pagination && pagination.pages > 1 ? (
+            <div className="flex items-center justify-between border-t px-4 py-3">
+              <span className="text-sm text-muted-foreground">
+                共 {pagination.total} 个数据源 · 第 {pagination.page}/{pagination.pages} 页
+              </span>
+              <div className="flex items-center gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={pagination.page <= 1}
+                  onClick={() => setPage((current) => Math.max(1, current - 1))}
+                >
+                  上一页
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={pagination.page >= pagination.pages}
+                  onClick={() => setPage((current) => Math.min(pagination.pages, current + 1))}
+                >
+                  下一页
+                </Button>
+              </div>
+            </div>
+          ) : null}
         </Card>
       )}
     </PageContainer>

@@ -1,6 +1,7 @@
 """Shared lookup and projection helpers for Studio authoring routes."""
 
 from fastapi import HTTPException, status
+from pydantic import BaseModel, ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,6 +15,25 @@ from backend.models.studio import (
 from backend.schemas import workflow as workflow_schemas
 
 LOCAL_USER_ID = "local-development-user"
+
+
+def canonicalize_studio_graph(graph: dict | BaseModel, *, workflow_id: str) -> dict:
+    """Return a frontend-safe canonical graph while preserving invalid drafts.
+
+    Pydantic accepts ``None`` for optional WorkflowProject fields, but the
+    TypeScript authoring schema models those fields as omitted rather than
+    nullable. Valid graphs can therefore be round-tripped through the canonical
+    schema to remove model-generated null fields without removing intentional
+    null values stored inside free-form params/config objects.
+    """
+
+    graph_data = graph.model_dump(mode="json") if isinstance(graph, BaseModel) else graph
+    candidate = {**graph_data, "id": workflow_id}
+    try:
+        project = workflow_schemas.WorkflowProject.model_validate(candidate)
+    except ValidationError:
+        return candidate
+    return project.model_dump(mode="json", exclude_none=True)
 
 
 def validation_projection(row: StudioWorkflowValidationRun) -> ValidationRunRead:

@@ -5,13 +5,17 @@ import uuid
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.api.v1.dify_imports import get_dify_graphon_client
 from backend.database import get_db
 from backend.models.workflow_run import WorkflowRun as WorkflowRunRow
 from backend.schemas import workflow as workflow_schemas
 from backend.schemas.common import ApiResponse
+from backend.services.plugin_registry_service import list_plugin_installations
 from backend.workflow.capability_projection import build_workflow_capabilities
 from backend.workflow.compiler import compile_workflow_project
 from backend.workflow.demand_assembler import draft_workflow_demand
+from backend.workflow.dify_compile import compile_managed_dify_workflow_project
+from backend.workflow.dify_graphon_client import DifyGraphonClient
 from backend.workflow.evidence_projection import (
     build_evidence_projection,
     get_evidence_batch,
@@ -22,6 +26,10 @@ from backend.workflow.external_importer import import_external_workflow
 from backend.workflow.fleet_inventory import (
     build_workflow_fleet_inventory,
     match_workflow_fleet_capability,
+)
+from backend.workflow.node_edit_draft import (
+    WorkflowNodeEditDraftError,
+    draft_workflow_node_edit,
 )
 from backend.workflow.opencli_adapter_nodes import list_opencli_adapter_nodes
 from backend.workflow.opencli_hda_tracer import (
@@ -48,6 +56,8 @@ async def _reject_workspace_scoped_run(db: AsyncSession, run_id: str) -> None:
 @router.post("/compile", response_model=ApiResponse[workflow_schemas.WorkflowCompileResponse])
 async def compile_workflow(
     body: workflow_schemas.WorkflowCompileRequest,
+    db: AsyncSession = Depends(get_db),
+    graphon_client: DifyGraphonClient = Depends(get_dify_graphon_client),
 ) -> ApiResponse[workflow_schemas.WorkflowCompileResponse]:
     """Compile a Canvas-authored WorkflowProject into an executable preview.
 
@@ -55,17 +65,30 @@ async def compile_workflow(
     does not create tasks, persist a plan, or dispatch workers.
     """
 
-    return ApiResponse.ok(compile_workflow_project(body.project))
+    return ApiResponse.ok(
+        await compile_managed_dify_workflow_project(
+            body.project,
+            graphon_client=graphon_client,
+            session=db,
+        )
+    )
 
 
 @router.get(
     "/capabilities",
     response_model=ApiResponse[workflow_schemas.WorkflowCapabilitiesResponse],
 )
-async def get_workflow_capabilities() -> ApiResponse[workflow_schemas.WorkflowCapabilitiesResponse]:
+async def get_workflow_capabilities(
+    db: AsyncSession = Depends(get_db),
+    graphon_client: DifyGraphonClient = Depends(get_dify_graphon_client),
+) -> ApiResponse[workflow_schemas.WorkflowCapabilitiesResponse]:
     """Return Canvas-visible workflow capabilities and their runtime status."""
 
-    return ApiResponse.ok(build_workflow_capabilities())
+    installations = await list_plugin_installations(
+        db,
+        dify_runtime_ready=await graphon_client.is_healthy(),
+    )
+    return ApiResponse.ok(build_workflow_capabilities(installations))
 
 
 @router.get(
@@ -109,11 +132,12 @@ async def match_workflow_fleet_target(
     "/opencli-adapter-nodes",
     response_model=ApiResponse[workflow_schemas.WorkflowOpenCLIAdapterNodesResponse],
 )
-async def get_opencli_adapter_nodes(
+def get_opencli_adapter_nodes(
     site: str | None = None,
     q: str | None = None,
     include_write: bool = Query(True, alias="includeWrite"),
     limit: int = Query(2000, ge=1, le=5000),
+    refresh: bool = False,
 ) -> ApiResponse[workflow_schemas.WorkflowOpenCLIAdapterNodesResponse]:
     """Return OpenCLI adapter commands projected as node-capability manifests."""
 
@@ -123,6 +147,7 @@ async def get_opencli_adapter_nodes(
             q=q,
             include_write=include_write,
             limit=limit,
+            refresh=refresh,
         )
     )
 
@@ -168,6 +193,23 @@ async def draft_demand_workflow(
 
 
 @router.post(
+    "/node-edit-draft",
+    response_model=ApiResponse[workflow_schemas.WorkflowNodeEditDraftResponse],
+)
+async def draft_node_edit(
+    body: workflow_schemas.WorkflowNodeEditDraftRequest,
+    db: AsyncSession = Depends(get_db),
+) -> ApiResponse[workflow_schemas.WorkflowNodeEditDraftResponse]:
+    """Ask the configured chat model for a reviewable edit of one node."""
+
+    try:
+        result = await draft_workflow_node_edit(body, session=db)
+    except WorkflowNodeEditDraftError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return ApiResponse.ok(result)
+
+
+@router.post(
     "/import/external-runtime",
     response_model=ApiResponse[workflow_schemas.WorkflowPatchResponse],
 )
@@ -190,10 +232,13 @@ async def import_external_runtime_workflow(
 async def start_run(
     body: workflow_schemas.WorkflowRunStartRequest,
     db: AsyncSession = Depends(get_db),
+    graphon_client: DifyGraphonClient = Depends(get_dify_graphon_client),
 ) -> ApiResponse[workflow_schemas.WorkflowRunProjection]:
     """Start a WorkflowProject run and emit replayable node-level events."""
 
-    return ApiResponse.ok(await start_workflow_run(body, session=db))
+    return ApiResponse.ok(
+        await start_workflow_run(body, session=db, graphon_client=graphon_client)
+    )
 
 
 @router.post(
@@ -313,6 +358,7 @@ async def start_run_from_webhook(
             responseMode=body.responseMode,
         ),
         session=db,
+        graphon_client=get_dify_graphon_client(),
     )
     return ApiResponse.ok(
         _webhook_ingress_response(

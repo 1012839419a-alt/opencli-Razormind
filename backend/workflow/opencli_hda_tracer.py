@@ -3,14 +3,20 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from backend.database import (
+    commit_session,
+    queue_after_commit,
+    rollback_session_preserving_primary,
+)
 from backend.models.record import CollectedRecord
 from backend.models.source import DataSource
 from backend.models.task import CollectionTask
@@ -46,36 +52,84 @@ from backend.workflow.block_reasons import (
 )
 from backend.workflow.compiler import INTERNAL_ID_SEPARATOR, compile_workflow_project
 from backend.workflow.data_operators import execute_data_operator
+from backend.workflow.dify_compile import compile_managed_dify_workflow_project
+from backend.workflow.dify_event_adapter import execute_dify_graphon_run
+from backend.workflow.dify_grants import resolve_dify_ephemeral_grants
+from backend.workflow.dify_graphon_client import DifyGraphonClient
 from backend.workflow.event_mirror import publish_workflow_run_event_mirror
 from backend.workflow.fleet_inventory import match_workflow_fleet_capability
+from backend.workflow.http_source_executor import (
+    WorkflowHTTPSourceExecutionError,
+    execute_workflow_http_source,
+)
+from backend.workflow.intelligence_store import (
+    IntelligenceStoreError,
+    run_intelligence_transaction,
+)
 from backend.workflow.joyai_vl_executor import (
     JOYAI_VL_INTERACTION_EXECUTOR,
     JOYAI_VL_TOOL_CAPABILITY_ID,
     JoyAIVLExecutionError,
     execute_joyai_vl_interaction,
 )
+from backend.workflow.native_node_runtime import (
+    NATIVE_BINDING_IDS,
+    NativeNodeValidationError,
+    execute_native_node,
+)
+from backend.workflow.last30days_provider import Last30DaysProviderError
+from backend.workflow.native_intelligence_executor import (
+    NATIVE_INTELLIGENCE_ACTION_BY_TOOL_ID,
+    NATIVE_INTELLIGENCE_EXECUTOR,
+    execute_native_intelligence_action,
+)
 from backend.workflow.realtime_market_executor import (
     OKX_MARKET_TICKER_SNAPSHOT_EXECUTOR,
     RealtimeMarketExecutionError,
     execute_okx_market_ticker_snapshot,
 )
+from backend.workflow.record_hygiene import (
+    HygieneConfigError,
+    HygieneInvariantError,
+    execute_record_hygiene,
+)
+from backend.workflow.rss_source_executor import (
+    WorkflowRSSSourceExecutionError,
+    execute_workflow_rss_source,
+)
 from backend.workflow.runtime_registry import (
     DATA_OPERATOR_CATALOG_BINDINGS,
+    COLLECTION_OUTPUT_BINDING_ID,
+    DEDUPE_BINDING_ID,
+    DIFY_GRAPHON_BINDING_ID,
     EXTERNAL_TOOL_BINDING_ID,
     INBOX_STORE_BINDING_ID,
     MERGE_BINDING_ID,
     NORMALIZE_BINDING_ID,
     NOTIFY_SEND_BINDING_ID,
+    OPENCLI_BINDING_ID,
     OPENCLI_FUNCTION_ID,
     OPENCLI_WORKER,
     RECORD_ACCEPTANCE_BINDING_ID,
     RECORD_SINK_BINDING_ID,
     ROUTER_ROUTE_BINDING_ID,
+    SCHEDULE_TRIGGER_BINDING_ID,
     SOURCE_FETCH_BINDING_ID,
     WEBHOOK_NOTIFY_BINDING_ID,
     WEBHOOK_TRIGGER_BINDING_ID,
 )
 from backend.workflow.runtime_resources import resolve_runtime_resources
+from backend.workflow.situation_awareness import (
+    SITUATION_AWARENESS_EXECUTOR,
+    SITUATION_AWARENESS_TOOL_CAPABILITY_ID,
+    execute_situation_awareness,
+)
+from backend.workflow.swarm_simulation import (
+    SWARM_SIMULATION_EXECUTOR,
+    SWARM_SIMULATION_TOOL_CAPABILITY_ID,
+    SwarmSimulationExecutionError,
+    execute_swarm_simulation,
+)
 from backend.workflow.turbopush_executor import (
     TurboPushPublishError,
     execute_turbopush_publish,
@@ -85,6 +139,7 @@ from backend.workflow.webhook_delivery import (
     WorkflowWebhookDeliveryError,
     execute_workflow_webhook_delivery,
 )
+from backend.workflow.workflow_run_events import append_workflow_run_events
 
 
 @dataclass
@@ -215,6 +270,7 @@ async def start_workflow_run(
     session: AsyncSession | None = None,
     existing_events: list[WorkflowNodeRunEvent] | None = None,
     workflow_version_id: str | None = None,
+    graphon_client: DifyGraphonClient | None = None,
 ) -> WorkflowRunProjection:
     """Create a replayable workflow run projection from a compiled WorkflowProject."""
 
@@ -222,7 +278,15 @@ async def start_workflow_run(
     trace_id = body.traceId or str(uuid.uuid4())
     started_at = _utcnow()
     prior_events = list(existing_events or [])
-    compile_result = compile_workflow_project(body.project)
+    compile_result = (
+        await compile_managed_dify_workflow_project(
+            body.project,
+            graphon_client=graphon_client,
+            session=session,
+        )
+        if graphon_client is not None
+        else compile_workflow_project(body.project)
+    )
 
     if not compile_result.valid or compile_result.plan is None:
         events = _compile_failure_events(
@@ -269,17 +333,67 @@ async def start_workflow_run(
         run_id=run_id,
         trace_id=trace_id,
         source_id=(
-            body.input.sourceId or body.input.source
-            if body.trigger.kind == "webhook"
-            else None
+            body.input.sourceId or body.input.source if body.trigger.kind == "webhook" else None
         ),
         initial_sequence=len(prior_events),
     )
-    runtime_nodes = compile_result.plan.runtime.nodes
-    runtime_nodes_by_id = {node.id: node for node in runtime_nodes}
-    should_trace_opencli = (
-        body.packageNodeId is not None or _select_package_id(runtime_nodes, None) is not None
+    runtime_nodes, trigger_selection_error = _select_runtime_nodes_for_trigger(
+        compile_result.plan.runtime.nodes,
+        trigger_kind=body.trigger.kind,
+        trigger_node_id=body.trigger.triggerNodeId,
     )
+    if trigger_selection_error is not None:
+        errors = [trigger_selection_error]
+        events = _compile_failure_events(
+            workflow_id=body.project.id,
+            run_id=run_id,
+            trace_id=trace_id,
+            errors=errors,
+        )
+        stored_events = [*prior_events, *events]
+        projection = _build_projection(
+            workflow_id=body.project.id,
+            run_id=run_id,
+            trace_id=trace_id,
+            package_node_id=body.packageNodeId,
+            started_at=started_at,
+            valid=False,
+            errors=errors,
+            runtime_nodes=[],
+            events=stored_events,
+        )
+        await _store_workflow_run(
+            run_id,
+            request=body,
+            projection=projection,
+            events=stored_events,
+            session=session,
+        )
+        return projection
+
+    runtime_nodes_by_id = {node.id: node for node in runtime_nodes}
+    if session is not None:
+        queued_projection = _build_projection(
+            workflow_id=body.project.id,
+            run_id=run_id,
+            trace_id=trace_id,
+            package_node_id=body.packageNodeId,
+            started_at=started_at,
+            valid=True,
+            errors=[],
+            runtime_nodes=runtime_nodes,
+            events=prior_events,
+        )
+        await _store_workflow_run(
+            run_id,
+            request=body,
+            projection=queued_projection,
+            events=prior_events,
+            session=session,
+        )
+    should_trace_opencli = any(
+        _binding_id(node) == OPENCLI_BINDING_ID for node in runtime_nodes
+    ) and (body.packageNodeId is not None or _select_package_id(runtime_nodes, None) is not None)
     trace = (
         build_opencli_hda_trace(
             body.project,
@@ -295,7 +409,22 @@ async def start_workflow_run(
     dispatches_by_node = {
         dispatch.nodeId: dispatch for dispatch in (trace.dispatches if trace else [])
     }
+    for node in runtime_nodes:
+        if (
+            _binding_id(node) != OPENCLI_BINDING_ID
+            or node.id in dispatches_by_node
+            or not _read_string(node.params.get("opencliAdapterNodeId"))
+        ):
+            continue
+        dispatches_by_node[node.id] = _to_dispatch(
+            body.project,
+            node,
+            package_node_id=None,
+            run_id=run_id,
+            trace_id=trace_id,
+        )
     blocked_by_package: dict[str, list[WorkflowRunBlockReason]] = {}
+    managed_package_terminal_ids: set[str] = set()
     outputs_by_node: dict[str, list[dict[str, Any]]] = {}
     materialized_source_tasks: dict[str, tuple[str, str]] = {}
 
@@ -305,6 +434,126 @@ async def start_workflow_run(
     for node in runtime_nodes:
         if node.id in package_ids:
             emitter.emit(node, "started", message="Package node started")
+            if _binding_id(node) == DIFY_GRAPHON_BINDING_ID:
+                package = next(
+                    (
+                        project_node
+                        for project_node in body.project.nodes
+                        if project_node.id == node.id
+                    ),
+                    None,
+                )
+                compat_runtime = _read_dict(package.params.get("compatRuntime")) if package else {}
+                source_content = compat_runtime.get("sourceContent")
+                source_sha256 = _read_string(compat_runtime.get("sourceSha256"))
+                if (
+                    package is None
+                    or graphon_client is None
+                    or not isinstance(source_content, str)
+                    or not source_content
+                    or source_sha256 is None
+                ):
+                    reason = WorkflowRunBlockReason(
+                        code="dify_graphon_unavailable",
+                        message="The managed Dify package has no available Graphon runtime.",
+                        source="dify_graphon_runtime",
+                        details={"nodeId": node.id},
+                    )
+                    emitter.emit(
+                        node,
+                        "failed",
+                        message=reason.message,
+                        block_reason=reason,
+                    )
+                    managed_package_terminal_ids.add(node.id)
+                    continue
+
+                grants = await resolve_dify_ephemeral_grants(package, session=session)
+                run_result = await execute_dify_graphon_run(
+                    graphon_client=graphon_client,
+                    source_content=source_content,
+                    source_sha256=source_sha256,
+                    policy={
+                        "allowNetwork": body.project.agentPermissions.canFetchNetwork,
+                        "allowedDomains": body.project.agentPermissions.allowedDomains,
+                        "allowCode": False,
+                        "allowTools": False,
+                    },
+                    inputs=body.input.payload,
+                    grants=grants,
+                )
+                queued_internal_ids: set[str] = set()
+                for runtime_event in run_result.events:
+                    if runtime_event.source_node_id is None:
+                        continue
+                    if runtime_event.source_node_id not in queued_internal_ids:
+                        queued_internal_ids.add(runtime_event.source_node_id)
+                        emitter.emit_nested(
+                            node,
+                            runtime_event.source_node_id,
+                            "queued",
+                            message=f'Dify node "{runtime_event.source_node_id}" queued',
+                            details={
+                                "runtime": "graphon",
+                                "runtimeRunId": runtime_event.runtime_run_id,
+                                "runtimeSequence": runtime_event.runtime_sequence,
+                                "synthetic": True,
+                            },
+                        )
+                    block_reason = None
+                    if runtime_event.event_type in {"blocked", "failed"}:
+                        block_reason = WorkflowRunBlockReason(
+                            code=(
+                                "dify_runtime_failed"
+                                if runtime_event.event_type == "failed"
+                                else "dify_runtime_blocked"
+                            ),
+                            message=runtime_event.message,
+                            source="dify_graphon_runtime",
+                            details={
+                                "runtimeRunId": runtime_event.runtime_run_id,
+                                "runtimeSequence": runtime_event.runtime_sequence,
+                            },
+                        )
+                    emitter.emit_nested(
+                        node,
+                        runtime_event.source_node_id,
+                        runtime_event.event_type,
+                        message=runtime_event.message,
+                        block_reason=block_reason,
+                        details=runtime_event.details,
+                    )
+
+                terminal_details = {
+                    "runtime": "graphon",
+                    "runtimeRunId": run_result.runtime_run_id,
+                    "outputPreview": run_result.terminal_details,
+                }
+                if run_result.status == "completed":
+                    emitter.emit(
+                        node,
+                        "completed",
+                        message="Managed Dify package completed through Graphon",
+                        details=terminal_details,
+                    )
+                else:
+                    reason = WorkflowRunBlockReason(
+                        code=run_result.code or "dify_runtime_failed",
+                        message=run_result.message or "The managed Dify package did not complete.",
+                        source="dify_graphon_runtime",
+                        details={
+                            "runtimeRunId": run_result.runtime_run_id,
+                            **run_result.terminal_details,
+                        },
+                    )
+                    emitter.emit(
+                        node,
+                        "blocked" if run_result.status == "blocked" else "failed",
+                        message=reason.message,
+                        block_reason=reason,
+                        details=terminal_details,
+                    )
+                managed_package_terminal_ids.add(node.id)
             continue
 
         missing_runtime = _read_dict(node.runtime.get("missing_runtime"))
@@ -435,8 +684,111 @@ async def start_workflow_run(
             continue
 
         if _is_workflow_source_fetch_node(node):
-            reason = _source_fetch_block_reason(node, body.project.agentPermissions)
             emitter.emit(node, "started", message="Workflow source fetch binding started")
+            binding = _read_dict(node.runtime.get("binding"))
+            binding_input = _read_dict(binding.get("input"))
+            try:
+                rss_result = await execute_workflow_rss_source(
+                    binding_input,
+                    allowed_domains=body.project.agentPermissions.allowedDomains,
+                    max_items=body.project.settings.maxItemsPerRun,
+                    session=session,
+                )
+            except WorkflowRSSSourceExecutionError as exc:
+                reason = WorkflowRunBlockReason(
+                    code=exc.code,
+                    message=exc.message,
+                    source="workflow_rss_source",
+                    details={"nodeId": node.id, **exc.details},
+                )
+                emitter.emit(
+                    node,
+                    "blocked" if exc.status == "blocked" else "failed",
+                    message=reason.message,
+                    block_reason=reason,
+                )
+                continue
+
+            if rss_result is not None:
+                live_items = _live_source_items(
+                    node,
+                    rss_result.items,
+                    artifact="live_rss_source",
+                )
+                outputs_by_node[node.id] = live_items
+                emitter.emit(
+                    node,
+                    "partial",
+                    message="Live RSS source loaded as workflow items",
+                    batch=_node_batch_reference(
+                        body.project.id,
+                        run_id,
+                        node,
+                        item_count=len(live_items),
+                    ),
+                    details={
+                        "bindingId": SOURCE_FETCH_BINDING_ID,
+                        "itemCount": len(live_items),
+                        "outputPort": "items[]",
+                        "channelType": "rss",
+                        "url": rss_result.url,
+                        "feedTitle": rss_result.feed_title,
+                        "totalEntries": rss_result.total_entries,
+                        "lineage": _lineage_pointer(node),
+                    },
+                )
+                emitter.emit(node, "completed", message="Live RSS source completed")
+                continue
+
+            try:
+                live_result = await execute_workflow_http_source(
+                    binding_input,
+                    allowed_domains=body.project.agentPermissions.allowedDomains,
+                    max_items=body.project.settings.maxItemsPerRun,
+                )
+            except WorkflowHTTPSourceExecutionError as exc:
+                reason = WorkflowRunBlockReason(
+                    code=exc.code,
+                    message=exc.message,
+                    source="workflow_http_source",
+                    details={"nodeId": node.id, **exc.details},
+                )
+                emitter.emit(
+                    node,
+                    "blocked" if exc.status == "blocked" else "failed",
+                    message=reason.message,
+                    block_reason=reason,
+                )
+                continue
+
+            if live_result is not None:
+                live_items = _live_source_items(node, live_result.items)
+                outputs_by_node[node.id] = live_items
+                emitter.emit(
+                    node,
+                    "partial",
+                    message="Live HTTP source loaded as workflow items",
+                    batch=_node_batch_reference(
+                        body.project.id,
+                        run_id,
+                        node,
+                        item_count=len(live_items),
+                    ),
+                    details={
+                        "bindingId": SOURCE_FETCH_BINDING_ID,
+                        "itemCount": len(live_items),
+                        "outputPort": "items[]",
+                        "method": live_result.method,
+                        "statusCode": live_result.status_code,
+                        "url": live_result.url,
+                        "resultPath": live_result.result_path,
+                        "lineage": _lineage_pointer(node),
+                    },
+                )
+                emitter.emit(node, "completed", message="Live HTTP source completed")
+                continue
+
+            reason = _source_fetch_block_reason(node, body.project.agentPermissions)
             emitter.emit(
                 node,
                 "blocked",
@@ -521,14 +873,75 @@ async def start_workflow_run(
                 )
                 continue
 
+        if _is_capability_native_node(node):
+            emitter.emit(node, "started", message="Native workflow node started")
+            try:
+                details, output_items = _execute_capability_native_node(
+                    node,
+                    outputs_by_node,
+                    workflow_input=body.input.payload,
+                )
+            except (NativeNodeValidationError, ValueError, TypeError) as exc:
+                reason = WorkflowRunBlockReason(
+                    code="native_node_execution_failed",
+                    message=str(exc),
+                    source="native_node_runtime",
+                    details={
+                        "nodeId": node.id,
+                        "bindingId": _binding_id(node),
+                    },
+                )
+                emitter.emit(
+                    node,
+                    "failed",
+                    message=reason.message,
+                    block_reason=reason,
+                    details=reason.details,
+                )
+                continue
+
+            outputs_by_node[node.id] = output_items
+            emitter.emit(
+                node,
+                "partial",
+                message="Native workflow node produced output",
+                details=details,
+            )
+            emitter.emit(
+                node,
+                "completed",
+                message="Native workflow node completed",
+                details=details,
+            )
+            continue
+
         if _is_first_loop_native_node(node):
             emitter.emit(node, "started", message=_native_node_started_message(node))
+            if _is_external_tool_node(node):
+                emitter.emit(
+                    node,
+                    "tool_call_started",
+                    message="OpenCLI Tool Capability call started",
+                    details=_tool_call_trace_details(
+                        _external_tool_call_details(
+                            node,
+                            input_item_count=len(
+                                _upstream_outputs(node, outputs_by_node)
+                            ),
+                            output_item_count=0,
+                        )
+                    ),
+                )
+            await _persist_emitter_events(run_id, emitter, session=session)
+            if session is not None and _is_native_intelligence_node(node):
+                await commit_session(session)
             try:
                 details, output_items = await _execute_native_node(
                     node,
                     outputs_by_node,
                     run_id,
                     workflow_id=body.project.id,
+                    trace_id=trace_id,
                     session=session,
                     runtime_nodes_by_id=runtime_nodes_by_id,
                     materialized_source_tasks=materialized_source_tasks,
@@ -547,6 +960,61 @@ async def start_workflow_run(
                     block_reason=reason,
                     details=reason.details,
                 )
+                await _persist_emitter_events(run_id, emitter, session=session)
+                if session is not None and _is_native_intelligence_node(node):
+                    await commit_session(session)
+                continue
+            except (HygieneConfigError, HygieneInvariantError) as exc:
+                reason = WorkflowRunBlockReason(
+                    code="record_hygiene_execution_failed",
+                    message=str(exc),
+                    source="record_hygiene",
+                    details={"nodeId": node.id, "bindingId": _binding_id(node)},
+                )
+                emitter.emit(
+                    node,
+                    "failed",
+                    message=str(exc),
+                    block_reason=reason,
+                    details=reason.details,
+                )
+                await _persist_emitter_events(run_id, emitter, session=session)
+                continue
+            except (IntelligenceStoreError, ValueError) as exc:
+                if session is not None and _is_native_intelligence_node(node):
+                    await rollback_session_preserving_primary(session, exc)
+                code = getattr(exc, "code", None) or str(exc) or "native_intelligence_error"
+                event_type: WorkflowNodeRunEventType = (
+                    "blocked"
+                    if any(
+                        token in code
+                        for token in (
+                            "required",
+                            "missing",
+                            "not_found",
+                            "not_available",
+                            "not_registered",
+                            "unavailable",
+                        )
+                    )
+                    else "failed"
+                )
+                reason = WorkflowRunBlockReason(
+                    code=code,
+                    message=str(exc),
+                    source="native_intelligence",
+                    details={"exceptionType": type(exc).__name__},
+                )
+                emitter.emit(
+                    node,
+                    event_type,
+                    message=str(exc),
+                    block_reason=reason,
+                    details=reason.details,
+                )
+                await _persist_emitter_events(run_id, emitter, session=session)
+                if session is not None and _is_native_intelligence_node(node):
+                    await commit_session(session)
                 continue
             except Exception as exc:
                 if _binding_id(node) not in _DATA_OPERATOR_BINDING_IDS:
@@ -571,15 +1039,9 @@ async def start_workflow_run(
                     block_reason=reason,
                     details=reason.details,
                 )
+                await _persist_emitter_events(run_id, emitter, session=session)
                 continue
             outputs_by_node[node.id] = output_items
-            if _binding_id(node) == EXTERNAL_TOOL_BINDING_ID:
-                emitter.emit(
-                    node,
-                    "tool_call_started",
-                    message="OpenCLI Tool Capability call started",
-                    details=_tool_call_trace_details(details),
-                )
             emitter.emit(
                 node,
                 "partial",
@@ -597,7 +1059,7 @@ async def start_workflow_run(
                 ),
                 details=details,
             )
-            if _binding_id(node) == EXTERNAL_TOOL_BINDING_ID:
+            if _is_external_tool_node(node):
                 emitter.emit(
                     node,
                     "tool_call_completed",
@@ -605,6 +1067,9 @@ async def start_workflow_run(
                     details=_tool_call_trace_details(details),
                 )
             emitter.emit(node, "completed", message=_native_node_completed_message(node))
+            await _persist_emitter_events(run_id, emitter, session=session)
+            if session is not None and _is_native_intelligence_node(node):
+                await commit_session(session)
             continue
 
         dispatch = dispatches_by_node.get(node.id)
@@ -658,7 +1123,9 @@ async def start_workflow_run(
         output_items, agent_dispatch_details = await _dispatch_opencli_source_to_fleet(
             dispatch,
             fleet_match,
+            node=node,
         )
+        output_items = _opencli_dispatch_source_items(node, dispatch, output_items)
         batch = _batch_reference(body.project.id, run_id, dispatch)
         if output_items:
             batch = batch.model_copy(update={"itemCount": len(output_items)})
@@ -706,9 +1173,13 @@ async def start_workflow_run(
             node,
             "partial",
             message=(
-                "OpenCLI source items collected through selected fleet agent"
-                if agent_dispatch_details
-                else "OpenCLI dispatch envelope is ready for worker fanout"
+                "OpenCLI source items collected through local OpenCLI"
+                if _is_local_opencli_dispatch(agent_dispatch_details)
+                else (
+                    "OpenCLI source items collected through selected fleet agent"
+                    if agent_dispatch_details
+                    else "OpenCLI dispatch envelope is ready for worker fanout"
+                )
             ),
             details={
                 "adapterTaskId": dispatch.taskId,
@@ -722,14 +1193,20 @@ async def start_workflow_run(
             node,
             "completed",
             message=(
-                "OpenCLI source dispatch completed through selected fleet agent"
-                if agent_dispatch_details
-                else "OpenCLI source dispatch completed"
+                "OpenCLI source dispatch completed through local OpenCLI"
+                if _is_local_opencli_dispatch(agent_dispatch_details)
+                else (
+                    "OpenCLI source dispatch completed through selected fleet agent"
+                    if agent_dispatch_details
+                    else "OpenCLI source dispatch completed"
+                )
             ),
         )
         outputs_by_node[node.id] = output_items
 
     for package_node in reversed(package_nodes):
+        if package_node.id in managed_package_terminal_ids:
+            continue
         trace_errors = [
             error
             for error in (trace.errors if trace else [])
@@ -790,6 +1267,28 @@ async def start_workflow_run(
         session=session,
         workflow_version_id=workflow_version_id,
     )
+    if session is not None:
+        stored = await _load_workflow_run(run_id, session=session, cache=False)
+        if stored is not None:
+            projection = _build_projection(
+                workflow_id=body.project.id,
+                run_id=run_id,
+                trace_id=trace_id,
+                package_node_id=(trace.packageNodeId if trace else None)
+                or body.packageNodeId,
+                started_at=started_at,
+                valid=trace.valid if trace else True,
+                errors=trace.errors if trace else [],
+                runtime_nodes=runtime_nodes,
+                events=stored.events,
+            )
+            await _store_workflow_run(
+                run_id,
+                request=body,
+                projection=projection,
+                events=stored.events,
+                session=session,
+            )
     return projection
 
 
@@ -798,10 +1297,11 @@ async def get_workflow_run_projection(
     *,
     session: AsyncSession | None = None,
 ) -> WorkflowRunProjection | None:
-    stored = _RUNS.get(run_id)
-    if stored:
-        return stored.projection
-    stored = await _load_workflow_run(run_id, session=session)
+    stored = (
+        await _load_workflow_run(run_id, session=session)
+        if session is not None
+        else _RUNS.get(run_id)
+    )
     return stored.projection if stored else None
 
 
@@ -814,9 +1314,11 @@ async def list_workflow_run_events(
     event_type: WorkflowNodeRunEventType | None = None,
     limit: int | None = None,
 ) -> list[WorkflowNodeRunEvent] | None:
-    stored = _RUNS.get(run_id)
-    if not stored:
-        stored = await _load_workflow_run(run_id, session=session)
+    stored = (
+        await _load_workflow_run(run_id, session=session)
+        if session is not None
+        else _RUNS.get(run_id)
+    )
     if not stored:
         return None
     events = _filter_workflow_run_events(
@@ -834,7 +1336,11 @@ async def get_workflow_run_checkpoint(
     *,
     session: AsyncSession | None = None,
 ) -> WorkflowRunCheckpoint | None:
-    stored = _RUNS.get(run_id) or await _load_workflow_run(run_id, session=session)
+    stored = (
+        await _load_workflow_run(run_id, session=session)
+        if session is not None
+        else _RUNS.get(run_id)
+    )
     if stored is None:
         return None
     return _build_checkpoint(stored.request, stored.projection, stored.events)
@@ -887,8 +1393,8 @@ async def _store_workflow_run(
     session: AsyncSession | None,
     workflow_version_id: str | None,
 ) -> None:
-    stored = _StoredWorkflowRun(request, projection, list(events), workflow_version_id)
-    _RUNS[run_id] = stored
+    events_to_mirror = list(events)
+    stored_events = list(events)
     if session is not None:
         row = await session.get(WorkflowRunRow, run_id)
         if row is None:
@@ -904,36 +1410,54 @@ async def _store_workflow_run(
         row.request = request.model_dump(mode="json")
         row.projection = projection.model_dump(mode="json")
 
-        existing_events = (
-            await session.execute(
-                select(WorkflowRunEventRow).where(WorkflowRunEventRow.run_id == run_id)
-            )
-        ).scalars()
-        for event_row in existing_events:
-            await session.delete(event_row)
+        append_result = await append_workflow_run_events(
+            session,
+            run_id=run_id,
+            events=events,
+        )
+        stored_events = append_result.events
+        events_to_mirror = append_result.appended_events
 
-        for event in events:
-            session.add(
-                WorkflowRunEventRow(
-                    run_id=run_id,
-                    workflow_id=event.workflowId,
-                    trace_id=event.traceId,
-                    event_id=event.id,
-                    node_id=event.nodeId,
-                    sequence=event.sequence,
-                    event_type=event.eventType,
-                    payload=event.model_dump(mode="json"),
-                )
-            )
-        await session.flush()
+    stored = _StoredWorkflowRun(request, projection, stored_events, workflow_version_id)
+    if session is None:
+        _RUNS[run_id] = stored
+        await publish_workflow_run_event_mirror(events_to_mirror)
+        return
 
-    await publish_workflow_run_event_mirror(events)
+    queue_after_commit(session, lambda: _RUNS.__setitem__(run_id, stored))
+    if events_to_mirror:
+        queue_after_commit(
+            session,
+            lambda: publish_workflow_run_event_mirror(events_to_mirror),
+        )
+
+
+async def _persist_emitter_events(
+    run_id: str,
+    emitter: _WorkflowRunEventEmitter,
+    *,
+    session: AsyncSession | None,
+) -> None:
+    if session is None or not emitter.events:
+        return
+    result = await append_workflow_run_events(
+        session,
+        run_id=run_id,
+        events=emitter.events,
+    )
+    emitter.events[:] = result.events
+    if result.appended_events:
+        queue_after_commit(
+            session,
+            lambda: publish_workflow_run_event_mirror(result.appended_events),
+        )
 
 
 async def _load_workflow_run(
     run_id: str,
     *,
     session: AsyncSession | None,
+    cache: bool = True,
 ) -> _StoredWorkflowRun | None:
     if session is None:
         return None
@@ -959,7 +1483,8 @@ async def _load_workflow_run(
         events=[WorkflowNodeRunEvent.model_validate(event_row.payload) for event_row in event_rows],
         workflow_version_id=row.workflow_version_id,
     )
-    _RUNS[run_id] = stored
+    if cache:
+        _RUNS[run_id] = stored
     return stored
 
 
@@ -1080,6 +1605,38 @@ class _WorkflowRunEventEmitter:
             )
         )
 
+    def emit_nested(
+        self,
+        package_node: CompiledWorkflowNode,
+        internal_node_id: str,
+        event_type: WorkflowNodeRunEventType,
+        *,
+        message: str | None = None,
+        block_reason: WorkflowRunBlockReason | None = None,
+        details: dict[str, object] | None = None,
+    ) -> None:
+        sequence = self._initial_sequence + len(self.events) + 1
+        node_id = f"{package_node.id}{INTERNAL_ID_SEPARATOR}{internal_node_id}"
+        self.events.append(
+            WorkflowNodeRunEvent(
+                id=f"{self._run_id}:{sequence:04d}:{event_type}:{node_id}",
+                sequence=sequence,
+                workflowId=self._workflow_id,
+                workflowRunId=self._run_id,
+                traceId=self._trace_id,
+                nodeId=node_id,
+                sourceId=self._source_id,
+                eventType=event_type,
+                createdAt=_utcnow(),
+                nodePath=[package_node.id, internal_node_id],
+                packageNodeId=package_node.id,
+                internalNodeId=internal_node_id,
+                message=message,
+                blockReason=block_reason,
+                details=details or {},
+            )
+        )
+
 
 def _build_projection(
     *,
@@ -1131,7 +1688,7 @@ def _build_projection(
                 state.batches.append(event.batch)
 
     node_states = [states[node_id] for node_id in ordered_ids]
-    status = _run_status(node_states, valid)
+    status = _run_status(node_states, valid, runtime_nodes)
     updated_at = events[-1].createdAt if events else started_at
     return WorkflowRunProjection(
         workflowId=workflow_id,
@@ -1246,6 +1803,14 @@ async def _match_dispatch_fleet_target(
         return None
 
     adapter_node_id = _read_string(node.params.get("opencliAdapterNodeId"))
+    if adapter_node_id:
+        from backend.workflow.opencli_adapter_nodes import resolve_opencli_adapter_node
+
+        adapter_node = resolve_opencli_adapter_node(adapter_node_id)
+        if adapter_node is not None and not adapter_node.browser:
+            # Public/non-browser commands are safest and fastest on the local OpenCLI
+            # runtime. Browser-backed commands continue through fleet/profile matching.
+            return None
     request = WorkflowFleetCapabilityMatchRequest(
         adapterNodeId=adapter_node_id,
         site=None if adapter_node_id else dispatch.site,
@@ -1265,14 +1830,65 @@ def _fleet_match_trace_details(
 async def _dispatch_opencli_source_to_fleet(
     dispatch: WorkflowOpenCLIHDATraceDispatch,
     match: WorkflowFleetCapabilityMatchResponse | None,
+    *,
+    node: CompiledWorkflowNode,
 ) -> tuple[list[dict[str, Any]], dict[str, object] | None]:
     target = _fleet_agent_dispatch_target(dispatch, match)
     if target is None:
-        return [], None
+        payload = _read_dict(dispatch.iii.get("payload"))
+        dispatch_policy = _read_string(payload.get("dispatch_policy"))
+        adapter_node_id = _read_string(node.params.get("opencliAdapterNodeId"))
+        local_adapter = False
+        if adapter_node_id:
+            from backend.workflow.opencli_adapter_nodes import resolve_opencli_adapter_node
 
-    from backend.channels.opencli_channel import _collect_via_agent, _collect_via_ws_agent
+            adapter_node = resolve_opencli_adapter_node(adapter_node_id)
+            local_adapter = adapter_node is not None and not adapter_node.browser
+        if (
+            dispatch.packageNodeId is not None
+            and dispatch_policy != "inline"
+            and not local_adapter
+        ):
+            # Packaged HDA fanout retains its asynchronous worker-envelope
+            # contract unless the package explicitly exposes raw items to a
+            # downstream node in the same run.
+            return [], None
+        from backend.channels.opencli_channel import OpenCLIChannel
 
-    agent_url = str(target["agentUrl"])
+        config: dict[str, Any] = {
+            "site": dispatch.site,
+            "command": dispatch.command,
+            "format": _read_string(payload.get("format")) or "json",
+            "args": dispatch.args,
+        }
+        positional_args = payload.get("positional_args", payload.get("positionalArgs"))
+        config["positional_args"] = positional_args if isinstance(positional_args, list) else []
+        result = await OpenCLIChannel().collect(config, {})
+        details: dict[str, object] = {
+            "attempted": True,
+            "protocol": "local",
+            "endpoint": "local-opencli",
+            "mode": "direct",
+            "site": dispatch.site,
+            "command": dispatch.command,
+            "format": config["format"],
+            "success": result.success,
+            "itemCount": len(result.items) if result.success else 0,
+        }
+        if result.error:
+            details["error"] = result.error
+        if result.error_type:
+            details["errorType"] = result.error_type
+        if result.metadata:
+            details["metadata"] = result.metadata
+        return (result.items if result.success else []), details
+
+    from backend.channels.opencli_channel import (
+        OpenCLIChannel,
+        _collect_via_agent,
+        _collect_via_ws_agent,
+    )
+
     protocol = str(target["protocol"])
     mode = str(target["mode"])
     output_format = str(target["format"])
@@ -1284,15 +1900,28 @@ async def _dispatch_opencli_source_to_fleet(
     details: dict[str, object] = {
         "attempted": True,
         "protocol": protocol,
-        "agentUrl": agent_url,
         "endpoint": target["endpoint"],
         "mode": mode,
         "site": dispatch.site,
         "command": dispatch.command,
         "format": output_format,
     }
+    agent_url = str(target["agentUrl"])
+    if agent_url:
+        details["agentUrl"] = agent_url
     try:
-        if protocol == "ws":
+        if protocol == "local":
+            result = await OpenCLIChannel().collect(
+                {
+                    "site": dispatch.site,
+                    "command": dispatch.command,
+                    "args": dispatch.args,
+                    "positional_args": positional_args,
+                    "format": output_format,
+                },
+                {},
+            )
+        elif protocol == "ws":
             result = await _collect_via_ws_agent(
                 agent_url,
                 dispatch.site,
@@ -1346,10 +1975,12 @@ def _fleet_agent_dispatch_target(
         return None
     selected = match.selected
     protocol = (selected.agentProtocol or "").lower()
-    if protocol not in {"http", "ws"}:
+    if protocol not in {"http", "local", "ws"}:
         return None
-    agent_url = (selected.agentUrl or selected.endpoint or "").rstrip("/")
-    if not agent_url:
+    agent_url = ""
+    if protocol != "local":
+        agent_url = (selected.agentUrl or selected.endpoint or "").rstrip("/")
+    if protocol != "local" and not agent_url:
         return None
     payload = _read_dict(dispatch.iii.get("payload"))
     positional_args = payload.get("positional_args", payload.get("positionalArgs"))
@@ -1386,10 +2017,25 @@ def _status_after_event(event_type: WorkflowNodeRunEventType) -> WorkflowRunStat
     return "partial"
 
 
-def _run_status(node_states: list[WorkflowRunNodeState], valid: bool) -> WorkflowRunStatus:
+def _run_status(
+    node_states: list[WorkflowRunNodeState],
+    valid: bool,
+    runtime_nodes: list[CompiledWorkflowNode] | None = None,
+) -> WorkflowRunStatus:
     if not valid:
         return "failed"
     statuses = {state.status for state in node_states}
+    if runtime_nodes:
+        terminal_ids = {node.id for node in runtime_nodes if _is_builder_output(node)}
+        terminal_statuses = {state.status for state in node_states if state.nodeId in terminal_ids}
+        if (
+            len(terminal_ids) > 1
+            and len(terminal_statuses) == len(terminal_ids)
+            and terminal_statuses <= {"completed", "failed", "blocked"}
+            and "completed" in terminal_statuses
+            and terminal_statuses.intersection({"failed", "blocked"})
+        ):
+            return "partial_success"
     if "failed" in statuses:
         return "failed"
     if "blocked" in statuses:
@@ -1399,6 +2045,131 @@ def _run_status(node_states: list[WorkflowRunNodeState], valid: bool) -> Workflo
     if statuses and statuses <= {"completed"}:
         return "completed"
     return "queued"
+
+
+def _is_builder_output(node: CompiledWorkflowNode) -> bool:
+    builder = _read_dict(node.params.get("builder"))
+    return _read_string(builder.get("nodeType")) in {
+        "records-output",
+        "email-output",
+        "webhook-output",
+    }
+
+
+def _select_runtime_nodes_for_trigger(
+    nodes: list[CompiledWorkflowNode],
+    *,
+    trigger_kind: str,
+    trigger_node_id: str | None,
+) -> tuple[list[CompiledWorkflowNode], WorkflowCompileError | None]:
+    """Select one trigger entry and its reachable subgraph for an independent Run."""
+
+    trigger_nodes = [node for node in nodes if _runtime_trigger_kind(node) is not None]
+    if not trigger_nodes:
+        return nodes, None
+
+    selected: CompiledWorkflowNode | None = None
+    if trigger_node_id:
+        selected = next((node for node in nodes if node.id == trigger_node_id), None)
+        if selected is None:
+            return [], WorkflowCompileError(
+                code="workflow_trigger_not_found",
+                message=f'Workflow trigger node "{trigger_node_id}" was not found.',
+                node_id=trigger_node_id,
+                path=["trigger", "triggerNodeId"],
+            )
+        selected_kind = _runtime_trigger_kind(selected)
+        if selected_kind is None:
+            return [], WorkflowCompileError(
+                code="unsupported_workflow_trigger",
+                message=f'Node "{trigger_node_id}" is not a workflow trigger entry.',
+                node_id=trigger_node_id,
+                path=["trigger", "triggerNodeId"],
+            )
+        requested_kind = "manual" if trigger_kind == "ai" else trigger_kind
+        if selected_kind != requested_kind:
+            return [], WorkflowCompileError(
+                code="workflow_trigger_kind_mismatch",
+                message=(
+                    f'Workflow trigger node "{trigger_node_id}" is "{selected_kind}", '
+                    f'not "{trigger_kind}".'
+                ),
+                node_id=trigger_node_id,
+                path=["trigger", "kind"],
+            )
+    else:
+        requested_kind = "manual" if trigger_kind == "ai" else trigger_kind
+        candidates = [
+            node for node in trigger_nodes if _runtime_trigger_kind(node) == requested_kind
+        ]
+        if len(candidates) == 1:
+            selected = candidates[0]
+        elif len(candidates) > 1:
+            return [], WorkflowCompileError(
+                code="workflow_trigger_ambiguous",
+                message=(
+                    f'Workflow has multiple "{trigger_kind}" trigger entries; '
+                    "triggerNodeId is required."
+                ),
+                path=["trigger", "triggerNodeId"],
+            )
+        else:
+            return [], WorkflowCompileError(
+                code="workflow_trigger_kind_mismatch",
+                message=f'Workflow has no "{trigger_kind}" trigger entry.',
+                path=["trigger", "kind"],
+            )
+
+    adjacency: dict[str, list[str]] = {node.id: [] for node in nodes}
+    for node in nodes:
+        for dependency_id in node.depends_on:
+            adjacency.setdefault(dependency_id, []).append(node.id)
+
+    active_ids = {selected.id}
+    pending = [selected.id]
+    while pending:
+        current_id = pending.pop()
+        for downstream_id in adjacency.get(current_id, []):
+            if downstream_id not in active_ids:
+                active_ids.add(downstream_id)
+                pending.append(downstream_id)
+
+    # External-runtime imports predate trigger-scoped execution and are
+    # intentionally represented as governed OpenCLI nodes rather than opaque
+    # executors. Their imported subgraph is not yet wired to the host trigger,
+    # so keep explicitly marked externalWorkflow nodes runnable while ordinary
+    # disconnected/orphan nodes remain excluded.
+    active_ids.update(
+        node.id for node in nodes if isinstance(node.params.get("externalWorkflow"), dict)
+    )
+
+    selected_nodes = [
+        node.model_copy(
+            update={
+                "depends_on": [
+                    dependency_id
+                    for dependency_id in node.depends_on
+                    if dependency_id in active_ids
+                ]
+            }
+        )
+        for node in nodes
+        if node.id in active_ids
+    ]
+    return selected_nodes, None
+
+
+def _runtime_trigger_kind(node: CompiledWorkflowNode) -> str | None:
+    binding_id = _binding_id(node)
+    if binding_id == WEBHOOK_TRIGGER_BINDING_ID:
+        return "webhook"
+    if binding_id != SCHEDULE_TRIGGER_BINDING_ID:
+        return None
+
+    builder = _read_dict(node.params.get("builder"))
+    node_type = _read_string(builder.get("nodeType"))
+    mode = _read_string(node.params.get("mode"))
+    return "manual" if node_type == "manual-trigger" or mode == "manual" else "schedule"
 
 
 def _select_package_id(
@@ -1446,21 +2217,26 @@ def _is_webhook_notify_node(node: CompiledWorkflowNode) -> bool:
     return _binding_id(node) == WEBHOOK_NOTIFY_BINDING_ID
 
 
+def _is_capability_native_node(node: CompiledWorkflowNode) -> bool:
+    return _binding_id(node) in NATIVE_BINDING_IDS.values()
+
+
 def _is_first_loop_native_node(node: CompiledWorkflowNode) -> bool:
     binding = node.runtime.get("binding")
     if not isinstance(binding, dict):
         return False
-    return binding.get("binding_id") in {
+    return _is_external_tool_node(node) or binding.get("binding_id") in {
         NORMALIZE_BINDING_ID,
         *_DATA_OPERATOR_BINDING_IDS,
+        DEDUPE_BINDING_ID,
         MERGE_BINDING_ID,
         ROUTER_ROUTE_BINDING_ID,
         RECORD_ACCEPTANCE_BINDING_ID,
         RECORD_SINK_BINDING_ID,
+        COLLECTION_OUTPUT_BINDING_ID,
         INBOX_STORE_BINDING_ID,
         NOTIFY_SEND_BINDING_ID,
         WEBHOOK_NOTIFY_BINDING_ID,
-        EXTERNAL_TOOL_BINDING_ID,
     }
 
 
@@ -1509,6 +2285,55 @@ def _request_source_items(
         }
         for index, item in enumerate(raw_items)
     ]
+
+
+def _live_source_items(
+    node: CompiledWorkflowNode,
+    raw_items: list[dict[str, Any]],
+    *,
+    artifact: str = "live_http_source",
+) -> list[dict[str, Any]]:
+    source_group = _source_group(node, node.id)
+    return [
+        {
+            "raw": item,
+            "lineage": [
+                {
+                    "nodeId": node.id,
+                    "sourceGroup": source_group,
+                    "artifact": artifact,
+                    "index": index,
+                }
+            ],
+        }
+        for index, item in enumerate(raw_items)
+    ]
+
+
+def _opencli_dispatch_source_items(
+    node: CompiledWorkflowNode,
+    dispatch: WorkflowOpenCLIHDATraceDispatch,
+    raw_items: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    return [
+        {
+            "raw": item,
+            "lineage": [
+                {
+                    "nodeId": node.id,
+                    "sourceGroup": dispatch.sourceGroup,
+                    "artifact": "opencliDispatch",
+                    "adapterTaskId": dispatch.taskId,
+                    "index": index,
+                }
+            ],
+        }
+        for index, item in enumerate(raw_items)
+    ]
+
+
+def _is_local_opencli_dispatch(details: dict[str, object] | None) -> bool:
+    return bool(details and details.get("protocol") == "local")
 
 
 async def _bound_source_record_items(
@@ -1573,14 +2398,41 @@ async def _execute_native_node(
     run_id: str,
     *,
     workflow_id: str,
+    trace_id: str,
     session: AsyncSession | None = None,
     runtime_nodes_by_id: dict[str, CompiledWorkflowNode] | None = None,
     materialized_source_tasks: dict[str, tuple[str, str]] | None = None,
 ) -> tuple[dict[str, object], list[dict[str, Any]]]:
     binding_id = _binding_id(node)
     input_items = _upstream_outputs(node, outputs_by_node)
+    if binding_id == COLLECTION_OUTPUT_BINDING_ID:
+        exposed = [
+            _append_lineage(item, node, step="collection_output", run_id=run_id)
+            for item in input_items
+        ]
+        return (
+            {
+                "bindingId": binding_id,
+                "artifact": "items[]",
+                "inputItemCount": len(input_items),
+                "outputItemCount": len(exposed),
+                "lineage": _lineage_pointer(node),
+            },
+            exposed,
+        )
     if binding_id == NORMALIZE_BINDING_ID:
-        candidates = _normalize_runtime_items(node, input_items, run_id)
+        binding = _read_dict(node.runtime.get("binding"))
+        binding_input = _read_dict(binding.get("input"))
+        normalize_config = dict(binding_input)
+        if source_id := _read_string(node.params.get("sourceId")):
+            normalize_config["sourceId"] = source_id
+        result = execute_record_hygiene(
+            "normalize",
+            input_items,
+            normalize_config,
+            {"runId": run_id, "nodeId": node.id},
+        )
+        candidates = result.records
         return (
             {
                 "bindingId": binding_id,
@@ -1588,6 +2440,9 @@ async def _execute_native_node(
                 "outputPort": "recordCandidate[]",
                 "inputItemCount": len(input_items),
                 "recordCandidateCount": len(candidates),
+                "rejectedCount": len(result.rejected),
+                "rejected": result.rejected,
+                "metrics": result.metrics,
                 "lineage": _lineage_pointer(node),
             },
             candidates,
@@ -1641,6 +2496,30 @@ async def _execute_native_node(
             },
             output_items,
         )
+    if binding_id == DEDUPE_BINDING_ID:
+        binding = _read_dict(node.runtime.get("binding"))
+        binding_input = _read_dict(binding.get("input"))
+        result = execute_record_hygiene(
+            "dedupe",
+            input_items,
+            binding_input,
+            {"runId": run_id, "nodeId": node.id},
+        )
+        return (
+            {
+                "bindingId": binding_id,
+                "key": binding_input.get("key", "title+source+publishedAt"),
+                "window": binding_input.get("window", "24h"),
+                "windowHours": binding_input.get("windowHours", 24),
+                "inputCandidateCount": len(input_items),
+                "deduplicatedCandidateCount": len(result.records),
+                "rejectedCount": len(result.rejected),
+                "rejected": result.rejected,
+                "metrics": result.metrics,
+                "lineage": _lineage_pointer(node),
+            },
+            result.records,
+        )
     if binding_id == MERGE_BINDING_ID:
         binding = _read_dict(node.runtime.get("binding"))
         binding_input = _read_dict(binding.get("input"))
@@ -1678,12 +2557,14 @@ async def _execute_native_node(
     if binding_id == RECORD_ACCEPTANCE_BINDING_ID:
         binding = _read_dict(node.runtime.get("binding"))
         binding_input = _read_dict(binding.get("input"))
-        accepted = [
-            _accept_candidate(item, node, run_id=run_id)
-            for item in input_items
-            if _candidate_has_lineage(item) or binding_input.get("lineageRequired") is False
-        ]
-        review_required = len(input_items) - len(accepted)
+        result = execute_record_hygiene(
+            "accept",
+            input_items,
+            binding_input,
+            {"runId": run_id, "nodeId": node.id},
+        )
+        accepted = result.records
+        review_required = len(result.rejected)
         return (
             {
                 "bindingId": binding_id,
@@ -1693,6 +2574,9 @@ async def _execute_native_node(
                 "inputCandidateCount": len(input_items),
                 "acceptedRecordCount": len(accepted),
                 "reviewRequiredCount": review_required,
+                "rejectedCount": len(result.rejected),
+                "rejected": result.rejected,
+                "metrics": result.metrics,
                 "lineage": _lineage_pointer(node),
             },
             accepted,
@@ -1715,6 +2599,10 @@ async def _execute_native_node(
             runtime_nodes_by_id=runtime_nodes_by_id or {},
             materialized_source_tasks=materialized_source_tasks or {},
         )
+        stored_refs = [
+            _append_lineage(item, node, step="store", run_id=run_id)
+            for item in stored_refs
+        ]
         return (
             {
                 "bindingId": binding_id,
@@ -1726,7 +2614,7 @@ async def _execute_native_node(
                 "storedRefs": stored_refs,
                 "lineage": _lineage_pointer(node),
             },
-            input_items,
+            stored_refs,
         )
     if binding_id == NOTIFY_SEND_BINDING_ID:
         binding = _read_dict(node.runtime.get("binding"))
@@ -1761,30 +2649,91 @@ async def _execute_native_node(
             },
             input_items,
         )
-    if binding_id == EXTERNAL_TOOL_BINDING_ID:
-        binding = _read_dict(node.runtime.get("binding"))
-        binding_input = _read_dict(binding.get("input"))
+    if _is_external_tool_node(node):
+        binding_input = _binding_input(node)
         output_items = await _execute_external_tool_capability(
             node,
             input_items,
             run_id=run_id,
+            workflow_id=workflow_id,
+            trace_id=trace_id,
+            session=session,
             binding_input=binding_input,
         )
         return (
             {
-                "bindingId": binding_id,
-                "toolCapabilityId": binding_input.get("toolCapabilityId"),
-                "executorMode": binding_input.get("executorMode"),
-                "inputItemCount": len(input_items),
-                "outputItemCount": len(output_items),
+                **_external_tool_call_details(
+                    node,
+                    input_item_count=len(input_items),
+                    output_item_count=len(output_items),
+                ),
                 "outputPort": binding_input.get("outputPort", "unknown"),
                 "sampleOutputs": [_trace_sample_output(item) for item in output_items[:3]],
-                "externalWorkflow": binding_input.get("externalWorkflow", {}),
-                "lineage": _lineage_pointer(node),
             },
             output_items,
         )
     return ({"bindingId": binding_id or "", "lineage": _lineage_pointer(node)}, [])
+
+
+def _execute_capability_native_node(
+    node: CompiledWorkflowNode,
+    outputs_by_node: dict[str, list[dict[str, Any]]],
+    *,
+    workflow_input: dict[str, Any],
+) -> tuple[dict[str, object], list[dict[str, Any]]]:
+    binding_id = _binding_id(node)
+    binding = _read_dict(node.runtime.get("binding"))
+    binding_input = _read_dict(binding.get("input"))
+    node_type = _read_string(binding_input.get("nodeType"))
+    if binding_id not in NATIVE_BINDING_IDS.values() or node_type is None:
+        raise ValueError(f'Unsupported native binding "{binding_id}"')
+
+    upstream_items = _upstream_outputs(node, outputs_by_node)
+    native_input = _capability_native_input(
+        node_type,
+        upstream_items,
+        workflow_input=workflow_input,
+    )
+    result = execute_native_node(
+        f"primitive.core.{node_type}",
+        native_input,
+        {"config": _read_dict(binding_input.get("config"))},
+    )
+    output_items = _capability_native_output_items(result.output)
+    details: dict[str, object] = {
+        "bindingId": binding_id,
+        "nodeType": result.node_type,
+        "input": _json_safe(native_input),
+        "output": _json_safe(result.output),
+        "outputItemCount": len(output_items),
+        "meta": _json_safe(result.meta),
+    }
+    if result.route is not None:
+        details["route"] = result.route
+    return details, output_items
+
+
+def _capability_native_input(
+    node_type: str,
+    upstream_items: list[dict[str, Any]],
+    *,
+    workflow_input: dict[str, Any],
+) -> object:
+    if node_type in {"list-filter", "list-sort", "iteration"}:
+        return upstream_items
+    if len(upstream_items) == 1:
+        return upstream_items[0]
+    if upstream_items:
+        return {"items": upstream_items}
+    return workflow_input
+
+
+def _capability_native_output_items(output: object) -> list[dict[str, Any]]:
+    if isinstance(output, list):
+        return [item if isinstance(item, dict) else {"value": item} for item in output]
+    if isinstance(output, dict):
+        return [output]
+    return [{"value": output}]
 
 
 async def _execute_external_tool_capability(
@@ -1792,8 +2741,51 @@ async def _execute_external_tool_capability(
     input_items: list[dict[str, Any]],
     *,
     run_id: str,
+    workflow_id: str,
+    trace_id: str,
+    session: AsyncSession | None,
     binding_input: dict[str, Any],
 ) -> list[dict[str, Any]]:
+    if binding_input.get("executorMode") == NATIVE_INTELLIGENCE_EXECUTOR:
+        tool_id = binding_input.get("toolCapabilityId")
+        action = (
+            NATIVE_INTELLIGENCE_ACTION_BY_TOOL_ID.get(tool_id)
+            if isinstance(tool_id, str)
+            else None
+        )
+        if action is None:
+            raise ValueError("native_intelligence_action_not_registered")
+        if session is None:
+            raise ValueError("native_intelligence_store_unavailable")
+        bind = session.bind
+        if bind is None:
+            raise ValueError("native_intelligence_store_unavailable")
+        session_factory = async_sessionmaker(
+            bind,
+            class_=AsyncSession,
+            expire_on_commit=False,
+            autoflush=False,
+        )
+
+        async def execute_transaction(retry_store):
+            return await execute_native_intelligence_action(
+                action_name=action.name,
+                input_items=input_items,
+                params=_merged_tool_params(binding_input),
+                session=retry_store.session,
+                workflow_id=workflow_id,
+                run_id=run_id,
+                trace_id=trace_id,
+                node_id=node.id,
+                commit_each_command=False,
+            )
+
+        output = await run_intelligence_transaction(
+            session_factory,
+            execute_transaction,
+        )
+        return [_external_tool_output(node, output, input_items, run_id, 0, binding_input)]
+
     if (
         binding_input.get("executorMode") == OKX_MARKET_TICKER_SNAPSHOT_EXECUTOR
         and binding_input.get("toolCapabilityId") == "tool.realtime.stream.subscribe"
@@ -1806,6 +2798,20 @@ async def _execute_external_tool_capability(
         and binding_input.get("toolCapabilityId") == JOYAI_VL_TOOL_CAPABILITY_ID
     ):
         output = _execute_joyai_vl_tool(binding_input)
+        return [_external_tool_output(node, output, input_items, run_id, 0, binding_input)]
+
+    if (
+        binding_input.get("executorMode") == SITUATION_AWARENESS_EXECUTOR
+        and binding_input.get("toolCapabilityId") == SITUATION_AWARENESS_TOOL_CAPABILITY_ID
+    ):
+        output = _execute_situation_awareness_tool(input_items, binding_input)
+        return [_external_tool_output(node, output, input_items, run_id, 0, binding_input)]
+
+    if (
+        binding_input.get("executorMode") == SWARM_SIMULATION_EXECUTOR
+        and binding_input.get("toolCapabilityId") == SWARM_SIMULATION_TOOL_CAPABILITY_ID
+    ):
+        output = _execute_swarm_simulation_tool(input_items, binding_input)
         return [_external_tool_output(node, output, input_items, run_id, 0, binding_input)]
 
     fixture_outputs = _read_dict_list(binding_input.get("fixtureOutputs"))
@@ -1822,10 +2828,7 @@ async def _execute_external_tool_capability(
 
 
 async def _execute_okx_market_tool(binding_input: dict[str, Any]) -> dict[str, Any]:
-    params = {
-        **_read_dict(binding_input.get("executorParams")),
-        **_read_dict(binding_input.get("toolParams")),
-    }
+    params = _merged_tool_params(binding_input)
     try:
         # execute_okx_market_ticker_snapshot is a blocking urllib call; run
         # it off the event loop thread so it can't stall the single-worker
@@ -1842,10 +2845,7 @@ async def _execute_okx_market_tool(binding_input: dict[str, Any]) -> dict[str, A
 
 
 def _execute_joyai_vl_tool(binding_input: dict[str, Any]) -> dict[str, Any]:
-    params = {
-        **_read_dict(binding_input.get("executorParams")),
-        **_read_dict(binding_input.get("toolParams")),
-    }
+    params = _merged_tool_params(binding_input)
     try:
         return execute_joyai_vl_interaction(params)
     except JoyAIVLExecutionError as exc:
@@ -1856,6 +2856,46 @@ def _execute_joyai_vl_tool(binding_input: dict[str, Any]) -> dict[str, Any]:
             "status": "error",
             "message": str(exc),
         }
+
+
+def _execute_swarm_simulation_tool(
+    input_items: list[dict[str, Any]],
+    binding_input: dict[str, Any],
+) -> dict[str, Any]:
+    try:
+        return execute_swarm_simulation(input_items, _merged_tool_params(binding_input))
+    except SwarmSimulationExecutionError as exc:
+        return {
+            "schema": "swarm.provider-operation.error.v1",
+            "source": "swarm-simulation",
+            "eventType": "swarm.simulation.error",
+            "status": "error",
+            "simulated": True,
+            "message": str(exc),
+        }
+
+
+def _execute_situation_awareness_tool(
+    input_items: list[dict[str, Any]],
+    binding_input: dict[str, Any],
+) -> dict[str, Any]:
+    try:
+        return execute_situation_awareness(input_items, _merged_tool_params(binding_input))
+    except Last30DaysProviderError as exc:
+        return {
+            "schema": "recent-research.provider.error.v1",
+            "source": "situation-awareness",
+            "eventType": "recent.research.error",
+            "status": "error",
+            "message": str(exc),
+        }
+
+
+def _merged_tool_params(binding_input: dict[str, Any]) -> dict[str, Any]:
+    return {
+        **_read_dict(binding_input.get("executorParams")),
+        **_read_dict(binding_input.get("toolParams")),
+    }
 
 
 def _external_tool_output(
@@ -1899,6 +2939,23 @@ def _trace_sample_output(item: dict[str, Any]) -> dict[str, Any]:
             "market",
             "status",
             "message",
+            "query",
+            "counts",
+            "window",
+            "provider",
+            "simulated",
+            "run",
+            "outcomes",
+            "canonicalState",
+            "handles",
+            "action",
+            "sessionId",
+            "intelligenceSessionRef",
+            "state",
+            "version",
+            "result",
+            "readiness",
+            "provenance",
         )
         if key in raw
     }
@@ -1914,6 +2971,41 @@ def _tool_call_trace_details(details: dict[str, object]) -> dict[str, object]:
         "externalWorkflow": details.get("externalWorkflow", {}),
         "lineage": details.get("lineage", {}),
     }
+
+
+def _binding_input(node: CompiledWorkflowNode) -> dict[str, Any]:
+    binding = _read_dict(node.runtime.get("binding"))
+    return _read_dict(binding.get("input"))
+
+
+def _external_tool_call_details(
+    node: CompiledWorkflowNode,
+    *,
+    input_item_count: int,
+    output_item_count: int,
+) -> dict[str, object]:
+    binding_input = _binding_input(node)
+    return {
+        "bindingId": _binding_id(node),
+        "toolCapabilityId": binding_input.get("toolCapabilityId"),
+        "executorMode": binding_input.get("executorMode"),
+        "inputItemCount": input_item_count,
+        "outputItemCount": output_item_count,
+        "externalWorkflow": binding_input.get("externalWorkflow", {}),
+        "lineage": _lineage_pointer(node),
+    }
+
+
+def _is_native_intelligence_node(node: CompiledWorkflowNode) -> bool:
+    return _binding_input(node).get("executorMode") == NATIVE_INTELLIGENCE_EXECUTOR
+
+
+def _is_external_tool_node(node: CompiledWorkflowNode) -> bool:
+    binding_input = _binding_input(node)
+    return (
+        _binding_id(node) == EXTERNAL_TOOL_BINDING_ID
+        or binding_input.get("transportBindingId") == EXTERNAL_TOOL_BINDING_ID
+    )
 
 
 async def _store_record_sink_outputs(
@@ -1988,12 +3080,13 @@ async def _store_record_sink_outputs(
                 (raw, normalized, content_hash)
                 for raw, normalized, content_hash, _lineage in triples_with_lineage
             ],
-            channel_type=_read_string(runtime_nodes_by_id[source_node_id].params.get("site"))
-            or "workflow",
+            channel_type=_workflow_source_channel_type(runtime_nodes_by_id[source_node_id]),
             forward_to_odp=False,
+            workflow_id=workflow_id,
+            workflow_run_id=run_id,
         )
         skipped_total += skipped
-        for record, (_raw, _normalized, _content_hash, lineage) in zip(
+        for record, (raw, normalized, content_hash, lineage) in zip(
             records, triples_with_lineage, strict=False
         ):
             stored_refs.append(
@@ -2002,6 +3095,9 @@ async def _store_record_sink_outputs(
                     "target": target,
                     "sourceId": source_id,
                     "taskId": task_id,
+                    "raw": raw,
+                    "normalizedData": normalized,
+                    "contentHash": content_hash,
                     "lineage": lineage,
                 }
             )
@@ -2036,23 +3132,35 @@ async def _materialize_source_task(
         source_node.params.get("dataSourceId")
     )
     source = await session.get(DataSource, source_id) if source_id else None
+    source_name = _workflow_source_display_name(source_node)
+    source_description = _workflow_source_description(source_name)
+    source_config = _workflow_source_config(
+        source_node,
+        workflow_id=workflow_id,
+        run_id=run_id,
+    )
+    if source is None and not source_id:
+        source = await _find_materialized_workflow_source(
+            session,
+            workflow_id=workflow_id,
+            source_node_id=source_node.id,
+            channel_type=_workflow_source_channel_type(source_node),
+        )
     if source is None:
         source = DataSource(
-            name=f"Workflow Source: {source_node.id}",
-            description=("Materialized source ownership for a WorkflowProject Record Sink run."),
+            name=source_name,
+            description=source_description,
             channel_type=_workflow_source_channel_type(source_node),
-            channel_config={
-                "workflowId": workflow_id,
-                "workflowRunId": run_id,
-                "sourceNodeId": source_node.id,
-                "adapter": _adapter_reference(source_node),
-                "params": _json_safe(source_node.params),
-            },
+            channel_config=source_config,
             enabled=True,
-            tags=["workflow", "record-sink"],
+            tags=["workflow", "record-sink", "scanned-source"],
         )
         session.add(source)
         await session.flush()
+    elif not source_id:
+        source.name = source_name
+        source.description = source_description
+        source.channel_config = source_config
 
     task = CollectionTask(
         source_id=source.id,
@@ -2069,6 +3177,55 @@ async def _materialize_source_task(
     await session.flush()
     cache[source_node.id] = (source.id, task.id)
     return source.id, task.id
+
+
+async def _find_materialized_workflow_source(
+    session: AsyncSession,
+    *,
+    workflow_id: str,
+    source_node_id: str,
+    channel_type: str,
+) -> DataSource | None:
+    candidates = (
+        await session.scalars(
+            select(DataSource).where(DataSource.channel_type == channel_type)
+        )
+    ).all()
+    for candidate in candidates:
+        config = candidate.channel_config if isinstance(candidate.channel_config, dict) else {}
+        if config.get("workflowId") == workflow_id and config.get("sourceNodeId") == source_node_id:
+            return candidate
+    return None
+
+
+def _workflow_source_display_name(node: CompiledWorkflowNode) -> str:
+    label = _read_string(node.runtime.get("display_name")) or _read_string(
+        node.params.get("displayName")
+    )
+    if not label:
+        source_group = _read_string(node.params.get("sourceGroup"))
+        label = source_group.replace("-", " ").title() if source_group else "工作流数据源"
+    return f"{label} · 工作流扫描数据源"
+
+
+def _workflow_source_description(source_name: str) -> str:
+    return f"由工作流扫描写入记录库：{source_name}。技术节点标识仅保留在运行配置中。"
+
+
+def _workflow_source_config(
+    node: CompiledWorkflowNode,
+    *,
+    workflow_id: str,
+    run_id: str,
+) -> dict[str, object]:
+    return {
+        "workflowId": workflow_id,
+        "workflowRunId": run_id,
+        "sourceNodeId": node.id,
+        "displayName": _workflow_source_display_name(node),
+        "adapter": _adapter_reference(node),
+        "params": _json_safe(node.params),
+    }
 
 
 def _origin_source_node_id(
@@ -2088,8 +3245,12 @@ def _origin_source_node_id(
 def _workflow_source_channel_type(node: CompiledWorkflowNode) -> str:
     adapter = _read_string(node.adapter)
     binding = _read_dict(node.runtime.get("binding"))
+    binding_input = _read_dict(binding.get("input"))
+    channel_type = _read_string(binding_input.get("channelType"))
+    if channel_type:
+        return channel_type
     channel = _read_string(binding.get("channel"))
-    if channel:
+    if channel and channel != "source":
         return channel
     if adapter and adapter.startswith("opencli"):
         return "opencli"
@@ -2131,37 +3292,6 @@ def _upstream_outputs(
     return [
         item for upstream_id in node.depends_on for item in outputs_by_node.get(upstream_id, [])
     ]
-
-
-def _normalize_runtime_items(
-    node: CompiledWorkflowNode,
-    input_items: list[dict[str, Any]],
-    run_id: str,
-) -> list[dict[str, Any]]:
-    candidates: list[dict[str, Any]] = []
-    source_id = _read_string(node.params.get("sourceId")) or node.id
-    for index, item in enumerate(input_items):
-        raw = _read_dict(item.get("raw")) or _read_dict(item)
-        normalized, content_hash = normalize_item(raw, source_id)
-        lineage = list(_read_dict_list(item.get("lineage")))
-        lineage.append(
-            {
-                "nodeId": node.id,
-                "step": "normalize",
-                "runId": run_id,
-                "index": index,
-            }
-        )
-        candidates.append(
-            {
-                "candidateId": _stable_id("candidate", run_id, node.id, content_hash),
-                "raw": raw,
-                "normalizedData": normalized,
-                "contentHash": content_hash,
-                "lineage": lineage,
-            }
-        )
-    return candidates
 
 
 def _append_lineage(
@@ -2467,6 +3597,8 @@ def _native_node_started_message(node: CompiledWorkflowNode) -> str:
         return "Data operator started"
     if binding_id == NORMALIZE_BINDING_ID:
         return "Normalize transform started"
+    if binding_id == DEDUPE_BINDING_ID:
+        return "Dedupe transform started"
     if binding_id == MERGE_BINDING_ID:
         return "Merge node started"
     if binding_id == ROUTER_ROUTE_BINDING_ID:
@@ -2481,7 +3613,7 @@ def _native_node_started_message(node: CompiledWorkflowNode) -> str:
         return "Notification send started"
     if binding_id == WEBHOOK_NOTIFY_BINDING_ID:
         return "Webhook delivery started"
-    if binding_id == EXTERNAL_TOOL_BINDING_ID:
+    if _is_external_tool_node(node):
         return "OpenCLI Tool Capability started"
     return "Native workflow node started"
 
@@ -2492,6 +3624,8 @@ def _native_node_partial_message(node: CompiledWorkflowNode) -> str:
         return "Data operator emitted items"
     if binding_id == NORMALIZE_BINDING_ID:
         return "Record Candidates projected"
+    if binding_id == DEDUPE_BINDING_ID:
+        return "Duplicate candidates rejected with evidence"
     if binding_id == MERGE_BINDING_ID:
         return "Candidate streams merged with lineage"
     if binding_id == ROUTER_ROUTE_BINDING_ID:
@@ -2506,7 +3640,7 @@ def _native_node_partial_message(node: CompiledWorkflowNode) -> str:
         return "Notification payload projected"
     if binding_id == WEBHOOK_NOTIFY_BINDING_ID:
         return "Webhook delivery evidence emitted"
-    if binding_id == EXTERNAL_TOOL_BINDING_ID:
+    if _is_external_tool_node(node):
         return "OpenCLI Tool Capability emitted output"
     return "Native workflow node emitted trace evidence"
 
@@ -2517,6 +3651,8 @@ def _native_node_completed_message(node: CompiledWorkflowNode) -> str:
         return "Data operator completed"
     if binding_id == NORMALIZE_BINDING_ID:
         return "Normalize transform completed"
+    if binding_id == DEDUPE_BINDING_ID:
+        return "Dedupe transform completed"
     if binding_id == MERGE_BINDING_ID:
         return "Merge node completed"
     if binding_id == ROUTER_ROUTE_BINDING_ID:
@@ -2531,7 +3667,7 @@ def _native_node_completed_message(node: CompiledWorkflowNode) -> str:
         return "Notification send completed"
     if binding_id == WEBHOOK_NOTIFY_BINDING_ID:
         return "Webhook delivery completed"
-    if binding_id == EXTERNAL_TOOL_BINDING_ID:
+    if _is_external_tool_node(node):
         return "OpenCLI Tool Capability completed"
     return "Native workflow node completed"
 
@@ -2561,10 +3697,7 @@ def _legacy_location_from_node_path(node_path: list[str]) -> tuple[str | None, s
 
 def _package_ancestor_ids(node: CompiledWorkflowNode) -> list[str]:
     node_path = _compiled_node_path(node)
-    return [
-        INTERNAL_ID_SEPARATOR.join(node_path[:depth])
-        for depth in range(1, len(node_path))
-    ]
+    return [INTERNAL_ID_SEPARATOR.join(node_path[:depth]) for depth in range(1, len(node_path))]
 
 
 def _webhook_runtime_input_envelope(
@@ -2605,7 +3738,7 @@ def _to_dispatch(
     project: WorkflowProject,
     node: CompiledWorkflowNode,
     *,
-    package_node_id: str,
+    package_node_id: str | None,
     run_id: str,
     trace_id: str,
 ) -> WorkflowOpenCLIHDATraceDispatch:
@@ -2619,17 +3752,15 @@ def _to_dispatch(
         site = _read_string(node.params.get("site")) or ""
         command = _read_string(node.params.get("command")) or ""
 
-    internal_node_id = _internal_node_id(node.id, package_node_id)
-    source_group = _source_group(node, internal_node_id)
+    internal_node_id = _internal_node_id(node.id, package_node_id) if package_node_id else None
+    source_group = _source_group(node, internal_node_id or node.id)
     args = _read_dict(node.params.get("args"))
     task_id = _task_id(project.id, run_id, node.id, source_group)
     payload: dict[str, object] = {
         "workflow_id": project.id,
         "workflow_run_id": run_id,
-        "package_node_id": package_node_id,
         "node_id": node.id,
         "node_path": _compiled_node_path(node),
-        "internal_node_id": internal_node_id,
         "source_group": source_group,
         "site": site,
         "command": command,
@@ -2638,12 +3769,21 @@ def _to_dispatch(
         "task_id": task_id,
         "trace_id": trace_id,
     }
+    if package_node_id:
+        payload["package_node_id"] = package_node_id
+    if internal_node_id:
+        payload["internal_node_id"] = internal_node_id
     positional_args = node.params.get("positional_args", node.params.get("positionalArgs"))
     if isinstance(positional_args, list) and positional_args:
         payload["positional_args"] = positional_args
     mode = _read_string(node.params.get("mode"))
     if mode:
         payload["mode"] = mode
+    dispatch_policy = _read_string(
+        node.params.get("dispatchPolicy", node.params.get("dispatch_policy"))
+    )
+    if dispatch_policy:
+        payload["dispatch_policy"] = dispatch_policy
 
     return WorkflowOpenCLIHDATraceDispatch(
         taskId=task_id,

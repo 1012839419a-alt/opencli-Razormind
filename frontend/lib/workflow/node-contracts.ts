@@ -138,6 +138,44 @@ const CONTRACTS: Record<string, NodeContract> = {
     ],
     ["source adapter must be registered", "items[] output must include stable item ids"],
   ),
+  "intelligence.source.rss": contract(
+    "intelligence.source.rss",
+    "RSS / Atom Source",
+    "trigger -> items[]",
+    [port("in", "input", "trigger", false, "Consumes a schedule trigger.")],
+    [port("out", "output", "items[]", true, "Emits parsed RSS or Atom entries.")],
+    [
+      param("feedUrl", "params", "string", true, "https://www.federalreserve.gov/feeds/press_all.xml", {
+        description: "Public RSS or Atom URL. Its host must be listed in agentPermissions.allowedDomains.",
+      }),
+      param("maxEntries", "params", "number", true, 20, {
+        min: 1,
+        max: 500,
+        description: "Maximum feed entries read per run, also capped by project settings.",
+      }),
+      param("sourceGroup", "params", "string", true, "macro-policy", {
+        description: "Business grouping key preserved in lineage and Records.",
+      }),
+      param("site", "params", "string", false, "federal-reserve", {
+        description: "Human-readable source key used by Records and source ownership.",
+      }),
+      param("providerId", "params", "string", false, "", {
+        description: "Optional self-hosted RSS generator Provider resolved by the backend at run time.",
+      }),
+      param("generatorType", "params", "string", false, "rsshub", {
+        enum: ["rsshub", "rss_bridge"],
+        description: "Generator kind for a provider-backed feed URL.",
+      }),
+      param("generatorSelection", "params", "object", false, {}, {
+        description: "Selected RSSHub route or RSS-Bridge bridge and its non-secret parameters.",
+      }),
+    ],
+    [
+      "feed host must be allowed",
+      "provider token must remain backend-only",
+      "items[] must retain sourceGroup lineage",
+    ],
+  ),
   "intelligence.source.opencli-slot": contract(
     "intelligence.source.opencli-slot",
     "OpenCLI Source Slot",
@@ -191,7 +229,7 @@ const CONTRACTS: Record<string, NodeContract> = {
     [port("in", "input", "items[]", true, "Consumes source items.")],
     [port("out", "output", "recordCandidate[]", true, "Emits normalized record candidates.")],
     [
-      param("language", "params", "string", true, "zh-CN", { description: "Normalized output language." }),
+      param("language", "params", "string", true, "zh-CN", { description: "Language metadata annotation; content is not translated." }),
       param("preserveSourceRefs", "params", "boolean", false, true, { description: "Keeps source references available downstream." }),
     ],
     ["normalized item count should match fetched item count in deterministic simulation"],
@@ -333,6 +371,31 @@ const CONTRACTS: Record<string, NodeContract> = {
       "raw artifacts or candidates cannot bypass this gate into the record sink",
     ],
   ),
+  "package.processing.record-hygiene": contract(
+    "package.processing.record-hygiene",
+    "Record Hygiene & Acceptance",
+    "items[] -> record[]",
+    [port("in", "input", "items[]", true, "Consumes raw source items for the default cleaning pipeline.")],
+    [port("out", "output", "record[]", true, "Emits records accepted by the internal gate.")],
+    [
+      param("language", "params", "string", true, "zh-CN", { description: "Language metadata annotation; content is not translated." }),
+      param("preserveSourceRefs", "params", "boolean", true, true, { description: "Preserves source references and lineage evidence." }),
+      param("key", "params", "string", true, "title+source+publishedAt", { description: "Stable deduplication key expression." }),
+      param("window", "params", "string", true, "24h", { description: "Deduplication time window." }),
+      param("mode", "params", "string", true, "automatic_with_review", {
+        enum: ["automatic_with_review", "manual_review", "automatic_strict"],
+        description: "Record acceptance policy.",
+      }),
+      param("schema", "params", "string", true, "record.v1", { description: "Required output record schema." }),
+      param("lineageRequired", "params", "boolean", true, true, { description: "Rejects candidates without lineage." }),
+      param("minQuality", "params", "number", false, 0, { min: 0, max: 1, description: "Minimum accepted candidate quality." }),
+    ],
+    [
+      "internal graph must remain Normalize -> Dedupe -> Record Acceptance Gate",
+      "package parameters must bind to their canonical internal nodes",
+      "accepted records must retain source lineage",
+    ],
+  ),
   "intelligence.output.inbox": contract(
     "intelligence.output.inbox",
     "Inbox Store",
@@ -372,9 +435,9 @@ const CONTRACTS: Record<string, NodeContract> = {
   "intelligence.output.collection-result": contract(
     "intelligence.output.collection-result",
     "Collection Output",
-    "recordCandidate[] -> storedItems[]",
+    "recordCandidate[] -> items[]",
     [port("in", "input", "recordCandidate[]", true, "Consumes normalized package candidates.")],
-    [port("out", "output", "storedItems[]", false, "Emits package output artifact references.")],
+    [port("out", "output", "items[]", false, "Exposes normalized package items with lineage.")],
     [
       param("queue", "params", "string", true, "opencli-hda-output", {
         description: "Internal artifact queue for package output.",
@@ -451,7 +514,7 @@ const CONTRACTS: Record<string, NodeContract> = {
   ),
   "package.opencli.multi-source-hda": contract(
     "package.opencli.multi-source-hda",
-    "OpenCLI Multi-source HDA",
+    "多站点采集执行",
     "trigger -> items[]",
     [port("in", "input", "trigger", true, "Consumes a workflow schedule trigger.")],
     [port("out", "output", "items[]", true, "Emits normalized items from locked OpenCLI internal sources.")],

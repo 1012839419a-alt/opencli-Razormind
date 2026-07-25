@@ -13,6 +13,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from backend.schemas.workflow import WorkflowProjectNode
+from backend.workflow.native_node_runtime import NATIVE_PRIMITIVE_IDS
 
 NodeOriginKind = Literal["node_library", "primitive_library", "n8n", "legacy"]
 
@@ -20,6 +21,7 @@ WORKFLOW_CATALOG_IDS = {
     "intelligence.input.collection-need",
     "intelligence.schedule.cron",
     "intelligence.source.jin10",
+    "intelligence.source.rss",
     "intelligence.source.pool",
     "intelligence.source.opencli-slot",
     "intelligence.processing.normalize",
@@ -41,7 +43,12 @@ WORKFLOW_CATALOG_IDS = {
     "intelligence.output.turbopush-publish",
     "external.tool.capability",
     "package.collection.pipeline",
+    "package.processing.record-hygiene",
     "package.opencli.multi-source-hda",
+    "package.processing.record-hygiene",
+    "package.intelligence.situation-awareness",
+    "package.simulation.swarm-forecast",
+    "package.intelligence.native-lifecycle",
     "package.dispatch.fanout",
     "package.intelligence.pipeline",
     "package.ops.event",
@@ -51,6 +58,7 @@ WORKFLOW_CATALOG_IDS = {
     "package.verify.regression-gate",
     "package.map.knowledge-map",
     "package.review.human-review",
+    "package.compat.dify-workflow",
 }
 
 WORKFLOW_PRIMITIVE_IDS = {
@@ -161,7 +169,7 @@ WORKFLOW_PRIMITIVE_IDS = {
     "primitive.map.semantic-link",
     "primitive.map.link-weight",
     "primitive.map.knowledge-export",
-}
+} | NATIVE_PRIMITIVE_IDS
 
 FORBIDDEN_UI_KEYS = {
     "executor",
@@ -247,7 +255,12 @@ def forbidden_node_definition_keys(node: WorkflowProjectNode) -> list[str]:
 
     ui = node.ui or {}
     keys = [f"ui.{key}" for key in sorted(FORBIDDEN_UI_KEYS) if key in ui]
-    keys.extend(_forbidden_param_paths(node.params))
+    keys.extend(
+        _forbidden_param_paths(
+            node.params,
+            allowed_paths=_native_intelligence_ref_allowed_paths(node),
+        )
+    )
     return keys
 
 
@@ -255,18 +268,58 @@ def _forbidden_param_paths(
     value: Any,
     *,
     path: tuple[str, ...] = ("params",),
+    allowed_paths: frozenset[tuple[str, ...]] = frozenset(),
 ) -> list[str]:
     paths: list[str] = []
     if isinstance(value, dict):
         for key, nested in value.items():
             nested_path = (*path, str(key))
-            if key in FORBIDDEN_PARAM_KEYS:
+            if key in FORBIDDEN_PARAM_KEYS and nested_path not in allowed_paths:
                 paths.append(".".join(nested_path))
-            paths.extend(_forbidden_param_paths(nested, path=nested_path))
+            paths.extend(
+                _forbidden_param_paths(
+                    nested,
+                    path=nested_path,
+                    allowed_paths=allowed_paths,
+                )
+            )
     elif isinstance(value, list):
         for index, nested in enumerate(value):
-            paths.extend(_forbidden_param_paths(nested, path=(*path, str(index))))
+            paths.extend(
+                _forbidden_param_paths(
+                    nested,
+                    path=(*path, str(index)),
+                    allowed_paths=allowed_paths,
+                )
+            )
     return paths
+
+
+def _native_intelligence_ref_allowed_paths(
+    node: WorkflowProjectNode,
+) -> frozenset[tuple[str, ...]]:
+    tool = node.params.get("toolCapability")
+    if not isinstance(tool, dict):
+        return frozenset()
+    tool_id = _read_string(tool.get("id"))
+    executor = tool.get("executor")
+    if (
+        not tool_id
+        or not tool_id.startswith("tool.intelligence.native.")
+        or not isinstance(executor, dict)
+        or executor.get("mode") != "native_intelligence"
+    ):
+        return frozenset()
+    return frozenset(
+        {
+            (
+                "params",
+                "toolParams",
+                "intelligenceSessionRef",
+                "sessionId",
+            )
+        }
+    )
 
 
 def _read_string(value: Any) -> str | None:

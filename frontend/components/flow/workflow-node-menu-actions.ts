@@ -8,7 +8,7 @@ import type { WorkflowPrimitive } from "@/lib/workflow/node-primitives"
 import { NODE_NETWORK_DEPTH_LIMIT_REACHED } from "@/lib/workflow/node-hierarchy"
 import type { CanvasPoint } from "./workflow-canvas-geometry"
 
-export type NodeMenuState = { nodeId: string; x: number; y: number }
+export type NodeMenuState = { nodeId?: string; x: number; y: number }
 
 type FitView = (options?: { padding?: number; duration?: number; nodes?: { id: string }[] }) => unknown
 
@@ -85,15 +85,16 @@ export function useWorkflowNodeMenuActions(options: {
       }
       const text = localizeNodeText(item.id, { label: item.label, description: item.description }, language)
       addWorkflowNodeFromCatalog(item, screenToFlowPosition({ x: nodeMenu.x + 26, y: nodeMenu.y + 26 }))
+      setInspectorOpen(true)
       showToast(`已添加一级业务节点：${text.label}`)
       setNodeMenu(null)
     },
-    [addWorkflowNodeFromCatalog, language, nodeMenu, screenToFlowPosition, setNodeMenu, showToast],
+    [addWorkflowNodeFromCatalog, language, nodeMenu, screenToFlowPosition, setInspectorOpen, setNodeMenu, showToast],
   )
 
   const addPrimitiveFromMenu = useCallback(
     (item: WorkflowPrimitive, itemIndex: number) => {
-      if (!nodeMenu) return
+      if (!nodeMenu?.nodeId) return
       const text = localizeNodeText(item.id, { label: item.label, description: item.description }, language)
       const count = addPrimitiveToNodeNetwork(
         nodeMenu.nodeId,

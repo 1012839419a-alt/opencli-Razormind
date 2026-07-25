@@ -1,14 +1,21 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import Link from "next/link"
-import { AlertTriangle, PlugZap } from "lucide-react"
-import { clearParameterDraftEntry, useFlowStore } from "@/lib/flow/store"
-import type { WorkflowNodeData, FieldConfig } from "@/lib/flow/types"
+import { AlertTriangle, Bot, CheckCircle2, Database, ExternalLink, Loader2, Plus, PlugZap, Trash2 } from "lucide-react"
+import { useFlowStore } from "@/lib/flow/store"
+import { useSources } from "@/lib/api/hooks"
+import type {
+  FieldConfig,
+  GeneratedWorkflowEdgeMapping,
+  WorkflowNodeData,
+} from "@/lib/flow/types"
+import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Separator } from "@/components/ui/separator"
+import { Switch } from "@/components/ui/switch"
 import {
   Select,
   SelectContent,
@@ -18,13 +25,32 @@ import {
 } from "@/components/ui/select"
 import type { NodeInternalStatus } from "@/lib/workflow/node-internals"
 import { getNodeTemplate } from "@/lib/workflow/node-templates"
-import {
-  buildParameterInterfaceView,
-  parseJsonParameterValue,
-  type ParameterInterfaceViewField,
-} from "@/lib/workflow/parameter-interface"
+import { buildParameterInterfaceView, type ParameterInterfaceViewField } from "@/lib/workflow/parameter-interface"
 import { blockedActionViewForRuntime } from "@/lib/workflow/capabilities"
+import { businessNodeName } from "@/lib/workflow/business-node-experience"
 import { buildCanonicalNodeViewContract } from "@/lib/workflow/canonical-node-contract"
+import { findWorkflowProjectNodeByCanvasId } from "@/lib/workflow/node-path"
+import { requestWorkflowNodeEditDraft, type WorkflowNodeEditDraft } from "@/lib/workflow/node-edit-draft"
+import {
+  isOpenCLISourceSlotArray,
+  type OpenCLISourceSlot,
+} from "@/lib/workflow/node-catalog"
+import {
+  openCLISlotFromDataSource,
+  SOURCE_ARGUMENT_LABELS,
+  SOURCE_MARKET_OPTIONS,
+  sourceBusinessArguments,
+  sourceBusinessQuery,
+  sourceMarket,
+  sourceSlotKey,
+  updateSourceBusinessQuery,
+  updateSourceMarket,
+} from "@/lib/workflow/source-business-config"
+import type {
+  WorkflowCapability,
+  WorkflowNodeKind,
+  WorkflowProjectNode,
+} from "@/lib/workflow/schema"
 import { MonoRow, PanelShell, SectionCaption } from "./inspector-shell"
 import { cn } from "@/lib/utils"
 
@@ -66,6 +92,12 @@ const houdiniDetailsClass = "overflow-hidden rounded-[3px] border border-[#20242
 const houdiniSummaryClass =
   "flex cursor-pointer list-none items-center justify-between gap-3 bg-[#171a1f] px-3 py-2 font-mono text-[10px] uppercase tracking-[0.16em] text-muted-foreground transition-colors hover:text-foreground"
 
+type NodeAiEditState =
+  | { status: "idle"; result: null; error: null }
+  | { status: "loading"; result: null; error: null }
+  | { status: "ready"; result: WorkflowNodeEditDraft; error: null }
+  | { status: "error"; result: null; error: string }
+
 type ProjectNodeWithIdentity = {
   params: Record<string, unknown>
   ui?: Record<string, unknown>
@@ -100,26 +132,40 @@ function readCanonical(data: WorkflowNodeData): CanonicalNodeData | undefined {
   return canonical as CanonicalNodeData
 }
 
+function nodeParameterDisplayValue(value: unknown): string | undefined {
+  if (typeof value === "string") return value.trim() ? value : undefined
+  if (typeof value === "number" || typeof value === "boolean") return String(value)
+  return undefined
+}
+
 export function Inspector() {
   const nodes = useFlowStore((s) => s.nodes)
   const edges = useFlowStore((s) => s.edges)
   const workflowProject = useFlowStore((s) => s.workflowProject)
+  const networkStackLength = useFlowStore((s) => s.networkStack.length)
   const updateNodeData = useFlowStore((s) => s.updateNodeData)
   const updateEdgeData = useFlowStore((s) => s.updateEdgeData)
   const updateEdgeType = useFlowStore((s) => s.updateEdgeType)
   const toggleEdgeAnimated = useFlowStore((s) => s.toggleEdgeAnimated)
   const updateWorkflowNodeParams = useFlowStore((s) => s.updateWorkflowNodeParams)
   const updateParameterInterfaceField = useFlowStore((s) => s.updateParameterInterfaceField)
+  const importWorkflowProject = useFlowStore((s) => s.importWorkflowProject)
   const takeSnapshot = useFlowStore((s) => s.takeSnapshot)
   const setNodes = useFlowStore((s) => s.setNodes)
   const onEdgesChange = useFlowStore((s) => s.onEdgesChange)
   const [nodeTab, setNodeTab] = useState<"config" | "prompt" | "run" | "trace">("config")
   const [parameterGroupTab, setParameterGroupTab] = useState("")
-  const [jsonDrafts, setJsonDrafts] = useState<Record<string, string>>({})
-  const [jsonErrors, setJsonErrors] = useState<Record<string, string>>({})
+  const [aiEditMessage, setAiEditMessage] = useState("")
+  const [aiEditState, setAiEditState] = useState<NodeAiEditState>({ status: "idle", result: null, error: null })
 
   const selected = nodes.filter((n) => n.selected)
   const selectedEdges = edges.filter((e) => e.selected)
+  const selectedNodeId = selected.length === 1 ? selected[0].id : null
+
+  useEffect(() => {
+    setAiEditMessage("")
+    setAiEditState({ status: "idle", result: null, error: null })
+  }, [selectedNodeId])
 
   const deselectAll = () => {
     setNodes((ns) => ns.map((n) => (n.selected ? { ...n, selected: false } : n)))
@@ -130,6 +176,46 @@ export function Inspector() {
   if (selected.length === 0 && selectedEdges.length === 1) {
     const edge = selectedEdges[0]
     const edgeType = edge.type ?? "workflow"
+    const mapping: GeneratedWorkflowEdgeMapping = edge.data?.mapping ?? {
+      mode: "auto",
+      fields: [],
+      preserveRaw: true,
+      compatible: true,
+      conflicts: [],
+    }
+    const updateMapping = (patch: Partial<GeneratedWorkflowEdgeMapping>) => {
+      const nextFields = patch.fields ?? mapping.fields
+      const structuralConflicts = nextFields.flatMap((field, index) => {
+        if (!field.source.trim() || !field.target.trim()) {
+          return [`映射 ${index + 1} 必须同时填写来源与目标字段。`]
+        }
+        return []
+      })
+      updateEdgeData(edge.id, {
+        mapping: {
+          ...mapping,
+          ...patch,
+          ...(patch.fields
+            ? {
+                compatible: structuralConflicts.length === 0,
+                conflicts: structuralConflicts,
+              }
+            : {}),
+          preserveRaw: true,
+        },
+      })
+    }
+    const updateMappingField = (
+      index: number,
+      patch: Partial<GeneratedWorkflowEdgeMapping["fields"][number]>,
+    ) => {
+      updateMapping({
+        mode: "override",
+        fields: mapping.fields.map((field, fieldIndex) =>
+          fieldIndex === index ? { ...field, ...patch } : field,
+        ),
+      })
+    }
     return (
       <PanelShell
         title="Connection"
@@ -148,6 +234,95 @@ export function Inspector() {
               onChange={(e) => updateEdgeData(edge.id, { label: e.target.value })}
               placeholder="例如：成功 / 失败"
             />
+          </div>
+
+          <div className="space-y-3 rounded-md border bg-card p-3">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <SectionCaption>Field Mapping</SectionCaption>
+                <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+                  自动映射可改为人工覆盖；原始结构始终保留在 data.raw。
+                </p>
+              </div>
+              <Select
+                value={mapping.mode}
+                onValueChange={(value) =>
+                  value && updateMapping({ mode: value as GeneratedWorkflowEdgeMapping["mode"] })
+                }
+              >
+                <SelectTrigger className="w-24">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="auto">自动</SelectItem>
+                  <SelectItem value="override">覆盖</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            {mapping.fields.map((field, index) => (
+              <div key={index} className="space-y-2 rounded-md border bg-background p-2">
+                <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2">
+                  <Input
+                    aria-label={`映射 ${index + 1} 来源字段`}
+                    value={field.source}
+                    onFocus={takeSnapshot}
+                    onChange={(event) => updateMappingField(index, { source: event.target.value })}
+                    placeholder="data.source"
+                  />
+                  <span className="font-mono text-xs text-muted-foreground">→</span>
+                  <Input
+                    aria-label={`映射 ${index + 1} 目标字段`}
+                    value={field.target}
+                    onFocus={takeSnapshot}
+                    onChange={(event) => updateMappingField(index, { target: event.target.value })}
+                    placeholder="data.target"
+                  />
+                </div>
+                <div className="flex items-center gap-2">
+                  <Input
+                    aria-label={`映射 ${index + 1} 转换`}
+                    value={field.transform ?? ""}
+                    onFocus={takeSnapshot}
+                    onChange={(event) => updateMappingField(index, { transform: event.target.value || undefined })}
+                    placeholder="可选转换表达式"
+                  />
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => updateMapping({ mode: "override", fields: mapping.fields.filter((_, fieldIndex) => fieldIndex !== index) })}
+                  >
+                    移除
+                  </Button>
+                </div>
+              </div>
+            ))}
+
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="w-full"
+              onClick={() => updateMapping({
+                mode: "override",
+                fields: [...mapping.fields, { source: "data.", target: "data." }],
+              })}
+            >
+              添加字段映射
+            </Button>
+
+            <div className="flex items-center justify-between gap-2 font-mono text-[10px]">
+              <span className="text-muted-foreground">兼容性</span>
+              <span className={mapping.compatible ? "text-success" : "text-destructive"}>
+                {mapping.compatible ? "可编译" : "阻止发布 / 运行"}
+              </span>
+            </div>
+            {mapping.conflicts.map((conflict) => (
+              <p key={conflict} className="text-[11px] leading-relaxed text-destructive">
+                {conflict}
+              </p>
+            ))}
           </div>
 
           <div className="space-y-1.5">
@@ -204,25 +379,52 @@ export function Inspector() {
   const data = node.data as WorkflowNodeData
   const canonical = data.canonical as { kind?: string; capability?: string; adapter?: string; params?: Record<string, unknown> } | undefined
   const projectNode = hydrateProjectNodeIdentity(
-    workflowProject.nodes.find((candidate) => candidate.id === node.id),
+    findWorkflowProjectNodeByCanvasId(workflowProject, node.id),
     data,
   )
-  const projectAdapter = projectNode?.adapter
-    ? workflowProject.adapters.find((candidate) => candidate.id === projectNode.adapter)
+  const implementationNode = findImplementationNode(projectNode)
+  const configurationNode = implementationNode ?? projectNode
+  const configurationNodeId = implementationNode
+    ? `${node.id}__${implementationNode.id}`
+    : node.id
+  const projectAdapter = configurationNode?.adapter
+    ? workflowProject.adapters.find((candidate) => candidate.id === configurationNode.adapter)
     : undefined
-  const nodeTemplate = getNodeTemplate(projectNode)
+  const nodeTemplate = getNodeTemplate(configurationNode)
   const nodeViewContract = buildCanonicalNodeViewContract(projectNode, data, node.id)
+  const isBusinessLevel = networkStackLength === 0
+  const businessLabel = businessNodeName({
+    label: data.label,
+    kind: nodeViewContract.identity.kind as WorkflowNodeKind,
+    capability: nodeViewContract.identity.capability as WorkflowCapability,
+    params: configurationNode?.params ?? canonical?.params,
+  })
   const parameterInterfaceView = buildParameterInterfaceView({
-    node: projectNode,
+    node: configurationNode,
     adapter: projectAdapter,
     nodes,
-    allowedParamIds: nodeViewContract.params.map((param) => param.id),
+    allowedParamIds: implementationNode
+      ? undefined
+      : nodeViewContract.params.map((param) => param.id),
   })
   const nodeInternals = nodeViewContract.internals
   const nodeContract = nodeViewContract.staticContract
   const promptCapable =
     canonical?.kind === "agent" ||
     typeof data.primitiveId === "string" && (data.primitiveId.includes("prompt") || data.primitiveId.includes("model"))
+  const promptParameter = (id: string) =>
+    projectNode?.params[id] ?? canonical?.params?.[id] ?? data.fields?.find((field) => field.id === id)?.value
+  const promptConfiguration: Array<{ key: string; value: string }> = [
+    { key: "preset", value: promptParameter("style") },
+    { key: "version", value: promptParameter("promptVersion") ?? promptParameter("version") },
+    { key: "model", value: promptParameter("model") },
+  ].flatMap(({ key, value }) => {
+    const displayValue = nodeParameterDisplayValue(value)
+    return displayValue ? [{ key, value: displayValue }] : []
+  })
+  const configuredPrompt = nodeParameterDisplayValue(promptParameter("prompt") ?? promptParameter("systemPrompt"))
+  const testInput = nodeParameterDisplayValue(promptParameter("input"))
+  const expectedOutput = nodeParameterDisplayValue(promptParameter("expected"))
 
   const update = (patch: Partial<WorkflowNodeData>) => updateNodeData(node.id, patch)
 
@@ -235,32 +437,23 @@ export function Inspector() {
 
   const updateParameterField = (field: ParameterInterfaceViewField, value: unknown) => {
     if (field.readonly) return
-    if (field.binding.source === "params" && field.binding.fieldId === "operatorId") {
-      const configField = parameterInterfaceView?.fields.find(
-        (candidate) => candidate.binding.source === "params" && candidate.binding.fieldId === "config",
-      )
-      if (configField) {
-        setJsonDrafts((drafts) => clearParameterDraftEntry(drafts, node.id, configField.id))
-        setJsonErrors((errors) => clearParameterDraftEntry(errors, node.id, configField.id))
-      }
-    }
     if (parameterInterfaceView?.mode === "template") {
-      if (field.binding.source === "adapter") {
-        if (field.binding.fieldId === "mode") {
-          updateWorkflowNodeParams(node.id, {}, { mode: value as never })
+        if (field.binding.source === "adapter") {
+          if (field.binding.fieldId === "mode") {
+          updateWorkflowNodeParams(configurationNodeId, {}, { mode: value as never })
           return
         }
-        updateWorkflowNodeParams(node.id, {}, { config: { [field.binding.fieldId]: value } })
+        updateWorkflowNodeParams(configurationNodeId, {}, { config: { [field.binding.fieldId]: value } })
         return
       }
       if (field.binding.source === "data") {
         update({ [field.binding.fieldId]: value } as Partial<WorkflowNodeData>)
         return
       }
-      updateWorkflowNodeParams(node.id, { [field.binding.fieldId]: value })
+      updateWorkflowNodeParams(configurationNodeId, { [field.binding.fieldId]: value })
       return
     }
-    updateParameterInterfaceField(node.id, field.id, value)
+    updateParameterInterfaceField(configurationNodeId, field.id, value)
   }
 
   const renderParameterField = (field: ParameterInterfaceViewField) => {
@@ -291,47 +484,6 @@ export function Inspector() {
         <div className="min-w-0">{control}</div>
       </div>
     )
-
-    if (field.type === "json") {
-      const draftKey = `${node.id}:${field.id}`
-      const value = jsonDrafts[draftKey] ?? formatJsonParameterValue(raw)
-      const error = jsonErrors[draftKey]
-      return row(
-        <div className="space-y-1">
-          <Textarea
-            id={fieldId}
-            rows={5}
-            readOnly={field.readonly}
-            className={cn(houdiniTextareaClass, error && "border-[#f87171]/70")}
-            value={value}
-            onChange={(event) => {
-              const next = event.target.value
-              setJsonDrafts((drafts) => ({ ...drafts, [draftKey]: next }))
-              const parsed = parseJsonParameterValue(next)
-              if (!parsed.ok) {
-                setJsonErrors((errors) => ({ ...errors, [draftKey]: parsed.error }))
-                return
-              }
-              setJsonErrors((errors) => {
-                const updated = { ...errors }
-                delete updated[draftKey]
-                return updated
-              })
-              updateParameterField(field, parsed.value)
-            }}
-            onBlur={() => {
-              if (jsonErrors[draftKey]) return
-              setJsonDrafts((drafts) => {
-                const updated = { ...drafts }
-                delete updated[draftKey]
-                return updated
-              })
-            }}
-          />
-          {error ? <p role="alert" className="font-mono text-[10px] text-[#f87171]">{error}</p> : null}
-        </div>,
-      )
-    }
 
     if (field.type === "boolean") {
       const checked = raw === true || raw === "true"
@@ -399,17 +551,9 @@ export function Inspector() {
             ? raw.split(",").map((value) => value.trim()).filter(Boolean)
             : [],
       )
-      const options = field.options ?? []
-      const optionValues = new Set(options.map((option) => option.value))
-      const visibleOptions = [
-        ...options,
-        ...Array.from(selectedValues)
-          .filter((value) => !optionValues.has(value))
-          .map((value) => ({ value, label: value })),
-      ]
       return row(
-        <div className="flex flex-wrap items-center gap-1">
-          {visibleOptions.map((option) => {
+        <div className="flex flex-wrap gap-1">
+          {(field.options ?? []).map((option) => {
             const selectedToken = selectedValues.has(option.value)
             return (
               <button
@@ -433,21 +577,6 @@ export function Inspector() {
               </button>
             )
           })}
-          {field.allowCustom ? (
-            <Input
-              disabled={field.readonly}
-              placeholder="Add value"
-              className={cn(houdiniInputClass, "h-6 w-28 px-2 text-[10px]")}
-              onKeyDown={(event) => {
-                if (event.key !== "Enter" && event.key !== ",") return
-                event.preventDefault()
-                const value = event.currentTarget.value.trim().replace(/,$/, "")
-                if (!value) return
-                updateParameterField(field, [...selectedValues, value])
-                event.currentTarget.value = ""
-              }}
-            />
-          ) : null}
         </div>,
       )
     }
@@ -487,12 +616,7 @@ export function Inspector() {
     }
 
     if (field.type === "number") {
-      const value =
-        typeof raw === "number"
-          ? raw
-          : typeof raw === "string" && raw.trim()
-            ? Number(raw)
-            : undefined
+      const value = typeof raw === "number" ? raw : Number(raw ?? 0)
       return row(
           <Input
             id={fieldId}
@@ -501,14 +625,8 @@ export function Inspector() {
             max={field.max}
             step={field.step}
             readOnly={field.readonly}
-            value={typeof value === "number" && Number.isFinite(value) ? value : field.optional ? "" : 0}
-            onChange={(e) => {
-              if (field.optional && !e.target.value) {
-                updateParameterField(field, undefined)
-                return
-              }
-              updateParameterField(field, Number(e.target.value))
-            }}
+            value={Number.isFinite(value) ? value : 0}
+            onChange={(e) => updateParameterField(field, Number(e.target.value))}
             className={houdiniInputClass}
           />,
       )
@@ -539,9 +657,30 @@ export function Inspector() {
     : parameterGroups[0]?.id
   const activeParameterFields = parameterInterfaceView?.fields.filter((field) => field.groupId === activeParameterGroupId) ?? []
   const blockedAction = blockedActionViewForRuntime(data)
+  const requestAiEdit = async () => {
+    const message = aiEditMessage.trim()
+    if (!message) return
+    setAiEditState({ status: "loading", result: null, error: null })
+    try {
+      const result = await requestWorkflowNodeEditDraft(workflowProject, node.id.replaceAll("__", "::"), message)
+      setAiEditState({ status: "ready", result, error: null })
+    } catch (error) {
+      setAiEditState({ status: "error", result: null, error: error instanceof Error ? error.message : "节点 AI 编辑失败" })
+    }
+  }
+  const applyAiEdit = () => {
+    const project = aiEditState.status === "ready" ? aiEditState.result.patch?.project : null
+    if (!project) return
+    importWorkflowProject(project)
+    setAiEditState({ status: "idle", result: null, error: null })
+    setAiEditMessage("")
+  }
+  const openCLISources = isOpenCLISourceSlotArray(configurationNode?.params.sources)
+    ? configurationNode.params.sources
+    : undefined
   return (
     <PanelShell
-      title={data.label}
+      title={isBusinessLevel ? businessLabel : data.label}
       typeLine={`${nodeViewContract.identity.kind}::${nodeViewContract.identity.capability}`.toUpperCase() + " · V1.0"}
       status={data.status}
       onClose={deselectAll}
@@ -569,28 +708,35 @@ export function Inspector() {
 
         {nodeTab === "prompt" ? (
           <div className="space-y-3">
-            <SectionCaption>Prompt Playground</SectionCaption>
+            <SectionCaption>节点提示词配置</SectionCaption>
             <div className="rounded-md border bg-card p-3 text-[11px] leading-relaxed text-muted-foreground">
-              Prompt edits are staged through Agent proposal before they update the canonical workflow.
+              这里只显示节点已保存的提示词配置和测试用例，不会注入演示文本。通过 AI 编辑生成的是待审阅提案，确认应用后才会更新工作流。
             </div>
-            <MonoRow k="preset" v={String(canonical?.params?.style ?? data.fields?.find((field) => field.id === "preset")?.value ?? "macro-brief")} />
-            <MonoRow k="version" v={String(canonical?.params?.promptVersion ?? data.fields?.find((field) => field.id === "version")?.value ?? "v1")} />
-            <MonoRow k="model" v={String(canonical?.params?.model ?? data.fields?.find((field) => field.id === "model")?.value ?? "deepseek/mock")} />
-            <Separator />
-            <div className="space-y-1.5">
-              <Label className="font-mono text-[10px] uppercase tracking-wider">Test Input</Label>
-              <Textarea readOnly rows={3} className="font-mono text-xs" value="JIN10 macro news sample with policy/market impact." />
-            </div>
-            <div className="space-y-1.5">
-              <Label className="font-mono text-[10px] uppercase tracking-wider">Mock Output</Label>
-              <Textarea readOnly rows={4} className="font-mono text-xs" value="3-bullet macro brief, impact score, source refs, and risk note." />
-            </div>
-            <div className="rounded-md border bg-card p-3">
-              <SectionCaption>Version Note</SectionCaption>
-              <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
-                Baseline prompt version for deterministic local evaluation and regression gate.
-              </p>
-            </div>
+            {promptConfiguration.map(({ key, value }) => <MonoRow key={key} k={key} v={value} />)}
+            {configuredPrompt ? (
+              <div className="space-y-1.5">
+                <Label className="font-mono text-[10px] uppercase tracking-wider">已配置提示词</Label>
+                <Textarea readOnly rows={4} className="font-mono text-xs" value={configuredPrompt} />
+              </div>
+            ) : null}
+            {testInput || expectedOutput ? <Separator /> : null}
+            {testInput ? (
+              <div className="space-y-1.5">
+                <Label className="font-mono text-[10px] uppercase tracking-wider">测试输入</Label>
+                <Textarea readOnly rows={3} className="font-mono text-xs" value={testInput} />
+              </div>
+            ) : null}
+            {expectedOutput ? (
+              <div className="space-y-1.5">
+                <Label className="font-mono text-[10px] uppercase tracking-wider">期望输出</Label>
+                <Textarea readOnly rows={4} className="font-mono text-xs" value={expectedOutput} />
+              </div>
+            ) : null}
+            {!configuredPrompt && !testInput && !expectedOutput ? (
+              <div className="rounded-md border border-dashed bg-card p-3 text-[11px] leading-relaxed text-muted-foreground">
+                当前节点未配置提示词测试用例。真实运行输入和输出只在执行时产生，请在“运行结果”或 Run Trace 中查看。
+              </div>
+            ) : null}
           </div>
         ) : nodeTab === "run" ? (
           <div className="space-y-3">
@@ -618,6 +764,79 @@ export function Inspector() {
           </div>
         ) : (
           <>
+        <section className="overflow-hidden rounded-[3px] border border-[#2f4055] bg-[#0b121c]" aria-label="与 AI 对话编辑节点">
+          <div className="flex items-center gap-2 border-b border-[#26394d] bg-[#101b29] px-3 py-2">
+            <Bot className="size-3.5 text-[#a0c3ec]" />
+            <SectionCaption>与 AI 对话编辑此节点</SectionCaption>
+          </div>
+          <div className="space-y-2.5 p-3">
+            <p className="text-[11px] leading-relaxed text-muted-foreground">基于已绑定的对话模型生成参数变更提案；不会自动保存，需先审阅再应用。</p>
+            <Textarea
+              value={aiEditMessage}
+              onChange={(event) => setAiEditMessage(event.target.value)}
+              rows={3}
+              placeholder="例如：把最大条数改为 50，并保留来源引用"
+              className={houdiniTextareaClass}
+              aria-label="告诉 AI 如何编辑当前节点"
+            />
+            <Button type="button" size="sm" className="w-full" onClick={() => void requestAiEdit()} disabled={!aiEditMessage.trim() || aiEditState.status === "loading"}>
+              {aiEditState.status === "loading" ? <Loader2 className="size-3.5 animate-spin" /> : <Bot className="size-3.5" />}
+              生成编辑提案
+            </Button>
+            {aiEditState.status === "error" ? <p className="text-[11px] leading-relaxed text-destructive">{aiEditState.error}</p> : null}
+            {aiEditState.status === "ready" ? (
+              <div className="space-y-2 rounded-[2px] border border-[#314864] bg-[#0a1018] p-2.5">
+                <p className="text-[11px] leading-relaxed text-foreground">{aiEditState.result.reply}</p>
+                {aiEditState.result.patch?.patch.operations.length ? (
+                  <>
+                    <p className="font-mono text-[10px] text-muted-foreground">{aiEditState.result.patch.patch.operations.length} 项参数变更 · {aiEditState.result.patch.valid ? "已通过校验" : "未通过校验"}</p>
+                    {aiEditState.result.patch.valid && aiEditState.result.patch.project ? (
+                      <Button type="button" size="sm" variant="outline" className="w-full" onClick={applyAiEdit}>
+                        <CheckCircle2 className="size-3.5" />应用到草稿
+                      </Button>
+                    ) : null}
+                  </>
+                ) : <p className="font-mono text-[10px] text-muted-foreground">未生成可安全应用的参数变更。</p>}
+              </div>
+            ) : null}
+          </div>
+        </section>
+        <section className="space-y-3 rounded-[3px] border border-[#20242a] bg-[#101216]/84 p-3">
+          <div>
+            <SectionCaption>业务配置</SectionCaption>
+            <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+              名称和说明会直接显示在画布节点上。
+            </p>
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="node-label" className="font-mono text-[10px] uppercase tracking-wider">
+              节点名称
+            </Label>
+            <Input
+              id="node-label"
+              value={isBusinessLevel ? businessLabel : data.label}
+              onFocus={takeSnapshot}
+              onChange={(event) => update({ label: event.target.value })}
+              placeholder="例如：采集 A 股市场数据"
+              className={houdiniInputClass}
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="node-desc" className="font-mono text-[10px] uppercase tracking-wider">
+              节点说明
+            </Label>
+            <Textarea
+              id="node-desc"
+              rows={2}
+              value={data.description ?? ""}
+              onFocus={takeSnapshot}
+              onChange={(event) => update({ description: event.target.value })}
+              placeholder="说明这个节点为业务流程完成什么"
+              className={houdiniTextareaClass}
+            />
+          </div>
+        </section>
+
         {blockedAction ? (
           <div className="overflow-hidden rounded-[3px] border border-[#7f1d1d]/60 bg-[#180b0b]/70">
             <div className="flex items-center justify-between gap-3 border-b border-[#7f1d1d]/50 bg-[#2a1010]/72 px-3 py-2">
@@ -649,6 +868,13 @@ export function Inspector() {
               ) : null}
             </div>
           </div>
+        ) : null}
+
+        {openCLISources ? (
+          <OpenCLISourceEditor
+            sources={openCLISources}
+            onChange={(sources) => updateWorkflowNodeParams(configurationNodeId, { sources })}
+          />
         ) : null}
 
         {parameterInterfaceView ? (
@@ -767,40 +993,13 @@ export function Inspector() {
           </details>
         ) : null}
 
-        <details className={houdiniDetailsClass}>
-          <summary className={houdiniSummaryClass}>
-            <span>{nodeTemplate ? "Identity" : "Parameters"}</span>
-            <span className="truncate text-[10px] normal-case tracking-normal">{data.label}</span>
-          </summary>
-          <div className="space-y-3 border-t p-3">
-            <div className="space-y-1.5">
-              <Label htmlFor="node-label" className="font-mono text-[10px] uppercase tracking-wider">
-                Name
-              </Label>
-              <Input
-                id="node-label"
-                value={data.label}
-                onFocus={takeSnapshot}
-                onChange={(e) => update({ label: e.target.value })}
-                className={houdiniInputClass}
-              />
-            </div>
-
-            <div className="space-y-1.5">
-              <Label htmlFor="node-desc" className="font-mono text-[10px] uppercase tracking-wider">
-                Description
-              </Label>
-              <Textarea
-                id="node-desc"
-                rows={3}
-                value={data.description ?? ""}
-                onFocus={takeSnapshot}
-                onChange={(e) => update({ description: e.target.value })}
-                placeholder="添加描述..."
-                className={houdiniTextareaClass}
-              />
-            </div>
-
+        {isCondition || (!nodeTemplate && data.fields && data.fields.length > 0) ? (
+          <details className={houdiniDetailsClass}>
+            <summary className={houdiniSummaryClass}>
+              <span>高级设置</span>
+              <span className="truncate text-[10px] normal-case tracking-normal">{data.label}</span>
+            </summary>
+            <div className="space-y-3 border-t p-3">
             {isCondition ? (
               <div className="space-y-1.5">
                 <Label htmlFor="node-cond" className="font-mono text-[10px] uppercase tracking-wider">
@@ -836,14 +1035,17 @@ export function Inspector() {
                   </div>
                 ))
               : null}
-          </div>
-        </details>
+            </div>
+          </details>
+        ) : null}
 
         {data.nodeType !== "note" && data.nodeType !== "group" ? (
           <details className={houdiniDetailsClass}>
             <summary className={houdiniSummaryClass}>
-              <span>Ports</span>
-              <span className="text-[10px] normal-case tracking-normal">{ports.length} ports</span>
+              <span>接口</span>
+              <span className="text-[10px] normal-case tracking-normal">
+                {ports.filter((port) => port.dir === "input").length} IN · {ports.filter((port) => port.dir === "output").length} OUT
+              </span>
             </summary>
             <div className="space-y-1.5 border-t p-3">
               {ports.map((p) => (
@@ -893,7 +1095,320 @@ export function Inspector() {
   )
 }
 
-function formatJsonParameterValue(value: unknown): string {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return "{}"
-  return JSON.stringify(value, null, 2)
+function findImplementationNode(node: WorkflowProjectNode | undefined): WorkflowProjectNode | undefined {
+  if (!node) return undefined
+  const operator = node.params.operator
+  if (!operator || typeof operator !== "object" || Array.isArray(operator)) return undefined
+  const implementationNodeId = (operator as Record<string, unknown>).implementationNodeId
+  if (typeof implementationNodeId !== "string") return undefined
+  return (node.internals?.nodes ?? []).find((candidate): candidate is WorkflowProjectNode => {
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return false
+    return (candidate as { id?: unknown }).id === implementationNodeId
+  })
+}
+
+function OpenCLISourceEditor({
+  sources,
+  onChange,
+}: {
+  sources: OpenCLISourceSlot[]
+  onChange: (sources: OpenCLISourceSlot[]) => void
+}) {
+  const sourceCatalog = useSources({ enabled: true, limit: 100 })
+  const registeredSources = (sourceCatalog.data?.data ?? [])
+    .map(openCLISlotFromDataSource)
+    .filter((source): source is OpenCLISourceSlot => Boolean(source))
+  const selectedSourceKeys = new Set(sources.map(sourceSlotKey))
+  const availableSources = registeredSources.filter((source) => !selectedSourceKeys.has(sourceSlotKey(source)))
+  const businessQuery = sourceBusinessQuery(sources)
+  const market = sourceMarket(sources)
+
+  const updateSource = (index: number, patch: Partial<OpenCLISourceSlot>) => {
+    onChange(sources.map((source, sourceIndex) => (
+      sourceIndex === index ? { ...source, ...patch } : source
+    )))
+  }
+
+  const addSource = (sourceId: string | null) => {
+    const source = availableSources.find((candidate) => candidate.id === sourceId)
+    if (!source) return
+    onChange([...sources, source])
+  }
+
+  return (
+    <section className="overflow-hidden rounded-[3px] border border-[#20242a] bg-[#101216]/84">
+      <div className="space-y-3 border-b border-[#24282f] bg-[#171a1f] p-3">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <SectionCaption>数据来源</SectionCaption>
+            <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+              选择系统中已经连接的数据源，执行时自动并行采集。
+            </p>
+          </div>
+          <Link
+            href="/sources"
+            className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-[2px] border border-[#343a43] px-2 text-[10px] text-muted-foreground transition-colors hover:border-[#5f6976] hover:text-foreground"
+          >
+            管理数据源
+            <ExternalLink className="size-3" />
+          </Link>
+        </div>
+        <div className="flex items-center justify-between gap-3 rounded-[3px] border border-[#2a2f36] bg-[#0b0d10] px-2.5 py-2">
+          <div className="flex min-w-0 items-center gap-2">
+            <span className="flex size-6 shrink-0 items-center justify-center rounded-[2px] bg-[#ff7a17]/12 text-[#ff9a4a]">
+              <Database className="size-3.5" />
+            </span>
+            <div className="min-w-0">
+              <p className="text-[11px] font-medium text-foreground">{sources.length} 个来源</p>
+              <p className="truncate text-[10px] text-muted-foreground">智能多源 · 并行执行</p>
+            </div>
+          </div>
+          <Select onValueChange={addSource} disabled={sourceCatalog.isLoading || availableSources.length === 0}>
+            <SelectTrigger
+              aria-label="添加已连接的数据源"
+              className="h-7 w-auto min-w-28 rounded-[2px] border-[#343a43] bg-[#111317] px-2 text-[11px] shadow-none focus:ring-0"
+            >
+              <Plus className="size-3" />
+              <SelectValue placeholder={sourceCatalog.isLoading ? "加载中" : "添加数据源"} />
+            </SelectTrigger>
+            <SelectContent>
+              {availableSources.map((source) => (
+                <SelectItem key={source.id} value={source.id}>
+                  {source.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        {sourceCatalog.isError ? (
+          <p className="text-[10px] leading-relaxed text-[#fca5a5]">
+            数据源目录暂时不可用。现有配置仍可使用，连接后端后即可选择其他来源。
+          </p>
+        ) : !sourceCatalog.isLoading && registeredSources.length === 0 ? (
+          <p className="text-[10px] leading-relaxed text-muted-foreground">
+            当前节点已有 {sources.length} 个来源；全局目录中暂无其他已连接的 OpenCLI 数据源。
+          </p>
+        ) : !sourceCatalog.isLoading && availableSources.length === 0 ? (
+          <p className="text-[10px] leading-relaxed text-muted-foreground">
+            所有已连接的 OpenCLI 数据源都已添加到当前节点。
+          </p>
+        ) : null}
+      </div>
+
+      {businessQuery !== undefined || market !== undefined ? (
+        <div className="grid gap-3 border-b border-[#24282f] bg-[#0d0f12] p-3">
+          {businessQuery !== undefined ? (
+            <div className="space-y-1.5">
+              <Label htmlFor="source-business-query" className="text-[11px] font-medium text-foreground">
+                采集主题
+              </Label>
+              <Input
+                id="source-business-query"
+                value={businessQuery}
+                onChange={(event) => onChange(updateSourceBusinessQuery(sources, event.target.value))}
+                placeholder="例如：人工智能、贵州茅台"
+                className="h-8 rounded-[3px] border-[#303640] bg-[#080a0c] text-xs focus-visible:ring-0"
+              />
+              <p className="text-[10px] text-muted-foreground">一次设置会同步到所有搜索型来源。</p>
+            </div>
+          ) : null}
+          {market !== undefined ? (
+            <div className="space-y-1.5">
+              <Label className="text-[11px] font-medium text-foreground">市场范围</Label>
+              <Select value={market} onValueChange={(value) => value && onChange(updateSourceMarket(sources, value))}>
+                <SelectTrigger className="h-8 rounded-[3px] border-[#303640] bg-[#080a0c] text-xs focus:ring-0">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {!SOURCE_MARKET_OPTIONS.some((option) => option.value === market) ? (
+                    <SelectItem value={market}>{market}</SelectItem>
+                  ) : null}
+                  {SOURCE_MARKET_OPTIONS.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
+      <div className="space-y-2 p-2">
+        {sources.map((source, index) => {
+          const businessArguments = sourceBusinessArguments(source)
+          return (
+            <div key={source.id} className="rounded-[3px] border border-[#252a31] bg-[#090a0c]/70">
+              <div className="flex items-center gap-2 p-2.5">
+                <span className="flex size-7 shrink-0 items-center justify-center rounded-[3px] border border-[#343a43] bg-[#15181d] font-mono text-[11px] font-semibold uppercase text-[#ff9a4a]">
+                  {source.site.slice(0, 1)}
+                </span>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-xs font-medium text-foreground">{source.label}</p>
+                  <p className="truncate text-[10px] text-muted-foreground">
+                    {source.site} · {source.sourceGroup || "数据采集"}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  aria-label={`移除来源 ${source.label}`}
+                  disabled={sources.length <= 1}
+                  onClick={() => onChange(sources.filter((_, sourceIndex) => sourceIndex !== index))}
+                  className="inline-flex size-7 shrink-0 items-center justify-center rounded-[2px] border border-[#2c3036] text-muted-foreground transition-colors hover:border-[#7f1d1d] hover:text-[#f87171] disabled:cursor-not-allowed disabled:opacity-30"
+                >
+                  <Trash2 className="size-3" />
+                </button>
+              </div>
+              {businessArguments.length > 0 ? (
+                <details className="border-t border-[#20242a]">
+                  <summary className="cursor-pointer list-none px-2.5 py-2 text-[10px] text-muted-foreground transition-colors hover:text-foreground">
+                    采集选项 · {businessArguments.length} 项
+                  </summary>
+                  <div className="grid gap-2 border-t border-[#20242a] p-2.5">
+                    {businessArguments.map(([key, value]) => (
+                      <SourceBusinessArgument
+                        key={key}
+                        argumentKey={key}
+                        value={value}
+                        onChange={(nextValue) => updateSource(index, { args: { ...source.args, [key]: nextValue } })}
+                      />
+                    ))}
+                  </div>
+                </details>
+              ) : null}
+            </div>
+          )
+        })}
+      </div>
+
+      <details className="border-t border-[#24282f] bg-[#111317]/74">
+        <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2 font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground transition-colors hover:text-foreground">
+          <span>高级设置</span>
+          <span className="normal-case tracking-normal">OpenCLI 映射</span>
+        </summary>
+        <div className="space-y-2 border-t border-[#24282f] p-2">
+          {sources.map((source, index) => (
+            <div key={source.id} className="space-y-2 rounded-[3px] border border-[#252a31] bg-[#090a0c]/70 p-2.5">
+              <Input
+                aria-label={`来源 ${index + 1} 名称`}
+                value={source.label}
+                onChange={(event) => updateSource(index, { label: event.target.value })}
+                className={houdiniInputClass}
+              />
+              <div className="grid grid-cols-2 gap-2">
+                <div className="space-y-1">
+                  <Label className="font-mono text-[9px] uppercase tracking-wider text-muted-foreground">站点</Label>
+                  <Input
+                    aria-label={`来源 ${index + 1} 站点`}
+                    value={source.site}
+                    onChange={(event) => updateSource(index, { site: event.target.value })}
+                    className={houdiniInputClass}
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label className="font-mono text-[9px] uppercase tracking-wider text-muted-foreground">命令</Label>
+                  <Input
+                    aria-label={`来源 ${index + 1} 命令`}
+                    value={source.command}
+                    onChange={(event) => updateSource(index, { command: event.target.value })}
+                    className={houdiniInputClass}
+                  />
+                </div>
+              </div>
+              <SourceArgsEditor
+                sourceId={source.id}
+                value={source.args}
+                onCommit={(args) => updateSource(index, { args })}
+              />
+            </div>
+          ))}
+        </div>
+      </details>
+      <div className="border-t border-[#24282f] bg-[#0d0f12] px-3 py-2">
+        <p className="text-[10px] leading-relaxed text-muted-foreground">
+          配置会自动保存。使用画布顶部“试运行”检查真实返回和数据新鲜度。
+        </p>
+      </div>
+    </section>
+  )
+}
+
+function SourceBusinessArgument({
+  argumentKey,
+  value,
+  onChange,
+}: {
+  argumentKey: string
+  value: string | number | boolean
+  onChange: (value: string | number | boolean) => void
+}) {
+  const label = SOURCE_ARGUMENT_LABELS[argumentKey] ?? argumentKey
+  if (typeof value === "boolean") {
+    return (
+      <div className="flex items-center justify-between gap-3 rounded-[3px] border border-[#252a31] bg-[#0d0f12] px-2.5 py-2">
+        <Label className="text-[11px] text-foreground">{label}</Label>
+        <Switch checked={value} onCheckedChange={onChange} aria-label={label} />
+      </div>
+    )
+  }
+  return (
+    <div className="space-y-1">
+      <Label className="text-[10px] text-muted-foreground">{label}</Label>
+      <Input
+        type={typeof value === "number" ? "number" : "text"}
+        value={value}
+        onChange={(event) => onChange(typeof value === "number" ? Number(event.target.value) : event.target.value)}
+        className="h-7 rounded-[2px] border-[#2c3036] bg-[#07080a] px-2 text-[11px] focus-visible:ring-0"
+      />
+    </div>
+  )
+}
+
+function SourceArgsEditor({
+  sourceId,
+  value,
+  onCommit,
+}: {
+  sourceId: string
+  value: Record<string, unknown>
+  onCommit: (value: Record<string, unknown>) => void
+}) {
+  const serialized = JSON.stringify(value, null, 2)
+  const [draft, setDraft] = useState(serialized)
+  const [error, setError] = useState("")
+
+  useEffect(() => {
+    setDraft(serialized)
+    setError("")
+  }, [serialized])
+
+  const commit = () => {
+    try {
+      const parsed = JSON.parse(draft) as unknown
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        setError("参数必须是 JSON 对象")
+        return
+      }
+      setError("")
+      onCommit(parsed as Record<string, unknown>)
+    } catch {
+      setError("JSON 格式不正确")
+    }
+  }
+
+  return (
+    <div className="space-y-1">
+      <Label htmlFor={`source-args-${sourceId}`} className="font-mono text-[9px] uppercase tracking-wider text-muted-foreground">
+        参数
+      </Label>
+      <Textarea
+        id={`source-args-${sourceId}`}
+        rows={3}
+        value={draft}
+        onChange={(event) => setDraft(event.target.value)}
+        onBlur={commit}
+        className={cn(houdiniTextareaClass, error && "border-[#7f1d1d]")}
+      />
+      {error ? <p className="text-[10px] text-[#f87171]">{error}</p> : null}
+    </div>
+  )
 }

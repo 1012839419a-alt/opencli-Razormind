@@ -12,6 +12,7 @@ from backend.api.v1 import (
     control,
     cookies,
     dashboard,
+    dify_imports,
     geo_acquisition,
     identity,
     model_defaults,
@@ -21,6 +22,7 @@ from backend.api.v1 import (
     operations_inbox,
     plan_ir,
     plans,
+    plugins,
     presets,
     providers,
     records,
@@ -54,6 +56,7 @@ v1_router.include_router(model_defaults.router)
 v1_router.include_router(nodes.router)
 v1_router.include_router(plan_ir.router)
 v1_router.include_router(plans.router)
+v1_router.include_router(plugins.router)
 v1_router.include_router(presets.router)
 v1_router.include_router(providers.router)
 v1_router.include_router(sources.router)
@@ -67,6 +70,7 @@ v1_router.include_router(skill_record.router)
 v1_router.include_router(webhooks.router)
 v1_router.include_router(workflows.router)
 v1_router.include_router(workflow_assets.router)
+v1_router.include_router(dify_imports.router)
 v1_router.include_router(notifications.router)
 v1_router.include_router(operations_inbox.router)
 v1_router.include_router(operations_agents.router)

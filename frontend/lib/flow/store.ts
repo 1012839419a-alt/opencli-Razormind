@@ -37,7 +37,13 @@ import { PACKAGED_WORKFLOW_PROJECT } from "../workflow/collection-pipeline"
 import type { WorkflowProject } from "../workflow/schema"
 import { parseWorkflowProject, type AdapterBinding, type WorkflowProfile, type WorkflowProjectNode } from "../workflow/schema"
 import { workflowNodeToReactFlow, workflowProjectToReactFlow } from "../workflow/to-react-flow"
-import { addCatalogNodeToWorkflowProject, type WorkflowNodeCatalogItem } from "../workflow/node-catalog"
+import {
+  addCatalogNodeToWorkflowProject,
+  buildOpenCLIMultiSourceHDAInternals,
+  isOpenCLISourceSlotArray,
+  opencliAdaptersForSourceSlots,
+  type WorkflowNodeCatalogItem,
+} from "../workflow/node-catalog"
 import { getNodeInternals, type NodeInternals, type NodeInternalStep } from "../workflow/node-internals"
 import { getPrimitiveByStepCapability, primitiveToNodeData, type WorkflowPrimitive } from "../workflow/node-primitives"
 import {
@@ -64,7 +70,13 @@ import type {
 } from "../workflow/backend-runs"
 import { applyEvidenceBatchRuntimePatches } from "../workflow/runtime-bridge"
 import { MAX_WORKFLOW_NODE_DEPTH, NODE_NETWORK_DEPTH_LIMIT_REACHED } from "../workflow/node-hierarchy"
-import { normalizeWorkflowRuntimeNodePath, workflowRuntimeCanvasNodeIds } from "../workflow/node-path"
+import {
+  findWorkflowProjectNodeByCanvasId as findProjectNodeByCanvasId,
+  mapWorkflowProjectNodeTree,
+  normalizeWorkflowRuntimeNodePath,
+  workflowProjectNodeChildren,
+  workflowRuntimeCanvasNodeIds,
+} from "../workflow/node-path"
 import {
   appendCanonicalNetworkNode,
   canonicalPositionFromNetworkCanvas,
@@ -362,6 +374,8 @@ function workflowNodeStatusFromRun(status: WorkflowRunStatus): WorkflowNodeData[
       return "running"
     case "completed":
       return "success"
+    case "partial_success":
+      return "partial_success"
     case "blocked":
     case "failed":
       return "error"
@@ -631,7 +645,7 @@ function materializeProjectInternals(
       },
       data: {
         ...reactNode.data,
-        status: mode === "network" ? "success" : reactNode.data.status,
+        status: reactNode.data.status,
         internalOf: parentId,
         internalStepId: normalizedNode.id,
         ...(catalogId?.startsWith("primitive.")
@@ -657,6 +671,8 @@ function materializeProjectInternals(
       id: `e-${parentId}__${edge.id}`,
       source: scopedInternalId(parentId, edge.source),
       target: scopedInternalId(parentId, edge.target),
+      sourceHandle: edge.sourcePort,
+      targetHandle: edge.targetPort,
       label: edge.label,
       type: "workflow" as const,
       animated: true,
@@ -694,24 +710,6 @@ function isWorkflowProjectNode(value: unknown): value is WorkflowProjectNode {
     typeof node.capability === "string" &&
     (!("params" in node) || Boolean(node.params && typeof node.params === "object" && !Array.isArray(node.params)))
   )
-}
-
-function findProjectNodeByCanvasId(project: WorkflowProject, canvasNodeId: string): WorkflowProjectNode | undefined {
-  const visit = (node: WorkflowProjectNode, scopedId: string): WorkflowProjectNode | undefined => {
-    if (scopedId === canvasNodeId) return node
-    const children = node.internals?.nodes.filter(isWorkflowProjectNode) ?? []
-    for (const child of children) {
-      const match = visit(child, scopedInternalId(scopedId, child.id))
-      if (match) return match
-    }
-    return undefined
-  }
-
-  for (const node of project.nodes) {
-    const match = visit(node, node.id)
-    if (match) return match
-  }
-  return undefined
 }
 
 function projectNodeFromCanvasNode(node: WorkflowNode): WorkflowProjectNode | undefined {
@@ -866,7 +864,11 @@ export const useFlowStore = create<FlowState>((set, get) => ({
       ...(isShape ? { width: 140, height: 100, style: { width: 140, height: 100 } } : {}),
     }
     // 分组容器必须排在数组最前，保证 React Flow 的 parent-before-child 顺序
-    set((state) => ({ nodes: isGroup ? [newNode, ...state.nodes] : [...state.nodes, newNode] }))
+    set((state) => ({
+      nodes: isGroup
+        ? [{ ...newNode, selected: true }, ...state.nodes.map((node) => ({ ...node, selected: false }))]
+        : [...state.nodes.map((node) => ({ ...node, selected: false })), { ...newNode, selected: true }],
+    }))
   },
 
   addPrimitiveNode: (item, position, runtimeCapability, options) => {
@@ -955,20 +957,35 @@ export const useFlowStore = create<FlowState>((set, get) => ({
     set((state) => {
       const target = findProjectNodeByCanvasId(state.workflowProject, nodeId)
       if (!target) return {}
+      const nextParams = { ...target.params, ...paramsPatch }
+      const nextSources =
+        nextParams.template === "opencli-multi-source" && isOpenCLISourceSlotArray(nextParams.sources)
+          ? nextParams.sources
+          : undefined
+      const sourceAdapters = nextSources ? opencliAdaptersForSourceSlots(nextSources) : []
+      const sourceAdapterIds = new Set(sourceAdapters.map((adapter) => adapter.id))
 
       const nextProject = parseWorkflowProject({
         ...state.workflowProject,
-        adapters: state.workflowProject.adapters.map((adapter) => {
-          if (!target.adapter || adapter.id !== target.adapter || !adapterPatch) return adapter
-          return {
-            ...adapter,
-            ...(adapterPatch.mode ? { mode: adapterPatch.mode } : {}),
-            ...(adapterPatch.config ? { config: { ...adapter.config, ...adapterPatch.config } } : {}),
-          }
-        }),
+        adapters: [
+          ...state.workflowProject.adapters.map((adapter) => {
+            if (!target.adapter || adapter.id !== target.adapter || !adapterPatch) return adapter
+            return {
+              ...adapter,
+              ...(adapterPatch.mode ? { mode: adapterPatch.mode } : {}),
+              ...(adapterPatch.config ? { config: { ...adapter.config, ...adapterPatch.config } } : {}),
+            }
+          }),
+          ...sourceAdapters.filter(
+            (adapter) =>
+              sourceAdapterIds.has(adapter.id) &&
+              !state.workflowProject.adapters.some((existing) => existing.id === adapter.id),
+          ),
+        ],
         nodes: updateCanonicalProjectNodeByCanvasId(state.workflowProject, nodeId, (node) => ({
           ...node,
           params: { ...node.params, ...paramsPatch },
+          ...(nextSources ? { internals: buildOpenCLIMultiSourceHDAInternals(nextSources) } : {}),
         })).nodes,
       })
       const nextNode = findProjectNodeByCanvasId(nextProject, nodeId)
@@ -1357,7 +1374,7 @@ export const useFlowStore = create<FlowState>((set, get) => ({
 
   applyWorkflowCapabilities: (capabilities) => {
     set((state) => {
-      const projectNodes = state.workflowProject.nodes.map((node) => {
+      const projectRuntimeCapability = (node: WorkflowProjectNode): WorkflowProjectNode => {
         const catalogId = typeof node.ui?.catalogId === "string" ? node.ui.catalogId : null
         if (!catalogId) return node
         const runtimeCapability = projectedCatalogRuntimeCapability(
@@ -1400,20 +1417,29 @@ export const useFlowStore = create<FlowState>((set, get) => ({
             runtimeContract: runtimeContractForCapability(runtimeCapability),
           },
         }
-      })
+      }
+      const projectNodes = state.workflowProject.nodes.map((node) =>
+        mapWorkflowProjectNodeTree(node, projectRuntimeCapability),
+      )
       const workflowProject = parseWorkflowProject({
         ...state.workflowProject,
         nodes: projectNodes,
       })
       const runtimeByNodeId = new Map<string, { capability: WorkflowRuntimeCapability; contract: WorkflowNodeData["runtimeContract"] }>()
-      for (const node of workflowProject.nodes) {
+      const collectRuntime = (node: WorkflowProjectNode, canvasNodeId: string) => {
         const runtimeCapability = node.ui?.runtimeCapability
         if (isWorkflowRuntimeCapability(runtimeCapability)) {
-          runtimeByNodeId.set(node.id, {
+          runtimeByNodeId.set(canvasNodeId, {
             capability: runtimeCapability,
             contract: runtimeContractForCapability(runtimeCapability),
           })
         }
+        for (const child of workflowProjectNodeChildren(node)) {
+          collectRuntime(child, scopedInternalId(canvasNodeId, child.id))
+        }
+      }
+      for (const node of workflowProject.nodes) {
+        collectRuntime(node, node.id)
       }
       return {
         workflowProject,

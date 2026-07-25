@@ -16,6 +16,15 @@ from backend.models.identity import (
     WorkspaceMembership,
     WorkspaceRole,
 )
+from backend.models.feed_provider import FeedProvider
+from backend.models.intelligence import (
+    IntelligenceArtifact,
+    IntelligenceArtifactReference,
+    IntelligenceCommandRecord,
+    IntelligenceOutbox,
+    IntelligenceSession,
+    IntelligenceTransition,
+)
 from backend.models.model_default import ModelDefault
 from backend.models.notification import NotificationLog, NotificationRule
 from backend.models.odp_system_measurement import OdpSystemMeasurement
@@ -30,6 +39,7 @@ from backend.models.operations_work_item import OperationsWorkItem
 from backend.models.plan import Plan
 from backend.models.plan_health import PlanHealthRecord
 from backend.models.plan_source_index import PlanSourceIndex
+from backend.models.plugin_installation import PluginInstallation
 from backend.models.provider import ModelProvider
 from backend.models.provider_model import ProviderModel
 from backend.models.record import CollectedRecord
@@ -77,12 +87,20 @@ __all__ = [
     "OperationsAgentDraft",
     "PublishedOperationsAgentVersion",
     "OperationsAgentRun",
+    "FeedProvider",
+    "IntelligenceSession",
+    "IntelligenceArtifact",
+    "IntelligenceArtifactReference",
+    "IntelligenceTransition",
+    "IntelligenceCommandRecord",
+    "IntelligenceOutbox",
     "ModelProvider",
     "ProviderModel",
     "ModelDefault",
     "Plan",
     "PlanHealthRecord",
     "PlanSourceIndex",
+    "PluginInstallation",
     "DataSource",
     "SourceCredential",
     "SourceCursor",

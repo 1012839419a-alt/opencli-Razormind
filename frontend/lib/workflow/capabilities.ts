@@ -46,6 +46,10 @@ export type WorkflowRuntimeIOContract = {
   outputShape: { ports: WorkflowRuntimeContractPort[]; artifacts: string[] }
   permissionGate: { required: string[] }
   configGate: { required: string[] }
+  resourceGate?: { required: string[] }
+  errors?: Array<{ code: string; stable: boolean }>
+  provenance?: { required: boolean; fields: string[] }
+  limits?: Record<string, number>
   eventShape: { events: string[] }
   fixtureCoverage: { cases: string[] }
   certification: { realNodeIoContract: boolean; realWebhookDelivery: boolean }
@@ -266,7 +270,7 @@ export function blockedActionViewForRuntime(data: {
     message: sanitizeResourceText(firstReason ?? runtimeCapability?.reason ?? "Runtime resources must be resolved before this node can run."),
     actionLabel: actionLabelForMissing(keyText),
     href: actionHrefForMissing(keyText),
-    missingLabels: missing.map(displayMissingLabel),
+    missingLabels: Array.from(new Set(missing.map(displayMissingLabel))),
   }
 }
 

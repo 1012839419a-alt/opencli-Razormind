@@ -27,6 +27,7 @@ import { formatNumber, formatRelative } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { FailureFeed, TaskStream } from '@/components/monitor/task-stream'
 import { ThroughputChart } from '@/components/monitor/throughput-chart'
+import { OperationalAnalytics } from '@/components/monitor/operational-analytics'
 import { WorkerAllocation } from '@/components/monitor/worker-allocation'
 import { BACKEND_HINT, ErrorState, LoadingState } from '@/components/shell/data-states'
 import { PageContainer } from '@/components/shell/page-container'
@@ -401,7 +402,7 @@ export default function DashboardPage() {
     },
     {
       title: '运行成功率',
-      value: `${Math.round((s.runs.success_rate ?? 0) * 100)}%`,
+      value: `${Math.round(s.runs.success_rate ?? 0)}%`,
       sub: `成功 ${s.runs.success} · 失败 ${s.runs.failed}`,
       icon: CheckCircle2,
     },
@@ -418,18 +419,24 @@ export default function DashboardPage() {
     dispatched: d.new_records,
     failed: d.failed_runs,
   }))
-  const workers: WorkerView[] = (workersQuery.data?.data ?? []).map((w: WorkerNode) => ({
-    id: w.id,
-    name: w.hostname,
-    lane: 'collect' as const,
-    region: w.worker_id.slice(0, 8),
-    online: w.status === 'online',
-    load: Math.min(96, w.active_tasks * 18),
-    queue: w.active_tasks,
-    current: w.active_tasks > 0 ? `${w.active_tasks} 个任务执行中` : null,
-    doneToday: 0,
-    failedToday: 0,
-  }))
+  const workers: WorkerView[] = (workersQuery.data?.data ?? []).map((w: WorkerNode) => {
+    const concurrency = typeof w.concurrency === 'number' && w.concurrency > 0 ? w.concurrency : null
+    return {
+      id: w.id,
+      name: w.hostname,
+      lane: 'collect' as const,
+      region: w.worker_id.slice(0, 8),
+      online: w.status === 'online',
+      load: concurrency === null ? null : Math.min(100, Math.round((w.active_tasks / concurrency) * 100)),
+      queue: concurrency === null ? 0 : Math.max(0, w.active_tasks - concurrency),
+      current:
+        w.active_tasks > 0
+          ? `${concurrency === null ? w.active_tasks : Math.min(w.active_tasks, concurrency)} 个任务运行中`
+          : null,
+      doneToday: null,
+      failedToday: null,
+    }
+  })
   const stream = runsToStream(s.recent_runs ?? [])
   const failures: FailureItem[] = stream
     .filter((task) => task.phase === 'failed')
@@ -564,7 +571,7 @@ export default function DashboardPage() {
           </div>
         </div>
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-          <ActionLink href="/studio/workflow" title="编排工作流" description="设计节点和执行链路" icon={GitBranch} />
+          <ActionLink href="/studio" title="编排工作流" description="先选择项目，再设计节点和执行链路" icon={GitBranch} />
           <ActionLink href="/sources" title="接入数据源" description="配置采集来源与凭证" icon={Database} />
           <ActionLink href="/schedules" title="设置触发调度" description="决定何时自动运行" icon={Clock3} />
           <ActionLink href="/tasks" title="检查运行结果" description="查看任务、记录与通知" icon={Activity} />
@@ -592,6 +599,13 @@ export default function DashboardPage() {
           ))}
         </div>
       </section>
+
+      <OperationalAnalytics
+        stats={s}
+        opinion={opinion.data}
+        opinionLoading={opinion.isLoading}
+        opinionError={opinion.isError}
+      />
 
       <AgentDeliveryPanel agents={agents} notificationLogs={notificationLogs} agentsLoading={agentsQuery.isLoading} logsLoading={notificationLogsQuery.isLoading} />
 

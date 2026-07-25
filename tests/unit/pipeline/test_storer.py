@@ -399,6 +399,28 @@ async def test_store_mixed_batch_some_items_without_identity(db_session):
 
 
 @pytest.mark.asyncio
+async def test_store_preserves_workflow_ownership_with_identity(db_session):
+    """The integrated store seam keeps both workflow lineage and identity dedup."""
+    source, task = await _setup_source_task(db_session)
+
+    records, skipped = await store_records(
+        db_session,
+        task.id,
+        source.id,
+        [_triple(source.id, "Workflow record", "workflow_hash")],
+        workflow_id="workflow-1",
+        workflow_run_id="run-1",
+        identities=["entry-workflow-1"],
+    )
+
+    assert skipped == 0
+    assert len(records) == 1
+    assert records[0].workflow_id == "workflow-1"
+    assert records[0].workflow_run_id == "run-1"
+    assert records[0].identity_key == "entry-workflow-1"
+
+
+@pytest.mark.asyncio
 async def test_store_identity_duplicated_within_same_batch(db_session):
     """Two triples in the same batch sharing an identity (e.g. a feed listed
     the same entry twice): keep the first, skip the rest."""

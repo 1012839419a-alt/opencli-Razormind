@@ -1,24 +1,32 @@
 "use client"
 
 import { memo, useEffect, useState, type MouseEvent as ReactMouseEvent } from "react"
-import { Handle, Position, useStore, type NodeProps } from "@xyflow/react"
+import { Handle, Position, useStore, useUpdateNodeInternals, type NodeProps } from "@xyflow/react"
 import { Loader2, Wand2 } from "lucide-react"
 import type { WorkflowNode as WorkflowNodeType } from "@/lib/flow/types"
 import { useFlowStore } from "@/lib/flow/store"
 import { useSettingsStore } from "@/lib/flow/settings-store"
 import { draftWorkflowDemand } from "@/lib/workflow/backend-demand-draft"
 import { COLLECTION_NEED_CATALOG_ID } from "@/lib/workflow/node-catalog"
-import { getNodeDisplayId, localizeNodeText } from "@/lib/workflow/node-i18n"
+import { getNodeDisplayId, localizeNodeText, type WorkflowLanguage } from "@/lib/workflow/node-i18n"
 import { getNodeVisualSignature } from "@/lib/workflow/node-visuals"
 import { runtimeStatusLabel, runtimeStatusTone } from "@/lib/workflow/capabilities"
 import { buildCanonicalNodeViewContract } from "@/lib/workflow/canonical-node-contract"
+import { findWorkflowProjectNodeByCanvasId } from "@/lib/workflow/node-path"
+import { businessNodeName } from "@/lib/workflow/business-node-experience"
 import type { AgentProposal } from "@/lib/workflow/proposal"
+import type {
+  WorkflowCapability,
+  WorkflowNodeKind,
+  WorkflowProjectNode,
+} from "@/lib/workflow/schema"
 import { cn } from "@/lib/utils"
 
 const statusLabels: Record<string, string> = {
   idle: "Idle",
   running: "Running",
   success: "Done",
+  partial_success: "Partial success",
   error: "Error",
 }
 
@@ -26,10 +34,49 @@ const statusDotStyles: Record<string, string> = {
   idle: "border-muted-foreground/50 bg-transparent",
   running: "border-[#ff7a17] bg-[#ff7a17]",
   success: "border-[#4ade80] bg-[#4ade80]",
+  partial_success: "border-warning bg-warning",
   error: "border-destructive bg-destructive",
 }
 
 const ROW_H = 18
+
+const PORT_TYPE_LABELS: Record<string, Record<WorkflowLanguage, string>> = {
+  trigger: { "zh-CN": "触发信号", "en-US": "Trigger" },
+  "items[]": { "zh-CN": "条目", "en-US": "Items" },
+  "recordCandidate[]": { "zh-CN": "候选记录", "en-US": "Candidates" },
+  "record[]": { "zh-CN": "记录", "en-US": "Records" },
+  "runtimeArtifact[]": { "zh-CN": "运行产物", "en-US": "Artifacts" },
+  "scoredItems[]": { "zh-CN": "评分条目", "en-US": "Scored items" },
+  "summary[]": { "zh-CN": "摘要", "en-US": "Summaries" },
+  branch: { "zh-CN": "分支", "en-US": "Branch" },
+  delivery: { "zh-CN": "投递结果", "en-US": "Delivery" },
+  "storedItems[]": { "zh-CN": "已存储条目", "en-US": "Stored items" },
+}
+
+const PORT_ID_LABELS: Record<string, Record<WorkflowLanguage, string>> = {
+  candidates: { "zh-CN": "候选记录", "en-US": "Candidates" },
+  records: { "zh-CN": "记录", "en-US": "Records" },
+  review: { "zh-CN": "人工复核", "en-US": "Review" },
+  notify: { "zh-CN": "通知", "en-US": "Notify" },
+  delivery: { "zh-CN": "投递结果", "en-US": "Delivery" },
+  stored: { "zh-CN": "已存储", "en-US": "Stored" },
+  in1: { "zh-CN": "输入 1", "en-US": "Input 1" },
+  in2: { "zh-CN": "输入 2", "en-US": "Input 2" },
+}
+
+function portDisplayLabel(
+  port: { id?: string; direction: string; type: string },
+  language: WorkflowLanguage,
+) {
+  const explicit = port.id ? PORT_ID_LABELS[port.id]?.[language] : undefined
+  if (explicit) return explicit
+  const typeLabel = PORT_TYPE_LABELS[port.type]?.[language]
+  if (typeLabel) return typeLabel
+  if (port.id && port.id !== "in" && port.id !== "out") return port.id
+  return port.direction === "input"
+    ? language === "zh-CN" ? "输入" : "Input"
+    : language === "zh-CN" ? "输出" : "Output"
+}
 
 function typeCaption(category: string, nodeType: string) {
   return `${category}::${nodeType}`.toUpperCase()
@@ -196,6 +243,19 @@ function readCanonical(data: WorkflowNodeType["data"]): CanonicalNodeData | unde
     : undefined
 }
 
+function implementationParams(node: WorkflowProjectNode | undefined): Record<string, unknown> | undefined {
+  if (!node) return undefined
+  const operator = node.params.operator
+  if (!operator || typeof operator !== "object" || Array.isArray(operator)) return undefined
+  const implementationNodeId = (operator as Record<string, unknown>).implementationNodeId
+  if (typeof implementationNodeId !== "string") return undefined
+  const implementation = (node.internals?.nodes ?? []).find((candidate) => {
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return false
+    return (candidate as { id?: unknown }).id === implementationNodeId
+  }) as WorkflowProjectNode | undefined
+  return implementation?.params
+}
+
 function isCollectionNeedData(data: WorkflowNodeType["data"]): boolean {
   const canonical = readCanonical(data)
   if (canonical?.catalogId === COLLECTION_NEED_CATALOG_ID) return true
@@ -282,14 +342,17 @@ function WorkflowNodeComponent({ id, data, selected }: NodeProps<WorkflowNodeTyp
   const internalLocked = data.internalLocked === true
   const internalDraft = data.internalDraft === true
   const workflowProject = useFlowStore((s) => s.workflowProject)
+  const networkStackLength = useFlowStore((s) => s.networkStack.length)
   const updateWorkflowNodeParams = useFlowStore((s) => s.updateWorkflowNodeParams)
   const queueAgentProposal = useFlowStore((s) => s.queueAgentProposal)
   const contextualZoom = useSettingsStore((s) => s.contextualZoom)
   const language = useSettingsStore((s) => s.language)
   const zoom = useStore((s) => s.transform[2])
+  const updateNodeInternals = useUpdateNodeInternals()
   const canonical = readCanonical(data)
-  const projectNode = workflowProject.nodes.find((candidate) => candidate.id === id)
+  const projectNode = findWorkflowProjectNodeByCanvasId(workflowProject, id)
   const nodeViewContract = buildCanonicalNodeViewContract(projectNode, data, id)
+  const isBusinessLevel = networkStackLength === 0
   const displayId = getNodeDisplayId(data)
   const isCollectionNeed = displayId === COLLECTION_NEED_CATALOG_ID || isCollectionNeedData(data)
   const demandParams = canonical?.params
@@ -320,13 +383,44 @@ function WorkflowNodeComponent({ id, data, selected }: NodeProps<WorkflowNodeTyp
     .filter((port) => port.direction === "output")
     .map((port) => ({
       id: port.id,
-      label: port.type.toLowerCase() === "evidencebatch" ? "EvidenceBatch" : port.id,
+      label: port.type.toLowerCase() === "evidencebatch" ? "EvidenceBatch" : portDisplayLabel(port, language),
+      type: port.type,
       accent: port.type === "assertion" || port.type.toLowerCase() === "evidencebatch" ? "#4ade80" : undefined,
     }))
-  const primitiveInputs = primitivePorts.filter((port) => port.direction === "input")
-  const outputs: { id?: string; label: string; accent?: string }[] = primitiveOutputs.length > 0
-    ? primitiveOutputs
-    : []
+  const primitiveInputs = primitivePorts
+    .filter((port) => port.direction === "input")
+    .map((port) => ({ id: port.id, label: portDisplayLabel(port, language), type: port.type }))
+  const connectedInputPorts = workflowProject.edges
+    .filter((edge) => edge.target === id)
+    .map((edge) => edge.targetPort)
+  const connectedOutputPorts = workflowProject.edges
+    .filter((edge) => edge.source === id)
+    .map((edge) => edge.sourcePort)
+  const semanticPorts = semanticFallbackPorts(canonical?.kind, language)
+  const inputs = mergeNodePorts(
+    primitiveInputs.length > 0 ? primitiveInputs : semanticPorts.inputs,
+    connectedInputPorts,
+    "input",
+    language,
+  )
+  const outputs = mergeNodePorts(
+    primitiveOutputs.length > 0 ? primitiveOutputs : semanticPorts.outputs,
+    connectedOutputPorts,
+    "output",
+    language,
+  )
+  const portSignature = [
+    ...inputs.map((port) => `in:${port.id ?? "__default__"}`),
+    ...outputs.map((port) => `out:${port.id ?? "__default__"}`),
+  ].join("|")
+  const portInterfaceRows = [
+    ...inputs.map((port) => ({ direction: "IN" as const, port })),
+    ...outputs.map((port) => ({ direction: "OUT" as const, port })),
+  ]
+
+  useEffect(() => {
+    updateNodeInternals(id)
+  }, [id, portSignature, updateNodeInternals])
 
   const summary = paramSummary(data)
   const nodeShape = nodeDisplayShape(data)
@@ -336,6 +430,12 @@ function WorkflowNodeComponent({ id, data, selected }: NodeProps<WorkflowNodeTyp
   const localized = prefersCustomLabel
     ? { label: data.label, description: data.description }
     : localizeNodeText(displayId, { label: data.label, description: data.description }, language)
+  const businessLabel = businessNodeName({
+    label: localized.label,
+    kind: nodeViewContract.identity.kind as WorkflowNodeKind,
+    capability: nodeViewContract.identity.capability as WorkflowCapability,
+    params: implementationParams(projectNode) ?? canonical?.params,
+  })
   const visual = getNodeVisualSignature(data)
   const mapBadges = readMapBadges(data)
   const evidenceBatchItemCount = data.runtimeEvidenceBatches?.reduce((sum, batch) => sum + batch.itemCount, 0) ?? 0
@@ -349,6 +449,10 @@ function WorkflowNodeComponent({ id, data, selected }: NodeProps<WorkflowNodeTyp
     outputs.length === 1
       ? { left: "50%" }
       : { left: `${((i + 1) / (outputs.length + 1)) * 100}%` }
+  const targetHandleStyle = (i: number) =>
+    inputs.length === 1
+      ? { left: "50%" }
+      : { left: `${((i + 1) / (inputs.length + 1)) * 100}%` }
 
   const assembleCollectionNeed = async (event: ReactMouseEvent<HTMLButtonElement>) => {
     event.preventDefault()
@@ -391,20 +495,29 @@ function WorkflowNodeComponent({ id, data, selected }: NodeProps<WorkflowNodeTyp
         data-runtime-status={data.runtimeCapability?.status ?? "unknown"}
         data-selected={selected ? "true" : "false"}
         data-package-state={internalLocked ? "locked" : internalDraft ? "draft" : "canonical"}
-        aria-label={`${nodeViewContract.identity.label}, ${nodeViewContract.identity.kind}, ${runtimeStatusLabel(nodeViewContract.status.capability)}`}
+        aria-label={`${isBusinessLevel ? businessLabel : nodeViewContract.identity.label}, ${nodeViewContract.identity.kind}, ${runtimeStatusLabel(nodeViewContract.status.capability)}`}
         className={cn(
           "workflow-node-card flex size-12 items-center justify-center bg-card text-card-foreground ring-1 transition-colors",
           selected ? "ring-foreground/40" : "ring-border",
           proposalFocused && "ring-2 ring-[#ff7a17]/45",
         )}
         style={nodeStyle}
-        title={`${nodeViewContract.identity.label} · ${nodeViewContract.identity.kind} · ${runtimeStatusLabel(nodeViewContract.status.capability)} · ${primitiveInputs.length} in / ${outputs.length} out`}
+        title={`${isBusinessLevel ? businessLabel : nodeViewContract.identity.label} · ${nodeViewContract.identity.kind} · ${runtimeStatusLabel(nodeViewContract.status.capability)} · ${inputs.length} in / ${outputs.length} out`}
       >
         <span className="workflow-node-mini-code">{visual.code}</span>
-        <Handle type="target" id={primitiveInputs[0]?.id} position={Position.Top} className={handleCls} />
+        {inputs.map((input, index) => (
+          <Handle
+            key={portKey(input.id, "in")}
+            type="target"
+            id={input.id}
+            position={Position.Top}
+            className={handleCls}
+            style={targetHandleStyle(index)}
+          />
+        ))}
         {outputs.map((out) => (
           <Handle
-            key={out.id ?? "out"}
+            key={portKey(out.id, "out")}
             id={out.id}
             type="source"
             position={Position.Bottom}
@@ -423,10 +536,10 @@ function WorkflowNodeComponent({ id, data, selected }: NodeProps<WorkflowNodeTyp
       data-runtime-status={data.runtimeCapability?.status ?? "unknown"}
       data-selected={selected ? "true" : "false"}
         data-package-state={internalLocked ? "locked" : internalDraft ? "draft" : "canonical"}
-      aria-label={`${nodeViewContract.identity.label}, ${nodeViewContract.identity.kind}, ${runtimeStatusLabel(nodeViewContract.status.capability)}`}
+      aria-label={`${isBusinessLevel ? businessLabel : nodeViewContract.identity.label}, ${nodeViewContract.identity.kind}, ${runtimeStatusLabel(nodeViewContract.status.capability)}`}
       className={cn(
         "workflow-node-card group relative overflow-hidden bg-card text-card-foreground transition-colors",
-        "w-[204px]",
+        internalLocked ? "w-[244px]" : "w-[204px]",
         selected ? "ring-1 ring-foreground/30" : "ring-1 ring-border hover:ring-[#3a3d42]",
         proposalFocused && "ring-2 ring-[#ff7a17]/40",
       )}
@@ -451,7 +564,11 @@ function WorkflowNodeComponent({ id, data, selected }: NodeProps<WorkflowNodeTyp
             <span className="truncate font-mono text-[9px] uppercase tracking-[0.08em] text-muted-foreground/80">
               {prefersCustomLabel
                 ? id === "collection-need" ? "工作流入口" : "工作流输出"
-                : internalLocked ? "LOCKED PACKAGE" : internalDraft ? "DRAFT INTERNAL" : typeCaption(data.category, data.nodeType)}
+                : internalLocked
+                  ? typeCaption(data.category, canonical?.capability ?? data.nodeType)
+                  : internalDraft
+                    ? "DRAFT INTERNAL"
+                    : typeCaption(data.category, data.nodeType)}
             </span>
             <span className="flex min-w-0 shrink-0 items-center gap-1">
               {prefersCustomLabel ? null : <RuntimeCapabilityBadge data={data} />}
@@ -459,7 +576,7 @@ function WorkflowNodeComponent({ id, data, selected }: NodeProps<WorkflowNodeTyp
             </span>
           </div>
 
-          <p className="mt-1 truncate text-[13px] font-medium leading-tight">{localized.label}</p>
+          <p className="mt-1 truncate text-[13px] font-medium leading-tight">{isBusinessLevel ? businessLabel : localized.label}</p>
 
           {detail === "high" && summary && !prefersCustomLabel ? (
             <code className="mt-1 block truncate font-mono text-[10px] leading-tight text-muted-foreground">
@@ -509,21 +626,29 @@ function WorkflowNodeComponent({ id, data, selected }: NodeProps<WorkflowNodeTyp
 
       {detail === "high" ? (
         <div className="border-t border-border/80 py-0.5">
-          {outputs.map((out, i) => (
+          {portInterfaceRows.map(({ direction, port }) => (
             <div
-              key={out.id ?? "out"}
+              key={`${direction}-${portKey(port.id, "interface-row")}`}
               className={cn("flex items-center justify-between font-mono text-[10px] text-muted-foreground", shapePadding(nodeShape))}
               style={{ height: ROW_H }}
+              title={`${direction} · ${port.id ?? "default"}: ${port.type ?? "unknown"}`}
             >
-              <span>{i === 0 ? (primitiveInputs[0]?.id ?? "in") : ""}</span>
-              <span className="flex items-center gap-1.5">
-                {out.label === "EvidenceBatch" && evidenceBatchItemCount > 0
-                  ? `${out.label} · ${evidenceBatchItemCount}`
-                  : out.label}
-                {out.accent ? (
+              <span className="shrink-0 text-[9px] font-semibold tracking-[0.08em] text-foreground/75">
+                {direction} · {port.id ?? "default"}
+              </span>
+              <span className="ml-2 flex min-w-0 items-center gap-1.5">
+                <span className="truncate">
+                  {port.label === "EvidenceBatch" && evidenceBatchItemCount > 0
+                    ? `${port.label} · ${evidenceBatchItemCount}`
+                    : port.label}
+                </span>
+                {port.type && port.type !== "unknown" ? (
+                  <span className="shrink-0 text-[8px] text-muted-foreground/60">[{port.type}]</span>
+                ) : null}
+                {port.accent ? (
                   <span
                     className="size-1.5 rounded-full"
-                    style={{ backgroundColor: out.accent }}
+                    style={{ backgroundColor: port.accent }}
                     aria-hidden
                   />
                 ) : null}
@@ -535,16 +660,19 @@ function WorkflowNodeComponent({ id, data, selected }: NodeProps<WorkflowNodeTyp
 
 
       {/* handles aligned to port rows */}
-      <Handle
-        type="target"
-        id={primitiveInputs[0]?.id}
-        position={Position.Top}
-        className={handleCls}
-        style={{ left: "50%" }}
-      />
+      {inputs.map((input, index) => (
+        <Handle
+          key={portKey(input.id, "in")}
+          type="target"
+          id={input.id}
+          position={Position.Top}
+          className={handleCls}
+          style={targetHandleStyle(index)}
+        />
+      ))}
       {outputs.map((out, i) => (
         <Handle
-          key={out.id ?? "out"}
+          key={portKey(out.id, "out")}
           id={out.id}
           type="source"
           position={Position.Bottom}
@@ -554,6 +682,68 @@ function WorkflowNodeComponent({ id, data, selected }: NodeProps<WorkflowNodeTyp
       ))}
     </div>
   )
+}
+
+type VisibleNodePort = { id?: string; label: string; type?: string; accent?: string }
+
+function mergeNodePorts(
+  declared: VisibleNodePort[],
+  connectedIds: Array<string | undefined>,
+  direction: "input" | "output",
+  language: WorkflowLanguage,
+): VisibleNodePort[] {
+  const ports = new Map<string, VisibleNodePort>()
+  for (const port of declared) {
+    ports.set(portKey(port.id), port)
+  }
+  for (const id of connectedIds) {
+    // An omitted edge port means the contract resolver chooses one of the
+    // declared ports. It is not a second anonymous Canvas port.
+    if (id === undefined && declared.length > 0) continue
+    const key = portKey(id)
+    if (!ports.has(key)) {
+      ports.set(key, {
+        id,
+        label: portDisplayLabel({ id, direction, type: "unknown" }, language),
+        type: "unknown",
+      })
+    }
+  }
+  return Array.from(ports.values())
+}
+
+function semanticFallbackPorts(kind: string | undefined, language: WorkflowLanguage): {
+  inputs: VisibleNodePort[]
+  outputs: VisibleNodePort[]
+} {
+  const visible = (id: string, direction: "input" | "output", type: string): VisibleNodePort => ({
+    id,
+    label: portDisplayLabel({ id, direction, type }, language),
+    type,
+  })
+  switch (kind) {
+    case "schedule":
+      return {
+        inputs: [],
+        outputs: [visible("out", "output", "trigger")],
+      }
+    case "source":
+      return {
+        inputs: [visible("in", "input", "trigger")],
+        outputs: [visible("out", "output", "items[]")],
+      }
+    case "sink":
+      return {
+        inputs: [visible("records", "input", "record[]")],
+        outputs: [visible("stored", "output", "storedItems[]")],
+      }
+    default:
+      return { inputs: [], outputs: [] }
+  }
+}
+
+function portKey(id: string | undefined, prefix = "port") {
+  return `${prefix}:${id ?? "__default__"}`
 }
 
 export default memo(WorkflowNodeComponent)

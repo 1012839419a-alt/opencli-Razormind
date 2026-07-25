@@ -37,6 +37,21 @@ async def test_create_source(client, sample_source_data):
 
 
 @pytest.mark.asyncio
+async def test_create_browser_act_source(client):
+    response = await client.post(
+        "/api/v1/sources",
+        json={
+            "name": "BrowserAct source",
+            "channel_type": "browser_act",
+            "channel_config": {"pack_id": "lead-generation/example"},
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json()["data"]["channel_type"] == "browser_act"
+
+
+@pytest.mark.asyncio
 async def test_get_source(client, sample_source_data):
     create_resp = await client.post("/api/v1/sources", json=sample_source_data)
     source_id = create_resp.json()["data"]["id"]
@@ -233,6 +248,52 @@ async def test_import_opml_endpoint_invalid_xml_returns_400(client):
         "/api/v1/sources/import-opml",
         files={"file": ("feeds.opml", b"<not-xml", "text/x-opml")},
     )
+    assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_import_opml_url_endpoint_imports_github_catalog_with_groups(client):
+    catalog_url = "https://raw.githubusercontent.com/example/catalog/main/business.opml"
+    opml = """<?xml version="1.0"?><opml><body>
+    <outline text="Business &amp; Economy">
+      <outline title="Markets" xmlUrl="https://markets.example.com/rss" />
+    </outline>
+    </body></opml>"""
+    with patch(
+        "backend.api.v1.sources.source_service.fetch_remote_opml",
+        AsyncMock(return_value=opml),
+    ):
+        response = await client.post(
+            "/api/v1/sources/import-opml-url",
+            json={"url": catalog_url},
+        )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert len(data["created"]) == 1
+    assert data["created"][0]["enabled"] is False
+    assert data["created"][0]["channel_config"] == {
+        "feed_url": "https://markets.example.com/rss",
+        "source_group": "business-economy",
+        "catalog_url": catalog_url,
+    }
+    assert data["created"][0]["tags"] == [
+        "rss",
+        "source-group:business-economy",
+        "catalog:opml",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_import_opml_url_endpoint_rejects_fetch_failure(client):
+    with patch(
+        "backend.api.v1.sources.source_service.fetch_remote_opml",
+        AsyncMock(side_effect=ValueError("unable to fetch OPML catalog")),
+    ):
+        response = await client.post(
+            "/api/v1/sources/import-opml-url",
+            json={"url": "https://example.com/broken.opml"},
+        )
     assert response.status_code == 400
 
 

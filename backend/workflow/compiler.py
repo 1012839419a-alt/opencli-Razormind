@@ -25,10 +25,14 @@ from backend.workflow.data_operators import (
     resolve_data_operator,
 )
 from backend.workflow.hda_templates import materialize_hda_templates
+from backend.workflow.native_intelligence_executor import (
+    NATIVE_INTELLIGENCE_ACTION_BY_TOOL_ID,
+)
 from backend.workflow.node_registry import (
     forbidden_node_definition_keys,
     resolve_node_origin,
 )
+from backend.workflow.runtime_contracts import runtime_io_contract
 from backend.workflow.runtime_registry import resolve_runtime_metadata
 from backend.workflow.tool_capabilities import (
     validate_workflow_tool_capability_version_pin,
@@ -57,6 +61,10 @@ _PORT_CONTRACTS: dict[str, tuple[list[_PortContract], list[_PortContract]]] = {
         [_PortContract("tick", "output", "trigger")],
     ),
     "intelligence.source.opencli-slot": (
+        [_PortContract("in", "input", "trigger", required=False)],
+        [_PortContract("out", "output", "items[]")],
+    ),
+    "intelligence.source.rss": (
         [_PortContract("in", "input", "trigger", required=False)],
         [_PortContract("out", "output", "items[]")],
     ),
@@ -105,7 +113,7 @@ _PORT_CONTRACTS: dict[str, tuple[list[_PortContract], list[_PortContract]]] = {
     ),
     "intelligence.output.collection-result": (
         [_PortContract("in", "input", "recordCandidate[]")],
-        [_PortContract("out", "output", "storedItems[]", required=False)],
+        [_PortContract("out", "output", "items[]", required=False)],
     ),
     "intelligence.output.inbox": (
         # recordCandidate[] like its kind-level fallback (kind=inbox/sink +
@@ -123,6 +131,18 @@ _PORT_CONTRACTS: dict[str, tuple[list[_PortContract], list[_PortContract]]] = {
         [_PortContract("in", "input", "unknown", required=False)],
         [_PortContract("out", "output", "unknown", required=False)],
     ),
+    "package.intelligence.situation-awareness": (
+        [_PortContract("in", "input", "unknown", required=False)],
+        [_PortContract("out", "output", "unknown", required=False)],
+    ),
+    "package.simulation.swarm-forecast": (
+        [_PortContract("in", "input", "unknown", required=False)],
+        [_PortContract("out", "output", "unknown", required=False)],
+    ),
+    "package.intelligence.native-lifecycle": (
+        [_PortContract("in", "input", "unknown", required=False)],
+        [_PortContract("out", "output", "unknown", required=False)],
+    ),
     "package.intelligence.pipeline": (
         [_PortContract("in", "input", "any", required=False)],
         [_PortContract("out", "output", "any", required=False)],
@@ -132,6 +152,10 @@ _PORT_CONTRACTS: dict[str, tuple[list[_PortContract], list[_PortContract]]] = {
         [_PortContract("out", "output", "any", required=False)],
     ),
     "package.dispatch.fanout": (
+        [_PortContract("in", "input", "any", required=False)],
+        [_PortContract("out", "output", "any", required=False)],
+    ),
+    "package.compat.dify-workflow": (
         [_PortContract("in", "input", "any", required=False)],
         [_PortContract("out", "output", "any", required=False)],
     ),
@@ -328,7 +352,7 @@ def _validate_project(project: WorkflowProject) -> list[WorkflowCompileError]:
                 )
             )
 
-        if _is_structural_container(node):
+        if _has_package_internals(node):
             errors.extend(
                 _validate_package_internals(
                     node,
@@ -341,7 +365,16 @@ def _validate_project(project: WorkflowProject) -> list[WorkflowCompileError]:
         errors.extend(_validate_node_origin(node, ["nodes", node.id]))
         errors.extend(_validate_data_operator_node(node, ["nodes", node.id]))
         errors.extend(_validate_capability_version_pin(node))
+        errors.extend(_validate_node_capability_gaps(node, ["nodes", node.id]))
 
+    errors.extend(_validate_edge_mappings(project.edges, path_prefix=["edges"]))
+    errors.extend(
+        _validate_visible_merge_nodes(
+            project.nodes,
+            project.edges,
+            path_prefix=["edges"],
+        )
+    )
     errors.extend(_validate_typed_edges(project.nodes, project.edges, path_prefix=["edges"]))
     errors.extend(_cycle_errors(project))
     return errors
@@ -394,7 +427,15 @@ def _requires_adapter(node: WorkflowProjectNode) -> bool:
 
 
 def _is_structural_container(node: WorkflowProjectNode) -> bool:
+    return _has_package_internals(node) and not _is_managed_runtime_package(node)
+
+
+def _has_package_internals(node: WorkflowProjectNode) -> bool:
     return bool(node.internals and node.internals.nodes)
+
+
+def _is_managed_runtime_package(node: WorkflowProjectNode) -> bool:
+    return _has_package_internals(node) and node.params.get("packageExecution") == "managed"
 
 
 def _validate_node_origin(
@@ -528,6 +569,44 @@ def _validate_data_operator_node(
             )
         ]
     return []
+def _validate_node_capability_gaps(
+    node: WorkflowProjectNode,
+    path_prefix: list[str],
+) -> list[WorkflowCompileError]:
+    ui = node.ui or {}
+    builder = ui.get("builder")
+    if not isinstance(builder, dict):
+        return []
+    gaps = builder.get("capabilityGaps")
+    if not isinstance(gaps, list):
+        return []
+
+    errors: list[WorkflowCompileError] = []
+    for index, gap in enumerate(gaps):
+        if not isinstance(gap, dict):
+            continue
+        blocking_actions = gap.get("blockingActions")
+        blocking_action_names = (
+            {value for value in blocking_actions if isinstance(value, str)}
+            if isinstance(blocking_actions, list)
+            else set()
+        )
+        if blocking_actions is not None and not {"publish", "run"}.intersection(
+            blocking_action_names
+        ):
+            continue
+        gap_id = _read_string(gap.get("id")) or f"gap-{index + 1}"
+        title = _read_string(gap.get("title")) or "Capability Gap"
+        detail = _read_string(gap.get("detail")) or "Required runtime capability is incomplete"
+        errors.append(
+            WorkflowCompileError(
+                code="capability_gap",
+                message=f'Workflow node "{node.id}" is blocked by {title}: {detail}',
+                node_id=node.id,
+                path=[*path_prefix, "ui", "builder", "capabilityGaps", gap_id],
+            )
+        )
+    return errors
 
 
 def _validate_typed_edges(
@@ -593,9 +672,71 @@ def _validate_typed_edges(
     return errors
 
 
+def _validate_edge_mappings(
+    edges: list[WorkflowProjectEdge],
+    *,
+    path_prefix: list[str],
+) -> list[WorkflowCompileError]:
+    errors: list[WorkflowCompileError] = []
+    for edge in edges:
+        ui = edge.ui or {}
+        mapping = ui.get("mapping")
+        if not isinstance(mapping, dict) or mapping.get("compatible") is not False:
+            continue
+        conflicts = mapping.get("conflicts")
+        conflict_messages = (
+            [value.strip() for value in conflicts if isinstance(value, str) and value.strip()]
+            if isinstance(conflicts, list)
+            else []
+        )
+        detail = "; ".join(conflict_messages) or "field mapping is incompatible"
+        errors.append(
+            WorkflowCompileError(
+                code="incompatible_edge_mapping",
+                message=f'Workflow edge "{edge.id}" cannot compile: {detail}',
+                edge_id=edge.id,
+                path=[*path_prefix, edge.id, "ui", "mapping"],
+            )
+        )
+    return errors
+
+
+def _validate_visible_merge_nodes(
+    nodes: list[WorkflowProjectNode],
+    edges: list[WorkflowProjectEdge],
+    *,
+    path_prefix: list[str],
+) -> list[WorkflowCompileError]:
+    incoming = Counter(edge.target for edge in edges)
+    errors: list[WorkflowCompileError] = []
+    for node in nodes:
+        builder = (node.ui or {}).get("builder")
+        if (
+            incoming[node.id] <= 1
+            or not isinstance(builder, dict)
+            or (node.kind == "flow" and node.capability == "merge")
+        ):
+            continue
+        errors.append(
+            WorkflowCompileError(
+                code="multiple_inputs_require_merge",
+                message=(
+                    f'Workflow node "{node.id}" has {incoming[node.id]} inputs. '
+                    "Agent Builder requires a visible Merge node before any multi-input node."
+                ),
+                node_id=node.id,
+                path=[*path_prefix, node.id],
+            )
+        )
+    return errors
+
+
 def _node_port_contracts(
     node: WorkflowProjectNode,
 ) -> tuple[list[_PortContract], list[_PortContract]] | None:
+    native_contract = _native_intelligence_port_contracts(node)
+    if native_contract is not None:
+        return native_contract
     ui = node.ui or {}
     catalog_id = _read_string(ui.get("catalogId"))
     if catalog_id in _PORT_CONTRACTS:
@@ -631,6 +772,32 @@ def _node_port_contracts(
         )
         (inputs if direction == "input" else outputs).append(port)
     return inputs, outputs
+
+
+def _native_intelligence_port_contracts(
+    node: WorkflowProjectNode,
+) -> tuple[list[_PortContract], list[_PortContract]] | None:
+    tool_capability = node.params.get("toolCapability")
+    if not isinstance(tool_capability, dict):
+        return None
+    tool_id = _read_string(tool_capability.get("id"))
+    action = NATIVE_INTELLIGENCE_ACTION_BY_TOOL_ID.get(tool_id or "")
+    if action is None:
+        return None
+    binding_id = f"workflow.native-intelligence.{action.name.replace('.', '-')}"
+    contract = runtime_io_contract(binding_id)
+    if contract is None:
+        return None
+    return (
+        [
+            _PortContract(name, "input", type_)
+            for name, type_ in contract.input_ports
+        ],
+        [
+            _PortContract(name, "output", type_)
+            for name, type_ in contract.output_ports
+        ],
+    )
 
 
 def _inferred_node_port_contracts(
@@ -756,7 +923,7 @@ def _boundary_nodes(
     node_path: tuple[str, ...],
     direction: Literal["input", "output"],
 ) -> list[tuple[tuple[str, ...], WorkflowProjectNode]]:
-    if not node.internals or not node.internals.nodes:
+    if _is_managed_runtime_package(node) or not node.internals or not node.internals.nodes:
         return [(node_path, node)]
 
     connected_ids = {
@@ -917,7 +1084,7 @@ def _compile_node_tree(
     if not _is_structural_container(node):
         return
 
-    bound_internal_nodes = _bind_internal_parameters(node)
+    bound_internal_nodes = _bind_internal_parameters(node, node_path=node_path)
     internal_depends_on = _expanded_dependency_map(
         bound_internal_nodes,
         node.internals.edges,
@@ -982,10 +1149,16 @@ def _package_metadata(
     *,
     node_path: tuple[str, ...],
 ) -> dict[str, object] | None:
-    if not (node.topicCollapse or node.miniNetwork or _is_structural_container(node)):
+    if not (
+        node.topicCollapse
+        or node.miniNetwork
+        or _is_structural_container(node)
+        or _is_managed_runtime_package(node)
+    ):
         return None
 
     locked = _package_locked(node)
+    managed = _is_managed_runtime_package(node)
     node_id = _node_path_id(node_path)
     internal_node_ids = (
         [_internal_id(node_id, internal_node.id) for internal_node in node.internals.nodes]
@@ -997,8 +1170,9 @@ def _package_metadata(
         "topicCollapse": node.topicCollapse.model_dump() if node.topicCollapse else None,
         "locked": locked,
         "editable": not locked,
-        "structural": True,
-        "executable": False,
+        "managed": managed,
+        "structural": not managed,
+        "executable": managed,
         "node_path": list(node_path),
         "internal_node_ids": internal_node_ids,
         "internal_edge_ids": (
@@ -1009,11 +1183,37 @@ def _package_metadata(
     }
 
 
-def _bind_internal_parameters(node: WorkflowProjectNode) -> list[WorkflowProjectNode]:
+def _resolve_internal_binding_id(
+    binding_node_id: str,
+    internal_node_ids: set[str],
+    *,
+    package_aliases: tuple[str, ...],
+) -> str | None:
+    if binding_node_id in internal_node_ids:
+        return binding_node_id
+
+    for package_alias in package_aliases:
+        for separator in ("__", INTERNAL_ID_SEPARATOR):
+            prefix = f"{package_alias}{separator}"
+            if not binding_node_id.startswith(prefix):
+                continue
+            candidate = binding_node_id[len(prefix) :]
+            if candidate in internal_node_ids:
+                return candidate
+    return None
+
+
+def _bind_internal_parameters(
+    node: WorkflowProjectNode,
+    *,
+    node_path: tuple[str, ...],
+) -> list[WorkflowProjectNode]:
     if not node.internals:
         return []
 
     internal_by_id = {internal_node.id: internal_node for internal_node in node.internals.nodes}
+    internal_node_ids = set(internal_by_id)
+    package_aliases = tuple(dict.fromkeys((node.id, _node_path_id(node_path))))
     params_by_node = {
         internal_node.id: dict(internal_node.params) for internal_node in node.internals.nodes
     }
@@ -1021,10 +1221,22 @@ def _bind_internal_parameters(node: WorkflowProjectNode) -> list[WorkflowProject
         for field in node.parameterInterface.fields:
             if field.binding.source != "params":
                 continue
-            value = node.params.get(field.id, field.value)
+            if field.id in node.params:
+                value = node.params[field.id]
+            elif field.binding.fieldId in node.params:
+                value = node.params[field.binding.fieldId]
+            else:
+                value = field.value
             if value is None:
                 continue
-            params_by_node[field.binding.nodeId][field.binding.fieldId] = value
+            binding_node_id = _resolve_internal_binding_id(
+                field.binding.nodeId,
+                internal_node_ids,
+                package_aliases=package_aliases,
+            )
+            if binding_node_id is None:
+                continue
+            params_by_node[binding_node_id][field.binding.fieldId] = value
 
     return [
         internal_by_id[internal_node.id].model_copy(
@@ -1067,8 +1279,7 @@ def _validate_package_internals(
                 WorkflowCompileError(
                     code="duplicate_edge_id",
                     message=(
-                        f'Package node "{package_node_id}" has duplicated internal '
-                        f'edge "{edge_id}"'
+                        f'Package node "{package_node_id}" has duplicated internal edge "{edge_id}"'
                     ),
                     node_id=package_node_id,
                     edge_id=edge_id,
@@ -1077,6 +1288,7 @@ def _validate_package_internals(
             )
 
     internal_node_ids = {internal_node.id for internal_node in node.internals.nodes}
+    package_aliases = tuple(dict.fromkeys((node.id, package_node_id)))
     for edge in node.internals.edges:
         if edge.source not in internal_node_ids:
             errors.append(
@@ -1105,6 +1317,9 @@ def _validate_package_internals(
                 )
             )
 
+    if _is_managed_runtime_package(node):
+        return errors
+
     for internal_node in node.internals.nodes:
         internal_path_prefix = [
             *path_prefix,
@@ -1120,7 +1335,7 @@ def _validate_package_internals(
                     code="node_path_depth_exceeded",
                     message=(
                         f'Workflow node "{internal_node_id}" exceeds the maximum '
-                        f'nesting depth of {MAX_NODE_PATH_DEPTH}'
+                        f"nesting depth of {MAX_NODE_PATH_DEPTH}"
                     ),
                     node_id=internal_node_id,
                     path=internal_path_prefix,
@@ -1169,6 +1384,12 @@ def _validate_package_internals(
             )
         )
         errors.extend(_validate_data_operator_node(internal_node, internal_path_prefix))
+        errors.extend(
+            _validate_node_capability_gaps(
+                internal_node,
+                internal_path_prefix,
+            )
+        )
         if _is_structural_container(internal_node):
             errors.extend(
                 _validate_package_internals(
@@ -1181,7 +1402,12 @@ def _validate_package_internals(
 
     if node.parameterInterface:
         for field in node.parameterInterface.fields:
-            if field.binding.nodeId not in internal_node_ids:
+            binding_node_id = _resolve_internal_binding_id(
+                field.binding.nodeId,
+                internal_node_ids,
+                package_aliases=package_aliases,
+            )
+            if binding_node_id is None:
                 errors.append(
                     WorkflowCompileError(
                         code="invalid_parameter_binding",
@@ -1201,11 +1427,25 @@ def _validate_package_internals(
                     )
                 )
 
+    internal_edge_path = [*path_prefix, "internals", "edges"]
+    errors.extend(
+        _validate_edge_mappings(
+            node.internals.edges,
+            path_prefix=internal_edge_path,
+        )
+    )
+    errors.extend(
+        _validate_visible_merge_nodes(
+            node.internals.nodes,
+            node.internals.edges,
+            path_prefix=internal_edge_path,
+        )
+    )
     errors.extend(
         _validate_typed_edges(
             node.internals.nodes,
             node.internals.edges,
-            path_prefix=[*path_prefix, "internals", "edges"],
+            path_prefix=internal_edge_path,
         )
     )
     errors.extend(
@@ -1278,6 +1518,9 @@ def _compile_node(
     }
     if runtime:
         runtime_metadata.update(runtime)
+    source_label = (node.ui or {}).get("label")
+    if node.kind == "source" and isinstance(source_label, str) and source_label.strip():
+        runtime_metadata["display_name"] = source_label.strip()
     if _is_structural_container(node):
         runtime_metadata.update({"structural": True, "executable": False})
     else:
@@ -1287,7 +1530,7 @@ def _compile_node(
         id=node_id,
         kind=node.kind,
         capability=node.capability,
-        params=node.params,
+        params=_compiled_node_params(node),
         depends_on=depends_on,
         adapter=(
             CompiledWorkflowAdapterBinding(
@@ -1347,7 +1590,7 @@ def _to_plan_node(
         type=f"workflow.{node.kind}.{node.capability}",
         label=node.id,
         params={
-            **node.params,
+            **_compiled_node_params(node),
             "workflow": {
                 "kind": node.kind,
                 "capability": node.capability,
@@ -1362,6 +1605,19 @@ def _to_plan_node(
         source_id=None,
         draft=kind == "source",
     )
+
+
+def _compiled_node_params(node: WorkflowProjectNode) -> dict[str, object]:
+    params = dict(node.params)
+    if not _is_managed_runtime_package(node):
+        return params
+    compat_runtime = params.get("compatRuntime")
+    if isinstance(compat_runtime, dict):
+        safe_runtime = dict(compat_runtime)
+        safe_runtime.pop("sourceContent", None)
+        safe_runtime.pop("ephemeralGrants", None)
+        params["compatRuntime"] = safe_runtime
+    return params
 
 
 def _plan_ports_for_node(

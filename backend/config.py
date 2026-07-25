@@ -17,6 +17,10 @@ class Settings(BaseSettings):
     app_env: Literal["development", "staging", "production"] = "development"
     debug: bool = False
     secret_key: str = "change-me-in-production"
+    # Fernet key used to encrypt provider credentials at rest. Keep this
+    # stable after providers have been saved, or their stored API keys cannot
+    # be decrypted on the next process start.
+    credential_encryption_key: str = ""
 
     # Database
     database_url: str = "sqlite+aiosqlite:///./opencli_admin.db"
@@ -129,6 +133,9 @@ class Settings(BaseSettings):
     # Collect timeouts (seconds)
     # opencli subprocess execution timeout (local mode and agent-side)
     opencli_timeout: int = 120
+    # Pinned Graphon compatibility sidecar used for Dify DSL inspection/runs.
+    dify_graphon_runtime_url: str = "http://localhost:8095"
+    dify_graphon_timeout_seconds: float = 15.0
     # Managed acquisition runtime. The commit/version are code-owned pins;
     # this path merely locates the installed checkout on every platform.
     ohmyopencli_root: str = "/opt/ohmyopencli"

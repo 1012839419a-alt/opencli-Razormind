@@ -1,5 +1,4 @@
 import type { WorkflowProject } from "./schema"
-import { workflowRequestAuthHeaders } from "./request-auth"
 
 type ApiResponse<T> = {
   success?: boolean
@@ -8,7 +7,21 @@ type ApiResponse<T> = {
   message?: string
 }
 
-export type WorkflowRunStatus = "queued" | "running" | "partial" | "blocked" | "completed" | "failed"
+export type WorkflowRunStatus =
+  | "queued"
+  | "running"
+  | "partial"
+  | "partial_success"
+  | "blocked"
+  | "completed"
+  | "failed"
+
+export type WorkflowRunTrigger = {
+  kind: "manual" | "ai" | "schedule" | "webhook"
+  triggerNodeId?: string
+  requestId?: string
+  idempotencyKey?: string
+}
 
 export type WorkflowNodeRunEventType =
   | "queued"
@@ -197,6 +210,15 @@ export type WorkflowRunStreamReplay = {
   projection: WorkflowRunProjection | null
 }
 
+export function inferWorkflowRunTrigger(project: WorkflowProject): WorkflowRunTrigger {
+  const scheduleNode = project.nodes.find(
+    (node) => node.kind === "schedule" && node.capability === "trigger",
+  )
+  return scheduleNode
+    ? { kind: "schedule", triggerNodeId: scheduleNode.id }
+    : { kind: "manual" }
+}
+
 export async function startWorkflowRun(
   project: WorkflowProject,
   options: {
@@ -205,13 +227,14 @@ export async function startWorkflowRun(
     traceId?: string
     packageNodeId?: string
     sourceOutputs?: Record<string, Array<Record<string, unknown>>>
+    trigger?: WorkflowRunTrigger
   } = {},
 ): Promise<WorkflowRunProjection> {
   const response = await fetch("/api/workflow/run", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      ...workflowRequestAuthHeaders(options.authorization),
+      ...(options.authorization ? { Authorization: options.authorization } : {}),
     },
     body: JSON.stringify({
       project,
@@ -219,6 +242,7 @@ export async function startWorkflowRun(
       ...(options.traceId ? { traceId: options.traceId } : {}),
       ...(options.packageNodeId ? { packageNodeId: options.packageNodeId } : {}),
       ...(options.sourceOutputs ? { sourceOutputs: options.sourceOutputs } : {}),
+      trigger: options.trigger ?? inferWorkflowRunTrigger(project),
     }),
   })
   return readApiResponse(response, "Workflow run failed")
@@ -230,7 +254,7 @@ export async function fetchWorkflowRunProjection(
 ): Promise<WorkflowRunProjection> {
   const response = await fetch(workflowRunEndpoint(runId), {
     headers: {
-      ...workflowRequestAuthHeaders(options.authorization),
+      ...(options.authorization ? { Authorization: options.authorization } : {}),
     },
     cache: "no-store",
   })
@@ -243,7 +267,7 @@ export async function fetchWorkflowRunCheckpoint(
 ): Promise<WorkflowRunCheckpoint> {
   const response = await fetch(`${workflowRunEndpoint(runId)}/checkpoint`, {
     headers: {
-      ...workflowRequestAuthHeaders(options.authorization),
+      ...(options.authorization ? { Authorization: options.authorization } : {}),
     },
     cache: "no-store",
   })
@@ -268,7 +292,7 @@ export async function queryWorkflowRunTrace(
   const suffix = search.size > 0 ? `?${search.toString()}` : ""
   const response = await fetch(`${workflowRunEndpoint(runId)}/trace${suffix}`, {
     headers: {
-      ...workflowRequestAuthHeaders(options.authorization),
+      ...(options.authorization ? { Authorization: options.authorization } : {}),
     },
     cache: "no-store",
   })
@@ -293,7 +317,7 @@ export async function fetchWorkflowRunEvents(
   const suffix = search.size > 0 ? `?${search.toString()}` : ""
   const response = await fetch(`${workflowRunEndpoint(runId)}/events${suffix}`, {
     headers: {
-      ...workflowRequestAuthHeaders(options.authorization),
+      ...(options.authorization ? { Authorization: options.authorization } : {}),
     },
     cache: "no-store",
   })
@@ -309,7 +333,7 @@ export async function continueWorkflowRunWithSourceOutputs(
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      ...workflowRequestAuthHeaders(options.authorization),
+      ...(options.authorization ? { Authorization: options.authorization } : {}),
     },
     body: JSON.stringify({ sourceOutputs }),
   })
@@ -320,18 +344,27 @@ export async function replayWorkflowRunEventStream(
   runId: string,
   options: { authorization?: string | null } = {},
 ): Promise<WorkflowRunStreamReplay> {
-  const response = await fetch(`${workflowRunEndpoint(runId)}/events/stream`, {
-    headers: {
-      ...workflowRequestAuthHeaders(options.authorization),
-    },
-    cache: "no-store",
-  })
-  if (!response.ok) {
-    const payload = (await response.json().catch(() => null)) as { message?: string; error?: string } | null
-    throw new Error(payload?.message ?? payload?.error ?? `Workflow event stream failed (${response.status})`)
+  const retryDelays = [0, 75, 200, 500]
+  for (const [index, delay] of retryDelays.entries()) {
+    if (delay > 0) {
+      await new Promise((resolve) => setTimeout(resolve, delay))
+    }
+    const response = await fetch(`${workflowRunEndpoint(runId)}/events/stream`, {
+      headers: {
+        ...(options.authorization ? { Authorization: options.authorization } : {}),
+      },
+      cache: "no-store",
+    })
+    if (response.ok) {
+      const text = await response.text()
+      return parseWorkflowRunEventStream(text)
+    }
+    if (response.status !== 404 || index === retryDelays.length - 1) {
+      const payload = (await response.json().catch(() => null)) as { message?: string; error?: string } | null
+      throw new Error(payload?.message ?? payload?.error ?? `Workflow event stream failed (${response.status})`)
+    }
   }
-  const text = await response.text()
-  return parseWorkflowRunEventStream(text)
+  throw new Error("Workflow event stream replay exhausted")
 }
 
 export async function fetchWorkflowEvidenceBatches(

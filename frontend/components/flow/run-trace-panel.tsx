@@ -1,11 +1,16 @@
 "use client"
 
-import { useMemo, useState } from "react"
-import { Activity, Boxes, Loader2, Play, RotateCcw } from "lucide-react"
+import { useEffect, useMemo, useRef, useState } from "react"
+import { Activity, Boxes, FileInput, Loader2, Play, RotateCcw } from "lucide-react"
 import { getApiAuthToken } from "@/lib/api/auth-token"
 import { useFlowStore } from "@/lib/flow/store"
+import { fetchWorkflowCapabilities } from "@/lib/workflow/backend-capabilities"
 import { compileWorkflowProject, type WorkflowCompileResponse } from "@/lib/workflow/backend-compile"
-import { traceOpenCLIHDAWorkflow, type WorkflowOpenCLIHDATraceResponse } from "@/lib/workflow/backend-opencli-hda-trace"
+import {
+  findOpenCLIHDAWorkflowPackageNodeId,
+  traceOpenCLIHDAWorkflow,
+  type WorkflowOpenCLIHDATraceResponse,
+} from "@/lib/workflow/backend-opencli-hda-trace"
 import {
   fetchWorkflowEvidenceBatchDetail,
   fetchWorkflowEvidenceBatchProjection,
@@ -17,12 +22,23 @@ import {
   type WorkflowEvidenceBatchSummary,
   type WorkflowNodeRunEvent,
   type WorkflowRunProjection,
+  type WorkflowRunStatus,
 } from "@/lib/workflow/backend-runs"
+import { fetchWorkflowToolCapabilities } from "@/lib/workflow/backend-tool-capabilities"
+import {
+  buildNativeIntelligencePreviewEvidence,
+  findNativeIntelligenceWorkflowPackageNodeId,
+  type NativeIntelligencePreviewEvidence,
+} from "@/lib/workflow/native-intelligence-preview"
+import { formatNativeIntelligenceResultPreview } from "@/lib/workflow/native-intelligence-result-preview"
 import { applyRuntimeNodePatches, buildRuntimeNodePatches } from "@/lib/workflow/runtime-bridge"
+import type { WorkflowProject } from "@/lib/workflow/schema"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
+import { Textarea } from "@/components/ui/textarea"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { cn } from "@/lib/utils"
 
 type RealRunState =
@@ -32,11 +48,11 @@ type RealRunState =
   | { status: "error"; projection: WorkflowRunProjection | null; events: WorkflowNodeRunEvent[]; error: string }
 
 type BackendPreviewState =
-  | { status: "idle"; compile: null; trace: null; error: null }
-  | { status: "running"; compile: WorkflowCompileResponse | null; trace: WorkflowOpenCLIHDATraceResponse | null; error: null }
-  | { status: "ready"; compile: WorkflowCompileResponse; trace: WorkflowOpenCLIHDATraceResponse | null; error: null }
-  | { status: "blocked"; compile: WorkflowCompileResponse; trace: WorkflowOpenCLIHDATraceResponse | null; error: null }
-  | { status: "error"; compile: WorkflowCompileResponse | null; trace: WorkflowOpenCLIHDATraceResponse | null; error: string }
+  | { status: "idle"; compile: null; trace: null; native: null; error: null }
+  | { status: "running"; compile: WorkflowCompileResponse | null; trace: WorkflowOpenCLIHDATraceResponse | null; native: NativeIntelligencePreviewEvidence | null; error: null }
+  | { status: "ready"; compile: WorkflowCompileResponse; trace: WorkflowOpenCLIHDATraceResponse | null; native: NativeIntelligencePreviewEvidence | null; error: null }
+  | { status: "blocked"; compile: WorkflowCompileResponse; trace: WorkflowOpenCLIHDATraceResponse | null; native: NativeIntelligencePreviewEvidence | null; error: null }
+  | { status: "error"; compile: WorkflowCompileResponse | null; trace: WorkflowOpenCLIHDATraceResponse | null; native: NativeIntelligencePreviewEvidence | null; error: string }
 
 type EvidenceBatchState = {
   status: "idle" | "loading" | "ready" | "error"
@@ -47,12 +63,34 @@ type EvidenceBatchState = {
   error: string | null
 }
 
+const INSPECTABLE_NATIVE_ACTIONS = new Set([
+  "simulation.timeline",
+  "simulation.stats",
+  "interviews.history",
+  "report.progress",
+  "report.read",
+  "report.ask",
+  "report.answers",
+])
+
 function SectionCaption({ children }: { children: React.ReactNode }) {
   return <p className="font-mono text-[9px] uppercase tracking-[0.2em] text-muted-foreground/70">{children}</p>
 }
 
-export function RunTracePanel() {
+const RUN_STATUS_LABELS: Record<WorkflowRunStatus, string> = {
+  queued: "排队中",
+  running: "运行中",
+  partial: "处理中",
+  partial_success: "部分成功",
+  blocked: "已阻止",
+  completed: "成功",
+  failed: "失败",
+}
+
+export function RunTracePanel({ runRequestId = 0 }: { runRequestId?: number }) {
+  const runButtonRef = useRef<HTMLButtonElement>(null)
   const workflowProject = useFlowStore((state) => state.workflowProject)
+  const selectedNodeId = useFlowStore((state) => state.nodes.find((node) => node.selected)?.id ?? null)
   const nodeCount = useFlowStore((state) => state.nodes.length)
   const edgeCount = useFlowStore((state) => state.edges.length)
   const setNodes = useFlowStore((state) => state.setNodes)
@@ -60,7 +98,7 @@ export function RunTracePanel() {
   const applyWorkflowRunProjection = useFlowStore((state) => state.applyWorkflowRunProjection)
   const applyWorkflowEvidenceBatchProjection = useFlowStore((state) => state.applyWorkflowEvidenceBatchProjection)
   const [runState, setRunState] = useState<RealRunState>({ status: "idle", projection: null, events: [], error: null })
-  const [backendState, setBackendState] = useState<BackendPreviewState>({ status: "idle", compile: null, trace: null, error: null })
+  const [backendState, setBackendState] = useState<BackendPreviewState>({ status: "idle", compile: null, trace: null, native: null, error: null })
   const [evidenceState, setEvidenceState] = useState<EvidenceBatchState>({
     status: "idle",
     projection: null,
@@ -69,6 +107,15 @@ export function RunTracePanel() {
     selectedBatchId: null,
     error: null,
   })
+  const [importNodeId, setImportNodeId] = useState("")
+  const [importOutputText, setImportOutputText] = useState("[\n  {\n    \"title\": \"Imported example\",\n    \"url\": \"https://example.com/item\"\n  }\n]")
+  const [importError, setImportError] = useState<string | null>(null)
+
+  const outputInputNodes = useMemo(() => collectOutputInputNodes(workflowProject), [workflowProject])
+  const selectedSourceId = outputInputNodes.some((node) => node.id === selectedNodeId) ? selectedNodeId : null
+  const effectiveImportNodeId = outputInputNodes.some((node) => node.id === importNodeId)
+    ? importNodeId
+    : selectedSourceId ?? outputInputNodes[0]?.id ?? ""
 
   const projection = runState.projection
   const errors = projection?.errors ?? []
@@ -82,12 +129,12 @@ export function RunTracePanel() {
   const isRunning = runState.status === "running"
   const isBackendRunning = backendState.status === "running"
 
-  const runBackendWorkflow = async () => {
+  const runBackendWorkflow = async (sourceOutputs?: Record<string, Array<Record<string, unknown>>>) => {
     setRunState((current) => ({ status: "running", projection: current.projection, events: current.events, error: null }))
     try {
       const token = getApiAuthToken()
       const authorization = token ? `Bearer ${token}` : null
-      const started = await startWorkflowRun(workflowProject, { authorization })
+      const started = await startWorkflowRun(workflowProject, { authorization, sourceOutputs })
       applyWorkflowRunProjection(started)
       setRunState({ status: "running", projection: started, events: [], error: null })
 
@@ -108,6 +155,32 @@ export function RunTracePanel() {
       }))
     }
   }
+
+  const runImportedOutput = async () => {
+    if (!effectiveImportNodeId) {
+      setImportError("当前工作流没有可接收导入输出的输入节点。")
+      return
+    }
+    try {
+      const decoded: unknown = JSON.parse(importOutputText)
+      const items = Array.isArray(decoded)
+        ? decoded
+        : decoded && typeof decoded === "object" && Array.isArray((decoded as { items?: unknown }).items)
+          ? (decoded as { items: unknown[] }).items
+          : null
+      if (!items || !items.every((item) => item && typeof item === "object" && !Array.isArray(item))) {
+        throw new Error("输出必须是对象数组，或形如 { \"items\": [...] }。")
+      }
+      setImportError(null)
+      await runBackendWorkflow({ [effectiveImportNodeId]: items as Array<Record<string, unknown>> })
+    } catch (error) {
+      setImportError(error instanceof Error ? error.message : "导入输出格式无效")
+    }
+  }
+
+  useEffect(() => {
+    if (runRequestId > 0) runButtonRef.current?.click()
+  }, [runRequestId])
 
   const loadEvidenceBatchResults = async (runId: string, authorization: string | null) => {
     setEvidenceState((current) => ({ ...current, status: "loading", error: null, detail: null, selectedBatchId: null }))
@@ -153,18 +226,46 @@ export function RunTracePanel() {
   }
 
   const runBackendPreview = async () => {
-    setBackendState((current) => ({ status: "running", compile: current.compile, trace: current.trace, error: null }))
+    setBackendState((current) => ({ status: "running", compile: current.compile, trace: current.trace, native: current.native, error: null }))
     try {
       const token = getApiAuthToken()
       const authorization = token ? `Bearer ${token}` : null
-      const compile = await compileWorkflowProject(workflowProject, { authorization })
-      const trace = compile.valid ? await traceOpenCLIHDAWorkflow(workflowProject, { authorization }) : null
+      const nativePackageNodeId = findNativeIntelligenceWorkflowPackageNodeId(workflowProject)
+      const [compile, nativeDependencies] = await Promise.all([
+        compileWorkflowProject(workflowProject, { authorization }),
+        nativePackageNodeId
+          ? Promise.all([
+              fetchWorkflowCapabilities({ authorization }),
+              fetchWorkflowToolCapabilities({ authorization }),
+            ])
+          : Promise.resolve(null),
+      ])
+      const openCLIPackageNodeId = findOpenCLIHDAWorkflowPackageNodeId(workflowProject)
+      const trace = compile.valid && openCLIPackageNodeId
+        ? await traceOpenCLIHDAWorkflow(workflowProject, {
+            authorization,
+            packageNodeId: openCLIPackageNodeId,
+          })
+        : null
+      const native = nativeDependencies
+        ? buildNativeIntelligencePreviewEvidence({
+            project: workflowProject,
+            compile,
+            capabilities: nativeDependencies[0],
+            tools: nativeDependencies[1].tools,
+          })
+        : null
       const patches = buildRuntimeNodePatches({ compile, trace })
       setNodes((nodes) => applyRuntimeNodePatches(nodes, patches))
       setBackendState({
-        status: compile.valid && (trace === null || trace.valid) ? "ready" : "blocked",
+        status: compile.valid
+          && (trace === null || trace.valid)
+          && (native === null || native.status === "ready")
+          ? "ready"
+          : "blocked",
         compile,
         trace,
+        native,
         error: null,
       })
     } catch (error) {
@@ -172,6 +273,7 @@ export function RunTracePanel() {
         status: "error",
         compile: current.compile,
         trace: current.trace,
+        native: current.native,
         error: error instanceof Error ? error.message : "Backend runtime preview failed",
       }))
     }
@@ -179,7 +281,7 @@ export function RunTracePanel() {
 
   const resetRun = () => {
     setRunState({ status: "idle", projection: null, events: [], error: null })
-    setBackendState({ status: "idle", compile: null, trace: null, error: null })
+    setBackendState({ status: "idle", compile: null, trace: null, native: null, error: null })
     setEvidenceState({
       status: "idle",
       projection: null,
@@ -208,11 +310,11 @@ export function RunTracePanel() {
             </p>
           </div>
           <Badge variant={runState.status === "error" ? "destructive" : "outline"} className="font-mono uppercase">
-            {projection?.status ?? runState.status}
+            {projection ? RUN_STATUS_LABELS[projection.status] : runState.status}
           </Badge>
         </div>
         <div className="mt-3 grid grid-cols-[1fr_1fr_auto] gap-2">
-          <Button size="sm" onClick={runBackendWorkflow} disabled={isRunning || isBackendRunning}>
+          <Button ref={runButtonRef} size="sm" onClick={() => void runBackendWorkflow()} disabled={isRunning || isBackendRunning}>
             {isRunning ? <Loader2 className="size-3.5 animate-spin" /> : <Play className="size-3.5" />}
             Run
           </Button>
@@ -230,6 +332,20 @@ export function RunTracePanel() {
             <span className="sr-only">Reset run trace</span>
           </Button>
         </div>
+        <details className="mt-3 rounded-md border bg-card/50 p-2.5" open={Boolean(selectedSourceId)}>
+          <summary className="flex cursor-pointer items-center gap-2 font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
+            <FileInput className="size-3.5" />导入节点输出
+          </summary>
+          <div className="mt-2.5 space-y-2">
+            <p className="text-[11px] leading-relaxed text-muted-foreground">把真实或测试 JSON 输出注入一个源节点，再启动同一条原生运行链路；不会改写节点配置。</p>
+            {outputInputNodes.length ? <Select value={effectiveImportNodeId} onValueChange={(value) => setImportNodeId(value ?? "")}><SelectTrigger className="h-8 text-xs"><SelectValue placeholder="选择输入节点" /></SelectTrigger><SelectContent>{outputInputNodes.map((node) => <SelectItem key={node.id} value={node.id}>{node.label}</SelectItem>)}</SelectContent></Select> : null}
+            <Textarea value={importOutputText} onChange={(event) => setImportOutputText(event.target.value)} rows={5} className="font-mono text-[10px]" aria-label="导入节点输出 JSON" />
+            {importError ? <p className="text-[11px] text-destructive">{importError}</p> : null}
+            <Button size="sm" variant="outline" className="w-full" onClick={() => void runImportedOutput()} disabled={!outputInputNodes.length || isRunning || isBackendRunning}>
+              <FileInput className="size-3.5" />导入输出并运行
+            </Button>
+          </div>
+        </details>
       </div>
 
       <ScrollArea className="min-h-0 flex-1">
@@ -286,13 +402,14 @@ export function RunTracePanel() {
             </>
           ) : null}
 
-          {backendState.compile || backendState.trace ? (
+          {backendState.compile || backendState.trace || backendState.native ? (
             <>
               <Separator />
               <BackendRuntimePreview
                 status={backendState.status}
                 compile={backendState.compile}
                 trace={backendState.trace}
+                native={backendState.native}
               />
             </>
           ) : null}
@@ -300,6 +417,40 @@ export function RunTracePanel() {
       </ScrollArea>
     </aside>
   )
+}
+
+type OutputInputNode = { id: string; label: string }
+
+function collectOutputInputNodes(project: WorkflowProject): OutputInputNode[] {
+  const inputNodes: OutputInputNode[] = []
+  for (const node of project.nodes) {
+    if (canReceiveImportedOutput(node)) inputNodes.push({ id: node.id, label: nodeLabel(node) })
+    for (const internalNode of node.internals?.nodes ?? []) {
+      const parsed = readWorkflowProjectNode(internalNode)
+      if (parsed && canReceiveImportedOutput(parsed)) {
+        inputNodes.push({ id: `${node.id}::${parsed.id}`, label: `${nodeLabel(node)} / ${nodeLabel(parsed)}` })
+      }
+    }
+  }
+  return inputNodes
+}
+
+function canReceiveImportedOutput(node: WorkflowProject["nodes"][number]): boolean {
+  return node.kind === "source" || node.capability === "fetch" || Array.isArray(node.params.sources)
+}
+
+function readWorkflowProjectNode(value: unknown): WorkflowProject["nodes"][number] | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null
+  const candidate = value as Record<string, unknown>
+  return typeof candidate.id === "string" && typeof candidate.kind === "string" && typeof candidate.capability === "string"
+    && candidate.params && typeof candidate.params === "object" && !Array.isArray(candidate.params)
+    ? candidate as WorkflowProject["nodes"][number]
+    : null
+}
+
+function nodeLabel(node: WorkflowProject["nodes"][number]): string {
+  const label = node.ui?.label
+  return typeof label === "string" && label.trim() ? label : node.id
 }
 
 function EvidenceBatchWorkbench({
@@ -485,6 +636,39 @@ function RealRunProjection({
 
 function RunEventCard({ event }: { event: WorkflowNodeRunEvent }) {
   const itemCount = event.batch?.itemCount ?? 0
+  const sample = Array.isArray(event.details.sampleOutputs)
+    ? readRecord(event.details.sampleOutputs[0])
+    : null
+  const native = sample?.action ? sample : event.details
+  const nativeAction = typeof native.action === "string" ? native.action : null
+  const domainState = typeof native.state === "string"
+    ? native.state
+    : typeof native.domainState === "string"
+      ? native.domainState
+      : null
+  const sessionId = typeof native.sessionId === "string" ? native.sessionId : null
+  const command = typeof native.command === "string" ? native.command : null
+  const artifactIds = Array.isArray(native.artifactIds)
+    ? native.artifactIds.filter((value): value is string => typeof value === "string")
+    : []
+  const provenance = readRecord(native.provenance)
+  const nativeResult = native.result
+  const result = readRecord(native.result)
+  const artifacts = Array.isArray(result?.artifacts)
+    ? result.artifacts.map(readRecord).filter((value): value is Record<string, unknown> => Boolean(value))
+    : []
+  const simulated = artifacts.some((artifact) => artifact.simulated === true)
+  const groundingIds = artifacts.flatMap((artifact) =>
+    Array.isArray(artifact.groundingArtifactIds)
+      ? artifact.groundingArtifactIds.filter(
+          (value): value is string => typeof value === "string",
+        )
+      : [],
+  )
+  const nativeResultPreview =
+    nativeAction && INSPECTABLE_NATIVE_ACTIONS.has(nativeAction) && nativeResult !== undefined
+      ? formatNativeIntelligenceResultPreview(nativeResult)
+      : null
   return (
     <div className="rounded-md border bg-card p-2.5">
       <div className="flex items-center justify-between gap-2">
@@ -503,6 +687,37 @@ function RunEventCard({ event }: { event: WorkflowNodeRunEvent }) {
           {event.message ?? event.blockReason?.message}
         </p>
       ) : null}
+      {nativeAction || command || domainState || sessionId || artifactIds.length ? (
+        <div className="mt-2 rounded-sm border bg-background/70 p-2 font-mono text-[9px] text-muted-foreground">
+          <div className="flex flex-wrap gap-x-2 gap-y-1">
+            {nativeAction ? <span>action {nativeAction}</span> : null}
+            {command ? <span>transition {command}</span> : null}
+            {domainState ? <span>state {domainState}</span> : null}
+            {provenance?.credentialFree === true ? <span>credential-free</span> : null}
+            {provenance?.offline === true ? <span>offline</span> : null}
+            {simulated ? <span>simulated</span> : null}
+          </div>
+          {sessionId ? <p className="mt-1 truncate">session {sessionId}</p> : null}
+          {artifactIds.length ? (
+            <p className="mt-1 truncate" title={artifactIds.join(", ")}>
+              artifacts {artifactIds.join(", ")}
+            </p>
+          ) : null}
+          {groundingIds.length ? (
+            <p className="mt-1 truncate" title={groundingIds.join(", ")}>
+              grounding {groundingIds.join(", ")}
+            </p>
+          ) : null}
+          {nativeResultPreview ? (
+            <div className="mt-2">
+              <p className="mb-1 uppercase">result</p>
+              <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-all rounded-sm border bg-card p-2 text-[9px] leading-relaxed text-foreground">
+                {nativeResultPreview}
+              </pre>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
     </div>
   )
 }
@@ -511,10 +726,12 @@ function BackendRuntimePreview({
   status,
   compile,
   trace,
+  native,
 }: {
   status: BackendPreviewState["status"]
   compile: WorkflowCompileResponse | null
   trace: WorkflowOpenCLIHDATraceResponse | null
+  native: NativeIntelligencePreviewEvidence | null
 }) {
   const runtimeNodes = compile?.plan?.runtime.nodes ?? []
   const boundCount = runtimeNodes.filter((node) => Boolean(readRecord(node.runtime.binding))).length
@@ -524,6 +741,10 @@ function BackendRuntimePreview({
   }).length
   const dispatches = trace?.dispatches ?? []
   const errors = [...(compile?.errors ?? []), ...(trace?.errors ?? [])]
+  const nativeBlockedCount = native?.status === "blocked"
+    ? Math.max(native.blockedActions.length, 1)
+    : 0
+  const blockedCount = errors.length + missingParameterCount + nativeBlockedCount
 
   return (
     <div className="space-y-3">
@@ -557,17 +778,52 @@ function BackendRuntimePreview({
           {
             key: "missing",
             label: "Blocked",
-            value: `${errors.length + missingParameterCount}`,
-            tone: errors.length + missingParameterCount === 0 ? "good" : "warn",
+            value: `${blockedCount}`,
+            tone: blockedCount === 0 ? "good" : "warn",
           },
           {
             key: "mode",
             label: "Mode",
-            value: trace?.dispatch?.mode ?? compile?.plan?.runtime.execution_mode ?? "preview",
+            value: native ? "native-preview" : trace?.dispatch?.mode ?? compile?.plan?.runtime.execution_mode ?? "preview",
             tone: "neutral",
           },
         ]}
       />
+
+      {native ? (
+        <div className="rounded-md border bg-card p-3" aria-label="Native Intelligence Preview">
+          <div className="flex items-center justify-between gap-2">
+            <SectionCaption>Native Intelligence Preview</SectionCaption>
+            <Badge variant={native.status === "ready" ? "secondary" : "outline"} className="font-mono text-[9px] uppercase">
+              {native.status}
+            </Badge>
+          </div>
+          <div className="mt-2 grid grid-cols-2 gap-2 font-mono text-[10px] text-muted-foreground">
+            <span>{native.actions.length}/{native.expectedActionCount} actions</span>
+            <span className="text-right">{native.compiledNodeIds.length} compiled nodes</span>
+            <span>readiness {native.readiness.status}</span>
+            <span className="text-right">dispatch none · mutation none</span>
+          </div>
+          <div className="mt-3 max-h-52 space-y-1.5 overflow-auto">
+            {native.actions.map((action) => (
+              <div key={action.action} className="flex items-center justify-between gap-2 rounded-sm border bg-background px-2 py-1.5 font-mono text-[10px]">
+                <span className="min-w-0 truncate text-foreground">{action.action}</span>
+                <span className={action.status === "runnable" ? "text-[#4ade80]" : "text-[#d97706]"}>
+                  {action.status}
+                </span>
+              </div>
+            ))}
+          </div>
+          {native.missingReasons.length > 0 ? (
+            <div className="mt-3 rounded-sm border border-[#d97706]/30 bg-[#d97706]/10 p-2 font-mono text-[9px] text-[#d97706]">
+              {native.missingReasons.join(" · ")}
+            </div>
+          ) : null}
+          <p className="mt-2 text-[10px] leading-relaxed text-muted-foreground">
+            Capability/readiness evidence only. Preview does not execute or mutate an intelligence session.
+          </p>
+        </div>
+      ) : null}
 
       {trace ? (
         <div className="rounded-md border bg-card p-3">

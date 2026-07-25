@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState, type RefObject } from "react"
 import { useReactFlow, getNodesBounds, getViewportForBounds } from "@xyflow/react"
 import { toPng } from "html-to-image"
 import {
@@ -22,6 +22,8 @@ import {
   SlidersHorizontal,
   Play,
   Bot,
+  BrainCircuit,
+  Database,
   ListTree,
   Magnet,
   Scissors,
@@ -32,6 +34,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
@@ -46,12 +49,13 @@ import {
   exportReactFlowToWorkflowMermaid,
   exportReactFlowToWorkflowMarkdown,
   exportReactFlowToWorkflowOpml,
-  importWorkflowJsonToReactFlow,
+  importWorkflowJsonToReactFlowManaged,
   importWorkflowMermaidToReactFlow,
 } from "@/lib/workflow/io"
 import { cn } from "@/lib/utils"
 import { MAX_WORKFLOW_NODE_DEPTH, workflowNodeDepthFromNetworkStack, workflowNodeLayerAtDepth } from "@/lib/workflow/node-hierarchy"
 import { COLLECTION_WORKFLOW_PROJECT } from "@/lib/workflow/collection-pipeline"
+import type { WorkflowWorkbenchMode } from "./workflow-workbench-panel"
 
 function downloadText(filename: string, data: string, type: string) {
   const blob = new Blob([data], { type })
@@ -84,7 +88,7 @@ function IconAction({
             variant="ghost"
             size="icon"
             className={cn(
-              "size-7 text-muted-foreground hover:text-foreground",
+              "size-11 text-muted-foreground hover:text-foreground",
               active && "bg-accent text-foreground",
             )}
             onClick={onClick}
@@ -115,6 +119,10 @@ export function CommandStrip({
   onToggleAgentDrawer,
   nodeManagementOpen,
   onToggleNodeManagement,
+  workbenchMode,
+  onChangeWorkbenchMode,
+  importInputRef,
+  documentState,
 }: {
   onOpenPalette: () => void
   onExported?: (msg: string) => void
@@ -130,8 +138,13 @@ export function CommandStrip({
   onToggleAgentDrawer?: () => void
   nodeManagementOpen?: boolean
   onToggleNodeManagement?: () => void
+  workbenchMode?: WorkflowWorkbenchMode | null
+  onChangeWorkbenchMode?: (mode: WorkflowWorkbenchMode | null) => void
+  importInputRef?: RefObject<HTMLInputElement | null>
+  documentState?: "loading" | "saving" | "saved" | "error" | "conflict"
 }) {
-  const fileInputRef = useRef<HTMLInputElement>(null)
+  const localFileInputRef = useRef<HTMLInputElement>(null)
+  const fileInputRef = importInputRef ?? localFileInputRef
   const { getNodes } = useReactFlow()
 
   const undo = useFlowStore((s) => s.undo)
@@ -162,6 +175,20 @@ export function CommandStrip({
   const clearDrawings = useFlowStore((s) => s.clearDrawings)
 
   const isDirty = canUndo
+  const persistenceLabel = documentState
+    ? {
+        loading: "加载中",
+        saving: "保存中",
+        saved: "已保存",
+        error: "保存失败",
+        conflict: "保存冲突",
+      }[documentState]
+    : isDirty
+      ? "未保存"
+      : "已保存"
+  const persistenceNeedsAttention = documentState
+    ? documentState === "saving" || documentState === "error" || documentState === "conflict"
+    : isDirty
   const [shareUrlLoaded, setShareUrlLoaded] = useState(false)
 
   useEffect(() => {
@@ -286,14 +313,19 @@ export function CommandStrip({
       const file = e.target.files?.[0]
       if (!file) return
       const reader = new FileReader()
-      reader.onload = () => {
+      reader.onload = async () => {
         const raw = reader.result as string
-        const workflow = importWorkflowJsonToReactFlow(raw)
+        const workflow = await importWorkflowJsonToReactFlowManaged(raw)
         if (workflow.ok) {
           importWorkflowProject(workflow.project)
+          const difyReport = workflow.report?.source === "dify" ? workflow.report : undefined
           onExported?.(
             workflow.format === "n8n"
               ? `已翻译 n8n workflow：${workflow.report?.nodeCount ?? workflow.project.nodes.length} 节点 / ${workflow.report?.edgeCount ?? workflow.project.edges.length} 连线`
+              : workflow.format === "dify"
+                ? difyReport?.runtimeSource === "backend"
+                  ? `已导入 Dify workflow：${difyReport.nodeCount} 节点，${difyReport.executable ? "可执行" : `${difyReport.blockers.length} 个阻塞项`}`
+                  : "已导入 Dify 结构预览；Graphon 检查不可用，当前不可执行"
               : "已导入 canonical workflow",
           )
           return
@@ -333,7 +365,7 @@ export function CommandStrip({
           <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
             <span>{nodeCount} 个节点</span>
             <span>·</span>
-            <span className={cn(isDirty && "text-[#ff7a17]")}>{isDirty ? "未保存" : "已保存"}</span>
+            <span className={cn(persistenceNeedsAttention && "text-[#ff7a17]")}>{persistenceLabel}</span>
           </div>
         </div>
       </nav>
@@ -345,8 +377,14 @@ export function CommandStrip({
         <span>{networkDepth === 1 ? networkLayer.description : networkDepth < MAX_WORKFLOW_NODE_DEPTH ? "双击节点继续展开内部网络" : networkLayer.description}</span>
       </div>
 
+      <div className="hidden shrink-0 items-center rounded-lg border bg-card/60 p-1 xl:flex" aria-label="画布工作视图">
+        <button type="button" aria-pressed={!workbenchMode} onClick={() => onChangeWorkbenchMode?.(null)} className={cn("min-h-8 rounded-md px-2.5 text-[11px] transition-colors", !workbenchMode ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground")}>编排</button>
+        <button type="button" aria-pressed={workbenchMode === "data"} onClick={() => onChangeWorkbenchMode?.("data")} className={cn("flex min-h-8 items-center gap-1.5 rounded-md px-2.5 text-[11px] transition-colors", workbenchMode === "data" ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground")}><Database className="size-3.5" />数据</button>
+        <button type="button" aria-pressed={workbenchMode === "evidence"} onClick={() => onChangeWorkbenchMode?.("evidence")} className={cn("flex min-h-8 items-center gap-1.5 rounded-md px-2.5 text-[11px] transition-colors", workbenchMode === "evidence" ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground")}><BrainCircuit className="size-3.5" />证据</button>
+      </div>
+
       <div className="flex shrink-0 items-center gap-1.5">
-        <Button variant="outline" size="sm" className="h-8 gap-1.5 rounded-lg" onClick={onOpenPalette}>
+        <Button variant="outline" size="sm" className="min-h-11 gap-1.5 rounded-lg" onClick={onOpenPalette}>
           <span className="text-base leading-none">＋</span>
           <span className="hidden sm:inline">添加节点</span>
         </Button>
@@ -363,7 +401,7 @@ export function CommandStrip({
         <Button
           variant="outline"
           size="sm"
-          className="hidden h-8 gap-1.5 rounded-lg md:flex"
+          className="hidden min-h-11 gap-1.5 rounded-lg md:flex"
           onClick={() => {
             save()
             onExported?.("工作流已保存到本地")
@@ -373,7 +411,7 @@ export function CommandStrip({
           保存
         </Button>
 
-        <Button size="sm" className="h-8 gap-1.5 rounded-lg" onClick={onToggleRunTrace}>
+        <Button size="sm" className="min-h-11 gap-1.5 rounded-lg" onClick={onToggleRunTrace}>
           <Play className="size-3.5" />
           试运行
         </Button>
@@ -384,7 +422,7 @@ export function CommandStrip({
               render={
                 <DropdownMenuTrigger
                   render={
-                    <Button variant="ghost" size="icon" className="size-8 rounded-lg" aria-label="更多工具" />
+                    <Button variant="ghost" size="icon" className="size-11 rounded-lg" aria-label="更多工具" />
                   }
                 />
               }
@@ -394,140 +432,164 @@ export function CommandStrip({
             <TooltipContent>更多工具</TooltipContent>
           </Tooltip>
           <DropdownMenuContent align="end" className="max-h-[76vh] w-64 overflow-y-auto">
-            <DropdownMenuLabel>工作流</DropdownMenuLabel>
-            <DropdownMenuItem
-              onClick={() => {
-                reset()
-                onExported?.("已恢复默认封包网络")
-              }}
-            >
-              <RotateCcw className="size-3.5" />
-              恢复默认封包网络
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              onClick={() => {
-                importWorkflowProject(COLLECTION_WORKFLOW_PROJECT)
-                onExported?.("已载入完整采集示例")
-              }}
-            >
-              <ListTree className="size-3.5" />
-              载入完整采集示例
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              onClick={() => {
-                const ok = load()
-                onExported?.(ok ? "已恢复上次保存" : "没有找到保存记录")
-              }}
-            >
-              <FolderOpen className="size-3.5" />
-              恢复上次保存
-            </DropdownMenuItem>
+            <DropdownMenuGroup>
+              <DropdownMenuLabel>工作流</DropdownMenuLabel>
+              <DropdownMenuItem
+                onClick={() => {
+                  reset()
+                  onExported?.("已恢复默认封包网络")
+                }}
+              >
+                <RotateCcw className="size-3.5" />
+                恢复默认封包网络
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={() => {
+                  importWorkflowProject(COLLECTION_WORKFLOW_PROJECT)
+                  onExported?.("已载入完整采集示例")
+                }}
+              >
+                <ListTree className="size-3.5" />
+                载入完整采集示例
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={() => {
+                  const ok = load()
+                  onExported?.(ok ? "已恢复上次保存" : "没有找到保存记录")
+                }}
+              >
+                <FolderOpen className="size-3.5" />
+                恢复上次保存
+              </DropdownMenuItem>
+            </DropdownMenuGroup>
             <DropdownMenuSeparator />
 
-            <DropdownMenuLabel>编辑与视图</DropdownMenuLabel>
-            <DropdownMenuItem onClick={() => setToolMode("select")}>
-              <Magnet className="size-3.5" />
-              选择工具 {toolMode === "select" ? "· 当前" : ""}
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => setToolMode(toolMode === "scissors" ? "select" : "scissors")}>
-              <Scissors className="size-3.5" />
-              剪断连线 {toolMode === "scissors" ? "· 当前" : ""}
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => setToolMode(toolMode === "draw" ? "select" : "draw")}>
-              <Eraser className="size-3.5" />
-              画布标注 {toolMode === "draw" ? "· 当前" : ""}
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={clearDrawings}>
-              <Eraser className="size-3.5" />
-              清除画布标注
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => void autoLayout("LR", "elk", true)}>
-              <Network className="size-3.5" />
-              自动整理节点
-            </DropdownMenuItem>
-            <DropdownMenuItem disabled={selectedNodeCount === 0} onClick={selectActiveComponent}>
-              <Network className="size-3.5" />
-              选择当前流程分支
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => setCanvasSetting("snapToHelperLines", !snapToHelperLines)}>
-              <Magnet className="size-3.5" />
-              {snapToHelperLines ? "关闭节点吸附" : "开启节点吸附"}
-            </DropdownMenuItem>
+            <DropdownMenuGroup>
+              <DropdownMenuLabel>编辑与视图</DropdownMenuLabel>
+              <DropdownMenuItem onClick={() => setToolMode("select")}>
+                <Magnet className="size-3.5" />
+                选择工具 {toolMode === "select" ? "· 当前" : ""}
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setToolMode(toolMode === "scissors" ? "select" : "scissors")}>
+                <Scissors className="size-3.5" />
+                剪断连线 {toolMode === "scissors" ? "· 当前" : ""}
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setToolMode(toolMode === "draw" ? "select" : "draw")}>
+                <Eraser className="size-3.5" />
+                画布标注 {toolMode === "draw" ? "· 当前" : ""}
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={clearDrawings}>
+                <Eraser className="size-3.5" />
+                清除画布标注
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => void autoLayout("LR", "elk", true)}>
+                <Network className="size-3.5" />
+                自动整理节点
+              </DropdownMenuItem>
+              <DropdownMenuItem disabled={selectedNodeCount === 0} onClick={selectActiveComponent}>
+                <Network className="size-3.5" />
+                选择当前流程分支
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setCanvasSetting("snapToHelperLines", !snapToHelperLines)}>
+                <Magnet className="size-3.5" />
+                {snapToHelperLines ? "关闭节点吸附" : "开启节点吸附"}
+              </DropdownMenuItem>
+            </DropdownMenuGroup>
             <DropdownMenuSeparator />
 
-            <DropdownMenuLabel>运行与设置</DropdownMenuLabel>
-            <DropdownMenuItem onClick={onToggleRunTrace}>
-              <Play className="size-3.5" />
-              {runTraceOpen ? "关闭运行记录" : "运行记录与结果"}
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={onToggleProjectSettings}>
-              <SlidersHorizontal className="size-3.5" />
-              {projectSettingsOpen ? "关闭工作流设置" : "工作流设置"}
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={onToggleAgentDrawer}>
-              <Bot className="size-3.5" />
-              {agentDrawerOpen ? "关闭 AI 修改建议" : "AI 修改建议"}
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={onToggleNodeManagement}>
-              <ListTree className="size-3.5" />
-              {nodeManagementOpen ? "关闭节点状态" : "节点状态"}
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={onToggleCollab}>
-              <Users className="size-3.5" />
-              {collab ? "关闭多人协作" : "开启多人协作"}
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={onToggleSettings}>
-              <Settings className="size-3.5" />
-              {settingsOpen ? "关闭画布设置" : "画布设置"}
-            </DropdownMenuItem>
+            <DropdownMenuGroup>
+              <DropdownMenuLabel>运行与设置</DropdownMenuLabel>
+              <DropdownMenuItem onClick={onToggleRunTrace}>
+                <Play className="size-3.5" />
+                {runTraceOpen ? "关闭运行记录" : "运行记录与结果"}
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => onChangeWorkbenchMode?.(workbenchMode === "data" ? null : "data")}>
+                <Database className="size-3.5" />
+                {workbenchMode === "data" ? "关闭节点数据工作台" : "节点数据工作台"}
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => onChangeWorkbenchMode?.(workbenchMode === "evidence" ? null : "evidence")}>
+                <BrainCircuit className="size-3.5" />
+                {workbenchMode === "evidence" ? "关闭逻辑证据工作台" : "逻辑证据工作台"}
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={onToggleProjectSettings}>
+                <SlidersHorizontal className="size-3.5" />
+                {projectSettingsOpen ? "关闭工作流设置" : "工作流设置"}
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={onToggleAgentDrawer}>
+                <Bot className="size-3.5" />
+                {agentDrawerOpen ? "关闭 AI 修改建议" : "AI 修改建议"}
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={onToggleNodeManagement}>
+                <ListTree className="size-3.5" />
+                {nodeManagementOpen ? "关闭节点状态" : "节点状态"}
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={onToggleCollab}>
+                <Users className="size-3.5" />
+                {collab ? "关闭多人协作" : "开启多人协作"}
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={onToggleSettings}>
+                <Settings className="size-3.5" />
+                {settingsOpen ? "关闭画布设置" : "画布设置"}
+              </DropdownMenuItem>
+            </DropdownMenuGroup>
             <DropdownMenuSeparator />
 
-            <DropdownMenuLabel>导入与导出</DropdownMenuLabel>
-            <DropdownMenuItem onClick={() => fileInputRef.current?.click()}>
-              <Upload className="size-3.5" />
-              导入 JSON / Mermaid / n8n
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={exportJson}>
-              <Download className="size-3.5" />
-              导出 JSON
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={exportImage}>
-              <ImageDown className="size-3.5" />
-              导出 PNG
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => void exportServerImage()}>
-              <ServerCog className="size-3.5" />
-              导出 SVG
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={exportMermaid}>
-              <FileCode2 className="size-3.5" />
-              导出 Mermaid
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={exportCanvas}>
-              <FileCode2 className="size-3.5" />
-              导出 Obsidian Canvas
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={exportOpml}>
-              <FileCode2 className="size-3.5" />
-              导出 OPML
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={exportMarkdown}>
-              <FileCode2 className="size-3.5" />
-              导出 Markdown
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => void copyShareUrl()}>
-              <Link2 className="size-3.5" />
-              {shareUrlLoaded ? "重新复制分享链接" : "复制分享链接"}
-            </DropdownMenuItem>
+            <DropdownMenuGroup>
+              <DropdownMenuLabel>导入与导出</DropdownMenuLabel>
+              <DropdownMenuItem onClick={() => fileInputRef.current?.click()}>
+                <Upload className="size-3.5" />
+                导入 Dify / n8n / JSON / Mermaid
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={exportJson}>
+                <Download className="size-3.5" />
+                导出 JSON
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={exportImage}>
+                <ImageDown className="size-3.5" />
+                导出 PNG
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => void exportServerImage()}>
+                <ServerCog className="size-3.5" />
+                导出 SVG
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={exportMermaid}>
+                <FileCode2 className="size-3.5" />
+                导出 Mermaid
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={exportCanvas}>
+                <FileCode2 className="size-3.5" />
+                导出 Obsidian Canvas
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={exportOpml}>
+                <FileCode2 className="size-3.5" />
+                导出 OPML
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={exportMarkdown}>
+                <FileCode2 className="size-3.5" />
+                导出 Markdown
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => void copyShareUrl()}>
+                <Link2 className="size-3.5" />
+                {shareUrlLoaded ? "重新复制分享链接" : "复制分享链接"}
+              </DropdownMenuItem>
+            </DropdownMenuGroup>
             <DropdownMenuSeparator />
-            <DropdownMenuLabel className="text-[10px] font-normal text-muted-foreground">
-              {nodeCount} 个节点 · {edgeCount} 条连线 · {selectedNodeCount + selectedEdgeCount} 个已选
-            </DropdownMenuLabel>
+            <DropdownMenuGroup>
+              <DropdownMenuLabel className="text-[10px] font-normal text-muted-foreground">
+                {nodeCount} 个节点 · {edgeCount} 条连线 · {selectedNodeCount + selectedEdgeCount} 个已选
+              </DropdownMenuLabel>
+            </DropdownMenuGroup>
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
 
-      <input ref={fileInputRef} type="file" accept="application/json,.json,.mmd,text/plain" className="hidden" onChange={onImportFile} />
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="application/json,application/yaml,text/yaml,.json,.yaml,.yml,.mmd,text/plain"
+        className="hidden"
+        onChange={onImportFile}
+      />
     </header>
   )
 }

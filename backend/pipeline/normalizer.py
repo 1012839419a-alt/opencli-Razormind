@@ -30,14 +30,20 @@ _AUTHOR_KEYS = (
     "user",     # generic
 )
 _DATE_KEYS = (
-    "created_at",   # twitter, bilibili
+    "displayTime",  # announcements: exact display/publication clock
+    "create_time",  # douyin epoch seconds
     "published_at", # generic
+    "publishedAt",  # generic camelCase
     "published",    # generic RSS
+    "sent_at",      # generic delivery timestamp
+    "sentAt",       # generic camelCase delivery timestamp
+    "created_at",   # twitter, bilibili (source-owned timestamp)
+    "time",         # v2ex notifications, finance news
+    "timestamp",    # generic
+    "noticeDate",   # announcements date-only fallback
     "date",         # reuters
-    "time",         # v2ex notifications
     "listed",       # linkedin
     "updated",      # xiaoyuzhou podcast
-    "timestamp",    # generic
 )
 
 # All known standard field names (lowercase) — used to decide what goes into extra_*
@@ -52,8 +58,10 @@ def _first(item: dict, keys: tuple[str, ...]) -> str:
     lower_map = {k.lower(): v for k, v in item.items()}
     for key in keys:
         val = lower_map.get(key.lower())
-        if val and isinstance(val, str):
+        if isinstance(val, str) and val:
             return val
+        if isinstance(val, int | float) and not isinstance(val, bool):
+            return str(val)
     return ""
 
 
