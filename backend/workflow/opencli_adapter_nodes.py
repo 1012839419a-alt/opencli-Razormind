@@ -219,7 +219,10 @@ def _load_opencli_catalog() -> tuple[dict[str, Any], ...]:
             result.stderr[:500],
         )
         return ()
-    raw = result.stdout or ""
+    raw = result.stdout
+    if not raw:
+        logger.warning("opencli list -f json produced no stdout")
+        return ()
     json_start = next((idx for idx, char in enumerate(raw) if char in ("[", "{")), None)
     if json_start is None:
         logger.warning("opencli list -f json produced no JSON")

@@ -8,6 +8,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
+from backend.workflow.tool_capabilities import resolve_workflow_tool_capability
 from backend.schemas.workflow import (
     WorkflowAdapterBinding,
     WorkflowPackageInternals,
@@ -33,6 +34,18 @@ NATIVE_INTELLIGENCE_FIXTURE_PATH = (
     Path(__file__).parent / "fixtures" / "native_intelligence_offline.json"
 )
 
+
+
+def _with_registry_pin(tool_capability: dict) -> dict:
+    """Stamp the registry's version pin onto a materialized tool reference.
+
+    Materialized package nodes are assembled from templates, not authored in
+    Studio, so they have no operator-provided pin; without the registry pin the
+    plan-level pin gate rejects every materialized package."""
+    tool = resolve_workflow_tool_capability(str(tool_capability.get("id") or ""))
+    if tool is not None and tool.versionPin is not None:
+        tool_capability["versionPin"] = tool.versionPin.model_dump()
+    return tool_capability
 
 def materialize_hda_templates(project: WorkflowProject) -> WorkflowProject:
     """Expand known package templates before validation/compile.
@@ -230,13 +243,13 @@ def _tool_package_internals(
         kind="action",
         capability="store",
         params={
-            "toolCapability": {
+            "toolCapability": _with_registry_pin({
                 "id": tool_id,
                 "executor": {
                     "mode": executor_mode,
                     "params": {},
                 },
-            },
+            }),
             "toolParams": tool_params,
         },
         ui={
@@ -306,13 +319,13 @@ def _native_intelligence_lifecycle_internals() -> WorkflowPackageInternals:
             kind="action",
             capability="store",
             params={
-                "toolCapability": {
+                "toolCapability": _with_registry_pin({
                     "id": f"tool.intelligence.native.{action}",
                     "executor": {
                         "mode": "native_intelligence",
                         "params": {"action": action},
                     },
-                },
+                }),
                 "toolParams": params,
             },
             ui={

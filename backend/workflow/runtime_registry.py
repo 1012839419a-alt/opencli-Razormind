@@ -52,13 +52,13 @@ SOURCE_FETCH_BINDING_ID = "workflow.source.fetch"
 SOURCE_POOL_BINDING_ID = "workflow.source-pool.parallel-fanout"
 COLLECTION_OUTPUT_BINDING_ID = "workflow.collection-output.items"
 NORMALIZE_BINDING_ID = "workflow.transform.normalize"
-DEDUPE_BINDING_ID = "workflow.transform.dedupe"
 DATA_OPERATOR_CATALOG_BINDINGS = {
     "intelligence.data.generate": "workflow.data.generate",
     "intelligence.data.filter": "workflow.data.filter",
     "intelligence.data.evaluate": "workflow.data.evaluate",
     "intelligence.data.refine": "workflow.data.refine",
 }
+DEDUPE_BINDING_ID = "workflow.transform.dedupe"
 MERGE_BINDING_ID = "workflow.flow.merge"
 ROUTER_ROUTE_BINDING_ID = "workflow.router.route"
 RECORD_ACCEPTANCE_BINDING_ID = "workflow.gate.record-acceptance"
@@ -426,52 +426,6 @@ def _resolve_normalize_node(node: WorkflowProjectNode, *, node_id: str) -> dict[
     }
 
 
-def _resolve_dedupe_node(node: WorkflowProjectNode, *, node_id: str) -> dict[str, Any]:
-    identity_fields = node.params.get("identityFields")
-    if not isinstance(identity_fields, list) or not all(
-        isinstance(field, str) and field.strip() for field in identity_fields
-    ):
-        identity_fields = ["title", "source"]
-    window_config: dict[str, Any]
-    if "window" in node.params:
-        # Studio owns the duration-string syntax. Preserve it verbatim so the
-        # RecordHygiene interface can validate supported and invalid values.
-        window_config = {"window": node.params.get("window")}
-    else:
-        window_hours = _read_number(node.params.get("windowHours"))
-        if window_hours is None:
-            window_seconds = _read_number(node.params.get("windowSeconds"))
-            window_hours = window_seconds / 3600 if window_seconds is not None else 24.0
-        window_config = {
-            "windowHours": window_hours,
-            "windowSeconds": window_hours * 3600,
-        }
-    return {
-        "binding": {
-            "status": "bound",
-            "binding_id": DEDUPE_BINDING_ID,
-            "runtime": "workflow",
-            "channel": "transform",
-            "input": {
-                "key": _read_string(node.params.get("key")) or "title+source+publishedAt",
-                **window_config,
-                "identityFields": identity_fields,
-                "eventTimeField": (
-                    _read_string(node.params.get("eventTimeField")) or "publishedAt"
-                ),
-                "strategy": _read_string(node.params.get("strategy")) or "keep_first",
-                "inputPort": "recordCandidate[]",
-                "outputPort": "recordCandidate[]",
-            },
-        },
-        "dedupe": {
-            "node_id": node_id,
-            "candidate_port": "recordCandidate[]",
-            "evidence_ports": ["rejected[]", "metrics"],
-        },
-    }
-
-
 def _resolve_data_operator_node(
     node: WorkflowProjectNode,
     *,
@@ -553,6 +507,52 @@ def _resolve_data_operator_node(
             "operator_kind": spec.kind,
             "pack_id": spec.pack_id,
             "pack_version": spec.pack_version,
+        },
+    }
+
+
+def _resolve_dedupe_node(node: WorkflowProjectNode, *, node_id: str) -> dict[str, Any]:
+    identity_fields = node.params.get("identityFields")
+    if not isinstance(identity_fields, list) or not all(
+        isinstance(field, str) and field.strip() for field in identity_fields
+    ):
+        identity_fields = ["title", "source"]
+    window_config: dict[str, Any]
+    if "window" in node.params:
+        # Studio owns the duration-string syntax. Preserve it verbatim so the
+        # RecordHygiene interface can validate supported and invalid values.
+        window_config = {"window": node.params.get("window")}
+    else:
+        window_hours = _read_number(node.params.get("windowHours"))
+        if window_hours is None:
+            window_seconds = _read_number(node.params.get("windowSeconds"))
+            window_hours = window_seconds / 3600 if window_seconds is not None else 24.0
+        window_config = {
+            "windowHours": window_hours,
+            "windowSeconds": window_hours * 3600,
+        }
+    return {
+        "binding": {
+            "status": "bound",
+            "binding_id": DEDUPE_BINDING_ID,
+            "runtime": "workflow",
+            "channel": "transform",
+            "input": {
+                "key": _read_string(node.params.get("key")) or "title+source+publishedAt",
+                **window_config,
+                "identityFields": identity_fields,
+                "eventTimeField": (
+                    _read_string(node.params.get("eventTimeField")) or "publishedAt"
+                ),
+                "strategy": _read_string(node.params.get("strategy")) or "keep_first",
+                "inputPort": "recordCandidate[]",
+                "outputPort": "recordCandidate[]",
+            },
+        },
+        "dedupe": {
+            "node_id": node_id,
+            "candidate_port": "recordCandidate[]",
+            "evidence_ports": ["rejected[]", "metrics"],
         },
     }
 
@@ -781,6 +781,7 @@ def _resolve_external_tool_capability(node: WorkflowProjectNode, *, node_id: str
             "channel": "tool-capability",
             "input": {
                 "toolCapabilityId": capability_id,
+                "toolCapabilityVersionPin": tool.versionPin.model_dump() if tool.versionPin else None,
                 "executorMode": executor_mode,
                 "toolLabel": tool.label,
                 "inputPort": (
@@ -806,6 +807,7 @@ def _resolve_external_tool_capability(node: WorkflowProjectNode, *, node_id: str
             "binding_id": resolved_binding_id,
             "dispatch": "opencli_admin_tool_capability",
             "toolCapabilityId": capability_id,
+            "versionPin": tool.versionPin.model_dump() if tool.versionPin else None,
         },
     }
 
@@ -1079,16 +1081,6 @@ def _is_normalize_node(node: WorkflowProjectNode) -> bool:
     )
 
 
-def _is_dedupe_node(node: WorkflowProjectNode) -> bool:
-    if (node.internals and node.internals.nodes) or node.topicCollapse or node.miniNetwork:
-        return False
-    return _read_string(
-        (node.ui or {}).get("catalogId")
-    ) == "intelligence.processing.dedupe" or (
-        node.kind == "agent" and node.capability == "dedupe"
-    )
-
-
 def _is_data_operator_node(node: WorkflowProjectNode) -> bool:
     return _data_operator_kind(node) is not None
 
@@ -1097,6 +1089,16 @@ def _data_operator_kind(node: WorkflowProjectNode) -> str | None:
     catalog_id = _read_string((node.ui or {}).get("catalogId"))
     binding_id = DATA_OPERATOR_CATALOG_BINDINGS.get(catalog_id or "")
     return binding_id.rsplit(".", 1)[-1] if binding_id else None
+
+
+def _is_dedupe_node(node: WorkflowProjectNode) -> bool:
+    if (node.internals and node.internals.nodes) or node.topicCollapse or node.miniNetwork:
+        return False
+    return _read_string(
+        (node.ui or {}).get("catalogId")
+    ) == "intelligence.processing.dedupe" or (
+        node.kind == "agent" and node.capability == "dedupe"
+    )
 
 
 def _is_merge_node(node: WorkflowProjectNode) -> bool:

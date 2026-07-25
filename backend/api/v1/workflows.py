@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.api.v1.dify_imports import get_dify_graphon_client
 from backend.database import get_db
+from backend.models.workflow_run import WorkflowRun as WorkflowRunRow
 from backend.schemas import workflow as workflow_schemas
 from backend.schemas.common import ApiResponse
 from backend.services.plugin_registry_service import list_plugin_installations
@@ -40,6 +41,12 @@ from backend.workflow.runtime_registry import WEBHOOK_TRIGGER_BINDING_ID
 from backend.workflow.tool_capabilities import list_workflow_tool_capabilities
 
 router = APIRouter(prefix="/workflows", tags=["workflows"])
+
+
+async def _reject_workspace_scoped_run(db: AsyncSession, run_id: str) -> None:
+    run = await db.get(WorkflowRunRow, run_id)
+    if run is not None and run.workflow_version_id is not None:
+        raise HTTPException(status_code=404, detail="Workflow run not found")
 
 
 @router.post("/compile", response_model=ApiResponse[workflow_schemas.WorkflowCompileResponse])
@@ -353,6 +360,7 @@ async def get_run_projection(
 ) -> ApiResponse[workflow_schemas.WorkflowRunProjection]:
     """Return the latest node-state projection for a workflow run."""
 
+    await _reject_workspace_scoped_run(db, run_id)
     projection = await get_workflow_run_projection(run_id, session=db)
     if projection is None:
         raise HTTPException(status_code=404, detail="Workflow run not found")
@@ -451,6 +459,7 @@ async def continue_run_with_source_outputs(
 ) -> ApiResponse[workflow_schemas.WorkflowRunProjection]:
     """Continue a workflow run after external source batches arrive."""
 
+    await _reject_workspace_scoped_run(db, run_id)
     projection = await continue_workflow_run_with_source_outputs(run_id, body, session=db)
     if projection is None:
         raise HTTPException(status_code=404, detail="Workflow run not found")
@@ -467,6 +476,7 @@ async def get_run_checkpoint(
 ) -> ApiResponse[workflow_schemas.WorkflowRunCheckpoint]:
     """Return the latest durable checkpoint descriptor for a workflow run."""
 
+    await _reject_workspace_scoped_run(db, run_id)
     checkpoint = await get_workflow_run_checkpoint(run_id, session=db)
     if checkpoint is None:
         raise HTTPException(status_code=404, detail="Workflow run not found")
@@ -490,6 +500,7 @@ async def query_run_trace(
 ) -> ApiResponse[workflow_schemas.WorkflowRunTraceResponse]:
     """Query persisted run trace events with a checkpoint for resume/replay."""
 
+    await _reject_workspace_scoped_run(db, run_id)
     projection = await get_workflow_run_projection(run_id, session=db)
     checkpoint = await get_workflow_run_checkpoint(run_id, session=db)
     events = await list_workflow_run_events(
@@ -537,6 +548,7 @@ async def get_run_events(
 ) -> ApiResponse[list[workflow_schemas.WorkflowNodeRunEvent]]:
     """Replay node-level events already emitted for a workflow run."""
 
+    await _reject_workspace_scoped_run(db, run_id)
     events = await list_workflow_run_events(
         run_id,
         session=db,
@@ -557,6 +569,7 @@ async def stream_run_events(
 ) -> Response:
     """Replay node events as a server-sent event response."""
 
+    await _reject_workspace_scoped_run(db, run_id)
     projection = await get_workflow_run_projection(run_id, session=db)
     events = await list_workflow_run_events(run_id, session=db)
     if projection is None or events is None:

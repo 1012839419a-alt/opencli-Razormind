@@ -1,4 +1,4 @@
-# OpenCLI Admin Context
+# OpenCLI Operations Platform
 
 OpenCLI is an Agent-driven data collection, processing, and delivery platform. OpenCLI Admin is its operator console for turning recurring data needs into observable, governable work.
 
@@ -207,8 +207,9 @@ _Avoid_: only Workflow, default graph, treating every branch as a separate Workf
 **Collection Operations**: The operator-facing domain for deciding what should be collected, how Workflows process it, when Automations run, what recently happened, what was delivered, and which failures or actions currently require attention. Its surfaces are distributed through the Project's Orchestration, Operations, and Data navigation rather than a competing all-in-one console.
 _Avoid_: Source Workflow Workbench
 
-**Collection Canvas**: The primary authoring surface for collection logic — the graph IS the program. Defining and editing what a source collects happens on the canvas; forms survive only as the inspector panel of a selected node. Absorbs the old Diagnostic Canvas's troubleshooting role.
-_Avoid_: Diagnostic Canvas (superseded 2026-07-02: canvas promoted from secondary diagnostic view to primary authoring surface), Topology Workbench as the authoritative authoring name, form-first configuration
+**Agent**:
+A workspace-owned, reusable definition of an intelligent worker, independent of any project-specific runtime or permission assignment.
+_Avoid_: Bot, runtime
 
 **Node Eligibility**:
 The rule that only an executable data or control-flow step may be represented as a Workflow node. Sources, transforms, Agent steps, branches, approvals, and Sinks may be nodes; Projects, Connections, Destinations, Plugin Installations, Agent definitions, Execution Resources, Automations, Runs, Deliveries, Work Items, permissions, and governance policies remain referenced or produced domain objects.
@@ -243,8 +244,9 @@ _Avoid_: fixed four-level hierarchy, hidden scope change, treating scope as runt
 **Live Collection View**: The operator-facing view of an active collection run as it happens, including streamed progress, rendered browser or pipeline state, and run-specific artifacts. It is anchored to a Recent Run, not to the default configuration surface.
 _Avoid_: Static task log, canvas-only monitoring
 
-**Adaptive Run Surface**: The on-demand layout that opens the right Live Collection View panels for the active run type. It should reveal pipeline events, browser or adapter rendering, and artifacts only when they help the operator understand that run.
-_Avoid_: Clock shop, always-on dashboard wall
+**Operations Agent**:
+An Agent that observes the platform, maintains its operation, and proposes evidence-backed improvements within its assigned permissions.
+_Avoid_: External Agent Consumer, unrestricted administrator
 
 **Run Attention Filter**: The Inbox view limited to Runs that require operator intervention, such as review, retry, acknowledgement, or dismissal. It is a filter over the single global Inbox and does not create a second run-specific queue or copy Run state.
 _Avoid_: separate run-specific Inbox, recent tasks table, static run history
@@ -257,28 +259,37 @@ _Avoid_: generic error notification, copied Run state, free-form production shel
 One typed, authorized, confirmed, and audited action available on a Recovery Case. Its preconditions and side-effect safety come from the node capability, Side Effect Contract, checkpoint, and current policy rather than an Agent improvising a command.
 _Avoid_: arbitrary admin command, hidden state edit, recovery without evidence, action that changes the original Run history
 
-### Control
+**Deployment Revision**:
+An immutable state of an Agent Deployment that an enabled Automation pins until an administrator explicitly upgrades it. Emergency suspension and permission revocation remain immediately effective.
+_Avoid_: Latest deployment, live configuration
 
-**Advisory Mode**: The control-loop operating mode in which suggested actions are surfaced to the operator and recorded as evidence, but never executed.
-_Avoid_: dry-run mode, suggestion mode
+**Automation**:
+A project-owned schedule or trigger that starts a specific published Workflow Version using only Agent Deployments authorized for that Project.
+_Avoid_: Workflow, scheduled agent
 
-**Automatic Mode**: The control-loop operating mode in which the Actuator may execute suggestions itself, opened per state class only when accumulated evidence justifies it.
-_Avoid_: autopilot, self-healing mode
+**Collection Request**:
+A user- or Agent-authored statement of the data to acquire, its sources, timeliness, media types, processing, and delivery needs. It is resolved into a Workflow Draft rather than executed by a separate collection engine.
+_Avoid_: Collection Task, source configuration, workflow
 
-**Actuator**: The component that carries out control actions against the collection system. It executes only whitelisted safe actions; everything else it downgrades.
-_Avoid_: executor, auto-fixer
+**Workflow Version**:
+An immutable, published form of a Workflow that an Automation can execute.
+_Avoid_: Latest workflow, draft
 
-**Evidence Ledger**: The durable record of every control suggestion and execution, together with the outcome later judged from post-decision measurements.
-_Avoid_: action log, audit trail
+**Agent Node**:
+A Workflow node whose execution is assigned to one authorized Agent Deployment. Agent assignment belongs to the node, not to the Automation that triggers the Workflow.
+_Avoid_: Automation agent, global agent
 
-**Recovery Rate**: The share of judged suggestions whose triggering state later cleared. It is the quantified basis for opening Automatic Mode.
-_Avoid_: success rate, fix rate
+**Actuator**:
+The mandatory boundary through which an Agent causes a system or external side effect; no Agent may bypass it.
+_Avoid_: Direct action, privileged tool
 
-**Require-Review Downgrade**: The policy that suggestions too dangerous to automate are executed only as "flag the source for human review", never as the suggested action itself.
-_Avoid_: blocked action, action rejection
+**Blocked Run**:
+A Run that cannot safely continue until a policy, permission, or approval condition is resolved. It is resumable and is not a failed Run.
+_Avoid_: Failed run, paused agent
 
-**Control Cycle**: The background loop that periodically measures every source, decides, and — in Automatic Mode — acts. It runs regardless of whether any UI is open.
-_Avoid_: polling-driven control, frontend-triggered control
+**Run**:
+One logical execution of a Workflow Version. Resolving a block or retrying a node continues the same Run with another attempt; explicitly rerunning the whole Workflow creates a new Run.
+_Avoid_: Trace, session, node attempt
 
 ### Workflow
 
@@ -288,8 +299,9 @@ _Avoid_: treating a user request as raw node params, confusing intent with execu
 **Runtime-Aware Workflow Drafting**: The process of translating a Collection Need into a Workflow Draft using the system's known executable capabilities, adapter metadata, and resource resolvers. AI may propose the mapping, but missing capabilities or resources are represented as blocked gaps rather than runnable-looking nodes.
 _Avoid_: AI freely drawing fake capabilities, optimistic runnable projections, silent fallbacks
 
-**Node Capability Mapping**: The audit surface that maps every Canvas-visible node family to its real backend capability, runtime binding, resource dependency, and current wiring status before new nodes are added. It decides whether an existing node can serve a Collection Need, should be exposed as blocked, or should remain design/import-only.
-_Avoid_: hand-rolled replacement nodes, treating palette presence as runtime support, frontend-only capability claims
+**Artifact Link**:
+A Run-specific relationship identifying an Artifact as an input, output, evidence, or attachment.
+_Avoid_: Artifact copy, ownership
 
 **Workflow**:
 A Project-owned node graph containing any number of sources, transforms, Agent steps, controls, merges, and delivery sinks. The Workflow is the executable design; its published versions are what Automations and Runs execute.
@@ -335,8 +347,9 @@ _Avoid_: treating an agent as a Data Source, agent-as-source attribution, generi
 **Tool Capability Node**: A Workflow node that declares an executable tool capability the operator can configure, validate, and bind to a runtime, such as an OpenCLI command, browser action, HTTP request, script runner, site adapter, or normalization step.
 _Avoid_: per-call canvas nodes, trace-as-authoring, hiding executable capability behind an agent prompt
 
-**Tool Call Event**: A runtime evidence event recording one concrete tool invocation, including selected capability, arguments, result, timing, error, and artifacts. It belongs to the trace and evidence ledger, not directly to the Collection Canvas.
-_Avoid_: ToolCallNode on the canvas, turning every agent step into a graph node
+**Signal**:
+A structured, expiring Data Feed record through which an Agent, Workflow, or system publishes information, need, capability, or alert for semantic subscription. Delivery retains the match reason, evidence, visibility, acknowledgement, and feedback.
+_Avoid_: Notification, raw broadcast, Agent message
 
 **Run Checkpoint**: A state snapshot produced at a recoverable boundary during one Run. It references the Workflow Version, Run, node position, state, resources, and artifacts needed for resume, branch, or replay; it is not a Canvas node or part of the Workflow structure.
 _Avoid_: checkpoint-as-node, storing recovery semantics in the Workflow definition, blindly resuming after Workflow changes
@@ -353,8 +366,9 @@ _Avoid_: generic StateNode, invisible state mutation, canvas nodes for every sta
 **Run Trace**: The technical event stream for one Run, including node lifecycle events, tool calls, inputs, outputs, artifact pointers, timing, token use, cost, and errors.
 _Avoid_: treating trace as the authoring graph, using control evidence as a substitute for run execution details
 
-**Control Evidence Entry**: A durable ledger entry for one control suggestion, approval, downgrade, execution, or outcome judgment. It explains why a control action was allowed or withheld and how its later recovery outcome was judged.
-_Avoid_: generic trace event, plain action log, hiding operator approval or recovery judgment
+**Device**:
+A physical machine, virtual machine, browser host, or edge device that contributes execution capacity to the platform.
+_Avoid_: Node, Worker
 
 **Control Suggestion Node**: A Workflow node that produces a control suggestion and supporting evidence, often from an AgentRuntime Node or rule evaluation. It does not execute the action; execution must pass through the Actuator and produce Control Evidence Entries.
 _Avoid_: agent-direct actuator execution, prompt-hidden automation, suggestions that bypass Advisory or Automatic Mode
@@ -371,44 +385,56 @@ _Avoid_: fake compatibility nodes, uncontrolled foreign executors, expanding eve
 **Runtime Capability Mapping**: The translation contract that maps an external runtime's tool calls, state, trace, checkpoints, interrupts, and control suggestions into OpenCLI Admin concepts. It internalizes operational capabilities without pretending every external graph is natively authored as an OpenCLI Workflow.
 _Avoid_: shallow importer, visual-only compatibility, losing external runtime semantics during import
 
-**Managed External Executor**: An external runtime executor, such as a LangGraph, LangChain, or Pi runner, that remains responsible for its own internal graph semantics while executing under OpenCLI Admin runtime binding. It must report inputs, outputs, tool calls, trace, checkpoints, failures, resources, and permissions through Runtime Capability Mapping.
-_Avoid_: uncontrolled foreign executor, executor-owned credentials, executor bypassing Run Trace or Control Evidence
+**Control Session**:
+A time-limited, scope-limited, fully audited interactive terminal session opened by an authorized Control Action. Its commands and outputs are retained as evidence; an Agent receives one only through the same explicit authorization path as a human administrator.
+_Avoid_: Raw SSH, permanent shell access, Actuator bypass
 
-**Registered Tool Capability**: A tool capability that has been registered in OpenCLI Admin's capability catalog before any native or imported runtime can call it. External runtime tools must enter through this catalog so permissions, resources, trace, and validation remain governable.
-_Avoid_: raw external tool invocation, prompt-only tool access, imported runtime private tools
+**Integration Package**:
+A versioned, installable extension that adds collection, processing, delivery, or supporting service capabilities while keeping its upstream project independently upgradeable.
+_Avoid_: Fork, copied dependency, plugin
 
-**Primitive Capability**: A low-level executable ability such as browser click, HTTP request, shell command, file read, or raw OpenCLI command. It is implementation material for packaged capabilities and is granted directly only under explicit policy.
-_Avoid_: exposing low-level primitives as the default agent or canvas interface, unrestricted browser or shell access
+**Managed Integration**:
+An Integration Package whose external service can be deployed, configured, monitored, and upgraded by the platform as part of one system installation.
+_Avoid_: Embedded source code, separately operated service
 
-**Business Capability**: A packaged domain-level tool capability, such as site search, market quote, feed collection, record normalization, or knowledge export. It is the default callable surface for Canvas nodes, AgentRuntime Nodes, and Imported Runtime Graphs, with Primitive Capabilities hidden behind its implementation boundary.
-_Avoid_: forcing operators or imported runtimes to assemble raw browser, HTTP, or shell primitives for common collection work
+**Integration Catalog**:
+The platform's curated set of official Integration Packages together with locally imported custom packages. It is not a public community marketplace.
+_Avoid_: Marketplace, package store
 
-**Capability Catalog**: The authoritative registry of Business Capabilities and governed Primitive Capabilities. Canvas nodes, AgentRuntime Nodes, and Imported Runtime Graphs reference catalog entries rather than inventing tools inline.
-_Avoid_: frontend-only tool palettes, prompt-defined tools, imported runtime tools without registry ownership
+**Local-first Data Plane**:
+The platform boundary in which collected data, derived artifacts, indexes, and processing remain in the user's environment by default, while explicit cloud processing remains supported and visible.
+_Avoid_: Offline-only system, local model only
 
-**Capability Manifest**: A package-owned declaration of the Business Capabilities and governed Primitive Capabilities it provides, including schemas, required resources, permission class, runtime binding, trace mapping, checkpoint support, and probes.
-_Avoid_: frontend-hardcoded capability lists, undocumented adapter affordances, tools inferred only from prompts
+**Verified Capability**:
+A capability that a discovered local or cloud deployment has demonstrated through a runnable Workflow check. Discovery alone does not make a capability available to production nodes.
+_Avoid_: Installed model, advertised feature
 
-**Capability Availability**: The backend-verified current status of a declared capability in this environment, including dependency presence, resource binding, permission readiness, and probe result.
-_Avoid_: assuming manifest presence means runnable, hiding missing resources until execution time
+**Capability Requirement**:
+A hardware- and vendor-neutral requirement declared by a Workflow Node for scheduling, such as browser session, network region, model function, memory, accelerator, or media support. The scheduler matches it only to a compatible Verified Capability.
+_Avoid_: GPU model, fixed Device, machine role
 
 **Capability Gap**: An explicit blocked gap produced when a Workflow or Imported Runtime Graph requires a capability that has no runnable mapping in the Capability Catalog, or whose availability is blocked by schema, dependency, resource, permission, or probe failure.
 _Avoid_: failing import silently, pretending missing tools are runnable, deleting unsupported external graph structure
 
-**Capability Gap Resolution**: The operator workflow for resolving a Capability Gap by mapping to an existing Business Capability, binding resources, granting permissions, selecting a manifest-declared candidate, or running probes. It does not create undocumented capabilities inline; new capabilities enter through package manifests.
-_Avoid_: prompt-defined tool registration, UI-invented tools without manifests, bypassing capability probes or permission classes
+**Source**:
+A Project-owned collection target and scope, such as repositories, accounts, searches, sites, or streams. It references a Connection when authentication is required and is consumed by Workflow Nodes.
+_Avoid_: Connection, credential, integration
 
-**Record Candidate**: A candidate collection result produced by a collection capability before it has been normalized, deduplicated, reviewed, or accepted into the records system.
-_Avoid_: treating every scraped item as an accepted Record, mixing raw artifacts with structured records
+**Inbox**:
+The user-facing view of unresolved requests that require attention or approval. It does not own a separate approval state.
+_Avoid_: Approval database, notification log
 
-**Record**: A normalized collection result accepted into OpenCLI Admin's records system and eligible for search, export, notification, downstream egress, and review workflows.
-_Avoid_: runtime artifact, transient node output, unnormalized scrape result
+**My Work**:
+The personal Inbox view of items for which the current user is the required or assigned next actor.
+_Avoid_: Notifications, all activity, personal backlog
 
-**Record Acceptance Gate**: A Gate Node that decides whether a Record Candidate becomes a Record based on schema completeness, dedupe result, lineage preservation, quality threshold, review policy, and automatic-acceptance rules.
-_Avoid_: normalize-implies-accepted, silently storing raw candidates as records, accepting records without lineage
+**Project Triage**:
+The project-level Inbox view of unresolved items that still need classification, acceptance, dismissal, or conversion into planned work. It remains useful when one person operates the Workspace.
+_Avoid_: My Work, project notifications, issue tracker
 
-**Runtime Artifact**: A non-record output produced during execution, such as a screenshot, HTML snapshot, trace attachment, LLM summary, diagnostic report, or checkpoint blob. It may support evidence or debugging without becoming a Record.
-_Avoid_: forcing every artifact into records, sending diagnostic blobs as business results by default
+**Project Context**:
+The active Project filter and navigation context applied to shared platform modules. A Project aggregates its Workflows, recent results, Data Feeds, Automations, and Triage without duplicating global data-source, run, device, worker, or integration administration.
+_Avoid_: Project admin console, nested workspace, duplicated module
 
 **Artifact Transform Node**: A Transform-family Workflow node that explicitly converts Runtime Artifacts into Record Candidates, Run State, diagnostics, review material, or other typed outputs. Artifacts must pass through a typed transform before entering record or business-result flows.
 _Avoid_: artifact-to-record shortcuts, untyped artifact edges, treating screenshots or HTML as records without extraction
@@ -478,3 +504,87 @@ _Avoid_: fake canvas-only nodes that look real
 
 **Dry-Run Preview**: A backend-executed preview of a Workflow Draft on fixture or explicitly bounded sample data, displayed in the browser and labeled as non-production. It never produces authoritative collection or delivery results; authoritative Runs execute a published Workflow Version.
 _Avoid_: browser-side "real" Runs, split-brain execution, preview with ungoverned external side effects
+
+**External Agent Consumer**:
+An Agent or tool that consumes processed internet data without operating or maintaining the collection platform.
+_Avoid_: Operations Agent, collector
+
+**Agent Session**:
+A continuous Agent conversation that is independent of Run identity. A Run uses a fresh Session by default, while an Automation may explicitly reuse one across Runs.
+_Avoid_: Run, agent process
+
+**Agent Invocation**:
+The participation of an Agent Session in a specific Run and Agent Node execution.
+_Avoid_: Agent Session, Run
+
+**Artifact**:
+An immutable output or evidence object that can be referenced by multiple Runs without being copied or rewritten.
+_Avoid_: Mutable file, run attachment
+
+**Data Feed**:
+A published, permissioned data product with a stable contract through which processed collection results can be queried, subscribed to, replayed, or pushed to external consumers.
+_Avoid_: Workflow output, raw record, delivery channel
+
+**Data Subscription**:
+An independently configured consumer of a Data Feed with its own protocol, filter, cursor, retry, and delivery state. Adding a consumer does not modify or rerun the producing Workflow.
+_Avoid_: Workflow branch, duplicated collection, feed copy
+
+**Query Request**:
+A freshness-bounded request from an Agent or application for existing or newly collected data. It searches eligible Data Feeds and indexes first, triggers an authorized Workflow when data is missing or stale, may stream partial results, and returns provenance rather than inventing missing facts.
+_Avoid_: Chat answer, separate search engine, ungrounded prompt
+
+**Coverage Policy**:
+A Project or Data Feed constraint defining required source classes, regions, languages, time range, and independent-source minimums. Query and collection Nodes continue authorized collection when coverage is insufficient and report remaining gaps explicitly.
+_Avoid_: Search ranking, source list, completeness claim
+
+**Finding**:
+An evidence-backed observation of an anomaly, coverage gap, risk, or optimization opportunity. Policy routes it to the Overview, Inbox, an Agent conversation, or an authorized low-risk Control Action; a Finding is not itself a notification or approval request.
+_Avoid_: Alert notification, Gate Request, Agent opinion
+
+**Collected Record**:
+A captured unit of internet data that preserves its source metadata and original content or media Artifact.
+_Avoid_: Processed result, summary
+
+**Derived Representation**:
+An immutable text, media, or structured form produced from a Collected Record with traceable Run, node, tool, and model provenance.
+_Avoid_: Overwritten record, normalized truth
+
+**Tool**:
+A callable capability supplied by an Integration Package for collection, processing, delivery, or operation.
+_Avoid_: Plugin, node
+
+**Node**:
+The product form through which a Tool participates in a Workflow. A Node may encapsulate multiple internal steps without exposing an additional product concept.
+_Avoid_: HDA, recipe, composite
+
+**Custom Node**:
+A Workspace-owned Node definition created when a user explicitly saves changes to an installed Node's internal implementation. It is reusable across Projects and versioned independently from the installed Node.
+_Avoid_: Modified official node, project node
+
+**Worker**:
+An execution process running on a Device that performs collection, browser, model, or processing work.
+_Avoid_: Device, Node, Agent
+
+**Control Plane**:
+The API and coordination services that own configuration, scheduling, policy, Gate state, Run metadata, and Worker registration. Its web frontend is a client and may be deployed separately.
+_Avoid_: Frontend, management Mac, Worker
+
+**Execution Plane**:
+The pool of authenticated Workers that lease tasks and provide verified browser, collection, model, media, or processing capabilities. Workers may run on desktops, servers, NAS devices, cloud hosts, or edge devices independently of the Control Plane and storage location.
+_Avoid_: Mac cluster, frontend host, SSH fleet
+
+**Worker Connection**:
+The authenticated outbound channel through which a Worker registers, reports health and capabilities, leases tasks, and returns results to the Control Plane. A private overlay network is optional, and SSH is reserved for installation, maintenance, or a governed Control Session rather than routine scheduling.
+_Avoid_: SSH scheduler, LAN trust, network reachability
+
+**Overview**:
+The global operational view organized around Project data production, freshness, failures, Data Feeds, Automations, and cross-project anomalies, with only a small system-wide summary above it.
+_Avoid_: Infrastructure dashboard, second monitoring product, metric wall
+
+**Gate Request**:
+The single pending fact that records why a Run requires approval before it may continue. Approval is limited to the request's exact action, target, parameters, permissions, and validity period.
+_Avoid_: Inbox item, approval notification
+
+**Gate Decision**:
+The single recorded outcome of a Gate Request.
+_Avoid_: Inbox action, run status

@@ -1,6 +1,6 @@
 """Unit tests for backend/worker/tasks.py — celery task retry wiring."""
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -46,7 +46,34 @@ def test_run_scheduled_collection_autoretries_with_backoff():
     assert run_scheduled_collection.retry_jitter is True
 
 
+def test_run_scheduled_collection_uses_same_retry_policy():
+    assert run_scheduled_collection.autoretry_for == run_collection.autoretry_for
+    assert run_scheduled_collection.max_retries == run_collection.max_retries
+    assert run_scheduled_collection.default_retry_delay == run_collection.default_retry_delay
+
+
+def test_scheduled_retries_reuse_celery_request_as_occurrence_id():
+    registered = run_scheduled_collection._get_current_object()
+    registered.push_request(id="occurrence-1", hostname="worker-1")
+
+    async def fake_pipeline(*args, **kwargs):
+        return {"args": args, "kwargs": kwargs}
+
+    try:
+        with patch("backend.pipeline.runner.run_scheduled_pipeline", new=fake_pipeline):
+            result = registered.run("schedule-1", "source-1", {"cursor": "next"})
+    finally:
+        registered.pop_request()
+
+    assert result["kwargs"] == {
+        "occurrence_id": "occurrence-1",
+        "celery_task_id": "occurrence-1",
+        "worker_id": "worker-1",
+    }
+
+
 # ── P1 (test/ops audit): retry-exhausted alert ─────────────────────────────
+
 
 def test_run_collection_uses_alert_on_exhaustion_task_base():
     """The task must actually be wired to the base class that emits the
@@ -54,6 +81,7 @@ def test_run_collection_uses_alert_on_exhaustion_task_base():
     ``run_collection`` is a celery ``PromiseProxy``, so check the registered
     task instance's actual class instead of isinstance on the proxy."""
     from backend.worker.celery_app import celery_app
+
     registered = celery_app.tasks["run_collection"]
     assert isinstance(registered, _AlertOnRetriesExhaustedTask)
 
@@ -68,7 +96,8 @@ async def test_mark_retries_exhausted_sets_task_run_error_detail(db_session):
     from backend.worker.tasks import _mark_retries_exhausted
 
     source = DataSource(
-        name="Retry Exhausted Source", channel_type="rss",
+        name="Retry Exhausted Source",
+        channel_type="rss",
         channel_config={"feed_url": "https://ex.com/feed.xml"},
     )
     db_session.add(source)
@@ -86,12 +115,11 @@ async def test_mark_retries_exhausted_sets_task_run_error_detail(db_session):
     async def fake_emit(run_id, step, message, level="info", detail=None, elapsed_ms=None):
         emitted.append({"run_id": run_id, "level": level, "detail": detail})
 
-    session_factory = MagicMock(side_effect=lambda: db_session)
-
     class _Cm:
-        async def __aenter__(self_inner):
+        async def __aenter__(self):
             return db_session
-        async def __aexit__(self_inner, *exc):
+
+        async def __aexit__(self, *exc):
             return False
 
     with (
@@ -136,7 +164,9 @@ def test_on_failure_emits_signal_when_retries_exhausted():
     def _closing_side_effect(coro):
         coro.close()
 
-    with patch("backend.worker.tasks._run_async", side_effect=_closing_side_effect) as run_async_mock:
+    with patch(
+        "backend.worker.tasks._run_async", side_effect=_closing_side_effect
+    ) as run_async_mock:
         task.on_failure(RuntimeError("boom"), "celery-id-1", ("task-1",), {}, None)
 
     run_async_mock.assert_called_once()

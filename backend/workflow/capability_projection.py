@@ -822,78 +822,6 @@ def _catalog_capabilities(*, dify_runtime_ready: bool) -> list[WorkflowRuntimeCa
     ]
 
 
-def _dify_runtime_ready(installations: list[PluginInstallationRead]) -> bool:
-    return any(
-        installation.id == "bundled:dify-graphon-runtime" and installation.runtime_status == "READY"
-        for installation in installations
-    )
-
-
-def _plugin_catalog_capabilities(
-    installations: list[PluginInstallationRead],
-) -> list[WorkflowRuntimeCapability]:
-    projected: list[WorkflowRuntimeCapability] = []
-    for installation in installations:
-        if installation.bundled:
-            continue
-        for node in installation.node_definitions:
-            kind, capability = _plugin_node_shape(node.family)
-            projected.append(
-                _capability(
-                    id=node.id,
-                    label=node.label,
-                    surface="catalog",
-                    status="blocked" if node.status == "BLOCKED" else "runnable",
-                    backend_available=node.status == "READY",
-                    kind=kind,
-                    capability=capability,
-                    provider=installation.provider_key,
-                    runtime_binding=None,
-                    reason=(
-                        node.lock_reason
-                        or "This plugin capability has no compatible OpenCLI runtime adapter."
-                    ),
-                    missing=(["dify_plugin_runtime_adapter"] if node.status == "BLOCKED" else []),
-                    tags=[
-                        "plugin",
-                        "dify",
-                        node.family,
-                        installation.provider_key,
-                        installation.version,
-                    ],
-                    source="backend.services.plugin_registry_service",
-                    manifest={
-                        "schema": "capability.plugin-projection.v1",
-                        "plugin": {
-                            "installationId": installation.id,
-                            "providerKey": installation.provider_key,
-                            "version": installation.version,
-                            "capabilityId": node.capability_id,
-                            "family": node.family,
-                        },
-                        "canvas": {
-                            "node": True,
-                            "locked": node.locked,
-                            "lockReason": node.lock_reason,
-                        },
-                    },
-                )
-            )
-    return projected
-
-
-def _plugin_node_shape(
-    family: str,
-) -> tuple[WorkflowNodeKind, WorkflowCapability]:
-    if family == "datasource":
-        return "source", "fetch"
-    if family == "trigger":
-        return "schedule", "trigger"
-    if family == "agent_strategy":
-        return "agent", "summarize"
-    return "action", "store"
-
-
 def _data_operator_capabilities() -> list[WorkflowRuntimeCapability]:
     specs_by_kind: dict[str, list[object]] = {}
     for spec in list_data_operator_specs():
@@ -971,6 +899,76 @@ def _data_operator_capabilities() -> list[WorkflowRuntimeCapability]:
             )
         )
     return rows
+def _dify_runtime_ready(installations: list[PluginInstallationRead]) -> bool:
+    return any(
+        installation.id == "bundled:dify-graphon-runtime" and installation.runtime_status == "READY"
+        for installation in installations
+    )
+
+
+def _plugin_catalog_capabilities(
+    installations: list[PluginInstallationRead],
+) -> list[WorkflowRuntimeCapability]:
+    projected: list[WorkflowRuntimeCapability] = []
+    for installation in installations:
+        if installation.bundled:
+            continue
+        for node in installation.node_definitions:
+            kind, capability = _plugin_node_shape(node.family)
+            projected.append(
+                _capability(
+                    id=node.id,
+                    label=node.label,
+                    surface="catalog",
+                    status="blocked" if node.status == "BLOCKED" else "runnable",
+                    backend_available=node.status == "READY",
+                    kind=kind,
+                    capability=capability,
+                    provider=installation.provider_key,
+                    runtime_binding=None,
+                    reason=(
+                        node.lock_reason
+                        or "This plugin capability has no compatible OpenCLI runtime adapter."
+                    ),
+                    missing=(["dify_plugin_runtime_adapter"] if node.status == "BLOCKED" else []),
+                    tags=[
+                        "plugin",
+                        "dify",
+                        node.family,
+                        installation.provider_key,
+                        installation.version,
+                    ],
+                    source="backend.services.plugin_registry_service",
+                    manifest={
+                        "schema": "capability.plugin-projection.v1",
+                        "plugin": {
+                            "installationId": installation.id,
+                            "providerKey": installation.provider_key,
+                            "version": installation.version,
+                            "capabilityId": node.capability_id,
+                            "family": node.family,
+                        },
+                        "canvas": {
+                            "node": True,
+                            "locked": node.locked,
+                            "lockReason": node.lock_reason,
+                        },
+                    },
+                )
+            )
+    return projected
+
+
+def _plugin_node_shape(
+    family: str,
+) -> tuple[WorkflowNodeKind, WorkflowCapability]:
+    if family == "datasource":
+        return "source", "fetch"
+    if family == "trigger":
+        return "schedule", "trigger"
+    if family == "agent_strategy":
+        return "agent", "summarize"
+    return "action", "store"
 
 
 def _manifest(
@@ -1331,6 +1329,7 @@ def _resource_capabilities() -> list[WorkflowRuntimeCapability]:
                 **tool.manifest,
                 "toolCapability": {
                     "id": tool.id,
+                    "versionPin": tool.versionPin.model_dump() if tool.versionPin else None,
                     "inputPorts": [port.model_dump() for port in tool.inputPorts],
                     "outputPorts": [port.model_dump() for port in tool.outputPorts],
                     "executor": tool.executor.model_dump(),

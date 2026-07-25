@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from dataclasses import dataclass
@@ -97,8 +98,8 @@ from backend.workflow.rss_source_executor import (
     execute_workflow_rss_source,
 )
 from backend.workflow.runtime_registry import (
-    COLLECTION_OUTPUT_BINDING_ID,
     DATA_OPERATOR_CATALOG_BINDINGS,
+    COLLECTION_OUTPUT_BINDING_ID,
     DEDUPE_BINDING_ID,
     DIFY_GRAPHON_BINDING_ID,
     EXTERNAL_TOOL_BINDING_ID,
@@ -146,11 +147,31 @@ class _StoredWorkflowRun:
     request: WorkflowRunStartRequest
     projection: WorkflowRunProjection
     events: list[WorkflowNodeRunEvent]
+    workflow_version_id: str | None = None
 
 
 _RUNS: dict[str, _StoredWorkflowRun] = {}
 _DATA_OPERATOR_BINDING_IDS = set(DATA_OPERATOR_CATALOG_BINDINGS.values())
 _LEGACY_DATA_OPERATOR_PACK_VERSION = "1.0.0"
+
+# Per-run_id locks so concurrent requests against the same workflow run
+# serialize their read-modify-write of stored run state/event rows instead
+# of racing (see continue_workflow_run_with_source_outputs). The registry
+# itself is guarded by _RUN_LOCKS_GUARD to avoid a create-or-get race on the
+# dict. Note: this registry is never pruned, so long-lived processes that
+# see many distinct run_ids will accumulate Lock objects (minor memory
+# growth, not a correctness issue).
+_RUN_LOCKS: dict[str, asyncio.Lock] = {}
+_RUN_LOCKS_GUARD = asyncio.Lock()
+
+
+async def _get_run_lock(run_id: str) -> asyncio.Lock:
+    async with _RUN_LOCKS_GUARD:
+        lock = _RUN_LOCKS.get(run_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            _RUN_LOCKS[run_id] = lock
+        return lock
 
 
 def build_opencli_hda_trace(
@@ -248,6 +269,7 @@ async def start_workflow_run(
     *,
     session: AsyncSession | None = None,
     existing_events: list[WorkflowNodeRunEvent] | None = None,
+    workflow_version_id: str | None = None,
     graphon_client: DifyGraphonClient | None = None,
 ) -> WorkflowRunProjection:
     """Create a replayable workflow run projection from a compiled WorkflowProject."""
@@ -302,6 +324,7 @@ async def start_workflow_run(
             projection=projection,
             events=stored_events,
             session=session,
+            workflow_version_id=workflow_version_id,
         )
         return projection
 
@@ -345,6 +368,7 @@ async def start_workflow_run(
             projection=projection,
             events=stored_events,
             session=session,
+            workflow_version_id=workflow_version_id,
         )
         return projection
 
@@ -367,6 +391,7 @@ async def start_workflow_run(
             projection=queued_projection,
             events=prior_events,
             session=session,
+            workflow_version_id=workflow_version_id,
         )
     should_trace_opencli = any(
         _binding_id(node) == OPENCLI_BINDING_ID for node in runtime_nodes
@@ -802,7 +827,11 @@ async def start_workflow_run(
             binding_input = _read_dict(binding.get("input"))
             emitter.emit(node, "started", message="TurboPush publish binding started")
             try:
-                result = execute_turbopush_publish(binding_input)
+                # execute_turbopush_publish uses a synchronous httpx.Client
+                # with a 600s timeout; run it off the event loop thread so a
+                # slow/hung TurboPush endpoint can't freeze the single-worker
+                # server for the whole timeout.
+                result = await asyncio.to_thread(execute_turbopush_publish, binding_input)
             except TurboPushPublishError as exc:
                 reason = WorkflowRunBlockReason(
                     code=exc.code,
@@ -953,9 +982,13 @@ async def start_workflow_run(
                 )
                 await _persist_emitter_events(run_id, emitter, session=session)
                 continue
-            except Exception as exc:
-                binding_id = _binding_id(node)
-                if binding_id in _DATA_OPERATOR_BINDING_IDS:
+            except (IntelligenceStoreError, ValueError) as exc:
+                if _binding_id(node) in _DATA_OPERATOR_BINDING_IDS and not isinstance(
+                    exc, IntelligenceStoreError
+                ):
+                    # Data-operator config/runtime errors must surface with the
+                    # data_operator_execution_failed contract, not the native
+                    # intelligence block shape this handler emits.
                     binding_input = _read_dict(
                         _read_dict(node.runtime.get("binding")).get("input")
                     )
@@ -964,7 +997,7 @@ async def start_workflow_run(
                         message="Data operator execution failed",
                         source="data_operator_runtime",
                         details={
-                            "bindingId": binding_id,
+                            "bindingId": _binding_id(node),
                             "operatorId": binding_input.get("operatorId"),
                             "errorType": type(exc).__name__,
                         },
@@ -978,8 +1011,6 @@ async def start_workflow_run(
                     )
                     await _persist_emitter_events(run_id, emitter, session=session)
                     continue
-                if not isinstance(exc, (IntelligenceStoreError, ValueError)):
-                    raise
                 if session is not None and _is_native_intelligence_node(node):
                     await rollback_session_preserving_primary(session, exc)
                 code = getattr(exc, "code", None) or str(exc) or "native_intelligence_error"
@@ -1014,6 +1045,31 @@ async def start_workflow_run(
                 await _persist_emitter_events(run_id, emitter, session=session)
                 if session is not None and _is_native_intelligence_node(node):
                     await commit_session(session)
+                continue
+            except Exception as exc:
+                if _binding_id(node) not in _DATA_OPERATOR_BINDING_IDS:
+                    raise
+                binding_input = _read_dict(
+                    _read_dict(node.runtime.get("binding")).get("input")
+                )
+                reason = WorkflowRunBlockReason(
+                    code="data_operator_execution_failed",
+                    message="Data operator execution failed",
+                    source="data_operator_runtime",
+                    details={
+                        "bindingId": _binding_id(node),
+                        "operatorId": binding_input.get("operatorId"),
+                        "errorType": type(exc).__name__,
+                    },
+                )
+                emitter.emit(
+                    node,
+                    "failed",
+                    message=reason.message,
+                    block_reason=reason,
+                    details=reason.details,
+                )
+                await _persist_emitter_events(run_id, emitter, session=session)
                 continue
             outputs_by_node[node.id] = output_items
             emitter.emit(
@@ -1239,6 +1295,7 @@ async def start_workflow_run(
         projection=projection,
         events=events,
         session=session,
+        workflow_version_id=workflow_version_id,
     )
     if session is not None:
         stored = await _load_workflow_run(run_id, session=session, cache=False)
@@ -1261,6 +1318,7 @@ async def start_workflow_run(
                 projection=projection,
                 events=stored.events,
                 session=session,
+                workflow_version_id=workflow_version_id,
             )
     return projection
 
@@ -1325,31 +1383,36 @@ async def continue_workflow_run_with_source_outputs(
     *,
     session: AsyncSession | None = None,
 ) -> WorkflowRunProjection | None:
-    stored = (
-        await _load_workflow_run(run_id, session=session)
-        if session is not None
-        else _RUNS.get(run_id)
-    )
-    if stored is None:
-        return None
+    # Hold the per-run_id lock across the read of prior stored state through
+    # the write in _store_workflow_run (invoked inside start_workflow_run).
+    # Without this, two concurrent continuation requests for the same run_id
+    # both read the same prior event list, then each does a delete+reinsert
+    # of WorkflowRunEventRows — last writer wins and the other request's
+    # events are silently dropped.
+    lock = await _get_run_lock(run_id)
+    async with lock:
+        stored = _RUNS.get(run_id) or await _load_workflow_run(run_id, session=session)
+        if stored is None:
+            return None
 
-    merged_outputs = _merge_source_outputs(
-        stored.request.sourceOutputs,
-        body.sourceOutputs,
-    )
-    request = stored.request.model_copy(
-        update={
-            "runId": run_id,
-            "traceId": stored.projection.traceId,
-            "sourceOutputs": merged_outputs,
-        },
-        deep=True,
-    )
-    return await start_workflow_run(
-        request,
-        session=session,
-        existing_events=stored.events,
-    )
+        merged_outputs = _merge_source_outputs(
+            stored.request.sourceOutputs,
+            body.sourceOutputs,
+        )
+        request = stored.request.model_copy(
+            update={
+                "runId": run_id,
+                "traceId": stored.projection.traceId,
+                "sourceOutputs": merged_outputs,
+            },
+            deep=True,
+        )
+        return await start_workflow_run(
+            request,
+            session=session,
+            existing_events=stored.events,
+            workflow_version_id=stored.workflow_version_id,
+        )
 
 
 async def _store_workflow_run(
@@ -1359,6 +1422,7 @@ async def _store_workflow_run(
     projection: WorkflowRunProjection,
     events: list[WorkflowNodeRunEvent],
     session: AsyncSession | None,
+    workflow_version_id: str | None = None,
 ) -> None:
     events_to_mirror = list(events)
     stored_events = list(events)
@@ -1373,6 +1437,7 @@ async def _store_workflow_run(
         row.status = projection.status
         row.valid = projection.valid
         row.package_node_id = projection.packageNodeId
+        row.workflow_version_id = workflow_version_id
         row.request = request.model_dump(mode="json")
         row.projection = projection.model_dump(mode="json")
 
@@ -1384,7 +1449,7 @@ async def _store_workflow_run(
         stored_events = append_result.events
         events_to_mirror = append_result.appended_events
 
-    stored = _StoredWorkflowRun(request, projection, stored_events)
+    stored = _StoredWorkflowRun(request, projection, stored_events, workflow_version_id)
     if session is None:
         _RUNS[run_id] = stored
         await publish_workflow_run_event_mirror(events_to_mirror)
@@ -1447,6 +1512,7 @@ async def _load_workflow_run(
         request=WorkflowRunStartRequest.model_validate(row.request),
         projection=WorkflowRunProjection.model_validate(row.projection),
         events=[WorkflowNodeRunEvent.model_validate(event_row.payload) for event_row in event_rows],
+        workflow_version_id=row.workflow_version_id,
     )
     if cache:
         _RUNS[run_id] = stored
@@ -2192,8 +2258,8 @@ def _is_first_loop_native_node(node: CompiledWorkflowNode) -> bool:
         return False
     return _is_external_tool_node(node) or binding.get("binding_id") in {
         NORMALIZE_BINDING_ID,
-        DEDUPE_BINDING_ID,
         *_DATA_OPERATOR_BINDING_IDS,
+        DEDUPE_BINDING_ID,
         MERGE_BINDING_ID,
         ROUTER_ROUTE_BINDING_ID,
         RECORD_ACCEPTANCE_BINDING_ID,
@@ -2412,30 +2478,6 @@ async def _execute_native_node(
             },
             candidates,
         )
-    if binding_id == DEDUPE_BINDING_ID:
-        binding = _read_dict(node.runtime.get("binding"))
-        binding_input = _read_dict(binding.get("input"))
-        result = execute_record_hygiene(
-            "dedupe",
-            input_items,
-            binding_input,
-            {"runId": run_id, "nodeId": node.id},
-        )
-        return (
-            {
-                "bindingId": binding_id,
-                "key": binding_input.get("key", "title+source+publishedAt"),
-                "window": binding_input.get("window", "24h"),
-                "windowHours": binding_input.get("windowHours", 24),
-                "inputCandidateCount": len(input_items),
-                "deduplicatedCandidateCount": len(result.records),
-                "rejectedCount": len(result.rejected),
-                "rejected": result.rejected,
-                "metrics": result.metrics,
-                "lineage": _lineage_pointer(node),
-            },
-            result.records,
-        )
     if binding_id in _DATA_OPERATOR_BINDING_IDS:
         binding = _read_dict(node.runtime.get("binding"))
         binding_input = _read_dict(binding.get("input"))
@@ -2484,6 +2526,30 @@ async def _execute_native_node(
                 "lineage": _lineage_pointer(node),
             },
             output_items,
+        )
+    if binding_id == DEDUPE_BINDING_ID:
+        binding = _read_dict(node.runtime.get("binding"))
+        binding_input = _read_dict(binding.get("input"))
+        result = execute_record_hygiene(
+            "dedupe",
+            input_items,
+            binding_input,
+            {"runId": run_id, "nodeId": node.id},
+        )
+        return (
+            {
+                "bindingId": binding_id,
+                "key": binding_input.get("key", "title+source+publishedAt"),
+                "window": binding_input.get("window", "24h"),
+                "windowHours": binding_input.get("windowHours", 24),
+                "inputCandidateCount": len(input_items),
+                "deduplicatedCandidateCount": len(result.records),
+                "rejectedCount": len(result.rejected),
+                "rejected": result.rejected,
+                "metrics": result.metrics,
+                "lineage": _lineage_pointer(node),
+            },
+            result.records,
         )
     if binding_id == MERGE_BINDING_ID:
         binding = _read_dict(node.runtime.get("binding"))
@@ -2755,7 +2821,7 @@ async def _execute_external_tool_capability(
         binding_input.get("executorMode") == OKX_MARKET_TICKER_SNAPSHOT_EXECUTOR
         and binding_input.get("toolCapabilityId") == "tool.realtime.stream.subscribe"
     ):
-        output = _execute_okx_market_tool(binding_input)
+        output = await _execute_okx_market_tool(binding_input)
         return [_external_tool_output(node, output, input_items, run_id, 0, binding_input)]
 
     if (
@@ -2792,10 +2858,13 @@ async def _execute_external_tool_capability(
     ]
 
 
-def _execute_okx_market_tool(binding_input: dict[str, Any]) -> dict[str, Any]:
+async def _execute_okx_market_tool(binding_input: dict[str, Any]) -> dict[str, Any]:
     params = _merged_tool_params(binding_input)
     try:
-        return execute_okx_market_ticker_snapshot(params)
+        # execute_okx_market_ticker_snapshot is a blocking urllib call; run
+        # it off the event loop thread so it can't stall the single-worker
+        # server for other in-flight requests.
+        return await asyncio.to_thread(execute_okx_market_ticker_snapshot, params)
     except RealtimeMarketExecutionError as exc:
         return {
             "schema": "event.market.ticker.error.v1",

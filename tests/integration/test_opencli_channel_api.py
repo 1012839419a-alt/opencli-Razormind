@@ -225,6 +225,19 @@ async def test_collect_agent_mode_passes_positional_args_to_dispatch(
     ctx.__aexit__ = AsyncMock(return_value=False)
     agent_pool.acquire.return_value = ctx
 
+    # Agent-mode collect() now looks up a site's browser binding (SELECT
+    # browser_bindings) before dispatch. Route AsyncSessionLocal() at the
+    # module the adapter imports it from to the app's own migrated
+    # db_session, mirroring test_collect_agent_mode_prefers_site_bound_agent
+    # below — otherwise the lookup hits the real (unmigrated) engine and
+    # raises "no such table: browser_bindings".
+    class BoundSessionContext:
+        async def __aenter__(self):
+            return db_session
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
     with (
         patch(
             "backend.channels.opencli_channel._collect_via_agent",

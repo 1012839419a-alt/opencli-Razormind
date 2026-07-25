@@ -297,6 +297,21 @@ RUNTIME_IO_CONTRACTS: dict[str, RuntimeIOContract] = {
         event_shape=("partial:recordCandidateCount", "completed"),
         fixture_coverage=("happy-path", "sse-parity", "odp-redis-mirror"),
     ),
+    **{
+        f"workflow.data.{operation}": RuntimeIOContract(
+            binding_id=f"workflow.data.{operation}",
+            status="executable",
+            input_ports=(("in", "recordCandidate[]"),),
+            output_ports=(("out", "recordCandidate[]"),),
+            input_params=("operatorId", "packVersion", "config"),
+            output_artifacts=("recordCandidate[]", "metrics", "rejectedCandidateIds"),
+            permission_gate=(),
+            config_gate=("data_operator_registry",),
+            event_shape=("partial:outputItemCount", "completed", "failed"),
+            fixture_coverage=("data-operator-unit", "workflow-data-operator-e2e"),
+        )
+        for operation in ("generate", "filter", "evaluate", "refine")
+    },
     "workflow.transform.dedupe": RuntimeIOContract(
         binding_id="workflow.transform.dedupe",
         status="executable",
@@ -321,21 +336,6 @@ RUNTIME_IO_CONTRACTS: dict[str, RuntimeIOContract] = {
         ),
         fixture_coverage=("workflow-opencli-hda-trace-api",),
     ),
-    **{
-        f"workflow.data.{operation}": RuntimeIOContract(
-            binding_id=f"workflow.data.{operation}",
-            status="executable",
-            input_ports=(("in", "recordCandidate[]"),),
-            output_ports=(("out", "recordCandidate[]"),),
-            input_params=("operatorId", "packVersion", "config"),
-            output_artifacts=("recordCandidate[]", "metrics", "rejectedCandidateIds"),
-            permission_gate=(),
-            config_gate=("data_operator_registry",),
-            event_shape=("partial:outputItemCount", "completed", "failed"),
-            fixture_coverage=("data-operator-unit", "workflow-data-operator-e2e"),
-        )
-        for operation in ("generate", "filter", "evaluate", "refine")
-    },
     "workflow.flow.merge": RuntimeIOContract(
         binding_id="workflow.flow.merge",
         status="executable",

@@ -1,5 +1,7 @@
 """Compile Canvas WorkflowProject documents into executable-plan previews."""
 
+import re
+
 from collections import Counter, defaultdict, deque
 from dataclasses import dataclass
 from typing import Literal
@@ -34,6 +36,9 @@ from backend.workflow.node_registry import (
 )
 from backend.workflow.runtime_contracts import runtime_io_contract
 from backend.workflow.runtime_registry import resolve_runtime_metadata
+from backend.workflow.tool_capabilities import (
+    validate_workflow_tool_capability_version_pin,
+)
 
 INTERNAL_ID_SEPARATOR = "::"
 MAX_NODE_PATH_DEPTH = 4
@@ -199,6 +204,7 @@ def compile_workflow_project(project: WorkflowProject) -> WorkflowCompileRespons
     plan_edges = [*root_plan_edges, *plan_edges]
     compiled_nodes = _topologically_order_compiled_nodes(compiled_nodes)
     plan_ir = PlanGraph(name=project.name, draft=True, nodes=plan_nodes, edges=plan_edges)
+    _widen_merge_fan_in(plan_ir)
     plan_validation = validate_plan_graph(plan_ir)
     if not plan_validation.valid:
         return WorkflowCompileResponse(
@@ -360,8 +366,9 @@ def _validate_project(project: WorkflowProject) -> list[WorkflowCompileError]:
             )
 
         errors.extend(_validate_node_origin(node, ["nodes", node.id]))
-        errors.extend(_validate_node_capability_gaps(node, ["nodes", node.id]))
         errors.extend(_validate_data_operator_node(node, ["nodes", node.id]))
+        errors.extend(_validate_capability_version_pin(node))
+        errors.extend(_validate_node_capability_gaps(node, ["nodes", node.id]))
 
     errors.extend(_validate_edge_mappings(project.edges, path_prefix=["edges"]))
     errors.extend(
@@ -374,6 +381,48 @@ def _validate_project(project: WorkflowProject) -> list[WorkflowCompileError]:
     errors.extend(_validate_typed_edges(project.nodes, project.edges, path_prefix=["edges"]))
     errors.extend(_cycle_errors(project))
     return errors
+
+
+def _validate_capability_version_pin(
+    node: WorkflowProjectNode,
+) -> list[WorkflowCompileError]:
+    if _read_string((node.ui or {}).get("catalogId")) != "external.tool.capability":
+        return []
+
+    tool_capability = node.params.get("toolCapability")
+    if not isinstance(tool_capability, dict):
+        return []
+    tool_id = _read_string(tool_capability.get("id"))
+    if tool_id is None:
+        return []
+
+    issue = validate_workflow_tool_capability_version_pin(
+        tool_id,
+        tool_capability.get("versionPin"),
+    )
+    if issue is None:
+        return []
+    if issue.code == "unknown_tool_capability" and isinstance(
+        node.params.get("externalWorkflow"), dict
+    ):
+        # Import is a drafting surface: preserve unknown external tools as a
+        # visible Capability Gap. Authoritative Plan validation still rejects
+        # the same unknown capability before publication or execution.
+        return []
+    return [
+        WorkflowCompileError(
+            code=issue.code,
+            message=f'Workflow node "{node.id}" {issue.message}',
+            node_id=node.id,
+            path=[
+                "nodes",
+                node.id,
+                "params",
+                "toolCapability",
+                "versionPin",
+            ],
+        )
+    ]
 
 
 def _requires_adapter(node: WorkflowProjectNode) -> bool:
@@ -423,46 +472,6 @@ def _validate_node_origin(
                 ),
                 node_id=node.id,
                 path=[*path_prefix, "ui"],
-            )
-        )
-    return errors
-
-
-def _validate_node_capability_gaps(
-    node: WorkflowProjectNode,
-    path_prefix: list[str],
-) -> list[WorkflowCompileError]:
-    ui = node.ui or {}
-    builder = ui.get("builder")
-    if not isinstance(builder, dict):
-        return []
-    gaps = builder.get("capabilityGaps")
-    if not isinstance(gaps, list):
-        return []
-
-    errors: list[WorkflowCompileError] = []
-    for index, gap in enumerate(gaps):
-        if not isinstance(gap, dict):
-            continue
-        blocking_actions = gap.get("blockingActions")
-        blocking_action_names = (
-            {value for value in blocking_actions if isinstance(value, str)}
-            if isinstance(blocking_actions, list)
-            else set()
-        )
-        if blocking_actions is not None and not {"publish", "run"}.intersection(
-            blocking_action_names
-        ):
-            continue
-        gap_id = _read_string(gap.get("id")) or f"gap-{index + 1}"
-        title = _read_string(gap.get("title")) or "Capability Gap"
-        detail = _read_string(gap.get("detail")) or "Required runtime capability is incomplete"
-        errors.append(
-            WorkflowCompileError(
-                code="capability_gap",
-                message=f'Workflow node "{node.id}" is blocked by {title}: {detail}',
-                node_id=node.id,
-                path=[*path_prefix, "ui", "builder", "capabilityGaps", gap_id],
             )
         )
     return errors
@@ -563,6 +572,44 @@ def _validate_data_operator_node(
             )
         ]
     return []
+def _validate_node_capability_gaps(
+    node: WorkflowProjectNode,
+    path_prefix: list[str],
+) -> list[WorkflowCompileError]:
+    ui = node.ui or {}
+    builder = ui.get("builder")
+    if not isinstance(builder, dict):
+        return []
+    gaps = builder.get("capabilityGaps")
+    if not isinstance(gaps, list):
+        return []
+
+    errors: list[WorkflowCompileError] = []
+    for index, gap in enumerate(gaps):
+        if not isinstance(gap, dict):
+            continue
+        blocking_actions = gap.get("blockingActions")
+        blocking_action_names = (
+            {value for value in blocking_actions if isinstance(value, str)}
+            if isinstance(blocking_actions, list)
+            else set()
+        )
+        if blocking_actions is not None and not {"publish", "run"}.intersection(
+            blocking_action_names
+        ):
+            continue
+        gap_id = _read_string(gap.get("id")) or f"gap-{index + 1}"
+        title = _read_string(gap.get("title")) or "Capability Gap"
+        detail = _read_string(gap.get("detail")) or "Required runtime capability is incomplete"
+        errors.append(
+            WorkflowCompileError(
+                code="capability_gap",
+                message=f'Workflow node "{node.id}" is blocked by {title}: {detail}',
+                node_id=node.id,
+                path=[*path_prefix, "ui", "builder", "capabilityGaps", gap_id],
+            )
+        )
+    return errors
 
 
 def _validate_typed_edges(
@@ -587,6 +634,17 @@ def _validate_typed_edges(
 
         source_port = _resolve_output_port(source_contract[1], edge.sourcePort)
         target_port = _resolve_input_port(target_contract[0], edge.targetPort)
+        if (
+            target_port is None
+            and _read_string((target_node.ui or {}).get("catalogId"))
+            == "intelligence.flow.merge"
+            and edge.targetPort
+            and re.fullmatch(r"in\d+", edge.targetPort)
+        ):
+            # Merge fans in N branches; the static contract only names in1/in2
+            # but the demand assembler emits in3+ whenever the catalog matches
+            # more than two sources for one need.
+            target_port = _PortContract(edge.targetPort, "input", "recordCandidate[]")
         if source_port is None:
             errors.append(
                 WorkflowCompileError(
@@ -1339,13 +1397,13 @@ def _validate_package_internals(
                 internal_path_prefix,
             )
         )
+        errors.extend(_validate_data_operator_node(internal_node, internal_path_prefix))
         errors.extend(
             _validate_node_capability_gaps(
                 internal_node,
                 internal_path_prefix,
             )
         )
-        errors.extend(_validate_data_operator_node(internal_node, internal_path_prefix))
         if _is_structural_container(internal_node):
             errors.extend(
                 _validate_package_internals(
@@ -1506,11 +1564,36 @@ def _compile_node(
     )
 
 
+
+def _widen_merge_fan_in(plan: PlanGraph) -> None:
+    """Grow merge nodes' declared inputs to cover every in<N> edge that
+    actually targets them. The static contract names only in1/in2, but the
+    demand assembler fans in one branch per matched catalog source."""
+    nodes_by_id = {node.id: node for node in plan.nodes}
+    for edge in plan.edges:
+        node = nodes_by_id.get(edge.target_node)
+        if node is None or node.kind != "merge":
+            continue
+        port = edge.target_port
+        if not port or not re.fullmatch(r"in\d+", port):
+            continue
+        if any(existing.name == port for existing in node.inputs):
+            continue
+        node.inputs.append(PlanPort(name=port, type="recordCandidate[]"))
+
+
 def _to_plan_ir(project: WorkflowProject) -> PlanGraph:
+    fan_in_by_node: dict[str, int] = defaultdict(int)
+    for edge in project.edges:
+        if edge.targetPort and re.fullmatch(r"in\d+", edge.targetPort):
+            fan_in_by_node[edge.target] += 1
     return PlanGraph(
         name=project.name,
         draft=True,
-        nodes=[_to_plan_node(node) for node in project.nodes],
+        nodes=[
+            _to_plan_node(node, merge_fan_in=fan_in_by_node.get(node.id))
+            for node in project.nodes
+        ],
         edges=[
             PlanEdge(
                 id=edge.id,
@@ -1529,6 +1612,7 @@ def _to_plan_node(
     id_override: str | None = None,
     *,
     node_path: tuple[str, ...] | None = None,
+    merge_fan_in: int | None = None,
 ) -> PlanNode:
     kind: Literal["source", "transform", "merge", "sink"]
     if node.kind in {"schedule", "source"}:
@@ -1539,7 +1623,7 @@ def _to_plan_node(
         kind = "merge"
     else:
         kind = "transform"
-    inputs, outputs = _plan_ports_for_node(node, kind)
+    inputs, outputs = _plan_ports_for_node(node, kind, merge_fan_in=merge_fan_in)
     return PlanNode(
         id=id_override or node.id,
         kind=kind,
@@ -1579,6 +1663,8 @@ def _compiled_node_params(node: WorkflowProjectNode) -> dict[str, object]:
 def _plan_ports_for_node(
     node: WorkflowProjectNode,
     kind: Literal["source", "transform", "merge", "sink"],
+    *,
+    merge_fan_in: int | None = None,
 ) -> tuple[list[PlanPort], list[PlanPort]]:
     ui = node.ui or {}
     catalog_id = ui.get("catalogId")
@@ -1594,10 +1680,11 @@ def _plan_ports_for_node(
             [PlanPort(name="patch", type="workflowPatch")],
         )
     if catalog_id == "intelligence.flow.merge":
+        fan_in = max(2, merge_fan_in or 2)
         return (
             [
-                PlanPort(name="in1", type="recordCandidate[]"),
-                PlanPort(name="in2", type="recordCandidate[]"),
+                PlanPort(name=f"in{index}", type="recordCandidate[]")
+                for index in range(1, fan_in + 1)
             ],
             [PlanPort(name="out", type="recordCandidate[]")],
         )

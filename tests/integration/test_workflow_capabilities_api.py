@@ -519,6 +519,12 @@ async def test_workflow_capabilities_project_real_backend_surfaces(client, monke
     assert tool_resource["backendAvailable"] is True
     assert tool_resource["runtimeBinding"] == "workflow.external-tool.capability"
     assert tool_resource["manifest"]["toolCapability"]["id"] == "tool.search.fixture"
+    assert tool_resource["manifest"]["toolCapability"]["versionPin"] == {
+        "package": "opencli-admin",
+        "packageVersion": "0.1.0",
+        "capabilityVersion": "1.0.0",
+        "provenance": "built-in",
+    }
     assert tool_resource["manifest"]["toolCapability"]["executor"]["mode"] == "fixture"
     realtime_resource = resources["resource.tool-capability.tool.realtime.stream.subscribe"]
     assert realtime_resource["status"] == "runnable"
@@ -631,6 +637,12 @@ async def test_workflow_tool_capabilities_register_opencli_tool_bindings(client)
     assert fixture_tool["status"] == "runnable"
     assert fixture_tool["provider"] == "opencli-admin"
     assert fixture_tool["executor"]["mode"] == "fixture"
+    assert fixture_tool["versionPin"] == {
+        "package": "opencli-admin",
+        "packageVersion": "0.1.0",
+        "capabilityVersion": "1.0.0",
+        "provenance": "built-in",
+    }
     assert fixture_tool["inputPorts"] == [{"name": "in", "type": "unknown"}]
     assert fixture_tool["outputPorts"] == [{"name": "out", "type": "unknown"}]
     assert fixture_tool["manifest"]["runtime"]["binding"] == ("workflow.external-tool.capability")
