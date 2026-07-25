@@ -140,8 +140,7 @@ def resolve_runtime_metadata(
                     adapter_id=adapter.id if adapter else None,
                     provider=adapter.provider if adapter else None,
                     message=(
-                        f"No runtime binding registered for workflow.{node.kind}."
-                        f"{node.capability}"
+                        f"No runtime binding registered for workflow.{node.kind}.{node.capability}"
                     ),
                 )
             )
@@ -604,6 +603,7 @@ def _resolve_external_tool_capability(node: WorkflowProjectNode, *, node_id: str
             "channel": "tool-capability",
             "input": {
                 "toolCapabilityId": capability_id,
+                "toolCapabilityVersionPin": tool.versionPin.model_dump(),
                 "executorMode": executor_mode,
                 "toolLabel": tool.label,
                 "inputPort": "unknown",
@@ -620,6 +620,7 @@ def _resolve_external_tool_capability(node: WorkflowProjectNode, *, node_id: str
             "binding_id": EXTERNAL_TOOL_BINDING_ID,
             "dispatch": "opencli_admin_tool_capability",
             "toolCapabilityId": capability_id,
+            "versionPin": tool.versionPin.model_dump(),
         },
     }
 
@@ -758,14 +759,14 @@ def _resolve_webhook_notifier(
         "dispatch": "blocked_until_projection",
         "input": {
             "notifier_type": "webhook",
-                "template": _read_string(node.params.get("template")) or "brief",
-                "target": target,
-                "adapter_mode": adapter.mode if adapter else "webhook",
-                "delivery_configured": delivery_configured,
-                "url": webhook_url,
-                "config": config,
-            },
-        }
+            "template": _read_string(node.params.get("template")) or "brief",
+            "target": target,
+            "adapter_mode": adapter.mode if adapter else "webhook",
+            "delivery_configured": delivery_configured,
+            "url": webhook_url,
+            "config": config,
+        },
+    }
     if not delivery_configured:
         return {
             "notifier": notifier_contract,

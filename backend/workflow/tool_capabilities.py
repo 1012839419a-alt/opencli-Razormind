@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from typing import Any
+
+from pydantic import ValidationError
+
 from backend.schemas.workflow import (
+    WorkflowCapabilityVersionPin,
     WorkflowToolCapabilitiesResponse,
     WorkflowToolCapability,
     WorkflowToolCapabilityExecutor,
@@ -13,6 +19,76 @@ from backend.workflow.joyai_vl_executor import (
     JOYAI_VL_TOOL_CAPABILITY_ID,
 )
 from backend.workflow.realtime_market_executor import OKX_MARKET_TICKER_SNAPSHOT_EXECUTOR
+
+WORKFLOW_TOOL_PACKAGE = "opencli-admin"
+WORKFLOW_TOOL_PACKAGE_VERSION = "0.1.0"
+ALLOWED_AUTHORITATIVE_PROVENANCE = {"built-in", "verified"}
+
+
+@dataclass(frozen=True)
+class WorkflowCapabilityPinIssue:
+    code: str
+    message: str
+
+
+def validate_workflow_tool_capability_version_pin(
+    tool_id: str,
+    version_pin: Any,
+) -> WorkflowCapabilityPinIssue | None:
+    """Validate a node pin against the installed Tool Capability registry."""
+
+    tool = resolve_workflow_tool_capability(tool_id)
+    if tool is None:
+        return WorkflowCapabilityPinIssue(
+            code="unknown_tool_capability",
+            message=f'Tool Capability "{tool_id}" is not installed in the registry.',
+        )
+    if not isinstance(version_pin, dict):
+        return WorkflowCapabilityPinIssue(
+            code="unpinned_tool_capability",
+            message=(
+                "must pin the exact package and capability version for "
+                f'Tool Capability "{tool_id}".'
+            ),
+        )
+
+    provenance = version_pin.get("provenance")
+    if provenance not in ALLOWED_AUTHORITATIVE_PROVENANCE:
+        return WorkflowCapabilityPinIssue(
+            code="disallowed_tool_capability_provenance",
+            message=(
+                f'Tool Capability "{tool_id}" uses provenance {provenance!r}; '
+                "authoritative definitions allow only built-in or verified packages."
+            ),
+        )
+
+    try:
+        submitted = WorkflowCapabilityVersionPin.model_validate(version_pin)
+    except ValidationError:
+        return WorkflowCapabilityPinIssue(
+            code="invalid_tool_capability_version_pin",
+            message=f'Tool Capability "{tool_id}" has an incomplete version pin.',
+        )
+
+    expected = tool.versionPin
+    if submitted != expected:
+        return WorkflowCapabilityPinIssue(
+            code="tool_capability_version_pin_mismatch",
+            message=(
+                f'Tool Capability "{tool_id}" version pin does not match the '
+                "installed registry entry."
+            ),
+        )
+    return None
+
+
+def _version_pin(capability_version: str = "1.0.0") -> WorkflowCapabilityVersionPin:
+    return WorkflowCapabilityVersionPin(
+        package=WORKFLOW_TOOL_PACKAGE,
+        packageVersion=WORKFLOW_TOOL_PACKAGE_VERSION,
+        capabilityVersion=capability_version,
+        provenance="built-in",
+    )
 
 
 def list_workflow_tool_capabilities() -> WorkflowToolCapabilitiesResponse:
@@ -44,6 +120,7 @@ def _tool_capabilities() -> list[WorkflowToolCapability]:
                 mode="fixture",
                 description="Reads fixture output from node params.",
             ),
+            versionPin=_version_pin(),
             tags=["tool", "fixture", "external-runtime", "review"],
             manifest={
                 "schema": "tool-capability.fixture-search.v1",
@@ -197,6 +274,7 @@ def _realtime_tool(
             mode="fixture",
             description="Registered tool capability; concrete executor is bound by runtime policy.",
         ),
+        versionPin=_version_pin(),
         tags=tags,
         manifest={
             "schema": schema,

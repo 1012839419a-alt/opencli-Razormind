@@ -1,4 +1,5 @@
 import type { WorkflowProject } from "./schema"
+import { workflowRequestAuthHeaders } from "./request-auth"
 
 type ApiResponse<T> = {
   success?: boolean
@@ -210,7 +211,7 @@ export async function startWorkflowRun(
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      ...(options.authorization ? { Authorization: options.authorization } : {}),
+      ...workflowRequestAuthHeaders(options.authorization),
     },
     body: JSON.stringify({
       project,
@@ -229,7 +230,7 @@ export async function fetchWorkflowRunProjection(
 ): Promise<WorkflowRunProjection> {
   const response = await fetch(workflowRunEndpoint(runId), {
     headers: {
-      ...(options.authorization ? { Authorization: options.authorization } : {}),
+      ...workflowRequestAuthHeaders(options.authorization),
     },
     cache: "no-store",
   })
@@ -242,7 +243,7 @@ export async function fetchWorkflowRunCheckpoint(
 ): Promise<WorkflowRunCheckpoint> {
   const response = await fetch(`${workflowRunEndpoint(runId)}/checkpoint`, {
     headers: {
-      ...(options.authorization ? { Authorization: options.authorization } : {}),
+      ...workflowRequestAuthHeaders(options.authorization),
     },
     cache: "no-store",
   })
@@ -267,7 +268,7 @@ export async function queryWorkflowRunTrace(
   const suffix = search.size > 0 ? `?${search.toString()}` : ""
   const response = await fetch(`${workflowRunEndpoint(runId)}/trace${suffix}`, {
     headers: {
-      ...(options.authorization ? { Authorization: options.authorization } : {}),
+      ...workflowRequestAuthHeaders(options.authorization),
     },
     cache: "no-store",
   })
@@ -292,7 +293,7 @@ export async function fetchWorkflowRunEvents(
   const suffix = search.size > 0 ? `?${search.toString()}` : ""
   const response = await fetch(`${workflowRunEndpoint(runId)}/events${suffix}`, {
     headers: {
-      ...(options.authorization ? { Authorization: options.authorization } : {}),
+      ...workflowRequestAuthHeaders(options.authorization),
     },
     cache: "no-store",
   })
@@ -308,7 +309,7 @@ export async function continueWorkflowRunWithSourceOutputs(
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      ...(options.authorization ? { Authorization: options.authorization } : {}),
+      ...workflowRequestAuthHeaders(options.authorization),
     },
     body: JSON.stringify({ sourceOutputs }),
   })
@@ -321,7 +322,7 @@ export async function replayWorkflowRunEventStream(
 ): Promise<WorkflowRunStreamReplay> {
   const response = await fetch(`${workflowRunEndpoint(runId)}/events/stream`, {
     headers: {
-      ...(options.authorization ? { Authorization: options.authorization } : {}),
+      ...workflowRequestAuthHeaders(options.authorization),
     },
     cache: "no-store",
   })

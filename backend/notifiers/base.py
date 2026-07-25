@@ -18,6 +18,11 @@ class NotificationSendResult:
     success: bool
     response_data: dict[str, Any] | None = None
 
+    def __bool__(self) -> bool:
+        """Keep legacy boolean notifier callers aligned with ``success``."""
+        return self.success
+
+
 
 class AbstractNotifier(ABC):
     notifier_type: str
