@@ -25,7 +25,7 @@ asset digests live in `tests/fixtures/dataflow/`.
 
 | Family | Examples | Required adapter or asset |
 | --- | --- | --- |
-| Tokenizer or statistical text | `MinHashDeduplicateFilter`, `SimHashDeduplicateFilter`, `NgramFilter`, stop-word/stemming/lemmatization refiners | pinned tokenizer/library pack |
+| Tokenizer or statistical text | `MinHashDeduplicateFilter`, `SimHashDeduplicateFilter`, `NgramFilter`, tokenizer-backed stop-word/stemming/lemmatization processing (`StopWordFilter` with `use_tokenizer=false` is runnable above) | pinned tokenizer/library pack |
 | Local language and quality models | `LanguageFilter`, `SemDeduplicateFilter`, Text-PT and Text-SFT quality filters | model artifact plus model digest |
 | PII and entity processing | `NERRefiner`, `PIIAnonymizeRefiner`, `PresidioFilter` | NER/Presidio model adapter |
 | Prompted cleaning and evaluation | `PromptedFilter`, `PromptedRefiner`, KBC text cleaner, model-judge filters | configured LLM provider |

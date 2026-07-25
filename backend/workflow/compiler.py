@@ -20,7 +20,10 @@ from backend.schemas.workflow import (
     WorkflowProjectNode,
     WorkflowRuntimePreview,
 )
-from backend.workflow.data_operators import resolve_data_operator
+from backend.workflow.data_operators import (
+    list_data_operator_specs,
+    resolve_data_operator,
+)
 from backend.workflow.hda_templates import materialize_hda_templates
 from backend.workflow.node_registry import (
     forbidden_node_definition_keys,
@@ -440,7 +443,10 @@ def _validate_data_operator_node(
     )
     spec = resolve_data_operator(operator_id, resolved_pack_version)
     if spec is None:
-        if resolve_data_operator(operator_id) is not None:
+        if any(
+            registered.id == operator_id
+            for registered in list_data_operator_specs()
+        ):
             return [
                 WorkflowCompileError(
                     code="unsupported_data_operator_version",

@@ -570,12 +570,12 @@ def test_phase2_tokenizer_true_fails_closed_without_a_bundled_tokenizer(alias):
             "threshold": 1,
             "use_tokenizer": True,
         }
+    invocation = translate_dataflow_alias(
+        DATAFLOW_ALIAS_SOURCE_IDS[alias],
+        init_config,
+        {"input_key": "content"},
+    )
     with pytest.raises(ValueError, match="dataflow_operator_unsupported"):
-        invocation = translate_dataflow_alias(
-            DATAFLOW_ALIAS_SOURCE_IDS[alias],
-            init_config,
-            {"input_key": "content"},
-        )
         execute_data_operator(
             invocation.operator_id,
             [

@@ -933,6 +933,8 @@ def _apply_rule(
         return ratio <= _number(rule.get("threshold", 3e-8), "threshold"), 1
     if rule_type == "lineStartWithBulletpoint":
         paragraphs = _paragraphs(text)
+        if not paragraphs:
+            return False, 1
         bullets = ("•", "‣", "▶", "◀", "◦", "■", "□", "▪", "▫", "–")
         ratio = sum(line.lstrip().startswith(bullets) for line in paragraphs) / len(
             paragraphs

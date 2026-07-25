@@ -599,7 +599,9 @@ def _data_operator_capabilities() -> list[WorkflowRuntimeCapability]:
                         ],
                         probes=["data_operator_registry"],
                     ),
-                    "operatorIds": [operator["id"] for operator in operators],
+                    "operatorIds": list(
+                        dict.fromkeys(operator["id"] for operator in operators)
+                    ),
                     "operators": operators,
                     "packs": sorted({operator["packId"] for operator in operators}),
                     "params": list(

@@ -21,7 +21,7 @@ candidate IDs.
 |  | `core.refine.text` | basic text normalization |
 | `builtin.text-cleaning@1.0.0` | `text.clean` | HTML/entity/URL/emoji/whitespace and configurable text cleanup |
 |  | `text.rule-filter` | non-empty, length, ratio and blocklist rules |
-|  | `text.deduplicate` | exact and SimHash duplicate removal |
+|  | `text.deduplicate` | exact and SimHash duplicate removal (SimHash here is a native v1 capability; the pinned 1.1.0 DataFlow import contract maps only `HashDeduplicateFilter` and `NgramHashDeduplicateFilter`, not `SimHashDeduplicateFilter`) |
 |  | `text.statistics` | character, word, sentence and lexical-diversity metrics |
 | `builtin.dataset-preparation@1.0.0` | `data.project` | select, rename, coalesce and scalar cast |
 |  | `data.chunk` | deterministic chunking with overlap |
