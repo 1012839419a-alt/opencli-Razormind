@@ -381,32 +381,56 @@ export function Inspector() {
             ? raw.split(",").map((value) => value.trim()).filter(Boolean)
             : [],
       )
+      const optionValues = new Set((field.options ?? []).map((option) => option.value))
+      const visibleOptions = [
+        ...(field.options ?? []),
+        ...Array.from(selectedValues)
+          .filter((value) => !optionValues.has(value))
+          .map((value) => ({ value, label: value })),
+      ]
       return row(
-        <div className="flex flex-wrap gap-1">
-          {(field.options ?? []).map((option) => {
-            const selectedToken = selectedValues.has(option.value)
-            return (
-              <button
-                key={option.value}
-                type="button"
-                disabled={field.readonly}
-                onClick={() => {
-                  const next = new Set(selectedValues)
-                  if (next.has(option.value)) next.delete(option.value)
-                  else next.add(option.value)
-                  updateParameterField(field, Array.from(next))
-                }}
-                className={cn(
-                  "h-6 rounded-[2px] border px-2 font-mono text-[10px] transition-colors disabled:pointer-events-none disabled:opacity-60",
-                  selectedToken
-                    ? "border-[#8694a5] bg-[#2b3138] text-foreground"
-                    : "border-[#2c3036] bg-[#07080a] text-muted-foreground hover:border-[#4a515c] hover:text-foreground",
-                )}
-              >
-                {option.label}
-              </button>
-            )
-          })}
+        <div className="space-y-1.5">
+          <div className="flex flex-wrap gap-1">
+            {visibleOptions.map((option) => {
+              const selectedToken = selectedValues.has(option.value)
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  disabled={field.readonly}
+                  onClick={() => {
+                    const next = new Set(selectedValues)
+                    if (next.has(option.value)) next.delete(option.value)
+                    else next.add(option.value)
+                    updateParameterField(field, Array.from(next))
+                  }}
+                  className={cn(
+                    "h-6 rounded-[2px] border px-2 font-mono text-[10px] transition-colors disabled:pointer-events-none disabled:opacity-60",
+                    selectedToken
+                      ? "border-[#8694a5] bg-[#2b3138] text-foreground"
+                      : "border-[#2c3036] bg-[#07080a] text-muted-foreground hover:border-[#4a515c] hover:text-foreground",
+                  )}
+                >
+                  {option.label}
+                </button>
+              )
+            })}
+          </div>
+          {field.allowCustom && !field.readonly ? (
+            <Input
+              aria-label={`Add ${field.label} token`}
+              placeholder="输入后按逗号或 Enter"
+              className={houdiniInputClass}
+              onKeyDown={(event) => {
+                if (event.key !== "Enter" && event.key !== ",") return
+                event.preventDefault()
+                const tokens = event.currentTarget.value.split(",").map((value) => value.trim()).filter(Boolean)
+                if (tokens.length === 0) return
+                event.currentTarget.value = ""
+                updateParameterField(field, Array.from(new Set([...selectedValues, ...tokens])))
+              }}
+            />
+          ) : null}
         </div>,
       )
     }
@@ -446,7 +470,8 @@ export function Inspector() {
     }
 
     if (field.type === "number") {
-      const value = typeof raw === "number" ? raw : Number(raw ?? 0)
+      const value = typeof raw === "number" ? raw : typeof raw === "string" && raw.trim() ? Number(raw) : undefined
+      const inputValue = typeof value === "number" && Number.isFinite(value) ? value : field.optional ? "" : 0
       return row(
           <Input
             id={fieldId}
@@ -455,8 +480,8 @@ export function Inspector() {
             max={field.max}
             step={field.step}
             readOnly={field.readonly}
-            value={Number.isFinite(value) ? value : 0}
-            onChange={(e) => updateParameterField(field, Number(e.target.value))}
+            value={inputValue}
+            onChange={(e) => updateParameterField(field, e.target.value === "" && field.optional ? undefined : Number(e.target.value))}
             className={houdiniInputClass}
           />,
       )

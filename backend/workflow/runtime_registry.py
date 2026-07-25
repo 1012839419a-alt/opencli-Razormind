@@ -20,6 +20,7 @@ from backend.workflow.block_reasons import (
     MISSING_TURBOPUSH_CONTENT_TYPE,
     MISSING_TURBOPUSH_SERVICE,
 )
+from backend.workflow.data_operators import get_data_operator_spec
 from backend.workflow.runtime_contracts import runtime_io_contract_manifest
 from backend.workflow.tool_capabilities import resolve_workflow_tool_capability
 from backend.workflow.turbopush_runtime import (
@@ -51,6 +52,12 @@ RECORD_SINK_BINDING_ID = "workflow.record-sink.records"
 INBOX_STORE_BINDING_ID = "workflow.inbox.store"
 WEBHOOK_NOTIFY_BINDING_ID = "workflow.notifier.webhook.send"
 NOTIFY_SEND_BINDING_ID = "workflow.notify.send"
+DATA_OPERATOR_CATALOG_BINDINGS = {
+    "intelligence.data.generate": "workflow.data.generate",
+    "intelligence.data.filter": "workflow.data.filter",
+    "intelligence.data.evaluate": "workflow.data.evaluate",
+    "intelligence.data.refine": "workflow.data.refine",
+}
 EXTERNAL_TOOL_BINDING_ID = "workflow.external-tool.capability"
 SUPPORTED_TOOL_EXECUTOR_MODES = {
     "fixture",
@@ -103,6 +110,8 @@ def resolve_runtime_metadata(
         metadata = _resolve_source_pool(node, node_id=resolved_node_id)
     elif _is_collection_output(node):
         metadata = _resolve_collection_output(node, node_id=resolved_node_id)
+    elif _is_data_operator_node(node):
+        metadata = _resolve_data_operator(node, node_id=resolved_node_id)
     elif _is_normalize_node(node):
         metadata = _resolve_normalize_node(node, node_id=resolved_node_id)
     elif _is_dedupe_node(node):
@@ -387,6 +396,47 @@ def _resolve_dedupe_node(node: WorkflowProjectNode, *, node_id: str) -> dict[str
             "key": key,
             "window": window,
         },
+    }
+
+
+def _resolve_data_operator(node: WorkflowProjectNode, *, node_id: str) -> dict[str, Any]:
+    catalog_id = _read_string((node.ui or {}).get("catalogId"))
+    binding_id = DATA_OPERATOR_CATALOG_BINDINGS.get(catalog_id or "")
+    operator_id = _read_string(node.params.get("operatorId"))
+    operation = binding_id.rsplit(".", 1)[-1] if binding_id else ""
+    operator = get_data_operator_spec(operator_id or "")
+    if not operator_id or operator is None or operator.kind != operation:
+        return {
+            "missing_runtime": _dump_missing_runtime(
+                WorkflowMissingRuntime(
+                    code=MISSING_RUNTIME_PARAMETER,
+                    node_id=node_id,
+                    kind=node.kind,
+                    capability=node.capability,
+                    required_params=["operatorId"],
+                    message=(
+                        f'Data operator "{operator_id or "unknown"}" is not registered '
+                        f'for "{catalog_id or "unknown"}".'
+                    ),
+                )
+            )
+        }
+    return {
+        "binding": {
+            "status": "bound",
+            "binding_id": binding_id,
+            "runtime": "workflow",
+            "channel": "data-operator",
+            "input": {
+                "operatorId": operator_id,
+                "params": {
+                    key: value for key, value in node.params.items() if key != "operatorId"
+                },
+                "inputPort": "recordCandidate[]",
+                "outputPort": "recordCandidate[]",
+            },
+        },
+        "data_operator": {"node_id": node_id, "operator_id": operator_id},
     }
 
 
@@ -896,6 +946,10 @@ def _is_dedupe_node(node: WorkflowProjectNode) -> bool:
     ) == "intelligence.processing.dedupe" or (
         node.kind == "agent" and node.capability == "dedupe"
     )
+
+
+def _is_data_operator_node(node: WorkflowProjectNode) -> bool:
+    return _read_string((node.ui or {}).get("catalogId")) in DATA_OPERATOR_CATALOG_BINDINGS
 
 
 def _is_merge_node(node: WorkflowProjectNode) -> bool:

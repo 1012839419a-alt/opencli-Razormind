@@ -1,0 +1,9 @@
+{
+  "name": "opencli-plugin-real-site-case",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Live Hacker News end-to-end adapter case for OpenCLI Admin",
+  "peerDependencies": {
+    "@jackwener/opencli": ">=1.8.6"
+  }
+}

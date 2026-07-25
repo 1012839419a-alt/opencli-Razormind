@@ -19,6 +19,10 @@ from backend.schemas.workflow import (
     WorkflowNodeKind,
     WorkflowRuntimeCapability,
 )
+from backend.workflow.data_operators import (
+    list_data_operator_packs,
+    list_data_operator_specs,
+)
 from backend.workflow.native_intelligence_executor import (
     NATIVE_INTELLIGENCE_LIFECYCLE_ACTIONS,
 )
@@ -373,6 +377,7 @@ def _catalog_capabilities() -> list[WorkflowRuntimeCapability]:
                 probes=["typed_port_contract_registered"],
             ),
         ),
+        *_data_operator_capabilities(),
         _blocked_catalog(
             "intelligence.agent.summary",
             "LLM Summary",
@@ -721,6 +726,132 @@ def _catalog_capabilities() -> list[WorkflowRuntimeCapability]:
             missing=["workflow_review_sink_binding"],
         ),
     ]
+
+
+_DATA_OPERATOR_PORTS = {
+    "generate": (["recordCandidate[]"], ["recordCandidate[]"]),
+    "filter": (["recordCandidate[]"], ["recordCandidate[]"]),
+    "evaluate": (["recordCandidate[]"], ["recordCandidate[]"]),
+    "refine": (["recordCandidate[]"], ["recordCandidate[]"]),
+}
+
+
+def _data_operator_capabilities() -> list[WorkflowRuntimeCapability]:
+    """Expose the registered data operators without exposing their resources."""
+
+    pack_by_operator_id = {
+        spec.id: pack
+        for pack in list_data_operator_packs()
+        for spec in pack.operators
+    }
+    specs_by_kind: dict[str, list[object]] = {}
+    for spec in list_data_operator_specs():
+        catalog_kind = getattr(spec, "kind", "")
+        if catalog_kind in _DATA_OPERATOR_PORTS:
+            specs_by_kind.setdefault(catalog_kind, []).append(spec)
+
+    rows: list[WorkflowRuntimeCapability] = []
+    for catalog_kind in _DATA_OPERATOR_PORTS:
+        specs = specs_by_kind.get(catalog_kind, [])
+        if not specs:
+            continue
+        ordered_specs = sorted(specs, key=lambda spec: getattr(spec, "id"))
+        input_types, output_types = _DATA_OPERATOR_PORTS[catalog_kind]
+        runtime_binding = f"workflow.data.{catalog_kind}"
+        operators = []
+        for spec in ordered_specs:
+            operator = {
+                "id": getattr(spec, "id"),
+                "kind": catalog_kind,
+                "label": getattr(spec, "label", catalog_kind.title()),
+                "description": getattr(spec, "description", ""),
+            }
+            pack = pack_by_operator_id.get(operator["id"])
+            if pack is not None:
+                operator.update({"packId": pack.id, "packVersion": pack.version})
+            operators.append(operator)
+        packs = list(
+            {
+                (operator["packId"], operator["packVersion"])
+                for operator in operators
+                if "packId" in operator
+            }
+        )
+        params = list(
+            dict.fromkeys(
+                param
+                for spec in ordered_specs
+                for param in _manifest_value(
+                    getattr(spec, "params", getattr(spec, "config_keys", ()))
+                )
+            )
+        )
+        rows.append(
+            _capability(
+                id=f"intelligence.data.{catalog_kind}",
+                label=f"Data {catalog_kind.title()}",
+                surface="catalog",
+                status="runnable",
+                backend_available=True,
+                kind="agent",
+                capability="normalize",
+                provider="workflow",
+                runtime_binding=runtime_binding,
+                reason="A registered data operator has an authoritative workflow binding.",
+                tags=["data", "operator", catalog_kind],
+                source="backend.workflow.data_operators",
+                manifest={
+                    **_manifest(
+                        schema=f"capability.data.{catalog_kind}.v1",
+                        input_ports=[
+                            _port("in" if len(input_types) == 1 else f"in{index + 1}", type_)
+                            for index, type_ in enumerate(input_types)
+                        ],
+                        output_ports=[
+                            _port("out" if len(output_types) == 1 else f"out{index + 1}", type_)
+                            for index, type_ in enumerate(output_types)
+                        ],
+                        runtime_binding=runtime_binding,
+                        trace_events=["partial:outputItemCount", "completed"],
+                        probes=["data_operator_registry"],
+                    ),
+                    "operators": operators,
+                    "operatorIds": [operator["id"] for operator in operators],
+                    "packs": [
+                        {"id": pack_id, "version": version}
+                        for pack_id, version in sorted(packs)
+                    ],
+                    "operatorRegistry": "backend.workflow.data_operators",
+                    "params": params,
+                    "artifacts": [
+                        "recordCandidate[]",
+                        "metrics",
+                        "rejectedCandidateIds",
+                    ],
+                    "readiness": {
+                        "status": "runnable",
+                        "operatorRegistry": "available",
+                        "missingReasons": [],
+                    },
+                },
+            )
+        )
+    return rows
+
+
+def _manifest_value(value: object) -> object:
+    """Keep operator declarations JSON-shaped without leaking implementation state."""
+
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        return model_dump()
+    if isinstance(value, tuple):
+        return [_manifest_value(item) for item in value]
+    if isinstance(value, list):
+        return [_manifest_value(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _manifest_value(item) for key, item in value.items()}
+    return value
 
 
 def _manifest(

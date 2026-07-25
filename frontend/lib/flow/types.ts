@@ -87,6 +87,8 @@ export type ParameterInterfaceField = {
   max?: number
   step?: number
   options?: { value: string; label: string }[]
+  optional?: boolean
+  allowCustom?: boolean
 }
 
 export type ParameterInterface = {

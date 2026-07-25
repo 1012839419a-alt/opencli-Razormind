@@ -42,7 +42,9 @@ export function buildParameterInterfaceView({
     return restrict(templateInterfaceView(node, adapter, template))
   }
 
-  const parameterInterface = node.parameterInterface ?? createParameterInterfaceFromInternals(node.id, getNodeInternals(node))
+  const inferredParameterInterface = createParameterInterfaceFromInternals(node.id, getNodeInternals(node))
+  const persistedParameterInterface = node.parameterInterface as ParameterInterface | undefined
+  const parameterInterface = persistedParameterInterface ?? inferredParameterInterface
 
   if (parameterInterface && parameterInterface.fields.length > 0) {
     const isPackage = typeof node.ui?.catalogId === "string" && node.ui.catalogId.startsWith("package.")
@@ -52,11 +54,19 @@ export function buildParameterInterfaceView({
       summary: "Public parameters promoted from node internals.",
       groups: sortedGroups(parameterInterface.groups),
       fields: parameterInterface.fields
-        .map((field) => ({
-          ...field,
-          readonly: field.readonly === true,
-          value: readParameterFieldValue(node, field, adapter, nodes),
-        }))
+        .map((field) => {
+          const inferredField = inferredParameterInterface?.fields.find((candidate) => candidate.id === field.id)
+          const enrichedField = {
+            ...field,
+            optional: field.optional ?? inferredField?.optional,
+            allowCustom: field.allowCustom ?? inferredField?.allowCustom,
+          }
+          return {
+            ...enrichedField,
+            readonly: enrichedField.readonly === true,
+            value: readParameterFieldValue(node, enrichedField, adapter, nodes),
+          }
+        })
         .sort(compareFields),
     })
   }
@@ -110,6 +120,8 @@ export function createParameterInterfaceFromInternals(
       max: param.max,
       step: param.step,
       options: param.options,
+      optional: param.optional,
+      allowCustom: param.allowCustom,
     })),
   )
   if (fields.length === 0) return undefined
@@ -156,7 +168,7 @@ function readParameterFieldValue(
   const boundNode = nodes.find((candidate) => candidate.id === field.binding.nodeId)
   if (boundNode) {
     if (field.binding.source === "params") {
-      return boundNode.data.fields?.find((candidate) => candidate.id === field.binding.fieldId)?.value ?? field.value ?? ""
+      return boundNode.data.fields?.find((candidate) => candidate.id === field.binding.fieldId)?.value ?? fallbackFieldValue(field)
     }
     if (field.binding.source === "data") {
       return boundNode.data[field.binding.fieldId] ?? field.value ?? ""
@@ -164,15 +176,19 @@ function readParameterFieldValue(
   }
 
   if (field.binding.nodeId === node.id || field.binding.nodeId.startsWith(`${node.id}__`)) {
-    if (field.binding.source === "params") return node.params[field.binding.fieldId] ?? field.value ?? ""
+    if (field.binding.source === "params") return node.params[field.binding.fieldId] ?? fallbackFieldValue(field)
     if (field.binding.source === "adapter") {
-      if (field.binding.fieldId === "mode") return adapter?.mode ?? field.value ?? ""
-      return adapter?.config[field.binding.fieldId] ?? field.value ?? ""
+      if (field.binding.fieldId === "mode") return adapter?.mode ?? fallbackFieldValue(field)
+      return adapter?.config[field.binding.fieldId] ?? fallbackFieldValue(field)
     }
-    if (field.binding.source === "data") return node.ui?.[field.binding.fieldId] ?? field.value ?? ""
+    if (field.binding.source === "data") return node.ui?.[field.binding.fieldId] ?? fallbackFieldValue(field)
   }
 
-  return field.value ?? ""
+  return fallbackFieldValue(field)
+}
+
+function fallbackFieldValue(field: ParameterInterfaceField): unknown {
+  return field.optional ? field.value : field.value ?? ""
 }
 
 function templateFieldToParameterField(

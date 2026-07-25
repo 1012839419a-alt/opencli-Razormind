@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+from backend.workflow.data_operators import list_data_operator_specs
+
 RuntimeIOContractStatus = Literal[
     "executable",
     "dispatch_only",
@@ -73,6 +75,22 @@ class RuntimeIOContract:
                 "exposeResourceInternals": False,
             },
         }
+
+
+def _data_operator_input_params(kind: str) -> tuple[str, ...]:
+    return tuple(
+        dict.fromkeys(
+            (
+                "operatorId",
+                *(
+                    key
+                    for spec in list_data_operator_specs()
+                    if spec.kind == kind
+                    for key in spec.config_keys
+                ),
+            )
+        )
+    )
 
 
 RUNTIME_IO_CONTRACTS: dict[str, RuntimeIOContract] = {
@@ -197,6 +215,21 @@ RUNTIME_IO_CONTRACTS: dict[str, RuntimeIOContract] = {
         ),
         fixture_coverage=("workflow-opencli-hda-trace-api",),
     ),
+    **{
+        f"workflow.data.{operation}": RuntimeIOContract(
+            binding_id=f"workflow.data.{operation}",
+            status="executable",
+            input_ports=(("in", "recordCandidate[]"),),
+            output_ports=(("out", "recordCandidate[]"),),
+            input_params=_data_operator_input_params(operation),
+            output_artifacts=("recordCandidate[]", "metrics", "rejectedCandidateIds"),
+            permission_gate=(),
+            config_gate=("data_operator_registry",),
+            event_shape=("partial:outputItemCount", "completed"),
+            fixture_coverage=("workflow-compile-api",),
+        )
+        for operation in ("generate", "filter", "evaluate", "refine")
+    },
     "workflow.flow.merge": RuntimeIOContract(
         binding_id="workflow.flow.merge",
         status="executable",

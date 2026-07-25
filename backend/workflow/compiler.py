@@ -20,6 +20,7 @@ from backend.schemas.workflow import (
     WorkflowProjectNode,
     WorkflowRuntimePreview,
 )
+from backend.workflow.data_operators import get_data_operator_spec
 from backend.workflow.hda_templates import materialize_hda_templates
 from backend.workflow.native_intelligence_executor import (
     NATIVE_INTELLIGENCE_ACTION_BY_TOOL_ID,
@@ -29,7 +30,10 @@ from backend.workflow.node_registry import (
     resolve_node_origin,
 )
 from backend.workflow.runtime_contracts import runtime_io_contract
-from backend.workflow.runtime_registry import resolve_runtime_metadata
+from backend.workflow.runtime_registry import (
+    DATA_OPERATOR_CATALOG_BINDINGS,
+    resolve_runtime_metadata,
+)
 
 INTERNAL_ID_SEPARATOR = "::"
 MAX_NODE_PATH_DEPTH = 4
@@ -68,6 +72,13 @@ _PORT_CONTRACTS: dict[str, tuple[list[_PortContract], list[_PortContract]]] = {
         [_PortContract("in", "input", "recordCandidate[]")],
         [_PortContract("out", "output", "recordCandidate[]")],
     ),
+    **{
+        catalog_id: (
+            [_PortContract("in", "input", "recordCandidate[]")],
+            [_PortContract("out", "output", "recordCandidate[]")],
+        )
+        for catalog_id in DATA_OPERATOR_CATALOG_BINDINGS
+    },
     "intelligence.flow.merge": (
         [
             _PortContract("in1", "input", "recordCandidate[]"),
@@ -366,6 +377,24 @@ def _validate_node_origin(
         )
 
     origin = resolve_node_origin(node)
+    catalog_id = _read_string((node.ui or {}).get("catalogId"))
+    binding_id = DATA_OPERATOR_CATALOG_BINDINGS.get(catalog_id or "")
+    if binding_id:
+        operator_id = _read_string(node.params.get("operatorId"))
+        operation = binding_id.rsplit(".", 1)[-1]
+        operator = get_data_operator_spec(operator_id or "")
+        if operator is None or operator.kind != operation:
+            errors.append(
+                WorkflowCompileError(
+                    code="invalid_data_operator",
+                    message=(
+                        f'Data operator "{operator_id or "unknown"}" is not registered '
+                        f'for "{catalog_id}".'
+                    ),
+                    node_id=node.id,
+                    path=[*path_prefix, "params", "operatorId"],
+                )
+            )
     if origin.kind == "legacy" and origin.notes:
         errors.append(
             WorkflowCompileError(

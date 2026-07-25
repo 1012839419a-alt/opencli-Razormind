@@ -4,6 +4,7 @@ import subprocess
 import pytest
 
 from backend.workflow import opencli_adapter_nodes
+from backend.workflow.data_operators import DataOperatorSpec, list_data_operator_specs
 from backend.workflow.native_intelligence_executor import (
     NATIVE_INTELLIGENCE_LIFECYCLE_ACTIONS,
 )
@@ -517,6 +518,91 @@ async def test_workflow_capabilities_project_real_backend_surfaces(client, monke
         "okx_market_ticker_snapshot"
     )
     assert "realtime.source.stream" not in catalog
+
+
+@pytest.mark.asyncio
+async def test_workflow_capabilities_project_data_operator_registry(client, monkeypatch):
+    monkeypatch.setattr(
+        "backend.workflow.capability_projection.get_opencli_adapter_node_summary",
+        lambda: {"total": 0},
+    )
+    response = await client.get("/api/v1/workflows/capabilities")
+
+    assert response.status_code == 200
+    catalog = {item["id"]: item for item in response.json()["data"]["catalog"]}
+    specs = {spec.id: spec for spec in list_data_operator_specs()}
+    expected = {
+        "generate": "core.generate.instruction-pairs",
+        "filter": "core.filter.quality",
+        "evaluate": "core.evaluate.quality",
+        "refine": "core.refine.text",
+    }
+
+    for kind, operator_id in expected.items():
+        capability = catalog[f"intelligence.data.{kind}"]
+        manifest = capability["manifest"]
+        assert capability["status"] == "runnable"
+        assert capability["backendAvailable"] is True
+        assert capability["runtimeBinding"] == f"workflow.data.{kind}"
+        assert manifest["ports"] == {
+            "inputs": [{"name": "in", "type": "recordCandidate[]"}],
+            "outputs": [{"name": "out", "type": "recordCandidate[]"}],
+        }
+        assert manifest["operatorIds"] == [operator_id]
+        assert manifest["operators"][0]["id"] == operator_id
+        assert manifest["operators"][0]["kind"] == kind
+        assert manifest["operators"][0]["packId"] == "builtin.core-data"
+        assert manifest["operators"][0]["packVersion"] == "1.0.0"
+        assert manifest["packs"] == [
+            {"id": "builtin.core-data", "version": "1.0.0"}
+        ]
+        assert manifest["operatorRegistry"] == "backend.workflow.data_operators"
+        assert manifest["params"] == list(specs[operator_id].config_keys)
+        assert manifest["artifacts"] == [
+            "recordCandidate[]",
+            "metrics",
+            "rejectedCandidateIds",
+        ]
+        assert manifest["trace"]["events"] == [
+            "partial:outputItemCount",
+            "completed",
+        ]
+        assert manifest["readiness"] == {
+            "status": "runnable",
+            "operatorRegistry": "available",
+            "missingReasons": [],
+        }
+        assert manifest["contract"]["canvas"]["exposeResourceInternals"] is False
+
+
+@pytest.mark.asyncio
+async def test_data_operator_projection_groups_same_kind_specs(client, monkeypatch):
+    specs = list_data_operator_specs()
+    monkeypatch.setattr(
+        "backend.workflow.capability_projection.list_data_operator_specs",
+        lambda: (*specs, DataOperatorSpec(
+            id="core.evaluate.secondary",
+            kind="evaluate",
+            label="Evaluate secondary",
+            description="Additional deterministic evaluation.",
+            config_keys=("threshold",),
+        )),
+    )
+    monkeypatch.setattr(
+        "backend.workflow.capability_projection.get_opencli_adapter_node_summary",
+        lambda: {"total": 0},
+    )
+
+    response = await client.get("/api/v1/workflows/capabilities")
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    capabilities = [item for item in data["catalog"] if item["id"] == "intelligence.data.evaluate"]
+    assert len(capabilities) == 1
+    manifest = capabilities[0]["manifest"]
+    assert manifest["schema"] == "capability.data.evaluate.v1"
+    assert manifest["operatorIds"] == ["core.evaluate.quality", "core.evaluate.secondary"]
+    assert manifest["params"] == ["minLength", "maxLength", "threshold"]
 
 
 def test_opencli_adapter_nodes_classify_manifest_entries(monkeypatch):

@@ -41,7 +41,13 @@ def draft_workflow_demand(body: WorkflowDemandDraftRequest) -> WorkflowPatchResp
             ],
         )
 
-    operations = _native_first_loop_operations(body.project, sources, body.text, body.locale)
+    operations = _native_first_loop_operations(
+        body.project,
+        sources,
+        body.text,
+        body.locale,
+        data_operators=_data_operators_for_need(body.text),
+    )
     return preview_workflow_patch(body.project, operations)
 
 
@@ -50,6 +56,8 @@ def _native_first_loop_operations(
     sources: list[dict[str, Any]],
     demand_text: str,
     locale: str | None,
+    *,
+    data_operators: list[dict[str, str]],
 ) -> list[WorkflowPatchOperation]:
     operations: list[WorkflowPatchOperation] = []
     used_node_ids = {node.id for node in project.nodes}
@@ -132,6 +140,9 @@ def _native_first_loop_operations(
         )
 
     merge_id = _unique_id(used_node_ids, "merge-candidates")
+    operator_ids = [
+        _unique_id(used_node_ids, f"{operator['id']}-data") for operator in data_operators
+    ]
     accept_id = _unique_id(used_node_ids, "accept-records")
     sink_id = _unique_id(used_node_ids, "record-sink")
     operations.extend(
@@ -195,6 +206,23 @@ def _native_first_loop_operations(
             ),
         ]
     )
+    for index, (operator, operator_id) in enumerate(zip(data_operators, operator_ids)):
+        operations.append(
+            WorkflowPatchOperation(
+                op="add_node",
+                node=WorkflowProjectNode(
+                    id=operator_id,
+                    kind="agent",
+                    capability="normalize",
+                    params={"operatorId": operator["operatorId"]},
+                    ui={
+                        "catalogId": operator["catalogId"],
+                        "label": operator["label"],
+                        "position": {"x": 960 + index * 260, "y": 240},
+                    },
+                ),
+            )
+        )
     for index, normalize_id in enumerate(normalize_ids, start=1):
         operations.append(
             WorkflowPatchOperation(
@@ -208,13 +236,40 @@ def _native_first_loop_operations(
                 ),
             )
         )
+    terminal_id = operator_ids[-1] if operator_ids else merge_id
+    if operator_ids:
+        operations.append(
+            WorkflowPatchOperation(
+                op="connect_nodes",
+                edge=WorkflowProjectEdge(
+                    id=_unique_id(used_edge_ids, f"e-{merge_id}-{operator_ids[0]}"),
+                    source=merge_id,
+                    target=operator_ids[0],
+                    sourcePort="out",
+                    targetPort="in",
+                ),
+            )
+        )
+        for source_id, target_id in zip(operator_ids, operator_ids[1:]):
+            operations.append(
+                WorkflowPatchOperation(
+                    op="connect_nodes",
+                    edge=WorkflowProjectEdge(
+                        id=_unique_id(used_edge_ids, f"e-{source_id}-{target_id}"),
+                        source=source_id,
+                        target=target_id,
+                        sourcePort="out",
+                        targetPort="in",
+                    ),
+                )
+            )
     operations.extend(
         [
             WorkflowPatchOperation(
                 op="connect_nodes",
                 edge=WorkflowProjectEdge(
-                    id=_unique_id(used_edge_ids, f"e-{merge_id}-{accept_id}"),
-                    source=merge_id,
+                    id=_unique_id(used_edge_ids, f"e-{terminal_id}-{accept_id}"),
+                    source=terminal_id,
                     target=accept_id,
                     sourcePort="out",
                     targetPort="candidates",
@@ -265,6 +320,64 @@ def _source_slots_for_need(text: str) -> list[dict[str, Any]]:
         )
 
     return slots
+
+
+def _data_operators_for_need(text: str) -> list[dict[str, str]]:
+    """Return the smallest reviewable data-operator chain the demand asks for."""
+
+    normalized = text.lower()
+    training_data = any(
+        token in normalized
+        for token in ("训练数据", "sft", "instruction", "instruction data", "微调数据")
+    )
+    quality_work = training_data or any(
+        token in normalized
+        for token in (
+            "数据清洗",
+            "清洗",
+            "quality",
+            "filter",
+            "evaluate",
+            "refine",
+            "质量",
+            "过滤",
+            "评估",
+            "筛选",
+        )
+    )
+    if not quality_work:
+        return []
+
+    operators = [
+        {
+            "id": "refine",
+            "catalogId": "intelligence.data.refine",
+            "operatorId": "core.refine.text",
+            "label": "Refine Data",
+        },
+        {
+            "id": "filter",
+            "catalogId": "intelligence.data.filter",
+            "operatorId": "core.filter.quality",
+            "label": "Filter Quality",
+        },
+        {
+            "id": "evaluate",
+            "catalogId": "intelligence.data.evaluate",
+            "operatorId": "core.evaluate.quality",
+            "label": "Evaluate Quality",
+        },
+    ]
+    if training_data:
+        operators.append(
+            {
+                "id": "generate",
+                "catalogId": "intelligence.data.generate",
+                "operatorId": "core.generate.instruction-pairs",
+                "label": "Generate Instruction Pairs",
+            }
+        )
+    return operators
 
 
 def _keyword_from_need(text: str) -> str:

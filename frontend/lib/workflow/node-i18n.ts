@@ -36,6 +36,22 @@ const NODE_TEXT: Record<string, Record<WorkflowLanguage, LocalizedNodeText>> = {
     "zh-CN": { label: "去重条目", description: "按标题、时间和来源去重" },
     "en-US": { label: "Dedupe Items", description: "Deduplicate by title, time, and source" },
   },
+  "intelligence.data.generate": {
+    "zh-CN": { label: "生成数据", description: "生成可继续处理的记录候选项" },
+    "en-US": { label: "Generate Data", description: "Generate record candidates for downstream processing" },
+  },
+  "intelligence.data.filter": {
+    "zh-CN": { label: "过滤数据", description: "按质量阈值筛选记录候选项" },
+    "en-US": { label: "Filter Data", description: "Filter record candidates by quality threshold" },
+  },
+  "intelligence.data.evaluate": {
+    "zh-CN": { label: "评估数据", description: "按质量规则评估记录候选项" },
+    "en-US": { label: "Evaluate Data", description: "Evaluate record candidates against a quality rubric" },
+  },
+  "intelligence.data.refine": {
+    "zh-CN": { label: "优化数据", description: "按指令改进记录候选项" },
+    "en-US": { label: "Refine Data", description: "Refine record candidates using an instruction" },
+  },
   "intelligence.agent.summary": {
     "zh-CN": { label: "LLM 摘要", description: "生成短摘要和影响解释" },
     "en-US": { label: "LLM Summary", description: "Generate short summaries with impact notes" },
@@ -539,6 +555,10 @@ export function getNodeDisplayId(data: WorkflowNodeData): string | undefined {
   if (kind === "notify" && typeof canonical?.adapter === "string" && canonical.adapter.startsWith("turbopush")) return "intelligence.output.turbopush-publish"
   if (kind === "notify") return "intelligence.output.webhook"
   if (kind === "agent" && capability === "normalize" && params.fanout === "parallel") return "intelligence.source.pool"
+  if (kind === "agent" && params.operatorId === "core.generate.instruction-pairs") return "intelligence.data.generate"
+  if (kind === "agent" && params.operatorId === "core.filter.quality") return "intelligence.data.filter"
+  if (kind === "agent" && params.operatorId === "core.evaluate.quality") return "intelligence.data.evaluate"
+  if (kind === "agent" && params.operatorId === "core.refine.text") return "intelligence.data.refine"
   if (kind === "agent" && capability === "normalize") return "intelligence.processing.normalize"
   if (kind === "agent" && capability === "dedupe") return "intelligence.processing.dedupe"
   if (kind === "agent" && capability === "summarize") return "intelligence.agent.summary"

@@ -50,6 +50,7 @@ from backend.workflow.block_reasons import (
     SOURCE_OUTPUT_REQUIRED,
 )
 from backend.workflow.compiler import INTERNAL_ID_SEPARATOR, compile_workflow_project
+from backend.workflow.data_operators import execute_data_operator
 from backend.workflow.event_mirror import publish_workflow_run_event_mirror
 from backend.workflow.fleet_inventory import match_workflow_fleet_capability
 from backend.workflow.intelligence_store import (
@@ -75,6 +76,7 @@ from backend.workflow.realtime_market_executor import (
 )
 from backend.workflow.runtime_registry import (
     COLLECTION_OUTPUT_BINDING_ID,
+    DATA_OPERATOR_CATALOG_BINDINGS,
     DEDUPE_BINDING_ID,
     EXTERNAL_TOOL_BINDING_ID,
     INBOX_STORE_BINDING_ID,
@@ -122,6 +124,7 @@ class _StoredWorkflowRun:
 
 
 _RUNS: dict[str, _StoredWorkflowRun] = {}
+_DATA_OPERATOR_BINDING_IDS = set(DATA_OPERATOR_CATALOG_BINDINGS.values())
 
 
 def build_opencli_hda_trace(
@@ -610,8 +613,16 @@ async def start_workflow_run(
                 reason = WorkflowRunBlockReason(
                     code=code,
                     message=str(exc),
-                    source="native_intelligence",
-                    details={"exceptionType": type(exc).__name__},
+                    source=(
+                        "data_operator"
+                        if _binding_id(node) in _DATA_OPERATOR_BINDING_IDS
+                        else "native_intelligence"
+                    ),
+                    details={
+                        "bindingId": _binding_id(node),
+                        "operatorId": _read_string(_binding_input(node).get("operatorId")),
+                        "exceptionType": type(exc).__name__,
+                    },
                 )
                 emitter.emit(
                     node,
@@ -1567,6 +1578,7 @@ def _is_first_loop_native_node(node: CompiledWorkflowNode) -> bool:
     return _is_external_tool_node(node) or binding.get("binding_id") in {
         NORMALIZE_BINDING_ID,
         DEDUPE_BINDING_ID,
+        *_DATA_OPERATOR_BINDING_IDS,
         MERGE_BINDING_ID,
         ROUTER_ROUTE_BINDING_ID,
         RECORD_ACCEPTANCE_BINDING_ID,
@@ -1775,6 +1787,37 @@ async def _execute_native_node(
                 "lineage": _lineage_pointer(node),
             },
             deduplicated,
+        )
+    if binding_id in _DATA_OPERATOR_BINDING_IDS:
+        binding_input = _binding_input(node)
+        operator_id = _read_string(binding_input.get("operatorId"))
+        if operator_id is None:
+            raise ValueError(f"Data operator binding {binding_id} is missing operatorId")
+        result = execute_data_operator(
+            operator_id,
+            input_items,
+            _read_dict(binding_input.get("params")) or dict(node.params),
+        )
+        output_items = [
+            _append_data_operator_lineage(item, node, operator_id=operator_id, run_id=run_id)
+            for item in result.items
+        ]
+        rejected_count = getattr(result, "rejected_count", result.metrics.get("rejectedCount", 0))
+        rejected_candidate_ids = list(getattr(result, "rejected_candidate_ids", ()))
+        rejected_candidate_ids_truncated = len(rejected_candidate_ids) > 100
+        return (
+            {
+                "bindingId": binding_id,
+                "operatorId": operator_id,
+                "inputItemCount": len(input_items),
+                "outputItemCount": len(output_items),
+                "rejectedCount": rejected_count,
+                "rejectedCandidateIds": rejected_candidate_ids[:100],
+                "rejectedCandidateIdsTruncated": rejected_candidate_ids_truncated,
+                "metrics": result.metrics,
+                "lineage": _lineage_pointer(node),
+            },
+            output_items,
         )
     if binding_id == MERGE_BINDING_ID:
         binding = _read_dict(node.runtime.get("binding"))
@@ -2460,6 +2503,23 @@ def _append_lineage(
     return updated
 
 
+def _append_data_operator_lineage(
+    item: dict[str, Any],
+    node: CompiledWorkflowNode,
+    *,
+    operator_id: str,
+    run_id: str,
+) -> dict[str, Any]:
+    """Keep an operator's own lineage marker while adding the workflow step."""
+
+    updated = dict(item)
+    lineage = item.get("lineage")
+    entries = list(lineage) if isinstance(lineage, list) else ([lineage] if lineage else [])
+    entries.append({"nodeId": node.id, "step": operator_id, "runId": run_id})
+    updated["lineage"] = entries
+    return updated
+
+
 def _dedupe_runtime_items(
     node: CompiledWorkflowNode,
     input_items: list[dict[str, Any]],
@@ -2778,6 +2838,8 @@ def _notify_send_block_reason(
 
 def _native_node_started_message(node: CompiledWorkflowNode) -> str:
     binding_id = _binding_id(node)
+    if binding_id in _DATA_OPERATOR_BINDING_IDS:
+        return "Data operator started"
     if binding_id == NORMALIZE_BINDING_ID:
         return "Normalize transform started"
     if binding_id == DEDUPE_BINDING_ID:
@@ -2803,6 +2865,8 @@ def _native_node_started_message(node: CompiledWorkflowNode) -> str:
 
 def _native_node_partial_message(node: CompiledWorkflowNode) -> str:
     binding_id = _binding_id(node)
+    if binding_id in _DATA_OPERATOR_BINDING_IDS:
+        return "Data operator emitted items"
     if binding_id == NORMALIZE_BINDING_ID:
         return "Record Candidates projected"
     if binding_id == DEDUPE_BINDING_ID:
@@ -2828,6 +2892,8 @@ def _native_node_partial_message(node: CompiledWorkflowNode) -> str:
 
 def _native_node_completed_message(node: CompiledWorkflowNode) -> str:
     binding_id = _binding_id(node)
+    if binding_id in _DATA_OPERATOR_BINDING_IDS:
+        return "Data operator completed"
     if binding_id == NORMALIZE_BINDING_ID:
         return "Normalize transform completed"
     if binding_id == DEDUPE_BINDING_ID:

@@ -13,6 +13,7 @@ from backend.models.record import CollectedRecord
 from backend.models.source import DataSource
 from backend.models.task import CollectionTask
 from backend.models.workflow_run import WorkflowRun, WorkflowRunEvent
+from backend.workflow import opencli_hda_tracer
 from backend.workflow.opencli_hda_tracer import _RUNS
 from tests.fixtures.workflow_conformance import workflow_conformance_project
 from tests.integration.test_workflow_compile_api import (
@@ -155,6 +156,96 @@ def _multi_source_opencli_hda_project() -> dict:
             "canWriteInbox": True,
             "allowedDomains": ["bilibili.com", "xiaohongshu.com"],
         },
+    }
+
+
+def _data_operator_chain_project() -> dict:
+    return {
+        "id": "wf-data-operator-chain",
+        "name": "Data operator chain",
+        "profile": "intelligence",
+        "version": 1,
+        "nodes": [
+            {
+                "id": "seed-candidates",
+                "kind": "source",
+                "capability": "fetch",
+                "adapter": "fixture-source",
+                "params": {
+                    "fixtureItems": [
+                        {
+                            "title": "  Release note  ",
+                            "content": (
+                                "  Contact team@example.com for the complete release note.  "
+                            ),
+                        },
+                        {"title": "Discard", "content": "discard this candidate"},
+                    ]
+                },
+            },
+            {
+                "id": "normalize-candidates",
+                "kind": "agent",
+                "capability": "normalize",
+                "params": {},
+                "ui": {"catalogId": "intelligence.processing.normalize"},
+            },
+            {
+                "id": "refine-items",
+                "kind": "action",
+                "capability": "store",
+                "params": {"operatorId": "core.refine.text", "redactEmail": True},
+                "ui": {"catalogId": "intelligence.data.refine"},
+            },
+            {
+                "id": "filter-items",
+                "kind": "action",
+                "capability": "store",
+                "params": {
+                    "operatorId": "core.filter.quality",
+                    "requiredFields": ["title", "content"],
+                    "minLength": 20,
+                    "blocklist": ["discard"],
+                },
+                "ui": {"catalogId": "intelligence.data.filter"},
+            },
+            {
+                "id": "evaluate-items",
+                "kind": "action",
+                "capability": "store",
+                "params": {"operatorId": "core.evaluate.quality", "minLength": 20},
+                "ui": {"catalogId": "intelligence.data.evaluate"},
+            },
+            {
+                "id": "generate-items",
+                "kind": "action",
+                "capability": "store",
+                "params": {"operatorId": "core.generate.instruction-pairs"},
+                "ui": {"catalogId": "intelligence.data.generate"},
+            },
+        ],
+        "edges": [
+            {"id": "seed-normalize", "source": "seed-candidates", "target": "normalize-candidates"},
+            {"id": "normalize-refine", "source": "normalize-candidates", "target": "refine-items"},
+            {"id": "refine-filter", "source": "refine-items", "target": "filter-items"},
+            {"id": "filter-evaluate", "source": "filter-items", "target": "evaluate-items"},
+            {"id": "evaluate-generate", "source": "evaluate-items", "target": "generate-items"},
+        ],
+        "settings": {
+            "timezone": "Asia/Shanghai",
+            "deterministicSimulation": True,
+            "maxItemsPerRun": 20,
+        },
+        "adapters": [
+            {
+                "id": "fixture-source",
+                "type": "source",
+                "provider": "fixture",
+                "mode": "fixture",
+                "config": {},
+            }
+        ],
+        "agentPermissions": {"canWriteInbox": True},
     }
 
 
@@ -1214,6 +1305,81 @@ async def test_workflow_run_moves_data_between_operator_implementation_boundarie
     assert clean_partial["details"]["lineage"]["dependsOn"] == [
         "collect-operator::collect-implementation"
     ]
+
+
+@pytest.mark.asyncio
+async def test_workflow_run_executes_data_operator_chain_with_lineage_and_metrics(
+    client, monkeypatch
+):
+    output_batches: list[list[dict]] = []
+    operator_inputs: dict[str, list[dict]] = {}
+    execute = opencli_hda_tracer.execute_data_operator
+
+    def capture_outputs(operator_id: str, items: list[dict], params: dict):
+        operator_inputs[operator_id] = items
+        result = execute(operator_id, items, params)
+        output_batches.append(result.items)
+        return result
+
+    monkeypatch.setattr(opencli_hda_tracer, "execute_data_operator", capture_outputs)
+    response = await client.post(
+        "/api/v1/workflows/runs",
+        json={
+            "project": _data_operator_chain_project(),
+            "runId": "run-data-operator-chain",
+            "traceId": "trace-data-operator-chain",
+        },
+    )
+
+    assert response.status_code == 202
+    assert response.json()["data"]["status"] == "completed"
+    events = (await client.get("/api/v1/workflows/runs/run-data-operator-chain/events")).json()[
+        "data"
+    ]
+    partials = {
+        event["nodeId"]: event["details"] for event in events if event["eventType"] == "partial"
+    }
+
+    expected = (
+        ("refine-items", "workflow.data.refine", "core.refine.text", 2, 2, 0),
+        ("filter-items", "workflow.data.filter", "core.filter.quality", 2, 1, 1),
+        ("evaluate-items", "workflow.data.evaluate", "core.evaluate.quality", 1, 1, 0),
+        (
+            "generate-items",
+            "workflow.data.generate",
+            "core.generate.instruction-pairs",
+            1,
+            1,
+            0,
+        ),
+    )
+    for node_id, binding_id, operator_id, input_count, output_count, rejected_count in expected:
+        details = partials[node_id]
+        assert details["bindingId"] == binding_id
+        assert details["operatorId"] == operator_id
+        assert details["inputItemCount"] == input_count
+        assert details["outputItemCount"] == output_count
+        assert details["rejectedCount"] == rejected_count
+        assert details["metrics"]["inputCount"] == input_count
+        assert details["metrics"]["outputCount"] == output_count
+        assert details["lineage"]["nodeId"] == node_id
+
+    assert partials["filter-items"]["metrics"]["rejectionReasons"] == {"blocklist_match": 1}
+    rejected_candidate = next(
+        item
+        for item in operator_inputs["core.filter.quality"]
+        if item["normalizedData"]["title"] == "Discard"
+    )
+    assert partials["filter-items"]["rejectedCandidateIds"] == [
+        rejected_candidate["candidateId"]
+    ]
+    assert partials["filter-items"]["rejectedCandidateIdsTruncated"] is False
+    assert partials["generate-items"]["lineage"]["dependsOn"] == ["evaluate-items"]
+    generated = output_batches[-1][0]
+    assert "title" not in generated and "content" not in generated
+    assert generated["normalizedData"]["response"] == (
+        "Contact [REDACTED_EMAIL] for the complete release note."
+    )
 
 
 @pytest.mark.asyncio

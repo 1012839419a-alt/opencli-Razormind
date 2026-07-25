@@ -260,7 +260,9 @@ function canonicalInternalsFromFallback(internals: NodeInternals): NonNullable<W
         stepCapability: stepItem.capability,
         evidence: stepItem.evidence,
         ...Object.fromEntries(
-          (stepItem.exposedParams ?? []).map((param) => [param.binding?.fieldId ?? param.id, param.value]),
+          (stepItem.exposedParams ?? [])
+            .filter((param) => param.value !== undefined)
+            .map((param) => [param.binding?.fieldId ?? param.id, param.value]),
         ),
       },
       ui: {
@@ -785,8 +787,11 @@ function writeBoundValueToNode(
   value: unknown,
 ): WorkflowNode {
   if (source === "params" || source === "adapter") {
-    const nextValue = String(value ?? "")
     const fields = node.data.fields ?? []
+    if (value === undefined) {
+      return { ...node, data: { ...node.data, fields: fields.filter((field) => field.id !== fieldId) } }
+    }
+    const nextValue = String(value)
     const hasField = fields.some((field) => field.id === fieldId)
     return {
       ...node,
@@ -800,6 +805,18 @@ function writeBoundValueToNode(
   }
   if (source === "data") return { ...node, data: { ...node.data, [fieldId]: value } }
   return node
+}
+
+function applyParamsPatch(
+  params: Record<string, unknown>,
+  patch: Record<string, unknown>,
+): Record<string, unknown> {
+  const next = { ...params }
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === undefined) delete next[key]
+    else next[key] = value
+  }
+  return next
 }
 
 export const useFlowStore = create<FlowState>((set, get) => ({
@@ -948,7 +965,7 @@ export const useFlowStore = create<FlowState>((set, get) => ({
     set((state) => {
       const target = findProjectNodeByCanvasId(state.workflowProject, nodeId)
       if (!target) return {}
-      const nextParams = { ...target.params, ...paramsPatch }
+      const nextParams = applyParamsPatch(target.params, paramsPatch)
       const nextSources =
         nextParams.template === "opencli-multi-source" && isOpenCLISourceSlotArray(nextParams.sources)
           ? nextParams.sources
@@ -975,7 +992,7 @@ export const useFlowStore = create<FlowState>((set, get) => ({
         ],
         nodes: updateCanonicalProjectNodeByCanvasId(state.workflowProject, nodeId, (node) => ({
           ...node,
-          params: { ...node.params, ...paramsPatch },
+          params: applyParamsPatch(node.params, paramsPatch),
           ...(nextSources ? { internals: buildOpenCLIMultiSourceHDAInternals(nextSources) } : {}),
         })).nodes,
       })
@@ -1053,7 +1070,7 @@ export const useFlowStore = create<FlowState>((set, get) => ({
       if (binding.source === "params") {
         projectNodes = updateCanonicalProjectNodeByCanvasId(projectNodes, backingNodeId, (node) => ({
           ...node,
-          params: { ...node.params, [binding.fieldId]: value },
+          params: applyParamsPatch(node.params, { [binding.fieldId]: value }),
         }))
       } else if (binding.source === "data") {
         projectNodes = updateCanonicalProjectNodeByCanvasId(projectNodes, backingNodeId, (node) => ({

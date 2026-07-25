@@ -1703,3 +1703,104 @@ async def test_compile_resolves_webhook_trigger_input_contract(client):
         "envelope": "runtimeInputEnvelope",
     }
     assert "missing_runtime" not in node["runtime"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("catalog_id", "operator_id", "binding_id", "contract_params"),
+    [
+        (
+            "intelligence.data.generate",
+            "core.generate.instruction-pairs",
+            "workflow.data.generate",
+            ["operatorId", "instructionTemplate"],
+        ),
+        (
+            "intelligence.data.filter",
+            "core.filter.quality",
+            "workflow.data.filter",
+            ["operatorId", "requiredFields", "minLength", "maxLength", "blocklist", "textField"],
+        ),
+        (
+            "intelligence.data.evaluate",
+            "core.evaluate.quality",
+            "workflow.data.evaluate",
+            ["operatorId", "minLength", "maxLength"],
+        ),
+        (
+            "intelligence.data.refine",
+            "core.refine.text",
+            "workflow.data.refine",
+            ["operatorId", "fields", "unicodeForm", "redactEmail", "redactPhone"],
+        ),
+    ],
+)
+async def test_compile_resolves_data_operator_contracts(
+    client, catalog_id, operator_id, binding_id, contract_params
+):
+    project = _valid_workflow_project()
+    project["nodes"] = [
+        {
+            "id": "data-operator",
+            "kind": "agent",
+            "capability": "normalize",
+            "params": {"operatorId": operator_id, "customOption": "kept"},
+            "ui": {"catalogId": catalog_id},
+        }
+    ]
+    project["edges"] = []
+    project["adapters"] = []
+
+    response = await client.post("/api/v1/workflows/compile", json={"project": project})
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["valid"] is True
+    node = data["plan"]["runtime"]["nodes"][0]
+    binding = node["runtime"]["binding"]
+    assert binding["binding_id"] == binding_id
+    assert binding["input"] == {
+        "operatorId": operator_id,
+        "params": {"customOption": "kept"},
+        "inputPort": "recordCandidate[]",
+        "outputPort": "recordCandidate[]",
+    }
+    assert binding["contract"]["inputShape"]["ports"] == [
+        {"name": "in", "type": "recordCandidate[]"}
+    ]
+    assert binding["contract"]["inputShape"]["params"] == contract_params
+    assert binding["contract"]["outputShape"]["ports"] == [
+        {"name": "out", "type": "recordCandidate[]"}
+    ]
+    assert binding["contract"]["outputShape"]["artifacts"] == [
+        "recordCandidate[]",
+        "metrics",
+        "rejectedCandidateIds",
+    ]
+    assert binding["contract"]["eventShape"]["events"] == [
+        "partial:outputItemCount",
+        "completed",
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operator_id", ["core.refine.text", "core.generate.unknown"])
+async def test_compile_rejects_unknown_or_wrong_kind_data_operator(client, operator_id):
+    project = _valid_workflow_project()
+    project["nodes"] = [
+        {
+            "id": "data-operator",
+            "kind": "agent",
+            "capability": "normalize",
+            "params": {"operatorId": operator_id},
+            "ui": {"catalogId": "intelligence.data.generate"},
+        }
+    ]
+    project["edges"] = []
+    project["adapters"] = []
+
+    response = await client.post("/api/v1/workflows/compile", json={"project": project})
+
+    assert response.status_code == 200
+    errors = response.json()["data"]["errors"]
+    assert any(error["code"] == "invalid_data_operator" for error in errors)

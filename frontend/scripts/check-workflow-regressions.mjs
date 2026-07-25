@@ -37,8 +37,10 @@ registerHooks({
     }
     if (url.endsWith('.ts') || url.endsWith('.tsx')) {
       const source = stripTypeScriptTypes(readFileSync(fileURLToPath(url), 'utf8'), {
-        mode: 'transform',
-        sourceMap: true,
+        // Node 26 removed the transform mode. These regression imports only
+        // execute type-strippable workflow modules, so the native strip mode
+        // keeps the loader compatible without changing application behavior.
+        mode: 'strip',
         sourceUrl: url,
       })
       return { format: 'module', source, shortCircuit: true }

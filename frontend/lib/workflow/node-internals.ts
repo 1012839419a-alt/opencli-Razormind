@@ -20,6 +20,8 @@ export type NodeInternalExposedParam = {
   max?: number
   step?: number
   options?: { value: string; label: string }[]
+  optional?: boolean
+  allowCustom?: boolean
 }
 
 export type NodeInternalStep = {
@@ -201,6 +203,44 @@ const NODE_INTERNALS: Record<string, NodeInternals> = {
       step("coverage", "Drop coverage", "validate", "Records dropped item evidence.", "dropped ids", "future"),
     ],
   },
+  "intelligence.data.generate": dataOperatorInternals(
+    "Generate Data",
+    "Generates record candidates from the configured instruction template.",
+    "core.generate.instruction-pairs",
+    [{ id: "instructionTemplate", label: "Instruction Template", type: "textarea", value: "Use the source material to answer this request: {title}" }],
+  ),
+  "intelligence.data.filter": dataOperatorInternals(
+    "Filter Data",
+    "Filters record candidates with deterministic field, length, and blocklist rules.",
+    "core.filter.quality",
+    [
+      { id: "requiredFields", label: "Required Fields", type: "tokens", value: [], options: candidateFieldOptions() },
+      { id: "minLength", label: "Minimum Length", type: "number", value: 0, min: 0, step: 1 },
+      { id: "maxLength", label: "Maximum Length", type: "number", value: undefined, min: 0, step: 1, optional: true },
+      { id: "blocklist", label: "Blocklist", type: "tokens", value: [], options: blocklistOptions(), allowCustom: true },
+      { id: "textField", label: "Text Field", type: "select", value: "content", options: candidateFieldOptions() },
+    ],
+  ),
+  "intelligence.data.evaluate": dataOperatorInternals(
+    "Evaluate Data",
+    "Evaluates record candidates with deterministic length bounds.",
+    "core.evaluate.quality",
+    [
+      { id: "minLength", label: "Minimum Length", type: "number", value: 20, min: 0, step: 1 },
+      { id: "maxLength", label: "Maximum Length", type: "number", value: undefined, min: 0, step: 1, optional: true },
+    ],
+  ),
+  "intelligence.data.refine": dataOperatorInternals(
+    "Refine Data",
+    "Normalizes configured text fields with optional PII redaction.",
+    "core.refine.text",
+    [
+      { id: "fields", label: "Fields", type: "tokens", value: ["title", "content", "text", "instruction", "response"], options: candidateFieldOptions() },
+      { id: "unicodeForm", label: "Unicode Form", type: "select", value: "NFKC", options: unicodeFormOptions() },
+      { id: "redactEmail", label: "Redact Email", type: "boolean", value: false },
+      { id: "redactPhone", label: "Redact Phone", type: "boolean", value: false },
+    ],
+  ),
   "intelligence.agent.score": {
     title: "Scoring Internals",
     summary: "Turns raw items into ranked signals with an explainable threshold.",
@@ -563,6 +603,10 @@ export function getNodeInternals(node: WorkflowProjectNode | undefined): NodeInt
   if (node.kind === "source" && node.adapter === "jin10-kuaixun") return NODE_INTERNALS["intelligence.source.jin10"]
   if (node.kind === "source" && node.adapter?.startsWith("opencli-")) return NODE_INTERNALS["intelligence.source.opencli-slot"]
   if (node.kind === "agent" && node.capability === "normalize" && node.params.fanout === "parallel") return NODE_INTERNALS["intelligence.source.pool"]
+  if (node.kind === "agent" && node.params.operatorId === "core.generate.instruction-pairs") return NODE_INTERNALS["intelligence.data.generate"]
+  if (node.kind === "agent" && node.params.operatorId === "core.filter.quality") return NODE_INTERNALS["intelligence.data.filter"]
+  if (node.kind === "agent" && node.params.operatorId === "core.evaluate.quality") return NODE_INTERNALS["intelligence.data.evaluate"]
+  if (node.kind === "agent" && node.params.operatorId === "core.refine.text") return NODE_INTERNALS["intelligence.data.refine"]
   if (node.kind === "agent" && node.capability === "normalize") return NODE_INTERNALS["intelligence.processing.normalize"]
   if (node.kind === "agent" && node.capability === "dedupe") return NODE_INTERNALS["intelligence.processing.dedupe"]
   if (node.kind === "agent" && node.capability === "summarize") return NODE_INTERNALS["intelligence.agent.summary"]
@@ -574,6 +618,48 @@ export function getNodeInternals(node: WorkflowProjectNode | undefined): NodeInt
   if (node.kind === "notify" && node.adapter?.startsWith("turbopush")) return NODE_INTERNALS["intelligence.output.turbopush-publish"]
   if (node.kind === "notify" && node.capability === "send") return NODE_INTERNALS["intelligence.output.webhook"]
   return undefined
+}
+
+function dataOperatorInternals(
+  title: string,
+  summary: string,
+  operatorId: string,
+  params: Array<Pick<NodeInternalExposedParam, "id" | "label" | "type" | "value" | "min" | "max" | "step" | "options" | "optional" | "allowCustom">>,
+): NodeInternals {
+  return {
+    title: `${title} Internals`,
+    summary,
+    steps: [
+      step("operator", "Backend operator", "dispatch", "Uses the backend-projected data operator contract.", operatorId, "ready", [
+        exposedParam("operatorId", "Operator ID", "runtime", "Runtime", "text", operatorId, { readonly: true, order: 1 }),
+      ]),
+      step("config", "Operator config", "configure", "Sets the user-facing operator parameters.", "params", "ready", params.map((param, index) =>
+        exposedParam(param.id, param.label, "operator", "Operator", param.type, param.value, {
+          min: param.min,
+          max: param.max,
+          step: param.step,
+          options: param.options,
+          optional: param.optional,
+          allowCustom: param.allowCustom,
+          groupOrder: 2,
+          order: index + 1,
+        }),
+      )),
+      step("output", "Candidate output", "contract", "Passes record candidates to the next operator.", "recordCandidate[]", "ready"),
+    ],
+  }
+}
+
+function candidateFieldOptions() {
+  return ["title", "content", "text", "instruction", "response"].map((value) => ({ value, label: value }))
+}
+
+function blocklistOptions() {
+  return ["spam", "advertisement", "sponsored"].map((value) => ({ value, label: value }))
+}
+
+function unicodeFormOptions() {
+  return ["NFC", "NFD", "NFKC", "NFKD"].map((value) => ({ value, label: value }))
 }
 
 function step(

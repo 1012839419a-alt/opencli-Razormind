@@ -228,9 +228,7 @@ async def test_patch_packages_selected_nodes_into_hda_and_compiles(client):
         "source-jin10",
         "normalize-items",
     ]
-    assert [edge["id"] for edge in package_node["internals"]["edges"]] == [
-        "e-source-normalize"
-    ]
+    assert [edge["id"] for edge in package_node["internals"]["edges"]] == ["e-source-normalize"]
     assert data["compile"]["plan"]["runtime"]["node_ids"] == [
         "collection-hda",
         "collection-hda::source-jin10",
@@ -322,12 +320,8 @@ async def test_patch_materializes_opencli_read_adapter_node(client, monkeypatch)
         "config": {"channel": "opencli"},
     }
 
-    runtime_nodes = {
-        node["id"]: node for node in data["compile"]["plan"]["runtime"]["nodes"]
-    }
-    assert runtime_nodes["source-bbc-news"]["runtime"]["binding"]["channel"] == (
-        "opencli"
-    )
+    runtime_nodes = {node["id"]: node for node in data["compile"]["plan"]["runtime"]["nodes"]}
+    assert runtime_nodes["source-bbc-news"]["runtime"]["binding"]["channel"] == ("opencli")
     assert runtime_nodes["source-bbc-news"]["runtime"]["binding"]["input"] == {
         "site": "bbc",
         "command": "news",
@@ -369,12 +363,8 @@ async def test_patch_materializes_opencli_required_arg_adapter_with_params(
     assert node["params"]["positional_args"] == ["openai"]
     assert node["params"]["args"] == {"limit": 1}
 
-    runtime_nodes = {
-        node["id"]: node for node in data["compile"]["plan"]["runtime"]["nodes"]
-    }
-    assert runtime_nodes["source-x-openai"]["runtime"]["binding"]["channel"] == (
-        "opencli"
-    )
+    runtime_nodes = {node["id"]: node for node in data["compile"]["plan"]["runtime"]["nodes"]}
+    assert runtime_nodes["source-x-openai"]["runtime"]["binding"]["channel"] == ("opencli")
 
 
 @pytest.mark.asyncio
@@ -406,9 +396,7 @@ async def test_patch_materialize_opencli_required_arg_reports_missing_params(
     assert data["valid"] is False
     assert data["project"] is None
     assert data["compile"] is None
-    assert {error["code"] for error in data["errors"]} == {
-        "missing_opencli_adapter_params"
-    }
+    assert {error["code"] for error in data["errors"]} == {"missing_opencli_adapter_params"}
     assert data["missing_capabilities"] == [
         {
             "capability": "opencli.adapter.params",
@@ -462,13 +450,9 @@ async def test_patch_materializes_opencli_write_adapter_as_review_tool_placehold
     }
     assert node["params"]["toolParams"]["args"] == {"text": "hello"}
 
-    runtime_nodes = {
-        node["id"]: node for node in data["compile"]["plan"]["runtime"]["nodes"]
-    }
+    runtime_nodes = {node["id"]: node for node in data["compile"]["plan"]["runtime"]["nodes"]}
     tool_runtime = runtime_nodes["tool-twitter-post"]["runtime"]
-    assert tool_runtime["external_tool"]["dispatch"] == (
-        "blocked_until_tool_capability_binding"
-    )
+    assert tool_runtime["external_tool"]["dispatch"] == ("blocked_until_tool_capability_binding")
     assert tool_runtime["missing_runtime"]["code"] == "missing_tool_capability_binding"
 
 
@@ -503,26 +487,18 @@ async def test_demand_draft_assembles_xiaohongshu_need_into_native_nodes(client)
     ]
 
     nodes = {node["id"]: node for node in data["project"]["nodes"]}
-    assert nodes["source-xiaohongshu"]["ui"]["catalogId"] == (
-        "intelligence.source.opencli-slot"
-    )
+    assert nodes["source-xiaohongshu"]["ui"]["catalogId"] == ("intelligence.source.opencli-slot")
     assert nodes["source-xiaohongshu"]["params"]["demand"]["text"] == "抓小红书热帖"
     assert nodes["source-xiaohongshu"]["params"]["args"] == {"keyword": "热门"}
     assert nodes["normalize-xiaohongshu"]["ui"]["catalogId"] == (
         "intelligence.processing.normalize"
     )
     assert nodes["merge-candidates"]["ui"]["catalogId"] == "intelligence.flow.merge"
-    assert nodes["accept-records"]["ui"]["catalogId"] == (
-        "intelligence.control.record-acceptance"
-    )
+    assert nodes["accept-records"]["ui"]["catalogId"] == ("intelligence.control.record-acceptance")
     assert nodes["record-sink"]["ui"]["catalogId"] == "intelligence.sink.records"
 
-    runtime_nodes = {
-        node["id"]: node for node in data["compile"]["plan"]["runtime"]["nodes"]
-    }
-    assert runtime_nodes["source-xiaohongshu"]["runtime"]["binding"]["channel"] == (
-        "opencli"
-    )
+    runtime_nodes = {node["id"]: node for node in data["compile"]["plan"]["runtime"]["nodes"]}
+    assert runtime_nodes["source-xiaohongshu"]["runtime"]["binding"]["channel"] == ("opencli")
     assert runtime_nodes["normalize-xiaohongshu"]["runtime"]["binding"]["binding_id"] == (
         "workflow.transform.normalize"
     )
@@ -563,12 +539,81 @@ async def test_demand_draft_assembles_multi_source_need_through_merge(client):
     assert ("normalize-xiaohongshu", "merge-candidates", "in1") in edges
     assert ("normalize-bilibili", "merge-candidates", "in2") in edges
 
-    runtime_nodes = {
-        node["id"]: node for node in data["compile"]["plan"]["runtime"]["nodes"]
+    runtime_nodes = {node["id"]: node for node in data["compile"]["plan"]["runtime"]["nodes"]}
+    assert (
+        runtime_nodes["merge-candidates"]["runtime"]["binding"]["input"]["preserveLineage"] is True
+    )
+
+
+@pytest.mark.asyncio
+async def test_demand_draft_adds_reviewable_data_quality_chain_for_training_data(client):
+    project = _valid_workflow_project()
+
+    response = await client.post(
+        "/api/v1/workflows/demand-draft",
+        json={
+            "project": project,
+            "text": "抓小红书 AI 热帖，清洗后生成 SFT 训练数据",
+            "locale": "zh-CN",
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["valid"] is True
+    nodes = {node["id"]: node for node in data["project"]["nodes"]}
+    operator_nodes = [
+        nodes[node_id]
+        for node_id in ("refine-data", "filter-data", "evaluate-data", "generate-data")
+    ]
+    assert [node["ui"]["catalogId"] for node in operator_nodes] == [
+        "intelligence.data.refine",
+        "intelligence.data.filter",
+        "intelligence.data.evaluate",
+        "intelligence.data.generate",
+    ]
+    assert [node["params"] for node in operator_nodes] == [
+        {"operatorId": "core.refine.text"},
+        {"operatorId": "core.filter.quality"},
+        {"operatorId": "core.evaluate.quality"},
+        {"operatorId": "core.generate.instruction-pairs"},
+    ]
+    assert all("runtime" not in node and "secrets" not in node["params"] for node in operator_nodes)
+
+    edges = {
+        (edge["source"], edge["target"], edge.get("sourcePort"), edge.get("targetPort"))
+        for edge in data["project"]["edges"]
     }
-    assert runtime_nodes["merge-candidates"]["runtime"]["binding"]["input"][
-        "preserveLineage"
-    ] is True
+    assert (
+        "merge-candidates",
+        "refine-data",
+        "out",
+        "in",
+    ) in edges
+    assert ("refine-data", "filter-data", "out", "in") in edges
+    assert ("filter-data", "evaluate-data", "out", "in") in edges
+    assert ("evaluate-data", "generate-data", "out", "in") in edges
+    assert ("generate-data", "accept-records", "out", "candidates") in edges
+
+
+@pytest.mark.asyncio
+async def test_demand_draft_adds_quality_chain_without_generation_for_cleaning(client):
+    response = await client.post(
+        "/api/v1/workflows/demand-draft",
+        json={
+            "project": _valid_workflow_project(),
+            "text": "collect bilibili content with quality filtering",
+            "locale": "zh-CN",
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["valid"] is True
+    nodes = {node["id"]: node for node in data["project"]["nodes"]}
+    assert {"refine-data", "filter-data", "evaluate-data"} <= nodes.keys()
+    assert "generate-data" not in nodes
+    assert nodes["evaluate-data"]["params"] == {"operatorId": "core.evaluate.quality"}
 
 
 @pytest.mark.asyncio
@@ -658,9 +703,7 @@ async def test_langgraph_import_preserves_graph_as_opencli_capability_nodes(clie
     assert "rawExecutor" not in nodes["search-tool"]["params"]
 
     imported_edges = [
-        edge
-        for edge in data["project"]["edges"]
-        if edge["source"] in {"planner", "search-tool"}
+        edge for edge in data["project"]["edges"] if edge["source"] in {"planner", "search-tool"}
     ]
     assert [(edge["source"], edge["target"]) for edge in imported_edges] == [
         ("planner", "search-tool"),
@@ -670,18 +713,14 @@ async def test_langgraph_import_preserves_graph_as_opencli_capability_nodes(clie
     assert imported_edges[0]["targetPort"] == "in"
     assert imported_edges[1]["targetPort"] == "in1"
 
-    runtime_nodes = {
-        node["id"]: node for node in data["compile"]["plan"]["runtime"]["nodes"]
-    }
+    runtime_nodes = {node["id"]: node for node in data["compile"]["plan"]["runtime"]["nodes"]}
     assert runtime_nodes["search-tool"]["runtime"]["origin"]["catalog_id"] == (
         "external.tool.capability"
     )
     assert runtime_nodes["search-tool"]["runtime"]["missing_runtime"]["code"] == (
         "missing_tool_capability_binding"
     )
-    assert runtime_nodes["join"]["runtime"]["binding"]["binding_id"] == (
-        "workflow.flow.merge"
-    )
+    assert runtime_nodes["join"]["runtime"]["binding"]["binding_id"] == ("workflow.flow.merge")
 
 
 @pytest.mark.asyncio
@@ -716,9 +755,7 @@ async def test_langchain_import_accepts_dict_nodes_and_edge_only_nodes(client):
     assert nodes["parser"]["ui"]["catalogId"] == "intelligence.processing.normalize"
     assert nodes["unlisted-tool"]["ui"]["externalWorkflow"]["runtime"] == "langchain"
     imported_edges = [
-        edge
-        for edge in data["project"]["edges"]
-        if edge["source"] in {"prompt", "parser"}
+        edge for edge in data["project"]["edges"] if edge["source"] in {"prompt", "parser"}
     ]
     assert [(edge["source"], edge["target"]) for edge in imported_edges] == [
         ("prompt", "parser"),
@@ -791,9 +828,10 @@ async def test_imported_external_tool_runs_through_opencli_tool_capability_bindi
     assert runtime_nodes["search-tool"]["runtime"]["binding"]["binding_id"] == (
         "workflow.external-tool.capability"
     )
-    assert runtime_nodes["search-tool"]["runtime"]["binding"]["input"][
-        "toolCapabilityId"
-    ] == "tool.search.fixture"
+    assert (
+        runtime_nodes["search-tool"]["runtime"]["binding"]["input"]["toolCapabilityId"]
+        == "tool.search.fixture"
+    )
 
     run = await client.post(
         "/api/v1/workflows/runs",
@@ -810,9 +848,9 @@ async def test_imported_external_tool_runs_through_opencli_tool_capability_bindi
     assert states["search-tool"]["status"] == "completed"
     assert states["parser"]["status"] == "completed"
 
-    events = (
-        await client.get("/api/v1/workflows/runs/run-external-tool-fixture/events")
-    ).json()["data"]
+    events = (await client.get("/api/v1/workflows/runs/run-external-tool-fixture/events")).json()[
+        "data"
+    ]
     by_node = {}
     for event in events:
         by_node.setdefault(event["nodeId"], []).append(event)
@@ -906,9 +944,9 @@ async def test_external_realtime_stream_tool_runs_okx_snapshot_executor(
     data = run.json()["data"]
     assert data["status"] == "completed"
 
-    events = (
-        await client.get("/api/v1/workflows/runs/run-okx-realtime-tool/events")
-    ).json()["data"]
+    events = (await client.get("/api/v1/workflows/runs/run-okx-realtime-tool/events")).json()[
+        "data"
+    ]
     by_node = {}
     for event in events:
         by_node.setdefault(event["nodeId"], []).append(event)
@@ -967,6 +1005,4 @@ async def test_imported_external_tool_rejects_unregistered_tool_capability(clien
     )
     assert "binding" not in runtime_node["runtime"]
     assert runtime_node["runtime"]["missing_runtime"]["code"] == "unknown_tool_capability"
-    assert runtime_node["runtime"]["external_tool"]["toolCapabilityId"] == (
-        "tool.missing.fixture"
-    )
+    assert runtime_node["runtime"]["external_tool"]["toolCapabilityId"] == ("tool.missing.fixture")
