@@ -1,7 +1,7 @@
 """add workflow projects, drafts, and immutable versions"""
 
 import sqlalchemy as sa
-from alembic import op
+from alembic import context, op
 
 revision = "f5a6b7c8d9e0"
 down_revision = "e4f5a6b7c8d9"
@@ -75,6 +75,15 @@ def upgrade() -> None:
         sa.UniqueConstraint("workflow_id", "version"),
     )
     op.create_index("ix_workflow_versions_workflow_id", "workflow_versions", ["workflow_id"])
+
+    # Legacy plugin-hub rejoin topologies reach this revision before the
+    # branch that creates workflow_runs; mirror the spine migrations and skip
+    # the ALTER when the runtime table is absent (the run-pinning column only
+    # matters on databases that actually record runs).
+    if not context.is_offline_mode():
+        connection = op.get_bind()
+        if "workflow_runs" not in sa.inspect(connection).get_table_names():
+            return
 
     with op.batch_alter_table("workflow_runs") as batch:
         batch.add_column(sa.Column("workflow_version_id", sa.String(36), nullable=True))
