@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any
 
@@ -14,7 +15,10 @@ from backend.schemas.workflow import (
     WorkflowProjectEdge,
     WorkflowProjectNode,
 )
+from backend.workflow.opencli_adapter_nodes import list_opencli_adapter_nodes
 from backend.workflow.patcher import preview_workflow_patch
+
+logger = logging.getLogger(__name__)
 
 
 def draft_workflow_demand(body: WorkflowDemandDraftRequest) -> WorkflowPatchResponse:
@@ -416,6 +420,19 @@ def _data_operators_for_need(text: str) -> list[dict[str, Any]]:
 
 
 def _source_slots_for_need(text: str) -> list[dict[str, Any]]:
+    """Resolve a collection need to native OpenCLI source slots.
+
+    Consults the OpenCLI adapter catalog first (~205 site adapters) so any
+    catalog-known site can be matched, not just the two hardcoded below.
+    Catalog access is best-effort and never raises: if it can't be reached
+    (binary missing, subprocess/decode failure, anything at all) this falls
+    back to the legacy keyword floor, which is byte-for-byte what this
+    function did before catalog matching existed.
+    """
+    return _catalog_slots_for_need(text) or _legacy_keyword_slots_for_need(text)
+
+
+def _legacy_keyword_slots_for_need(text: str) -> list[dict[str, Any]]:
     normalized = text.lower()
     slots: list[dict[str, Any]] = []
     keyword = _keyword_from_need(text)
@@ -457,6 +474,98 @@ def _keyword_from_need(text: str) -> str:
         value = re.sub(pattern, " ", value, flags=re.IGNORECASE)
     value = re.sub(r"\s+", " ", value).strip(" ，,。")
     return value or "热门"
+
+
+# --- OpenCLI adapter catalog matching --------------------------------------
+#
+# Chinese aliases for catalog sites that are commonly typed in Chinese rather
+# than by their OpenCLI site slug. An alias for a site that isn't present in
+# the loaded catalog is harmless -- it simply never matches anything.
+_CATALOG_SITE_ALIASES: dict[str, tuple[str, ...]] = {
+    "xiaohongshu": ("小红书", "xiaohongshu", "xhs"),
+    "bilibili": ("哔哩", "bilibili", "b站", "bili"),
+}
+
+_CATALOG_SLOT_CAP = 3
+_CATALOG_TOKEN_PATTERN = re.compile(r"[a-zA-Z一-鿿]+")
+
+
+def _catalog_slots_for_need(text: str) -> list[dict[str, Any]]:
+    """Match a need against the OpenCLI adapter catalog.
+
+    Deterministic, no LLM. Scores each read-access catalog site against the
+    need text by (a) exact site id/name token, (b) Chinese alias substring,
+    (c) description/domain/strategy keyword -- in that priority -- and keeps
+    only the best-scoring tier per site. Never raises: any catalog access
+    failure (missing binary, subprocess error, decode error, ...) is caught
+    and treated as "no catalog available", returning an empty list so the
+    caller can fall back to the legacy keyword floor.
+    """
+    try:
+        nodes = list_opencli_adapter_nodes(include_write=False).nodes
+    except Exception:
+        logger.debug(
+            "opencli adapter catalog unavailable for demand matching", exc_info=True
+        )
+        return []
+
+    normalized = text.strip().lower()
+    if not normalized or not nodes:
+        return []
+
+    keyword = _keyword_from_need(text)
+    best: dict[str, tuple[int, int, str]] = {}
+    for index, node in enumerate(nodes):
+        tier = _catalog_match_tier(normalized, node)
+        if tier is None:
+            continue
+        current = best.get(node.site)
+        if current is None or tier < current[0]:
+            best[node.site] = (tier, index, node.command)
+
+    ordered_sites = sorted(best.items(), key=lambda item: (item[1][0], item[1][1]))
+    slots: list[dict[str, Any]] = []
+    for site, (_tier, _index, command) in ordered_sites[:_CATALOG_SLOT_CAP]:
+        slots.append(
+            {
+                "id": _catalog_slot_id(site),
+                "label": f"{site.title()} {command.title()}".strip(),
+                "sourceGroup": "opencli",
+                "site": site,
+                "command": command,
+                "args": {"keyword": keyword},
+            }
+        )
+    return slots
+
+
+def _catalog_match_tier(normalized: str, node: Any) -> int | None:
+    # Command names (node.command) repeat across unrelated sites, so a
+    # command-only hit must never claim the exact-site tier.
+    site = node.site.lower()
+    if len(site) >= 2 and site in normalized:
+        return 0
+    for alias in _CATALOG_SITE_ALIASES.get(site, ()):
+        if alias.lower() in normalized:
+            return 1
+    if any(token in normalized for token in _catalog_description_tokens(node)):
+        return 2
+    return None
+
+
+def _catalog_description_tokens(node: Any) -> list[str]:
+    haystack = " ".join(
+        value for value in (node.description, node.domain, node.strategy) if value
+    )
+    return [
+        token.lower()
+        for token in _CATALOG_TOKEN_PATTERN.findall(haystack)
+        if len(token) >= 2
+    ]
+
+
+def _catalog_slot_id(site: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", site.strip().lower()).strip("-") or "source"
 
 
 def _unique_node_id(project: WorkflowProject, base: str) -> str:

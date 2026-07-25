@@ -14,7 +14,13 @@ from urllib.parse import urlparse
 
 import yaml
 
-from backend.channels.base import AbstractChannel, Capabilities, ChannelResult
+from backend.channels.base import (
+    AbstractChannel,
+    Capabilities,
+    ChannelResult,
+    FetchContext,
+    FetchResult,
+)
 from backend.channels.registry import register_channel
 from backend.opencli_runtime import configured_opencli_bin, resolve_opencli_bin
 
@@ -610,12 +616,27 @@ async def _collect_with_opencli_subprocess(
 
 @register_channel
 class OpenCLIChannel(AbstractChannel):
-    """Collect data by running the opencli CLI tool."""
+    """Collect data by running the opencli CLI tool.
+
+    Migrated onto the thick ``fetch()`` contract (see ``fetch()`` below) via the
+    same narrow-override pattern as ``BrowserActChannel`` (backend.channels.
+    browser_act_channel): ``collect()`` stays the single source of truth for
+    site/command routing, and ``fetch()`` only exists to flip channel_runner's
+    ``channel_migrated`` check.
+    """
 
     channel_type = "opencli"
     # Drives a real Chrome from the shared pool → must run on the node holding the
     # live session; the pipeline resolves a site-keyed browser binding for it.
-    capabilities = Capabilities(session_affinity=True)
+    # incremental/paginated stay False: opencli's site/command catalog is an
+    # external binary discovered at runtime via `--help` (see _get_named_options /
+    # _command_requires_browser) — there is no cursor or page-token contract for
+    # it anywhere in this codebase to drive a runner-owned pagination loop against.
+    # default_rate is spelled out (rather than left to the dataclass default) to
+    # document it's a deliberate choice, not an oversight: same 60/min every other
+    # browser-driving channel (BrowserActChannel, SkillChannel) accepts, since
+    # there's no empirical number specific to opencli to justify a different one.
+    capabilities = Capabilities(session_affinity=True, default_rate="60/min")
 
     async def collect(
         self, config: dict[str, Any], parameters: dict[str, Any]
@@ -786,6 +807,38 @@ class OpenCLIChannel(AbstractChannel):
                     await _cleanup_cdp_tabs(cdp_endpoint, pre_tab_ids)
 
             return result
+
+    async def fetch(self, ctx: FetchContext) -> FetchResult:
+        """Thick-contract entry point, overridden narrowly (same pattern as
+        ``BrowserActChannel.fetch()``, backend.channels.browser_act_channel:454) so
+        that ``type(chan).fetch is not AbstractChannel.fetch`` and
+        ``channel_runner.run_channel`` (backend.pipeline.channel_runner) treats
+        opencli as migrated: it builds a ``RateLimitedClient`` from
+        ``capabilities.default_rate`` for the run instead of skipping it, and any
+        failure's ``error_type`` (already set by ``_collect_with_opencli_subprocess``
+        for TimeoutError/FileNotFoundError/OSError/JSON-parse errors — see that
+        function) reaches ``error_taxonomy.effective_error_type`` directly instead
+        of relying on the inherited default doing the identical thing implicitly.
+
+        ``collect()`` remains the single source of truth for site/command routing
+        (direct subprocess vs. LAN-agent HTTP vs. WS-agent dispatch, browser-pool
+        acquisition, CDP tab snapshot/cleanup) — this override delegates straight
+        to the inherited default, because unlike ``BrowserActChannel`` there is no
+        ``ctx.source_id``-driven credential lookup to thread through: opencli has
+        no per-source encrypted-credential path (``capabilities.auth_kind`` stays
+        "none", so ``run_channel`` resolves ``AuthContext`` without a DB hit).
+
+        ``ctx.http`` is deliberately NOT threaded into ``collect()``: opencli's
+        transport is a local subprocess (direct/cdp/bridge modes) or a LAN-agent
+        HTTP/WS dispatch to an internal node (``_collect_via_agent`` /
+        ``_collect_via_ws_agent``) authenticated with the fleet's own bearer
+        token — neither is the public-API/SSRF-guarded shape ``ctx.http``'s
+        rate-limited client is built for. Same accepted trade-off
+        ``BrowserActChannel.fetch()`` documents: the ``RateLimitedClient`` the
+        runner builds but this channel never reads is one Python object for the
+        run's duration, not an open socket.
+        """
+        return await AbstractChannel.fetch(self, ctx)
 
     async def validate_config(self, config: dict[str, Any]) -> list[str]:
         errors: list[str] = []
