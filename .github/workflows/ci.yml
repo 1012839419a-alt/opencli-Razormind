@@ -119,8 +119,48 @@ jobs:
       # TODO(ratchet): once real coverage is measured for a few weeks, raise
       # this floor incrementally (e.g. 70 -> 75 -> 80) instead of jumping
       # straight to the pyproject target.
-      - name: Unit tests (with coverage report)
-        run: python -m pytest tests/unit -m "not live" --cov=backend --cov-report=term-missing --cov-fail-under=0
+      # tests/compat/dataflow pins the golden DataFlow contract and
+      # tests/integration exercises the workflow HTTP surface; both must run
+      # here or the pinned-compatibility guarantees have no regression gate.
+      # The upstream oracle stays opt-in (DATAFLOW_RUN_UPSTREAM_ORACLE=1) and
+      # self-skips in this job.
+      - name: Backend tests (with coverage report)
+        run: python -m pytest tests/unit tests/compat tests/integration -m "not live" --cov=backend --cov-report=term-missing --cov-fail-under=0
+
+  frontend-workflow-checks:
+    runs-on: ubuntu-latest
+    name: Frontend Workflow Checks
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      # frontend/pnpm-workspace.yaml is a pnpm 10 config store (allowBuilds,
+      # overrides, no `packages` field) — pnpm 9 rejects it outright.
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      # test-data-operator-nodes.mjs imports the real .ts sources via
+      # node:module registerHooks + stripTypeScriptTypes (needs Node >= 22.15).
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Data operator Canvas projection
+        run: pnpm run test:data-operator-nodes
+
+      - name: Workflow contracts
+        run: pnpm run test:workflow-contracts
 
   migrations:
     runs-on: ubuntu-latest

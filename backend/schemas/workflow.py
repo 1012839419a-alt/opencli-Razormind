@@ -126,7 +126,7 @@ class WorkflowParameterInterfaceField(BaseModel):
     id: str = Field(..., min_length=1)
     label: str = Field(..., min_length=1)
     groupId: str = Field(..., min_length=1)
-    type: Literal["text", "textarea", "number", "slider", "select", "boolean", "tokens"]
+    type: Literal["text", "textarea", "json", "number", "slider", "select", "boolean", "tokens"]
     binding: WorkflowParameterBinding
     description: Optional[str] = None
     order: Optional[float] = None
@@ -272,7 +272,7 @@ class WorkflowDemandDraftRequest(BaseModel):
     locale: Optional[str] = None
 
 
-ExternalWorkflowRuntime = Literal["langgraph", "langchain"]
+ExternalWorkflowRuntime = Literal["langgraph", "langchain", "dataflow"]
 
 
 class WorkflowExternalImportRequest(BaseModel):

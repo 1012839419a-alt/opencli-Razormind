@@ -40,7 +40,12 @@ import { workflowNodeToReactFlow, workflowProjectToReactFlow } from "../workflow
 import { addCatalogNodeToWorkflowProject, type WorkflowNodeCatalogItem } from "../workflow/node-catalog"
 import { getNodeInternals, type NodeInternals, type NodeInternalStep } from "../workflow/node-internals"
 import { getPrimitiveByStepCapability, primitiveToNodeData, type WorkflowPrimitive } from "../workflow/node-primitives"
-import { createParameterInterfaceFromInternals, setParameterInterfaceFieldValue } from "../workflow/parameter-interface"
+import {
+  createDataOperatorParameterInterface,
+  createParameterInterfaceFromInternals,
+  parseDataOperatorSelectionValue,
+  setParameterInterfaceFieldValue,
+} from "../workflow/parameter-interface"
 import {
   catalogRuntimeCapability,
   projectedCatalogRuntimeCapability,
@@ -72,6 +77,18 @@ export type { GeneratedWorkflowSpec } from "./types"
 const STORAGE_KEY = "workflow-editor-state"
 const initialWorkflowProject = PACKAGED_WORKFLOW_PROJECT
 const initialWorkflowFlow = workflowProjectToReactFlow(initialWorkflowProject)
+
+export function clearParameterDraftEntry<T>(
+  values: Record<string, T>,
+  nodeId: string,
+  fieldId: string,
+): Record<string, T> {
+  const key = `${nodeId}:${fieldId}`
+  if (!(key in values)) return values
+  const updated = { ...values }
+  delete updated[key]
+  return updated
+}
 
 export type FlowState = {
   workflowProject: WorkflowProject
@@ -994,8 +1011,32 @@ export const useFlowStore = create<FlowState>((set, get) => ({
       const targetField = parameterInterface?.fields.find((field) => field.id === fieldId)
       if (!parentProjectNode || !parameterInterface || !targetField || targetField.readonly) return {}
 
-      const nextParameterInterface = setParameterInterfaceFieldValue(parameterInterface, fieldId, value)
       const binding = targetField.binding
+      const parentCatalogId = typeof parentProjectNode.ui?.catalogId === "string"
+        ? parentProjectNode.ui.catalogId
+        : ""
+      const resetOperatorConfig =
+        parentCatalogId.startsWith("intelligence.data.") &&
+        binding.source === "params" &&
+        binding.fieldId === "operatorId" &&
+        parameterInterface.fields.some(
+          (field) => field.binding.source === "params" && field.binding.fieldId === "config",
+        )
+      const operatorSelection = resetOperatorConfig
+        ? parseDataOperatorSelectionValue(value)
+        : undefined
+      if (resetOperatorConfig && !operatorSelection) return {}
+      const updatedParameterInterface = setParameterInterfaceFieldValue(parameterInterface, fieldId, value)
+      const nextParameterInterface = resetOperatorConfig
+        ? {
+            ...updatedParameterInterface,
+            fields: updatedParameterInterface.fields.map((field) =>
+              field.binding.source === "params" && field.binding.fieldId === "config"
+                ? { ...field, value: {} }
+                : field,
+            ),
+          }
+        : updatedParameterInterface
       const bindsParent = binding.nodeId === parentProjectNode.id || binding.nodeId === nodeId
       const directBindingNode = bindsParent
         ? parentProjectNode
@@ -1028,7 +1069,13 @@ export const useFlowStore = create<FlowState>((set, get) => ({
       if (binding.source === "params") {
         projectNodes = updateCanonicalProjectNodeByCanvasId(projectNodes, backingNodeId, (node) => ({
           ...node,
-          params: { ...node.params, [binding.fieldId]: value },
+          params: resetOperatorConfig
+            ? {
+                operatorId: operatorSelection?.operatorId,
+                packVersion: operatorSelection?.packVersion,
+                config: {},
+              }
+            : { ...node.params, [binding.fieldId]: value },
         }))
       } else if (binding.source === "data") {
         projectNodes = updateCanonicalProjectNodeByCanvasId(projectNodes, backingNodeId, (node) => ({
@@ -1054,7 +1101,25 @@ export const useFlowStore = create<FlowState>((set, get) => ({
               ? { ...node, data: { ...node.data, parameterInterface: nextParameterInterface } }
               : node
           if (node.id === backingNodeId) {
-            return writeBoundValueToNode(withParentInterface, binding.source, binding.fieldId, value)
+            const withValue = writeBoundValueToNode(withParentInterface, binding.source, binding.fieldId, value)
+            return resetOperatorConfig
+              ? writeBoundValueToNode(
+                  writeBoundValueToNode(
+                    writeBoundValueToNode(
+                      withValue,
+                      "params",
+                      "operatorId",
+                      operatorSelection?.operatorId,
+                    ),
+                    "params",
+                    "packVersion",
+                    operatorSelection?.packVersion,
+                  ),
+                  "params",
+                  "config",
+                  {},
+                )
+              : withValue
           }
           return withParentInterface
         }),
@@ -1306,8 +1371,29 @@ export const useFlowStore = create<FlowState>((set, get) => ({
           true,
         )
         if (!runtimeCapability) return node
+        const parameterInterface = createDataOperatorParameterInterface(
+          node.id,
+          catalogId,
+          node.params,
+          runtimeCapability,
+        ) ?? node.parameterInterface
+        const selectedOperator = parameterInterface?.fields
+          .find((field) => field.id === "operator.operatorId")
+        const defaultSelection = parseDataOperatorSelectionValue(selectedOperator?.value)
+        const shouldPinDefaultVersion =
+          catalogId.startsWith("intelligence.data.") &&
+          typeof node.params.packVersion !== "string" &&
+          Boolean(defaultSelection)
         return {
           ...node,
+          params: shouldPinDefaultVersion
+            ? {
+                ...node.params,
+                operatorId: defaultSelection?.operatorId,
+                packVersion: defaultSelection?.packVersion,
+              }
+            : node.params,
+          parameterInterface,
           ui: {
             ...(node.ui ?? {}),
             runtimeCapability,
@@ -1340,6 +1426,7 @@ export const useFlowStore = create<FlowState>((set, get) => ({
               ...node.data,
               runtimeCapability: runtime.capability,
               runtimeContract: runtime.contract,
+              parameterInterface: workflowProject.nodes.find((projectNode) => projectNode.id === node.id)?.parameterInterface,
             },
           }
         }),

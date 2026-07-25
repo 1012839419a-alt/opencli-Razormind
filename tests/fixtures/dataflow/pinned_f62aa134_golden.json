@@ -1,0 +1,606 @@
+{
+  "fixtureSchemaVersion": 1,
+  "upstream": {
+    "repository": "https://github.com/OpenDCAI/DataFlow",
+    "sourceSha": "f62aa1349e0ff14cb737a4cbda1945d04fde85bb",
+    "sourceArchive": "https://github.com/OpenDCAI/DataFlow/archive/f62aa1349e0ff14cb737a4cbda1945d04fde85bb.tar.gz",
+    "files": {
+      "dataflow/operators/general_text/refine/lowercase_refiner.py": "29f6fa1dc4cea779b69f6733a95efc27b417064ab67271b6bc50f11e8163a3e5",
+      "dataflow/operators/general_text/refine/remove_emoji_refiner.py": "c84c0ad36db8ae5f7fbebdef574dad73ee6caa281008a5c15c1f295fa8dc0d71",
+      "dataflow/operators/general_text/refine/html_url_remover_refiner.py": "c620eb6b8e1854a9c56c5cca9d94844199136566102e48c15c35f6237dfa92c4",
+      "dataflow/operators/general_text/refine/html_entity_refiner.py": "9a3323ca07d8394023de39bd67c9f27f8b3f7b2b93a660be312c367538baf576",
+      "dataflow/operators/general_text/refine/remove_punctuation_refiner.py": "508df19f95a834b43cdd7d31b0e476b019cb9f168f9eec5a34c457cd2928c974",
+      "dataflow/operators/general_text/refine/remove_number_refiner.py": "5adc49bb080e534eb4c8a596020a1bba60cc7a53a0be2c894a0097086d1f4eea",
+      "dataflow/operators/general_text/refine/remove_repetitions_punctuation_refiner.py": "5b879d684394a087354ef8ea6ef40bab3af71877632c87cc1302ec713f361d6a",
+      "dataflow/operators/general_text/refine/remove_extra_spaces_refiner.py": "c5112b124ba0ac938d42a9a1b03c6407cef488fa5278bda30214f95134e5e395",
+      "dataflow/operators/general_text/filter/hash_deduplicate_filter.py": "bd1053b1fed83658701d437b19047d49b50f172acdc3d47ee96d81e629dd185a",
+      "dataflow/operators/general_text/filter/rule_based_filter.py": "ca08cf53e29e680f67beb267f239552114a69484f2c4d4465fda2f34290cea3e",
+      "dataflow/operators/general_text/filter/word_number_filter.py": "0063cd5fcc4f59b61433a9724dfbd94677dee9f0f83c3d11b316c58c99af48e1",
+      "dataflow/operators/general_text/refine/text_normalization_refiner.py": "94015d49eb739a4a309ddbaa889a9e38b21ba835db64324dda3c5b3a01393f5b",
+      "dataflow/operators/general_text/refine/remove_image_ref_refiner.py": "ccbe72f92a7ae532d0987fa358a5a057e9e88d2433dc3ab5f70250eb5f9d7aaa",
+      "dataflow/operators/general_text/filter/blocklist_filter.py": "6a90bd97d305815d91a0957b4e075c2e184fae34339d48bf7f541878be00defc",
+      "dataflow/operators/general_text/filter/blocklist/en.txt": "af851ecef1d5f212caba17339b12ac39cc2fef7d78c74876f67237644fcee8bd",
+      "dataflow/operators/general_text/filter/blocklist/zh.txt": "a1d9aa037c8b039ef3b40148b3364ce2ca62ce4a955b7082a16ad99f6cbd1bc0",
+      "dataflow/operators/general_text/filter/ngramhash_deduplicate_filter.py": "35e336ccbc5a13f5ea88ecaeec92f7dfc949bba77362f6095272d34b6ed6f87a"
+    }
+  },
+  "compatibilityPack": {
+    "packId": "builtin.text-cleaning",
+    "packVersion": "1.1.0",
+    "aliasCount": 34,
+    "canonicalOperators": [
+      "text.clean",
+      "text.rule-filter",
+      "text.deduplicate"
+    ]
+  },
+  "aliases": [
+    {
+      "alias": "RemoveExtraSpaces",
+      "sourceId": "dataflow@f62aa1349e0ff14cb737a4cbda1945d04fde85bb::dataflow.operators.general_text.refine.remove_extra_spaces_refiner.RemoveExtraSpacesRefiner",
+      "initConfig": {},
+      "runConfig": {
+        "input_key": "content"
+      },
+      "expected": {
+        "operatorId": "text.clean",
+        "kind": "refine",
+        "packId": "builtin.text-cleaning",
+        "packVersion": "1.1.0",
+        "config": {
+          "fields": [
+            "content"
+          ],
+          "operations": [
+            "removeExtraSpaces"
+          ]
+        }
+      }
+    },
+    {
+      "alias": "Lowercase",
+      "sourceId": "dataflow@f62aa1349e0ff14cb737a4cbda1945d04fde85bb::dataflow.operators.general_text.refine.lowercase_refiner.LowercaseRefiner",
+      "initConfig": {},
+      "runConfig": {
+        "input_key": "content"
+      },
+      "expected": {
+        "operatorId": "text.clean",
+        "kind": "refine",
+        "packId": "builtin.text-cleaning",
+        "packVersion": "1.1.0",
+        "config": {
+          "fields": [
+            "content"
+          ],
+          "operations": [
+            "lowercase"
+          ]
+        }
+      }
+    },
+    {
+      "alias": "HtmlUrlRemover",
+      "sourceId": "dataflow@f62aa1349e0ff14cb737a4cbda1945d04fde85bb::dataflow.operators.general_text.refine.html_url_remover_refiner.HtmlUrlRemoverRefiner",
+      "initConfig": {},
+      "runConfig": {
+        "input_key": "content"
+      },
+      "expected": {
+        "operatorId": "text.clean",
+        "kind": "refine",
+        "packId": "builtin.text-cleaning",
+        "packVersion": "1.1.0",
+        "config": {
+          "fields": [
+            "content"
+          ],
+          "operations": [
+            "htmlUrlRemover"
+          ]
+        }
+      }
+    },
+    {
+      "alias": "HtmlEntity",
+      "sourceId": "dataflow@f62aa1349e0ff14cb737a4cbda1945d04fde85bb::dataflow.operators.general_text.refine.html_entity_refiner.HtmlEntityRefiner",
+      "initConfig": {
+        "html_entities": [
+          "nbsp",
+          "amp"
+        ]
+      },
+      "runConfig": {
+        "input_key": "content"
+      },
+      "expected": {
+        "operatorId": "text.clean",
+        "kind": "refine",
+        "packId": "builtin.text-cleaning",
+        "packVersion": "1.1.0",
+        "config": {
+          "fields": [
+            "content"
+          ],
+          "operations": [
+            "htmlEntity"
+          ],
+          "htmlEntities": [
+            "nbsp",
+            "amp"
+          ]
+        }
+      }
+    },
+    {
+      "alias": "RemoveEmoji",
+      "sourceId": "dataflow@f62aa1349e0ff14cb737a4cbda1945d04fde85bb::dataflow.operators.general_text.refine.remove_emoji_refiner.RemoveEmojiRefiner",
+      "initConfig": {},
+      "runConfig": {
+        "input_key": "content"
+      },
+      "expected": {
+        "operatorId": "text.clean",
+        "kind": "refine",
+        "packId": "builtin.text-cleaning",
+        "packVersion": "1.1.0",
+        "config": {
+          "fields": [
+            "content"
+          ],
+          "operations": [
+            "removeEmoji"
+          ]
+        }
+      }
+    },
+    {
+      "alias": "RemoveNumber",
+      "sourceId": "dataflow@f62aa1349e0ff14cb737a4cbda1945d04fde85bb::dataflow.operators.general_text.refine.remove_number_refiner.RemoveNumberRefiner",
+      "initConfig": {},
+      "runConfig": {
+        "input_key": "content"
+      },
+      "expected": {
+        "operatorId": "text.clean",
+        "kind": "refine",
+        "packId": "builtin.text-cleaning",
+        "packVersion": "1.1.0",
+        "config": {
+          "fields": [
+            "content"
+          ],
+          "operations": [
+            "removeNumber"
+          ]
+        }
+      }
+    },
+    {
+      "alias": "RemovePunctuation",
+      "sourceId": "dataflow@f62aa1349e0ff14cb737a4cbda1945d04fde85bb::dataflow.operators.general_text.refine.remove_punctuation_refiner.RemovePunctuationRefiner",
+      "initConfig": {},
+      "runConfig": {
+        "input_key": "content"
+      },
+      "expected": {
+        "operatorId": "text.clean",
+        "kind": "refine",
+        "packId": "builtin.text-cleaning",
+        "packVersion": "1.1.0",
+        "config": {
+          "fields": [
+            "content"
+          ],
+          "operations": [
+            "removePunctuation"
+          ]
+        }
+      }
+    },
+    {
+      "alias": "RemoveRepetitionsPunctuation",
+      "sourceId": "dataflow@f62aa1349e0ff14cb737a4cbda1945d04fde85bb::dataflow.operators.general_text.refine.remove_repetitions_punctuation_refiner.RemoveRepetitionsPunctuationRefiner",
+      "initConfig": {},
+      "runConfig": {
+        "input_key": "content"
+      },
+      "expected": {
+        "operatorId": "text.clean",
+        "kind": "refine",
+        "packId": "builtin.text-cleaning",
+        "packVersion": "1.1.0",
+        "config": {
+          "fields": [
+            "content"
+          ],
+          "operations": [
+            "removeRepetitionsPunctuation"
+          ]
+        }
+      }
+    },
+    {
+      "alias": "ContentNull",
+      "sourceId": "dataflow@f62aa1349e0ff14cb737a4cbda1945d04fde85bb::dataflow.operators.general_text.filter.rule_based_filter.ContentNullFilter",
+      "initConfig": {},
+      "runConfig": {
+        "input_key": "content"
+      },
+      "expected": {
+        "operatorId": "text.rule-filter",
+        "kind": "filter",
+        "packId": "builtin.text-cleaning",
+        "packVersion": "1.1.0",
+        "config": {
+          "fields": [
+            "content"
+          ],
+          "rules": [
+            {
+              "type": "contentNull",
+              "outputKey": "content_null_filter_label"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "alias": "WordNumber",
+      "sourceId": "dataflow@f62aa1349e0ff14cb737a4cbda1945d04fde85bb::dataflow.operators.general_text.filter.word_number_filter.WordNumberFilter",
+      "initConfig": {
+        "min_words": 2,
+        "max_words": 10
+      },
+      "runConfig": {
+        "input_key": "content",
+        "output_key": "word_count"
+      },
+      "expected": {
+        "operatorId": "text.rule-filter",
+        "kind": "filter",
+        "packId": "builtin.text-cleaning",
+        "packVersion": "1.1.0",
+        "config": {
+          "fields": [
+            "content"
+          ],
+          "rules": [
+            {
+              "type": "wordNumber",
+              "min": 2,
+              "max": 10,
+              "outputKey": "word_count"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "alias": "SentenceNumber",
+      "sourceId": "dataflow@f62aa1349e0ff14cb737a4cbda1945d04fde85bb::dataflow.operators.general_text.filter.rule_based_filter.SentenceNumberFilter",
+      "initConfig": {
+        "min_sentences": 1,
+        "max_sentences": 3
+      },
+      "runConfig": {
+        "input_key": "content"
+      },
+      "expected": {
+        "operatorId": "text.rule-filter",
+        "kind": "filter",
+        "packId": "builtin.text-cleaning",
+        "packVersion": "1.1.0",
+        "config": {
+          "fields": [
+            "content"
+          ],
+          "rules": [
+            {
+              "type": "sentenceNumber",
+              "min": 1,
+              "max": 3,
+              "outputKey": "sentence_number_filter_label"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "alias": "CharNumber",
+      "sourceId": "dataflow@f62aa1349e0ff14cb737a4cbda1945d04fde85bb::dataflow.operators.general_text.filter.rule_based_filter.CharNumberFilter",
+      "initConfig": {
+        "threshold": 5
+      },
+      "runConfig": {
+        "input_key": "content"
+      },
+      "expected": {
+        "operatorId": "text.rule-filter",
+        "kind": "filter",
+        "packId": "builtin.text-cleaning",
+        "packVersion": "1.1.0",
+        "config": {
+          "fields": [
+            "content"
+          ],
+          "rules": [
+            {
+              "type": "charNumber",
+              "threshold": 5,
+              "outputKey": "char_number_filter_label"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "alias": "UniqueWords",
+      "sourceId": "dataflow@f62aa1349e0ff14cb737a4cbda1945d04fde85bb::dataflow.operators.general_text.filter.rule_based_filter.UniqueWordsFilter",
+      "initConfig": {
+        "threshold": 0.5
+      },
+      "runConfig": {
+        "input_key": "content"
+      },
+      "expected": {
+        "operatorId": "text.rule-filter",
+        "kind": "filter",
+        "packId": "builtin.text-cleaning",
+        "packVersion": "1.1.0",
+        "config": {
+          "fields": [
+            "content"
+          ],
+          "rules": [
+            {
+              "type": "uniqueWords",
+              "threshold": 0.5,
+              "outputKey": "unique_words_filter"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "alias": "HashDeduplicate",
+      "sourceId": "dataflow@f62aa1349e0ff14cb737a4cbda1945d04fde85bb::dataflow.operators.general_text.filter.hash_deduplicate_filter.HashDeduplicateFilter",
+      "initConfig": {
+        "hash_func": "sha256"
+      },
+      "runConfig": {
+        "input_key": "content",
+        "output_key": "deduplicate_label"
+      },
+      "expected": {
+        "operatorId": "text.deduplicate",
+        "kind": "filter",
+        "packId": "builtin.text-cleaning",
+        "packVersion": "1.1.0",
+        "config": {
+          "fields": [
+            "content"
+          ],
+          "hashFunction": "sha256",
+          "outputKey": "deduplicate_label"
+        }
+      }
+    }
+  ],
+  "goldenCases": [
+    {
+      "id": "text-clean-sequence",
+      "operatorId": "text.clean",
+      "packVersion": "1.1.0",
+      "config": {
+        "fields": [
+          "content"
+        ],
+        "operations": [
+          "htmlEntity",
+          "htmlUrlRemover",
+          "lowercase",
+          "removeEmoji",
+          "removeNumber",
+          "removePunctuation",
+          "removeExtraSpaces"
+        ]
+      },
+      "items": [
+        {
+          "candidateId": "clean-1",
+          "normalizedData": {
+            "content": "<p>Hello&nbsp;  WORLD 123 \ud83d\ude0a!!!</p>",
+            "title": "Preserved title"
+          },
+          "lineage": [
+            {
+              "nodeId": "source"
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "candidateIds": [
+          "clean-1"
+        ],
+        "normalizedData": [
+          {
+            "content": "hello world",
+            "title": "Preserved title"
+          }
+        ],
+        "lineage": [
+          [
+            {
+              "nodeId": "source"
+            }
+          ]
+        ],
+        "rejectedCandidateIds": []
+      }
+    },
+    {
+      "id": "rule-filter-stable-order",
+      "operatorId": "text.rule-filter",
+      "packVersion": "1.1.0",
+      "config": {
+        "fields": [
+          "content"
+        ],
+        "rules": [
+          {
+            "type": "wordNumber",
+            "min": 2,
+            "max": 10,
+            "outputKey": "word_number_filter_label"
+          }
+        ]
+      },
+      "items": [
+        {
+          "candidateId": "rule-keep-1",
+          "normalizedData": {
+            "content": "alpha beta."
+          },
+          "lineage": [
+            {
+              "nodeId": "source-a"
+            }
+          ]
+        },
+        {
+          "candidateId": "rule-reject-short",
+          "normalizedData": {
+            "content": "solo."
+          },
+          "lineage": [
+            {
+              "nodeId": "source-b"
+            }
+          ]
+        },
+        {
+          "candidateId": "rule-keep-2",
+          "normalizedData": {
+            "content": "gamma delta."
+          },
+          "lineage": [
+            {
+              "nodeId": "source-c"
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "candidateIds": [
+          "rule-keep-1",
+          "rule-keep-2"
+        ],
+        "normalizedData": [
+          {
+            "content": "alpha beta.",
+            "word_number_filter_label": 2
+          },
+          {
+            "content": "gamma delta.",
+            "word_number_filter_label": 2
+          }
+        ],
+        "lineage": [
+          [
+            {
+              "nodeId": "source-a"
+            }
+          ],
+          [
+            {
+              "nodeId": "source-c"
+            }
+          ]
+        ],
+        "rejectedCandidateIds": [
+          "rule-reject-short"
+        ]
+      }
+    },
+    {
+      "id": "hash-deduplicate-first-occurrence",
+      "operatorId": "text.deduplicate",
+      "packVersion": "1.1.0",
+      "config": {
+        "fields": [
+          "content"
+        ],
+        "hashFunction": "md5",
+        "outputKey": "minhash_deduplicated_label"
+      },
+      "items": [
+        {
+          "candidateId": "dedupe-first",
+          "normalizedData": {
+            "content": "same text"
+          },
+          "lineage": [
+            {
+              "nodeId": "source-a"
+            }
+          ]
+        },
+        {
+          "candidateId": "dedupe-other",
+          "normalizedData": {
+            "content": "other text"
+          },
+          "lineage": [
+            {
+              "nodeId": "source-b"
+            }
+          ]
+        },
+        {
+          "candidateId": "dedupe-repeat",
+          "normalizedData": {
+            "content": "same text"
+          },
+          "lineage": [
+            {
+              "nodeId": "source-c"
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "candidateIds": [
+          "dedupe-first",
+          "dedupe-other"
+        ],
+        "normalizedData": [
+          {
+            "content": "same text",
+            "minhash_deduplicated_label": 1
+          },
+          {
+            "content": "other text",
+            "minhash_deduplicated_label": 1
+          }
+        ],
+        "lineage": [
+          [
+            {
+              "nodeId": "source-a"
+            }
+          ],
+          [
+            {
+              "nodeId": "source-b"
+            }
+          ]
+        ],
+        "rejectedCandidateIds": [
+          "dedupe-repeat"
+        ]
+      }
+    }
+  ]
+}

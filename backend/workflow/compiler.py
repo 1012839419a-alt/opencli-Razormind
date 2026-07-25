@@ -20,6 +20,10 @@ from backend.schemas.workflow import (
     WorkflowProjectNode,
     WorkflowRuntimePreview,
 )
+from backend.workflow.data_operators import (
+    list_data_operator_specs,
+    resolve_data_operator,
+)
 from backend.workflow.hda_templates import materialize_hda_templates
 from backend.workflow.node_registry import (
     forbidden_node_definition_keys,
@@ -29,6 +33,7 @@ from backend.workflow.runtime_registry import resolve_runtime_metadata
 
 INTERNAL_ID_SEPARATOR = "::"
 MAX_NODE_PATH_DEPTH = 4
+_LEGACY_DATA_OPERATOR_PACK_VERSION = "1.0.0"
 
 
 @dataclass(frozen=True)
@@ -61,6 +66,22 @@ _PORT_CONTRACTS: dict[str, tuple[list[_PortContract], list[_PortContract]]] = {
         [_PortContract("out", "output", "recordCandidate[]")],
     ),
     "intelligence.processing.dedupe": (
+        [_PortContract("in", "input", "recordCandidate[]")],
+        [_PortContract("out", "output", "recordCandidate[]")],
+    ),
+    "intelligence.data.generate": (
+        [_PortContract("in", "input", "recordCandidate[]")],
+        [_PortContract("out", "output", "recordCandidate[]")],
+    ),
+    "intelligence.data.filter": (
+        [_PortContract("in", "input", "recordCandidate[]")],
+        [_PortContract("out", "output", "recordCandidate[]")],
+    ),
+    "intelligence.data.evaluate": (
+        [_PortContract("in", "input", "recordCandidate[]")],
+        [_PortContract("out", "output", "recordCandidate[]")],
+    ),
+    "intelligence.data.refine": (
         [_PortContract("in", "input", "recordCandidate[]")],
         [_PortContract("out", "output", "recordCandidate[]")],
     ),
@@ -316,6 +337,7 @@ def _validate_project(project: WorkflowProject) -> list[WorkflowCompileError]:
             )
 
         errors.extend(_validate_node_origin(node, ["nodes", node.id]))
+        errors.extend(_validate_data_operator_node(node, ["nodes", node.id]))
 
     errors.extend(_validate_typed_edges(project.nodes, project.edges, path_prefix=["edges"]))
     errors.extend(_cycle_errors(project))
@@ -364,6 +386,103 @@ def _validate_node_origin(
             )
         )
     return errors
+
+
+def _validate_data_operator_node(
+    node: WorkflowProjectNode,
+    path_prefix: list[str],
+) -> list[WorkflowCompileError]:
+    catalog_id = _read_string((node.ui or {}).get("catalogId"))
+    prefix = "intelligence.data."
+    expected_kind = (
+        catalog_id.removeprefix(prefix)
+        if catalog_id and catalog_id.startswith(prefix)
+        else None
+    )
+    operator_id = _read_string(node.params.get("operatorId"))
+    if expected_kind not in {"generate", "filter", "evaluate", "refine"}:
+        if "operatorId" not in node.params:
+            return []
+        return [
+            WorkflowCompileError(
+                code="data_operator_catalog_required",
+                message=(
+                    f'Workflow node "{node.id}" declares params.operatorId but does '
+                    "not reference a registered intelligence.data catalog node"
+                ),
+                node_id=node.id,
+                path=[*path_prefix, "ui", "catalogId"],
+            )
+        ]
+    if operator_id is None:
+        return [
+            WorkflowCompileError(
+                code="missing_data_operator_id",
+                message=f'Workflow data node "{node.id}" requires params.operatorId',
+                node_id=node.id,
+                path=[*path_prefix, "params", "operatorId"],
+            )
+        ]
+
+    pack_version_provided = "packVersion" in node.params
+    requested_pack_version = _read_string(node.params.get("packVersion"))
+    if pack_version_provided and requested_pack_version is None:
+        return [
+            WorkflowCompileError(
+                code="unsupported_data_operator_version",
+                message=(
+                    f'Workflow data node "{node.id}" requires params.packVersion '
+                    "to be a non-empty string when provided"
+                ),
+                node_id=node.id,
+                path=[*path_prefix, "params", "packVersion"],
+            )
+        ]
+    resolved_pack_version = (
+        requested_pack_version or _LEGACY_DATA_OPERATOR_PACK_VERSION
+    )
+    spec = resolve_data_operator(operator_id, resolved_pack_version)
+    if spec is None:
+        if any(
+            registered.id == operator_id
+            for registered in list_data_operator_specs()
+        ):
+            return [
+                WorkflowCompileError(
+                    code="unsupported_data_operator_version",
+                    message=(
+                        f'Workflow data node "{node.id}" references unsupported '
+                        f'version "{resolved_pack_version}" of operator '
+                        f'"{operator_id}"'
+                    ),
+                    node_id=node.id,
+                    path=[*path_prefix, "params", "packVersion"],
+                )
+            ]
+        return [
+            WorkflowCompileError(
+                code="unknown_data_operator",
+                message=(
+                    f'Workflow data node "{node.id}" references unknown operator '
+                    f'"{operator_id}"'
+                ),
+                node_id=node.id,
+                path=[*path_prefix, "params", "operatorId"],
+            )
+        ]
+    if spec.kind != expected_kind:
+        return [
+            WorkflowCompileError(
+                code="data_operator_kind_mismatch",
+                message=(
+                    f'Data operator "{operator_id}" has kind "{spec.kind}", but node '
+                    f'"{node.id}" requires "{expected_kind}"'
+                ),
+                node_id=node.id,
+                path=[*path_prefix, "params", "operatorId"],
+            )
+        ]
+    return []
 
 
 def _validate_typed_edges(
@@ -1004,6 +1123,7 @@ def _validate_package_internals(
                 internal_path_prefix,
             )
         )
+        errors.extend(_validate_data_operator_node(internal_node, internal_path_prefix))
         if _is_structural_container(internal_node):
             errors.extend(
                 _validate_package_internals(

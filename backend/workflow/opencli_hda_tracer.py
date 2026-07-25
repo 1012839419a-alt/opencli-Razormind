@@ -44,6 +44,7 @@ from backend.workflow.block_reasons import (
     SOURCE_OUTPUT_REQUIRED,
 )
 from backend.workflow.compiler import INTERNAL_ID_SEPARATOR, compile_workflow_project
+from backend.workflow.data_operators import execute_data_operator
 from backend.workflow.event_mirror import publish_workflow_run_event_mirror
 from backend.workflow.fleet_inventory import match_workflow_fleet_capability
 from backend.workflow.joyai_vl_executor import (
@@ -58,6 +59,7 @@ from backend.workflow.realtime_market_executor import (
     execute_okx_market_ticker_snapshot,
 )
 from backend.workflow.runtime_registry import (
+    DATA_OPERATOR_CATALOG_BINDINGS,
     EXTERNAL_TOOL_BINDING_ID,
     INBOX_STORE_BINDING_ID,
     MERGE_BINDING_ID,
@@ -92,6 +94,8 @@ class _StoredWorkflowRun:
 
 
 _RUNS: dict[str, _StoredWorkflowRun] = {}
+_DATA_OPERATOR_BINDING_IDS = set(DATA_OPERATOR_CATALOG_BINDINGS.values())
+_LEGACY_DATA_OPERATOR_PACK_VERSION = "1.0.0"
 
 
 def build_opencli_hda_trace(
@@ -491,6 +495,7 @@ async def start_workflow_run(
                 continue
 
         if _is_first_loop_native_node(node):
+            emitter.emit(node, "started", message=_native_node_started_message(node))
             try:
                 details, output_items = await _execute_native_node(
                     node,
@@ -516,8 +521,31 @@ async def start_workflow_run(
                     details=reason.details,
                 )
                 continue
+            except Exception as exc:
+                if _binding_id(node) not in _DATA_OPERATOR_BINDING_IDS:
+                    raise
+                binding_input = _read_dict(
+                    _read_dict(node.runtime.get("binding")).get("input")
+                )
+                reason = WorkflowRunBlockReason(
+                    code="data_operator_execution_failed",
+                    message="Data operator execution failed",
+                    source="data_operator_runtime",
+                    details={
+                        "bindingId": _binding_id(node),
+                        "operatorId": binding_input.get("operatorId"),
+                        "errorType": type(exc).__name__,
+                    },
+                )
+                emitter.emit(
+                    node,
+                    "failed",
+                    message=reason.message,
+                    block_reason=reason,
+                    details=reason.details,
+                )
+                continue
             outputs_by_node[node.id] = output_items
-            emitter.emit(node, "started", message=_native_node_started_message(node))
             if _binding_id(node) == EXTERNAL_TOOL_BINDING_ID:
                 emitter.emit(
                     node,
@@ -1384,6 +1412,7 @@ def _is_first_loop_native_node(node: CompiledWorkflowNode) -> bool:
         return False
     return binding.get("binding_id") in {
         NORMALIZE_BINDING_ID,
+        *_DATA_OPERATOR_BINDING_IDS,
         MERGE_BINDING_ID,
         ROUTER_ROUTE_BINDING_ID,
         RECORD_ACCEPTANCE_BINDING_ID,
@@ -1522,6 +1551,55 @@ async def _execute_native_node(
                 "lineage": _lineage_pointer(node),
             },
             candidates,
+        )
+    if binding_id in _DATA_OPERATOR_BINDING_IDS:
+        binding = _read_dict(node.runtime.get("binding"))
+        binding_input = _read_dict(binding.get("input"))
+        operator_id = _read_string(binding_input.get("operatorId"))
+        if operator_id is None:
+            raise ValueError(f"Data operator binding {binding_id} is missing operatorId")
+        pack_version = (
+            _read_string(binding_input.get("packVersion"))
+            or _LEGACY_DATA_OPERATOR_PACK_VERSION
+        )
+        config = binding_input.get("config")
+        if not isinstance(config, dict):
+            raise ValueError("Data operator config must be an object")
+        result = execute_data_operator(
+            operator_id,
+            input_items,
+            config,
+            pack_version=pack_version,
+        )
+        output_items = [
+            _append_data_operator_lineage(
+                item,
+                node,
+                operator_id=result.operator_id,
+                run_id=run_id,
+            )
+            for item in result.items
+        ]
+        result_details = result.to_details()
+        rejected_candidate_ids = list(result.rejected_candidate_ids)
+        return (
+            {
+                **result_details,
+                "packVersion": result.pack_version,
+                "bindingId": binding_id,
+                "inputPort": binding_input.get("inputPort", "recordCandidate[]"),
+                "outputPort": binding_input.get("outputPort", "recordCandidate[]"),
+                "inputItemCount": len(input_items),
+                "outputItemCount": len(output_items),
+                "rejectedCount": result.metrics.get(
+                    "rejectedCount", len(rejected_candidate_ids)
+                ),
+                "rejectedCandidateIds": rejected_candidate_ids[:100],
+                "rejectedCandidateIdsTruncated": len(rejected_candidate_ids) > 100,
+                "metrics": result.metrics,
+                "lineage": _lineage_pointer(node),
+            },
+            output_items,
         )
     if binding_id == MERGE_BINDING_ID:
         binding = _read_dict(node.runtime.get("binding"))
@@ -2057,6 +2135,16 @@ def _append_lineage(
     return updated
 
 
+def _append_data_operator_lineage(
+    item: dict[str, Any],
+    node: CompiledWorkflowNode,
+    *,
+    operator_id: str,
+    run_id: str,
+) -> dict[str, Any]:
+    return _append_lineage(item, node, step=operator_id, run_id=run_id)
+
+
 def _accept_candidate(
     item: dict[str, Any],
     node: CompiledWorkflowNode,
@@ -2333,6 +2421,8 @@ def _notify_send_block_reason(
 
 def _native_node_started_message(node: CompiledWorkflowNode) -> str:
     binding_id = _binding_id(node)
+    if binding_id in _DATA_OPERATOR_BINDING_IDS:
+        return "Data operator started"
     if binding_id == NORMALIZE_BINDING_ID:
         return "Normalize transform started"
     if binding_id == MERGE_BINDING_ID:
@@ -2356,6 +2446,8 @@ def _native_node_started_message(node: CompiledWorkflowNode) -> str:
 
 def _native_node_partial_message(node: CompiledWorkflowNode) -> str:
     binding_id = _binding_id(node)
+    if binding_id in _DATA_OPERATOR_BINDING_IDS:
+        return "Data operator emitted items"
     if binding_id == NORMALIZE_BINDING_ID:
         return "Record Candidates projected"
     if binding_id == MERGE_BINDING_ID:
@@ -2379,6 +2471,8 @@ def _native_node_partial_message(node: CompiledWorkflowNode) -> str:
 
 def _native_node_completed_message(node: CompiledWorkflowNode) -> str:
     binding_id = _binding_id(node)
+    if binding_id in _DATA_OPERATOR_BINDING_IDS:
+        return "Data operator completed"
     if binding_id == NORMALIZE_BINDING_ID:
         return "Normalize transform completed"
     if binding_id == MERGE_BINDING_ID:
