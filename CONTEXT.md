@@ -161,8 +161,20 @@ The auditable identity path that explains who or what authorized an execution, s
 _Avoid_: system user as universal actor, audit entry containing only the Run ID, Agent action without originating authority
 
 **Source**:
-A Project-owned data collection target and scope, such as an account, search, site, feed, repository, or stream. It may reference a workspace-owned Connection and is consumed by Workflow nodes.
-_Avoid_: Connection, credential, global source configuration
+A Workspace-owned reusable external data endpoint. It owns the channel or adapter, site or endpoint, Connection reference, credential references, and health state, and remains authoritative across every Project that is allowed to use it. Semantic configuration changes create a Source Revision; credential rotation, health observations, and safety revocation may update immediately without changing collection semantics.
+_Avoid_: Connection, credential, Project-specific query, node-owned source configuration
+
+**Source Revision**:
+An immutable semantic configuration of a Source, including its adapter, endpoint, and Connection reference. Operational state and credential material are resolved under current safety policy rather than frozen into the revision.
+_Avoid_: mutable latest Source configuration, copied credentials, health snapshot
+
+**Source Binding**:
+A Project-owned authorization and collection scope for using a Workspace-owned Source. It selects permitted capabilities or commands and defines Project-specific targets such as queries, markets, repository paths, filters, and permission subsets; every binding observes authoritative Source changes without copying or mutating the Source.
+_Avoid_: inline source definition, copied source configuration, direct cross-Project Source access, editing a Source through node parameters
+
+**Source Binding Revision**:
+An immutable version of a Source Binding that references an exact Source Revision and freezes its Project-specific capabilities, targets, filters, and permission subset. A Workflow Version pins Source Binding Revisions; semantic edits create new revisions and require validation and publication before Automations use them.
+_Avoid_: latest binding, mutable published node binding, silent Automation drift
 
 **Destination**:
 A Project-owned external write or delivery target and permitted scope, such as mailbox recipients, a site account or community, repository, webhook, storage location, or publishing channel. It references a workspace-owned Connection without copying credentials and grants only the write capabilities the Project is allowed to use.
@@ -308,7 +320,7 @@ A Project-owned node graph containing any number of sources, transforms, Agent s
 _Avoid_: Plan, graph project, per-source pipeline
 
 **Workflow Version**:
-An immutable published form of a Workflow. Runs and Automations reference an explicit Workflow Version rather than a mutable draft.
+An immutable published form of a Workflow. It pins exact Source Binding Revisions, Capability versions, and other executable definitions; Runs and Automations reference it rather than a mutable draft or latest binding.
 _Avoid_: latest Workflow, activated Workflow, draft snapshot
 
 **Automation**:
@@ -335,8 +347,8 @@ _Avoid_: object-by-object navigation, top-level Workflow/Source tabs, Project In
 The legacy code and document name for a Workflow. It may remain at compatibility boundaries during migration, but must not appear as a competing product concept.
 _Avoid_: user-facing Plan, treating Plan and Workflow as different execution designs
 
-**Canvas Source Node**: A Workflow node that represents a real executable collection source. It may wrap an existing Data Source or an inline source definition, but it must be resolvable into a real collection source before running.
-_Avoid_: decorative source node, abstract placeholder, UI-only source
+**Canvas Source Node**: An atomic Workflow Node that represents exactly one executable collection source through exactly one Project-owned Source Binding. It may set bounded Run controls such as time window, item limit, sampling, and input/output mapping, but cannot run by referencing or editing a Workspace Source directly.
+_Avoid_: decorative source node, abstract placeholder, UI-only source, inline source definition, a `sources[]` collection inside one atomic node
 
 **Executable Canvas Node**: Any node on the Collection Canvas that participates in a Workflow. It must either execute, route, transform, store, notify, gate, or expose package-owned executable internals; if it lacks a runtime binding, the node is explicitly blocked rather than treated as decorative.
 _Avoid_: fake node, visual-only node, silent mock execution
@@ -416,10 +428,6 @@ _Avoid_: GPU model, fixed Device, machine role
 **Capability Gap**: An explicit blocked gap produced when a Workflow or Imported Runtime Graph requires a capability that has no runnable mapping in the Capability Catalog, or whose availability is blocked by schema, dependency, resource, permission, or probe failure.
 _Avoid_: failing import silently, pretending missing tools are runnable, deleting unsupported external graph structure
 
-**Source**:
-A Project-owned collection target and scope, such as repositories, accounts, searches, sites, or streams. It references a Connection when authentication is required and is consumed by Workflow Nodes.
-_Avoid_: Connection, credential, integration
-
 **Inbox**:
 The user-facing view of unresolved requests that require attention or approval. It does not own a separate approval state.
 _Avoid_: Approval database, notification log
@@ -469,7 +477,7 @@ _Avoid_: chat-only Workflow state, Workflows that exist only in an assistant tra
 **Capability Discovery Entry**: The search and recommendation surface for finding available Business Capabilities, Presets, and blocked gaps from the Capability Catalog. It helps assemble Workflows but does not replace the Collection Canvas.
 _Avoid_: static raw node palette, frontend-only capability menus
 
-**Packaged Node Preset**: A ready-to-place node package that wraps a Business Capability with default parameters, resource hints, output ports, labels, tags, probes, and safety limits. In the Palette and Canvas it is the operator-facing "封装好的节点"; the underlying capability remains catalog-owned.
+**Packaged Node Preset**: A ready-to-place node package that wraps a Business Capability with default parameters, resource hints, output ports, labels, tags, probes, and safety limits. A multi-source preset expresses each source as an internal atomic Canvas Source Node with its own Source Binding rather than storing several source configurations on one node. In the Palette and Canvas it is the operator-facing "封装好的节点"; the underlying capability remains catalog-owned.
 _Avoid_: treating presets as only saved form params, hardcoded frontend nodes, presets without capability ownership
 
 **Node Preset Family**: A stable grouping for Packaged Node Presets by workflow role: Source, Transform, Flow, Sink, Control, or Runtime Package. AgentRuntime Nodes belong to Control; imported LangGraph, LangChain, Pi, or package-owned graphs belong to Runtime Package. Families keep the palette extensible as new nodes are added.
@@ -522,7 +530,7 @@ An immutable output or evidence object that can be referenced by multiple Runs w
 _Avoid_: Mutable file, run attachment
 
 **Data Feed**:
-A published, permissioned data product with a stable contract through which processed collection results can be queried, subscribed to, replayed, or pushed to external consumers.
+A published, permissioned data product with a stable contract through which processed collection results can be queried, subscribed to, replayed, or pushed to external consumers. It may combine governed outputs from one or more Projects without turning those Projects into external Sources.
 _Avoid_: Workflow output, raw record, delivery channel
 
 **Data Subscription**:
