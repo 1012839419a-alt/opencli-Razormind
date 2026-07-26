@@ -94,10 +94,6 @@ async def test_two_package_catalog_capabilities_are_projected_runnable(client):
     assert catalog["package.simulation.swarm-forecast"]["backendAvailable"] is True
 
 
-@pytest.mark.xfail(
-    reason="branch-consolidation merge fallout - see 2233admin/opencli-admin#43",
-    strict=False,
-)
 @pytest.mark.asyncio
 async def test_collection_output_flows_through_situation_into_swarm(client):
     project = {

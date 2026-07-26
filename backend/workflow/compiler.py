@@ -205,7 +205,9 @@ def compile_workflow_project(project: WorkflowProject) -> WorkflowCompileRespons
     compiled_nodes = _topologically_order_compiled_nodes(compiled_nodes)
     plan_ir = PlanGraph(name=project.name, draft=True, nodes=plan_nodes, edges=plan_edges)
     _widen_merge_fan_in(plan_ir)
-    plan_validation = validate_plan_graph(plan_ir)
+    # Compile previews adopt registry pins for unpinned tools; the strict
+    # require-pin gate stays on authoritative Plan persistence.
+    plan_validation = validate_plan_graph(plan_ir, require_tool_pins=False)
     if not plan_validation.valid:
         return WorkflowCompileResponse(
             valid=False,
@@ -399,6 +401,10 @@ def _validate_capability_version_pin(
     issue = validate_workflow_tool_capability_version_pin(
         tool_id,
         tool_capability.get("versionPin"),
+        # Compile-time contract: an absent pin adopts the registry's current
+        # version; only explicit mismatches fail. Authoritative Plan
+        # persistence keeps the strict require-pin gate.
+        require_pin=False,
     )
     if issue is None:
         return []

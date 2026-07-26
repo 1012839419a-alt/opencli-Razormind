@@ -340,6 +340,21 @@ def execute_data_operator(
     output, operator_metrics, rejected = executor(
         copy.deepcopy(items), resolved_config
     )
+    if "deduplicate" in operator_id:
+        # Record-acceptance gates require unique-dedupe evidence on each
+        # candidate; stamp the same contract the record-hygiene dedupe emits
+        # so operator-deduped chains pass acceptance regardless of pack
+        # version.
+        for survivor in output:
+            if isinstance(survivor, dict) and not isinstance(
+                survivor.get("dedupe"), dict
+            ):
+                survivor["dedupe"] = {
+                    "type": "dedupe",
+                    "operatorId": operator_id,
+                    "packVersion": spec.pack_version,
+                    "status": "unique",
+                }
     rejected_count = int(operator_metrics.pop("rejectedInputCount", len(rejected)))
     metrics = {
         "inputItemCount": len(items),

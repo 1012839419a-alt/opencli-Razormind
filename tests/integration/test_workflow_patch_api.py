@@ -513,10 +513,6 @@ async def test_demand_draft_assembles_xiaohongshu_need_into_native_nodes(client)
     )
 
 
-@pytest.mark.xfail(
-    reason="branch-consolidation merge fallout - see 2233admin/opencli-admin#43",
-    strict=False,
-)
 @pytest.mark.asyncio
 async def test_demand_draft_assembles_multi_source_need_through_merge(client):
     project = _valid_workflow_project()
@@ -1028,10 +1024,6 @@ async def test_external_realtime_stream_tool_runs_okx_snapshot_executor(
     assert partial["details"]["sampleOutputs"][0]["market"]["last"] == "1766.01"
 
 
-@pytest.mark.xfail(
-    reason="branch-consolidation merge fallout - see 2233admin/opencli-admin#43",
-    strict=False,
-)
 @pytest.mark.asyncio
 async def test_imported_external_tool_rejects_unregistered_tool_capability(client):
     project = _valid_workflow_project()

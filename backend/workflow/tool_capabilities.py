@@ -47,13 +47,22 @@ class WorkflowCapabilityPinIssue:
 def validate_workflow_tool_capability_version_pin(
     tool_id: str,
     version_pin: Any,
+    *,
+    require_pin: bool = True,
 ) -> WorkflowCapabilityPinIssue | None:
-    """Validate a node pin against the installed Tool Capability registry."""
+    """Validate a node pin against the installed Tool Capability registry.
+
+    ``require_pin=True`` is the persistence-grade contract: authoritative
+    Plans must carry an explicit pin. Compile/run callers pass
+    ``require_pin=False`` — an absent pin adopts the registry's current
+    version, and only an explicit mismatch is an error."""
 
     tool = resolve_workflow_tool_capability(tool_id)
     if tool is not None and tool.versionPin is None:
         # Registry entry declares no pinned version (e.g. native intelligence
         # tools) — pin enforcement does not apply to this capability.
+        return None
+    if tool is not None and version_pin is None and not require_pin:
         return None
     if tool is None:
         return WorkflowCapabilityPinIssue(

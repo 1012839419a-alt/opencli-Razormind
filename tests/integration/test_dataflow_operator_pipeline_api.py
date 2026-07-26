@@ -615,10 +615,6 @@ def _minimal_operator_project(
     }
 
 
-@pytest.mark.xfail(
-    reason="branch-consolidation merge fallout - see 2233admin/opencli-admin#43",
-    strict=False,
-)
 @pytest.mark.asyncio
 async def test_dataflow_pipeline_runs_topologically_with_lineage_metrics_and_sink(
     client,
@@ -1036,10 +1032,6 @@ async def test_dataflow_pipeline_is_deterministic_at_http_seam(client):
         ]
 
 
-@pytest.mark.xfail(
-    reason="branch-consolidation merge fallout - see 2233admin/opencli-admin#43",
-    strict=False,
-)
 @pytest.mark.asyncio
 async def test_demand_draft_compiles_and_runs_the_native_dataflow_chain(
     client,

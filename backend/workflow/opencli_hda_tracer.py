@@ -1391,7 +1391,16 @@ async def continue_workflow_run_with_source_outputs(
     # events are silently dropped.
     lock = await _get_run_lock(run_id)
     async with lock:
-        stored = _RUNS.get(run_id) or await _load_workflow_run(run_id, session=session)
+        # Session-first: the in-memory mirror only refreshes via
+        # queue_after_commit callbacks, so mid-run commits can leave _RUNS
+        # holding an early (even empty) event snapshot until the next commit.
+        # The database transcript is authoritative for continuations; memory
+        # is only trusted when there is no session at all.
+        stored = (
+            await _load_workflow_run(run_id, session=session)
+            if session is not None
+            else _RUNS.get(run_id)
+        )
         if stored is None:
             return None
 

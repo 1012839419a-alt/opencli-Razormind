@@ -52,7 +52,11 @@ class PlanValidationResult:
         return {"valid": self.valid, "errors": [e.to_dict() for e in self.errors]}
 
 
-def validate_plan_graph(plan: PlanGraph) -> PlanValidationResult:
+def validate_plan_graph(
+    plan: PlanGraph,
+    *,
+    require_tool_pins: bool = True,
+) -> PlanValidationResult:
     """Run every structural check against ``plan`` and return the combined
     result. Checks are independent — a graph can fail more than one class
     at once, and all applicable errors are returned together rather than
@@ -65,7 +69,9 @@ def validate_plan_graph(plan: PlanGraph) -> PlanValidationResult:
     errors.extend(_check_source_node_entity_refs(plan))
     errors.extend(_check_dangling_edges(plan, nodes_by_id))
     errors.extend(_check_missing_required_params(plan))
-    errors.extend(_check_capability_version_pins(plan))
+    errors.extend(
+        _check_capability_version_pins(plan, require_pin=require_tool_pins)
+    )
     errors.extend(_check_orphan_merges(plan, nodes_by_id))
     errors.extend(_check_port_type_mismatches(plan, nodes_by_id))
     errors.extend(_check_cycles(plan, nodes_by_id))
@@ -73,7 +79,11 @@ def validate_plan_graph(plan: PlanGraph) -> PlanValidationResult:
     return PlanValidationResult(errors=errors)
 
 
-def _check_capability_version_pins(plan: PlanGraph) -> list[PlanValidationError]:
+def _check_capability_version_pins(
+    plan: PlanGraph,
+    *,
+    require_pin: bool = True,
+) -> list[PlanValidationError]:
     """Prevent persisted executable Plans from floating registered tools."""
 
     errors: list[PlanValidationError] = []
@@ -87,7 +97,18 @@ def _check_capability_version_pins(plan: PlanGraph) -> list[PlanValidationError]
         issue = validate_workflow_tool_capability_version_pin(
             tool_id.strip(),
             tool_capability.get("versionPin"),
+            require_pin=require_pin,
         )
+        if (
+            issue is not None
+            and issue.code == "unknown_tool_capability"
+            and not require_pin
+            and isinstance(node.params.get("externalWorkflow"), dict)
+        ):
+            # Compile previews keep imported unknown external tools visible as
+            # a Capability Gap instead of failing the whole draft; the strict
+            # persistence gate still rejects them.
+            continue
         if issue is not None:
             errors.append(
                 PlanValidationError(

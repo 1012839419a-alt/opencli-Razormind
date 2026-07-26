@@ -511,18 +511,21 @@ def _catalog_slots_for_need(text: str) -> list[dict[str, Any]]:
         return []
 
     keyword = _keyword_from_need(text)
-    best: dict[str, tuple[int, int, str]] = {}
+    best: dict[str, tuple[int, int, int, str]] = {}
     for index, node in enumerate(nodes):
-        tier = _catalog_match_tier(normalized, node)
-        if tier is None:
+        match = _catalog_match_tier(normalized, node)
+        if match is None:
             continue
+        tier, mention_pos = match
         current = best.get(node.site)
-        if current is None or tier < current[0]:
-            best[node.site] = (tier, index, node.command)
+        if current is None or (tier, mention_pos) < (current[0], current[1]):
+            best[node.site] = (tier, mention_pos, index, node.command)
 
-    ordered_sites = sorted(best.items(), key=lambda item: (item[1][0], item[1][1]))
+    ordered_sites = sorted(
+        best.items(), key=lambda item: (item[1][0], item[1][1], item[1][2])
+    )
     slots: list[dict[str, Any]] = []
-    for site, (_tier, _index, command) in ordered_sites[:_CATALOG_SLOT_CAP]:
+    for site, (_tier, _mention, _index, command) in ordered_sites[:_CATALOG_SLOT_CAP]:
         slots.append(
             {
                 "id": _catalog_slot_id(site),
@@ -536,17 +539,32 @@ def _catalog_slots_for_need(text: str) -> list[dict[str, Any]]:
     return slots
 
 
-def _catalog_match_tier(normalized: str, node: Any) -> int | None:
+def _catalog_match_tier(normalized: str, node: Any) -> tuple[int, int] | None:
+    """Return (tier, first mention position) or None.
+
+    The mention position keeps multi-source needs ordered the way the
+    operator wrote them ("抓小红书和B站…" puts xiaohongshu before bilibili)
+    instead of by adapter-catalog listing order, which is not stable across
+    catalog updates."""
     # Command names (node.command) repeat across unrelated sites, so a
     # command-only hit must never claim the exact-site tier.
     site = node.site.lower()
     if len(site) >= 2 and site in normalized:
-        return 0
-    for alias in _CATALOG_SITE_ALIASES.get(site, ()):
-        if alias.lower() in normalized:
-            return 1
-    if any(token in normalized for token in _catalog_description_tokens(node)):
-        return 2
+        return 0, normalized.find(site)
+    alias_positions = [
+        normalized.find(alias.lower())
+        for alias in _CATALOG_SITE_ALIASES.get(site, ())
+        if alias.lower() in normalized
+    ]
+    if alias_positions:
+        return 1, min(alias_positions)
+    token_positions = [
+        normalized.find(token)
+        for token in _catalog_description_tokens(node)
+        if token in normalized
+    ]
+    if token_positions:
+        return 2, min(token_positions)
     return None
 
 
