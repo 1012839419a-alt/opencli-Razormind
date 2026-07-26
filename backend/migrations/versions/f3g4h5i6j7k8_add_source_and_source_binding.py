@@ -117,3 +117,5 @@ def downgrade() -> None:
     op.drop_table("source_bindings")
     op.drop_table("source_revisions")
     op.drop_table("sources")
+    sa.Enum(name="source_binding_lifecycle_status").drop(op.get_bind(), checkfirst=True)
+    sa.Enum(name="source_lifecycle_status").drop(op.get_bind(), checkfirst=True)

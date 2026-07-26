@@ -301,3 +301,33 @@ async def test_cross_workspace_confirmation_cannot_apply_recorded_proposal(
     assert work_item.evidence["schema_version"] == "agent-control-evidence/v1"
     assert work_item.evidence["proposal_version"] == proposal.proposal_version
     assert work_item.evidence["confirmation"]["state"] == "pending"
+
+
+@pytest.mark.asyncio
+async def test_confirmation_rejects_stale_target_version(client, db_session):
+    provider = await _make_provider(db_session, default_model="gpt-4o-mini", enabled=True)
+    identity, _, workspace = await _authorize_chat(db_session, subject="stale-proposal-admin")
+    proposal = await _build_proposal(
+        db_session,
+        "update_provider",
+        {"provider_id": provider.id, "enabled": False},
+        identity=identity,
+        workspace_id=workspace.id,
+    )
+    await db_session.commit()
+
+    provider.default_model = "changed-after-proposal"
+    await db_session.commit()
+
+    response = await client.post(
+        "/api/v1/chat/confirm",
+        json={"proposal": proposal.model_dump()},
+    )
+
+    assert response.status_code == 409
+    await db_session.refresh(provider)
+    assert provider.enabled is True
+    assert provider.default_model == "changed-after-proposal"
+    work_item = await db_session.get(OperationsWorkItem, proposal.work_item_id)
+    assert work_item is not None
+    assert work_item.status == WorkItemStatus.OPEN

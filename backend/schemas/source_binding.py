@@ -2,6 +2,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from backend.models.source_binding import SourceLifecycleStatus
 from backend.schemas.common import UTCModel
 
 
@@ -20,7 +21,7 @@ class SourceUpdate(BaseModel):
 
     name: str | None = Field(default=None, min_length=1, max_length=255)
     description: str | None = Field(default=None, max_length=4000)
-    status: str | None = None
+    status: SourceLifecycleStatus | None = None
 
 
 class SourceRead(UTCModel):
@@ -71,7 +72,7 @@ class SourceBindingUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str | None = Field(default=None, min_length=1, max_length=255)
-    status: str | None = None
+    status: SourceLifecycleStatus | None = None
 
 
 class SourceBindingRead(UTCModel):

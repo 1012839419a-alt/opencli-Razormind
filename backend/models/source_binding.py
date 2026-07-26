@@ -15,7 +15,7 @@ Neither is touched or redefined by this module; both remain as-is.
 
 from enum import StrEnum
 
-from sqlalchemy import Enum, ForeignKey, Integer, JSON, String, Text, UniqueConstraint
+from sqlalchemy import JSON, Enum, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.models.base import TimestampMixin

@@ -3,7 +3,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.database import get_db
-from backend.models.source_binding import Source, SourceBinding, SourceBindingRevision, SourceRevision
+from backend.models.source_binding import (
+    Source,
+    SourceBinding,
+    SourceBindingRevision,
+    SourceRevision,
+)
 from backend.models.workflow import Project
 from backend.schemas.common import ApiResponse
 from backend.schemas.source_binding import (
@@ -14,7 +19,11 @@ from backend.schemas.source_binding import (
     SourceBindingUpdate,
 )
 from backend.security.identity import RequestIdentity, get_request_identity
-from backend.security.workspace_rbac import WorkspacePermission, get_workspace_access, require_permission
+from backend.security.workspace_rbac import (
+    WorkspacePermission,
+    get_workspace_access,
+    require_permission,
+)
 
 router = APIRouter(
     prefix="/workspaces/{workspace_id}/projects/{project_id}/source-bindings",
@@ -43,7 +52,11 @@ async def _get_source_in_workspace(db: AsyncSession, workspace_id: str, source_i
     return source
 
 
-async def _get_source_revision(db: AsyncSession, source_id: str, revision_number: int) -> SourceRevision:
+async def _get_source_revision(
+    db: AsyncSession,
+    source_id: str,
+    revision_number: int,
+) -> SourceRevision:
     revision = await db.scalar(
         select(SourceRevision).where(
             SourceRevision.source_id == source_id,

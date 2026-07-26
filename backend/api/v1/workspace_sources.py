@@ -13,12 +13,21 @@ from backend.schemas.source_binding import (
     SourceUpdate,
 )
 from backend.security.identity import RequestIdentity, get_request_identity
-from backend.security.workspace_rbac import WorkspacePermission, get_workspace_access, require_permission
+from backend.security.workspace_rbac import (
+    WorkspacePermission,
+    get_workspace_access,
+    require_permission,
+)
 
 router = APIRouter(prefix="/workspaces/{workspace_id}/sources", tags=["sources"])
 
 
-async def _get_source(db: AsyncSession, workspace_id: str, source_id: str, for_update: bool = False) -> Source:
+async def _get_source(
+    db: AsyncSession,
+    workspace_id: str,
+    source_id: str,
+    for_update: bool = False,
+) -> Source:
     query = select(Source).where(Source.workspace_id == workspace_id, Source.id == source_id)
     if for_update:
         query = query.with_for_update()

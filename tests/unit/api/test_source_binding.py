@@ -25,7 +25,12 @@ def _build_client(db_session, user):
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
 
 
-async def _seed_workspace_admin(db_session, user, workspace_name: str, workspace_slug: str) -> Workspace:
+async def _seed_workspace_admin(
+    db_session,
+    user,
+    workspace_name: str,
+    workspace_slug: str,
+) -> Workspace:
     workspace = Workspace(name=workspace_name, slug=workspace_slug)
     db_session.add(workspace)
     await db_session.flush()
@@ -210,3 +215,30 @@ async def test_project_cannot_bind_source_from_another_workspace(db_session):
             },
         )
         assert rejected.status_code == 404
+
+
+async def test_source_status_rejects_unknown_lifecycle_value(db_session):
+    user = User(subject="status-owner")
+    db_session.add(user)
+    await db_session.flush()
+    workspace = await _seed_workspace_admin(db_session, user, "Workspace", "workspace-status")
+
+    async with _build_client(db_session, user) as client:
+        source = (
+            await client.post(
+                f"/workspaces/{workspace.id}/sources",
+                json={
+                    "name": "Source",
+                    "slug": "source",
+                    "adapter_type": "rss",
+                    "adapter_config": {},
+                },
+            )
+        ).json()["data"]
+
+        rejected = await client.patch(
+            f"/workspaces/{workspace.id}/sources/{source['id']}",
+            json={"status": "unknown"},
+        )
+
+    assert rejected.status_code == 422
