@@ -1,15 +1,15 @@
 # opencli-admin 后端架构声明（分支归一后）
 
-> 基线：main `b65708b`（2026-07-26）。三条产品线——安全加固线（`fix/sec-correctness-hardening`）、运营治理线（`notification-ack-cleanup-work`）、unified 产品线（`codex/unified-product-3002`）——已全部并入 main；迁移头归一为 `1901f6da7138`；八处跨线接缝已缝合（见 [#43](https://github.com/2233admin/opencli-admin/issues/43)）。
+> 基线：main `b65708b`（2026-07-26）。三条产品线——安全加固线（`fix/sec-correctness-hardening`）、运营治理线（`notification-ack-cleanup-work`）、unified 产品线（`codex/unified-product-3002`）——已全部并入 main；迁移头归一后由 Source/Binding V1 顺延为 `f3g4h5i6j7k8`；八处跨线接缝已缝合（见 [#43](https://github.com/2233admin/opencli-admin/issues/43)）。
 >
 > 本文是给协作 Agent / 新会话的**架构声明**：动 `backend/` 前先读这份。`docs/ARCHITECTURE.md` 为合并前的旧全量文档, 与本文冲突处以本文为准。
 
 | 指标 | 值 |
 |---|---|
 | v1 API 路由模块 | 34 |
-| OpenAPI operations（治理台账对账后） | 194（台账：`docs/backend-capability-exposure-matrix.yaml`） |
+| OpenAPI operations（治理台账对账后） | 205（台账：`docs/backend-capability-exposure-matrix.yaml`） |
 | 测试 | unit+compat+integration ≈ 2374 通过, 0 xfail |
-| Alembic | 单头 `1901f6da7138` |
+| Alembic | 单头 `f3g4h5i6j7k8` |
 
 ## 1. 分层总图
 
@@ -87,12 +87,12 @@ flowchart LR
 
 - **Workspace RBAC**：`workspaces.py`（成员/角色）+ `identity.py`（User / Team / ServiceIdentity）。**已知 TODO**：RBAC 版工作区列表被 Studio 全量版 `GET /workspaces` 遮蔽——dev 模式（无 OIDC）依赖全量版；接 OIDC 前必须切换。
 - **Operations 控制面**：`operations_inbox`（工作项）、`operations_agents`（版本化 Agent 身份 + 权限画像）、`automations`、`consumer_grants`。
-- **暴露台账**：`docs/backend-capability-exposure-matrix.yaml` 锁 194 个 operations, `test_capability_exposure_matrix` 盯漂移。合并新增的 workspace-governance 条目标注 "governance review pending", 待复核。
+- **暴露台账**：`docs/backend-capability-exposure-matrix.yaml` 锁 205 个 operations, `test_capability_exposure_matrix` 盯漂移。合并新增的 workspace-governance 条目标注 "governance review pending", 待复核。
 - **通知**：`NotificationSendResult` 契约（含 ack 字段）+ 三阶段派发（计划 / 发送 / 短会话回写）；webhook 出站走 SSRF guard, 网络异常收敛为 `WorkflowWebhookDeliveryError`。
 
 ## 5. 存储与迁移
 
-- SQLite（dev, `aiosqlite`）/ PostgreSQL（compose）。迁移单头 `1901f6da7138`——运营线（workspace RBAC / operations / versioning）与产品线（plugin / feed / intelligence session）双链在此汇合。
+- SQLite（dev, `aiosqlite`）/ PostgreSQL（compose）。迁移单头 `f3g4h5i6j7k8`——`1901f6da7138` 汇合运营线与产品线后，Source/Binding V1 单链顺延。
 - **Legacy 升级路径已验证**：旧 plugin-hub 链 rejoin 拓扑下, 版本化迁移对缺失的 `workflow_runs` 表容忍跳过（online inspector guard；offline SQL 渲染不受影响）。模式参照 spine 迁移的缺表 early-return 惯例。
 - **去重是存储层保证**：`store_records` 按 `(source, content_hash)` 拦截。实测：A 股采集两轮 125→126, 仅真实新增入库。
 

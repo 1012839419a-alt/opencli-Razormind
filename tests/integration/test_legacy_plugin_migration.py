@@ -87,7 +87,7 @@ def test_legacy_plugin_database_rejoins_current_migration_head(tmp_path: Path) -
     finally:
         connection.close()
 
-    assert revision == ("1901f6da7138",)
+    assert revision == ("f3g4h5i6j7k8",)
     assert "version" in cursor_columns
     assert "identity_key" in record_columns
     assert "ix_collected_records_source_identity" in record_indexes

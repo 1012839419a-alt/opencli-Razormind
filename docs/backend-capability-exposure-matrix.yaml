@@ -1,6 +1,6 @@
 version: 1
 source: backend.main.app.openapi
-openapi_operation_count: 193
+openapi_operation_count: 205
 allowed_dispositions:
 - operator_ui
 - studio_binding
@@ -1975,6 +1975,114 @@ operations:
   decision: Added by branch-consolidation merge; governance review pending.
   target_epic: Epic 8
   capability_id: operator.workspace-governance
+- method: GET
+  path: /api/v1/workspaces/{workspace_id}/sources
+  operation_id: list_sources_api_v1_workspaces__workspace_id__sources_get
+  disposition: studio_binding
+  frontend_route: /studio
+  wrapper: null
+  decision: Bind workspace Source management to Studio without redefining legacy DataSource.
+  target_epic: Epic 8
+  capability_id: studio.sources
+- method: POST
+  path: /api/v1/workspaces/{workspace_id}/sources
+  operation_id: create_source_api_v1_workspaces__workspace_id__sources_post
+  disposition: studio_binding
+  frontend_route: /studio
+  wrapper: null
+  decision: Bind workspace Source management to Studio without redefining legacy DataSource.
+  target_epic: Epic 8
+  capability_id: studio.sources
+- method: GET
+  path: /api/v1/workspaces/{workspace_id}/sources/{source_id}
+  operation_id: get_source_api_v1_workspaces__workspace_id__sources__source_id__get
+  disposition: studio_binding
+  frontend_route: /studio
+  wrapper: null
+  decision: Bind workspace Source management to Studio without redefining legacy DataSource.
+  target_epic: Epic 8
+  capability_id: studio.sources
+- method: PATCH
+  path: /api/v1/workspaces/{workspace_id}/sources/{source_id}
+  operation_id: update_source_api_v1_workspaces__workspace_id__sources__source_id__patch
+  disposition: studio_binding
+  frontend_route: /studio
+  wrapper: null
+  decision: Bind workspace Source management to Studio without redefining legacy DataSource.
+  target_epic: Epic 8
+  capability_id: studio.sources
+- method: GET
+  path: /api/v1/workspaces/{workspace_id}/sources/{source_id}/revisions
+  operation_id: list_source_revisions_api_v1_workspaces__workspace_id__sources__source_id__revisions_get
+  disposition: studio_binding
+  frontend_route: /studio
+  wrapper: null
+  decision: Expose immutable Source revision history through the Studio Source surface.
+  target_epic: Epic 8
+  capability_id: studio.sources
+- method: POST
+  path: /api/v1/workspaces/{workspace_id}/sources/{source_id}/revisions
+  operation_id: create_source_revision_api_v1_workspaces__workspace_id__sources__source_id__revisions_post
+  disposition: studio_binding
+  frontend_route: /studio
+  wrapper: null
+  decision: Create immutable Source revisions through the Studio Source surface.
+  target_epic: Epic 8
+  capability_id: studio.sources
+- method: GET
+  path: /api/v1/workspaces/{workspace_id}/projects/{project_id}/source-bindings
+  operation_id: list_source_bindings_api_v1_workspaces__workspace_id__projects__project_id__source_bindings_get
+  disposition: studio_binding
+  frontend_route: /studio
+  wrapper: null
+  decision: Bind project SourceBinding management to Studio with explicit revision pins.
+  target_epic: Epic 8
+  capability_id: studio.sources
+- method: POST
+  path: /api/v1/workspaces/{workspace_id}/projects/{project_id}/source-bindings
+  operation_id: create_source_binding_api_v1_workspaces__workspace_id__projects__project_id__source_bindings_post
+  disposition: studio_binding
+  frontend_route: /studio
+  wrapper: null
+  decision: Bind project SourceBinding management to Studio with explicit revision pins.
+  target_epic: Epic 8
+  capability_id: studio.sources
+- method: GET
+  path: /api/v1/workspaces/{workspace_id}/projects/{project_id}/source-bindings/{binding_id}
+  operation_id: get_source_binding_api_v1_workspaces__workspace_id__projects__project_id__source_bindings__binding_id__get
+  disposition: studio_binding
+  frontend_route: /studio
+  wrapper: null
+  decision: Bind project SourceBinding management to Studio with explicit revision pins.
+  target_epic: Epic 8
+  capability_id: studio.sources
+- method: PATCH
+  path: /api/v1/workspaces/{workspace_id}/projects/{project_id}/source-bindings/{binding_id}
+  operation_id: update_source_binding_api_v1_workspaces__workspace_id__projects__project_id__source_bindings__binding_id__patch
+  disposition: studio_binding
+  frontend_route: /studio
+  wrapper: null
+  decision: Bind project SourceBinding management to Studio with explicit revision pins.
+  target_epic: Epic 8
+  capability_id: studio.sources
+- method: GET
+  path: /api/v1/workspaces/{workspace_id}/projects/{project_id}/source-bindings/{binding_id}/revisions
+  operation_id: list_source_binding_revisions_api_v1_workspaces__workspace_id__projects__project_id__source_bindings__binding_id__revisions_get
+  disposition: studio_binding
+  frontend_route: /studio
+  wrapper: null
+  decision: Expose immutable SourceBinding revision history through Studio.
+  target_epic: Epic 8
+  capability_id: studio.sources
+- method: POST
+  path: /api/v1/workspaces/{workspace_id}/projects/{project_id}/source-bindings/{binding_id}/revisions
+  operation_id: create_source_binding_revision_api_v1_workspaces__workspace_id__projects__project_id__source_bindings__binding_id__revisions_post
+  disposition: studio_binding
+  frontend_route: /studio
+  wrapper: null
+  decision: Re-pin a SourceBinding only by creating an immutable binding revision.
+  target_epic: Epic 8
+  capability_id: studio.sources
 unreferenced_wrappers:
 - wrapper: getWorkspaceSettings
   operation_id: null
