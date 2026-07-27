@@ -337,7 +337,6 @@ def _catalog_capabilities(*, dify_runtime_ready: bool) -> list[WorkflowRuntimeCa
                             "channelType": "rest",
                             "method": "GET",
                             "query": {"format": "json"},
-                            "resultPath": "results",
                         },
                     },
                 },
