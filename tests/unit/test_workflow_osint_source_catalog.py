@@ -5,7 +5,6 @@ from backend.workflow.capability_projection import build_workflow_capabilities
 from backend.workflow.compiler import compile_workflow_project
 from backend.workflow.runtime_registry import SOURCE_FETCH_BINDING_ID
 
-
 SOURCE_CASES = (
     (
         "intelligence.source.searxng",
