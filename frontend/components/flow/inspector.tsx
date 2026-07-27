@@ -4,11 +4,13 @@ import { useEffect, useState } from "react"
 import Link from "next/link"
 import {
   AlertTriangle,
+  ChevronRight,
   Database,
   ExternalLink,
   GitBranch,
   Plus,
   PlugZap,
+  Search,
   Trash2,
   Unplug,
 } from "lucide-react"
@@ -53,7 +55,14 @@ import {
   shouldPreserveNodeAuthoredText,
   type WorkflowLanguage,
 } from "@/lib/workflow/node-i18n"
-import { buildWorkflowOutlineRows } from "@/lib/workflow/workflow-outline"
+import {
+  buildWorkflowOutlineRows,
+  filterWorkflowOutlineRows,
+  visibleWorkflowOutlineRows,
+  workflowDirectUpstreamNodeIds,
+  workflowInputReferenceForPort,
+  workflowOutlineRowHasChildren,
+} from "@/lib/workflow/workflow-outline"
 import { findWorkflowProjectNodeByCanvasId } from "@/lib/workflow/node-path"
 import {
   isOpenCLISourceSlotArray,
@@ -76,7 +85,13 @@ import type {
   WorkflowProject,
   WorkflowProjectNode,
 } from "@/lib/workflow/schema"
-import { MonoRow, PanelShell, SectionCaption } from "./inspector-shell"
+import {
+  MonoRow,
+  PanelShell,
+  SectionCaption,
+  workflowStatusDotClass,
+  workflowStatusText,
+} from "./inspector-shell"
 import { cn } from "@/lib/utils"
 
 const edgeTypeOptions = [
@@ -101,6 +116,9 @@ const INSPECTOR_COPY = {
     noNodes: "当前工作流还没有节点。",
     nodes: "节点",
     connections: "连线",
+    outlineSearch: "搜索节点、类型或说明",
+    collapseNode: "折叠节点",
+    expandNode: "展开节点",
     promptSection: "节点提示词配置",
     promptHelp: "这里只显示节点已保存的提示词配置和测试用例。AI 编辑生成的是待审阅提案，确认应用后才会更新工作流。",
     configuredPrompt: "已配置提示词",
@@ -130,6 +148,7 @@ const INSPECTOR_COPY = {
     inputsHelp: "每个输入端口只列出类型兼容的真实上游输出。可在这里重接或解绑。",
     inputUnbound: "未连接",
     noCompatibleOutputs: "没有可用的兼容输出。",
+    insertVariable: "引用上游输出",
     fieldMapping: "字段映射",
     fieldMappingGap: "上下游契约尚未提供字段 schema，暂不允许手填来源或目标字段路径。已有旧映射只读保留。",
     legacyMapping: "旧映射",
@@ -175,6 +194,9 @@ const INSPECTOR_COPY = {
     noNodes: "This workflow has no nodes yet.",
     nodes: "nodes",
     connections: "connections",
+    outlineSearch: "Search nodes, types, or descriptions",
+    collapseNode: "Collapse node",
+    expandNode: "Expand node",
     promptSection: "Node prompt configuration",
     promptHelp: "This shows only saved prompt configuration and test cases. AI edits remain review proposals until you apply them.",
     configuredPrompt: "Configured prompt",
@@ -204,6 +226,7 @@ const INSPECTOR_COPY = {
     inputsHelp: "Each input lists only type-compatible outputs from real upstream nodes. Reconnect or unbind here.",
     inputUnbound: "Unbound",
     noCompatibleOutputs: "No compatible outputs are available.",
+    insertVariable: "Reference upstream output",
     fieldMapping: "Field mapping",
     fieldMappingGap: "The upstream and downstream contracts do not expose field schemas yet. Manual source and target field paths are disabled; legacy mappings remain read-only.",
     legacyMapping: "Legacy mapping",
@@ -378,10 +401,34 @@ function WorkflowOutlinePanel({
   workflowProject: WorkflowProject
 }) {
   const copy = INSPECTOR_COPY[language]
+  const [outlineQuery, setOutlineQuery] = useState("")
+  const [collapsedNodeIds, setCollapsedNodeIds] = useState<Set<string>>(() => new Set())
   const nodeById = new Map(nodes.map((node) => [node.id, node]))
   const rows = buildWorkflowOutlineRows(nodes, edges)
-  const connectedRows = rows.filter((row) => !row.disconnected)
-  const disconnectedRows = rows.filter((row) => row.disconnected)
+  const outlineRowIndexById = new Map(rows.map((row, index) => [row.nodeId, index]))
+  const filteredRows = filterWorkflowOutlineRows(rows, outlineQuery, (nodeId) => {
+    const node = nodeById.get(nodeId)
+    if (!node) return ""
+    const localized = localizeNodeText(
+      getNodeDisplayId(node.data),
+      { label: node.data.label, description: node.data.description },
+      language,
+    )
+    return `${node.data.label} ${node.data.description ?? ""} ${localized.label} ${localized.description ?? ""} ${node.data.nodeType}`
+  })
+  const visibleRows = outlineQuery.trim()
+    ? filteredRows
+    : visibleWorkflowOutlineRows(filteredRows, collapsedNodeIds)
+  const connectedRows = visibleRows.filter((row) => !row.disconnected)
+  const disconnectedRows = visibleRows.filter((row) => row.disconnected)
+  const toggleOutlineNode = (nodeId: string) => {
+    setCollapsedNodeIds((current) => {
+      const next = new Set(current)
+      if (next.has(nodeId)) next.delete(nodeId)
+      else next.add(nodeId)
+      return next
+    })
+  }
   const renderRows = (sectionRows: typeof rows) => (
     <div role="tree" className="overflow-hidden rounded-[3px] border border-[#20242a] bg-[#101216]/84">
       {sectionRows.map((row) => {
@@ -409,39 +456,64 @@ function WorkflowOutlinePanel({
               language,
             })
           : localized.label
+        const collapsed = collapsedNodeIds.has(node.id)
+        const status = node.data.status ?? "idle"
+        const rowIndex = outlineRowIndexById.get(node.id)
+        const hasChildren = rowIndex !== undefined && workflowOutlineRowHasChildren(rows, rowIndex)
         return (
-          <button
+          <div
             key={node.id}
-            type="button"
             role="treeitem"
             aria-level={row.depth + 1}
             aria-selected={selectedNodeId === node.id}
-            onClick={() => onSelectNode(node.id)}
-            onDoubleClick={() => onOpenNode(node.id)}
-            onKeyDown={(event) => {
-              if (event.key !== "Enter") return
-              event.preventDefault()
-              onOpenNode(node.id)
-            }}
             style={{ paddingLeft: 12 + row.depth * 16 }}
             className={cn(
-              "flex w-full items-center gap-2 border-b border-[#20242a] py-2 pr-3 text-left transition-colors last:border-b-0 hover:bg-[#1b1f25]",
+              "flex w-full items-stretch border-b border-[#20242a] pr-1 text-left transition-colors last:border-b-0 hover:bg-[#1b1f25]",
               selectedNodeId === node.id && "bg-[#20252c] text-foreground",
             )}
           >
-            <span
-              className={cn(
-                "size-1.5 shrink-0 rounded-full",
-                node.data.status === "error" ? "bg-destructive" : "bg-[#4ade80]",
-              )}
-            />
-            <span className="min-w-0 flex-1">
-              <span className="block truncate text-[11px] font-medium text-foreground">{displayLabel}</span>
-              <span className="block truncate font-mono text-[9px] text-muted-foreground">
-                {row.branchLabel ? `${row.branchLabel} · ` : ""}{node.data.nodeType}
+            {hasChildren ? (
+              <button
+                type="button"
+                aria-label={collapsed ? copy.expandNode : copy.collapseNode}
+                aria-expanded={!collapsed}
+                onClick={(event) => {
+                  event.stopPropagation()
+                  toggleOutlineNode(node.id)
+                }}
+                className="flex w-6 shrink-0 items-center justify-center text-muted-foreground transition-colors hover:text-foreground"
+              >
+                <ChevronRight className={cn("size-3 transition-transform", !collapsed && "rotate-90")} />
+              </button>
+            ) : (
+              <span className="w-6 shrink-0" aria-hidden />
+            )}
+            <button
+              type="button"
+              onClick={() => onSelectNode(node.id)}
+              onDoubleClick={() => onOpenNode(node.id)}
+              onKeyDown={(event) => {
+                if (event.key !== "Enter") return
+                event.preventDefault()
+                onOpenNode(node.id)
+              }}
+              className="flex min-w-0 flex-1 items-center gap-2 py-2 pr-2 text-left"
+            >
+              <span
+                className={cn(
+                  "size-1.5 shrink-0 rounded-full border",
+                  workflowStatusDotClass[status] ?? workflowStatusDotClass.idle,
+                )}
+                title={workflowStatusText[status] ?? status}
+              />
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-[11px] font-medium text-foreground">{displayLabel}</span>
+                <span className="block truncate font-mono text-[9px] text-muted-foreground">
+                  {row.branchLabel ? `${row.branchLabel} · ` : ""}{node.data.nodeType}
+                </span>
               </span>
-            </span>
-          </button>
+            </button>
+          </div>
         )
       })}
     </div>
@@ -462,6 +534,17 @@ function WorkflowOutlinePanel({
           <p className="mt-2 font-mono text-[9px] uppercase tracking-[0.14em] text-muted-foreground/70">
             {nodes.length} {copy.nodes} · {edges.length} {copy.connections}
           </p>
+        </div>
+        <div className="relative">
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            data-testid="workflow-outline-search"
+            value={outlineQuery}
+            onChange={(event) => setOutlineQuery(event.target.value)}
+            placeholder={copy.outlineSearch}
+            aria-label={copy.outlineSearch}
+            className={cn(houdiniInputClass, "w-full pl-8")}
+          />
         </div>
         {nodes.length === 0 ? (
           <p className="rounded-[3px] border border-dashed border-[#2a3038] p-4 text-[11px] text-muted-foreground">
@@ -930,6 +1013,24 @@ export function Inspector({ compact = false, onClose }: { compact?: boolean; onC
         <div className="min-w-0">{control}</div>
       </div>
     )
+    const variableSelector = !field.readonly && upstreamVariableOptions.length > 0 ? (
+      <Select onValueChange={(value) => value && updateParameterField(field, value)}>
+        <SelectTrigger
+          data-testid="parameter-variable-selector"
+          aria-label={`${copy.insertVariable}: ${fieldText.label}`}
+          className={cn(houdiniSelectTriggerClass, "w-full")}
+        >
+          <SelectValue placeholder={copy.insertVariable} />
+        </SelectTrigger>
+        <SelectContent className="rounded-[2px] border border-[#2c3036] bg-[#0d0f12] font-mono text-[11px]">
+          {upstreamVariableOptions.map((option) => (
+            <SelectItem key={option.value} value={option.value} className="rounded-[2px] text-[11px]">
+              {option.label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    ) : null
 
     if (field.type === "json") {
       const draftKey = `${configurationNodeId}:${field.id}`
@@ -1019,6 +1120,8 @@ export function Inspector({ compact = false, onClose }: { compact?: boolean; onC
 
     if (field.type === "textarea") {
       return row(
+        <div className="space-y-1.5">
+          {variableSelector}
           <Textarea
             id={fieldId}
             rows={3}
@@ -1026,7 +1129,8 @@ export function Inspector({ compact = false, onClose }: { compact?: boolean; onC
             className={houdiniTextareaClass}
             value={typeof raw === "string" ? raw : ""}
             onChange={(e) => updateParameterField(field, e.target.value)}
-          />,
+          />
+        </div>,
       )
     }
 
@@ -1154,6 +1258,8 @@ export function Inspector({ compact = false, onClose }: { compact?: boolean; onC
     }
 
     return row(
+      <div className="space-y-1.5">
+        {variableSelector}
         <Input
           id={fieldId}
           value={typeof raw === "string" || typeof raw === "number" ? String(raw) : ""}
@@ -1161,7 +1267,8 @@ export function Inspector({ compact = false, onClose }: { compact?: boolean; onC
           readOnly={field.readonly}
           onChange={(e) => updateParameterField(field, e.target.value)}
           className={houdiniInputClass}
-        />,
+        />
+      </div>,
     )
   }
 
@@ -1213,11 +1320,40 @@ export function Inspector({ compact = false, onClose }: { compact?: boolean; onC
           portId: port.id,
         }))
     })
+  const upstreamNodeIds = workflowDirectUpstreamNodeIds(node.id, edges)
+  const upstreamVariableOptions = Array.from(new Map(nodes.flatMap((candidate) => {
+    if (!upstreamNodeIds.has(candidate.id)) return []
+    const candidateProjectNode = hydrateProjectNodeIdentity(
+      findWorkflowProjectNodeByCanvasId(workflowProject, candidate.id),
+      candidate.data,
+    )
+    const candidateContract = buildCanonicalNodeViewContract(
+      candidateProjectNode,
+      candidate.data,
+      candidate.id,
+    )
+    const localized = localizeNodeText(
+      getNodeDisplayId(candidate.data),
+      { label: candidate.data.label, description: candidate.data.description },
+      language,
+    )
+    return candidateContract.ports
+      .filter((port) => port.direction === "output")
+      .flatMap((port) => {
+        const value = workflowInputReferenceForPort(port.id)
+        return value ? [{
+          value,
+          label: `${localized.label} · ${port.id} (${port.type})`,
+        }] : []
+      })
+  }).map((option) => [option.value, option])).values())
   const parameterGroups = parameterInterfaceView?.groups ?? []
   const activeParameterGroupId = parameterGroups.some((group) => group.id === parameterGroupTab)
     ? parameterGroupTab
     : parameterGroups[0]?.id
   const activeParameterFields = parameterInterfaceView?.fields.filter((field) => field.groupId === activeParameterGroupId) ?? []
+  const regularParameterFields = activeParameterFields.filter((field) => field.type !== "json")
+  const advancedParameterFields = activeParameterFields.filter((field) => field.type === "json")
   const blockedAction = blockedActionViewForRuntime(data)
   const locateNode = () => {
     const internalNode = getInternalNode(node.id)
@@ -1509,11 +1645,23 @@ export function Inspector({ compact = false, onClose }: { compact?: boolean; onC
                 </button>
               ))}
             </div>
-            <div className="px-2 py-1">{activeParameterFields.map((field) => renderParameterField(field))}</div>
+            <div className="px-2 py-1">{regularParameterFields.map((field) => renderParameterField(field))}</div>
             {activeParameterFields.length === 0 ? (
               <p className="px-3 py-4 text-[11px] text-muted-foreground">{copy.noPublicParameters}</p>
             ) : null}
           </div>
+        ) : null}
+
+        {advancedParameterFields.length > 0 ? (
+          <details className={houdiniDetailsClass} data-testid="advanced-parameter-fields">
+            <summary className={houdiniSummaryClass}>
+              <span>{copy.advanced}</span>
+              <span className="text-[10px] normal-case tracking-normal">{advancedParameterFields.length}</span>
+            </summary>
+            <div className="border-t px-2 py-1">
+              {advancedParameterFields.map((field) => renderParameterField(field))}
+            </div>
+          </details>
         ) : null}
 
         {nodeContract || data.runtimeContract ? (

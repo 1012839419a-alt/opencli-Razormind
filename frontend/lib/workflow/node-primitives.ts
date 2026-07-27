@@ -1,5 +1,6 @@
 import type { NodeCategory, WorkflowNodeData, WorkflowNodeType } from "@/lib/flow/types"
 import type { WorkflowRuntimeCapability } from "./capabilities"
+import { DIFY_NODE_CAPABILITY_IDS } from "./dify-capability-map"
 import type { WorkflowCapability, WorkflowNodeKind } from "./schema"
 
 export type WorkflowPrimitiveCategory =
@@ -356,6 +357,72 @@ export const WORKFLOW_PRIMITIVES: WorkflowPrimitive[] = [
   primitive("primitive.ops.secret-ref", "secret-ref", "Secret Ref", "声明运行时注入的 secret 引用而不暴露明文", "ops", "transform", "data", "ShieldCheck", [
     out("secret", "secretRef", "Secret reference."),
   ], [{ id: "name", label: "name", value: "WEBHOOK_TOKEN" }], ["secret", "vault", "token", "密钥"]),
+  primitive(DIFY_NODE_CAPABILITY_IDS.start, "dify-start", "Start / User Input", "接收用户输入或工作流启动变量", "core", "trigger", "logic", "Play", [
+    out("variables", "object", "Workflow input variables."),
+  ], [{ id: "variables", label: "variables", value: "[]" }], ["dify", "start", "user input", "开始", "用户输入"]),
+  primitive(DIFY_NODE_CAPABILITY_IDS.end, "dify-end", "End", "结束工作流并映射最终输出", "output", "action", "action", "Square", [
+    inPort("result", "any", "Final workflow result."),
+  ], [{ id: "outputs", label: "outputs", value: "[]" }], ["dify", "end", "output", "结束", "输出"]),
+  primitive(DIFY_NODE_CAPABILITY_IDS.answer, "dify-answer", "Answer", "根据模板生成并返回最终回答", "output", "action", "action", "MessageSquare", [
+    inPort("variables", "object", "Answer template variables."),
+    out("answer", "string", "Rendered answer."),
+  ], [{ id: "template", label: "template", value: "{{answer}}" }], ["dify", "answer", "response", "回答"]),
+  primitive(DIFY_NODE_CAPABILITY_IDS.llm, "dify-llm", "LLM", "调用已配置的模型处理提示词并生成文本", "ai", "action", "action", "Sparkles", [
+    inPort("variables", "object", "Prompt variables."),
+    out("text", "string", "Generated text."),
+  ], [{ id: "model", label: "model", value: "" }, { id: "prompt", label: "prompt", value: "{{input}}" }], ["dify", "llm", "model", "prompt", "模型"]),
+  primitive(DIFY_NODE_CAPABILITY_IDS.agent, "dify-agent", "Agent", "让 Agent 按指令调用可用工具并完成任务", "ai", "action", "action", "Bot", [
+    inPort("input", "any", "Agent task input."),
+    out("result", "any", "Agent task result."),
+  ], [{ id: "instructions", label: "instructions", value: "" }, { id: "tools", label: "tools", value: "[]" }], ["dify", "agent", "tools", "智能体"]),
+  primitive(DIFY_NODE_CAPABILITY_IDS.knowledgeRetrieval, "dify-knowledge", "Knowledge Retrieval", "从选定知识库中检索相关文档", "input", "http", "data", "Database", [
+    inPort("query", "string", "Retrieval query."),
+    out("documents", "document[]", "Retrieved documents."),
+  ], [{ id: "knowledgeBase", label: "knowledgeBase", value: "" }, { id: "topK", label: "topK", value: "4" }], ["dify", "knowledge", "retrieval", "rag", "知识检索"]),
+  primitive(DIFY_NODE_CAPABILITY_IDS.questionClassifier, "dify-classifier", "Question Classifier", "用模型把输入问题路由到指定类别", "ai", "condition", "logic", "GitBranch", [
+    inPort("question", "string", "Question to classify."),
+    out("class", "string", "Matched class."),
+    out("fallback", "string", "Fallback class."),
+  ], [{ id: "model", label: "model", value: "" }, { id: "classes", label: "classes", value: "[]" }], ["dify", "question", "classifier", "route", "问题分类"]),
+  primitive(DIFY_NODE_CAPABILITY_IDS.humanInput, "dify-approval", "Human Approval", "暂停流程，等待人工批准或拒绝", "business", "condition", "logic", "UserCheck", [
+    inPort("request", "object", "Approval request."),
+    out("approved", "object", "Approved request."),
+    out("rejected", "object", "Rejected request."),
+  ], [{ id: "prompt", label: "prompt", value: "Please review" }], ["dify", "human", "approval", "review", "人工审批"]),
+  primitive(DIFY_NODE_CAPABILITY_IDS.iteration, "dify-iteration", "Iteration", "逐项处理输入列表并汇总结果", "logic", "condition", "logic", "Repeat", [
+    inPort("items", "items[]", "Items to iterate."),
+    out("item", "any", "Current item."),
+    out("results", "items[]", "Collected results."),
+  ], [{ id: "parallel", label: "parallel", value: "false" }], ["dify", "iteration", "foreach", "迭代"]),
+  primitive(DIFY_NODE_CAPABILITY_IDS.loop, "dify-loop", "Loop", "在满足继续条件时重复执行，最多运行指定次数", "logic", "condition", "logic", "Repeat", [
+    inPort("state", "object", "Loop state."),
+    out("body", "object", "Current loop state."),
+    out("done", "object", "Completed loop state."),
+  ], [{ id: "condition", label: "condition", value: "{{continue}}" }, { id: "maxIterations", label: "maxIterations", value: "10" }], ["dify", "loop", "repeat", "循环"]),
+  primitive(DIFY_NODE_CAPABILITY_IDS.templateTransform, "dify-template", "Template Transform", "用上游数据渲染文本模板", "transform", "transform", "data", "Braces", [
+    inPort("variables", "object", "Template variables."),
+    out("text", "string", "Rendered text."),
+  ], [{ id: "template", label: "template", value: "{{input}}" }], ["dify", "template", "transform", "jinja", "模板转换"]),
+  primitive(DIFY_NODE_CAPABILITY_IDS.variableAssign, "dify-assign", "Variable Assign", "设置或更新工作流变量", "state", "action", "data", "Variable", [
+    inPort("value", "any", "Value to assign."),
+    out("variables", "object", "Updated variables."),
+  ], [{ id: "variable", label: "variable", value: "" }], ["dify", "variable", "assign", "变量赋值"]),
+  primitive(DIFY_NODE_CAPABILITY_IDS.variableAggregate, "dify-aggregate", "Variable Aggregate", "把多个变量合并为数组、对象或首个有效值", "state", "transform", "data", "GitMerge", [
+    inPort("variables", "any[]", "Variables to aggregate."),
+    out("result", "any", "Aggregated variable."),
+  ], [{ id: "mode", label: "mode", value: "first_non_null" }], ["dify", "variable", "aggregate", "变量聚合"]),
+  primitive(DIFY_NODE_CAPABILITY_IDS.parameterExtract, "dify-parameter", "Parameter Extractor", "按 Schema 从文本中提取结构化参数", "ai", "transform", "data", "ListChecks", [
+    inPort("text", "string", "Text to inspect."),
+    out("parameters", "object", "Extracted parameters."),
+  ], [{ id: "model", label: "model", value: "" }, { id: "schema", label: "schema", value: "{}" }], ["dify", "parameter", "extract", "schema", "参数提取"]),
+  primitive(DIFY_NODE_CAPABILITY_IDS.documentExtract, "dify-document", "Document Extractor", "从支持的文件中提取可处理文本", "transform", "transform", "data", "FileText", [
+    inPort("files", "fileRef[]", "Documents to extract."),
+    out("text", "string", "Extracted text."),
+  ], [{ id: "mode", label: "mode", value: "auto" }], ["dify", "document", "extract", "file", "文档提取"]),
+  primitive(DIFY_NODE_CAPABILITY_IDS.httpRequest, "dify-http", "HTTP Request", "发送 HTTP 请求并把响应交给后续节点", "input", "http", "action", "Globe", [
+    inPort("request", "httpRequest", "HTTP request."),
+    out("response", "httpResponse", "HTTP response."),
+  ], [{ id: "method", label: "method", value: "GET" }, { id: "url", label: "url", value: "{{url}}" }], ["dify", "http", "request", "api", "请求"]),
   primitive("primitive.core.manual-trigger", "n8n-manual", "Manual Trigger", "手动启动一次 workflow 调试运行", "core", "trigger", "logic", "Play", [
     out("items", "items[]", "Manually triggered items."),
   ], [{ id: "mode", label: "mode", value: "test" }], ["n8n", "manual", "trigger", "execute", "手动"]),
@@ -479,6 +546,35 @@ export const WORKFLOW_PRIMITIVES: WorkflowPrimitive[] = [
     out("artifact", "exportArtifact", "Knowledge export artifact."),
   ], [{ id: "formats", label: "formats", value: "canvas,opml,markdown" }], ["turnmap", "export", "obsidian", "opml", "markdown", "导出"]),
 ]
+
+export const DIFY_COMMON_NODE_CAPABILITY_IDS = [
+  DIFY_NODE_CAPABILITY_IDS.start,
+  DIFY_NODE_CAPABILITY_IDS.end,
+  DIFY_NODE_CAPABILITY_IDS.answer,
+  DIFY_NODE_CAPABILITY_IDS.llm,
+  DIFY_NODE_CAPABILITY_IDS.agent,
+  DIFY_NODE_CAPABILITY_IDS.knowledgeRetrieval,
+  DIFY_NODE_CAPABILITY_IDS.questionClassifier,
+  DIFY_NODE_CAPABILITY_IDS.ifElse,
+  DIFY_NODE_CAPABILITY_IDS.switch,
+  DIFY_NODE_CAPABILITY_IDS.humanInput,
+  DIFY_NODE_CAPABILITY_IDS.iteration,
+  DIFY_NODE_CAPABILITY_IDS.loop,
+  DIFY_NODE_CAPABILITY_IDS.code,
+  DIFY_NODE_CAPABILITY_IDS.templateTransform,
+  DIFY_NODE_CAPABILITY_IDS.variableAssign,
+  DIFY_NODE_CAPABILITY_IDS.variableAggregate,
+  DIFY_NODE_CAPABILITY_IDS.parameterExtract,
+  DIFY_NODE_CAPABILITY_IDS.documentExtract,
+  DIFY_NODE_CAPABILITY_IDS.httpRequest,
+] as const
+
+export function getDifyCommonWorkflowPrimitives(): WorkflowPrimitive[] {
+  const primitivesById = new Map(WORKFLOW_PRIMITIVES.map((item) => [item.id, item]))
+  return DIFY_COMMON_NODE_CAPABILITY_IDS.map((id) => primitivesById.get(id)).filter(
+    (item): item is WorkflowPrimitive => item !== undefined,
+  )
+}
 
 export function getWorkflowPrimitives(query = ""): WorkflowPrimitive[] {
   const q = query.trim().toLowerCase()

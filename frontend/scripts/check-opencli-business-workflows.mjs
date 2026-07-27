@@ -13,13 +13,27 @@ test('registers two real OpenCLI business workflow templates', () => {
   assert.match(templateSource, /buildOpenCLISituationAwarenessWorkflow\(name\)/)
 })
 
-test('A-share workflow covers market, financials, announcements and live news without fixtures', () => {
-  for (const command of ['gridlist', 'quote', 'bbsj-summary', 'announcement', 'telegraph', 'news']) {
+test('domestic OODA workflow covers five source groups without fixtures', () => {
+  for (const group of ['market', 'filings', 'macro', 'news', 'social']) {
+    assert.match(businessSource, new RegExp(`sourceGroup: "${group}"`))
+  }
+  for (const command of ['gridlist', 'quote', 'hot', 'bbsj-summary', 'announcement', 'announcements', 'home', 'disclosure-pdf', 'kuaixun', 'telegraph', 'news', 'hot-stocks']) {
     assert.match(businessSource, new RegExp(`command: "${command}"`))
+  }
+  for (const site of ['eastmoney', 'ths', 'sse', 'szse', 'bse', 'cninfo', 'jin10', 'cls', 'sinafinance', 'xueqiu']) {
+    assert.match(businessSource, new RegExp(`site: "${site}"`))
   }
   assert.doesNotMatch(businessSource, /runtime:\s*"fixture"|mode:\s*"fixture"/)
   assert.match(businessSource, /deterministicSimulation: false/)
   assert.match(businessSource, /exposeRawSourceItems: true/)
+})
+
+test('known domestic source gaps stay explicit instead of becoming fake runnable nodes', () => {
+  assert.match(businessSource, /site: "gelonghui"[\s\S]*status: "unavailable"/)
+  assert.match(businessSource, /site: "jin10"[\s\S]*status: "degraded"/)
+  assert.match(businessSource, /site: "cninfo"[\s\S]*status: "degraded"/)
+  assert.match(businessSource, /不生成伪节点/)
+  assert.match(businessSource, /按 empty 展示/)
 })
 
 test('situation workflow collects cross-platform discovery and stable transcript evidence', () => {

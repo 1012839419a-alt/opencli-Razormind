@@ -44,12 +44,12 @@ export function buildWorkflowOutlineRows(
   ) => {
     if (visited.has(nodeId)) return
     visited.add(nodeId)
-    rows.push({ nodeId, depth, branchLabel, disconnected })
     const nextEdges = [...(outgoing.get(nodeId) ?? [])].sort((left, right) => {
       const leftNode = nodeById.get(left.target)
       const rightNode = nodeById.get(right.target)
       return leftNode && rightNode ? compareNodes(leftNode, rightNode) : left.target.localeCompare(right.target)
     })
+    rows.push({ nodeId, depth, branchLabel, disconnected })
     for (const edge of nextEdges) {
       visit(edge.target, depth + 1, edgeBranchLabel(edge), disconnected)
     }
@@ -61,4 +61,92 @@ export function buildWorkflowOutlineRows(
     if (!visited.has(node.id)) visit(node.id, 0, undefined, true)
   }
   return rows
+}
+
+export function visibleWorkflowOutlineRows(
+  rows: WorkflowOutlineRow[],
+  collapsedNodeIds: ReadonlySet<string>,
+): WorkflowOutlineRow[] {
+  const visible: WorkflowOutlineRow[] = []
+  let hiddenBelowDepth: number | undefined
+
+  for (const [index, row] of rows.entries()) {
+    if (hiddenBelowDepth !== undefined && row.depth > hiddenBelowDepth) continue
+    hiddenBelowDepth = undefined
+    visible.push(row)
+    if (workflowOutlineRowHasChildren(rows, index) && collapsedNodeIds.has(row.nodeId)) {
+      hiddenBelowDepth = row.depth
+    }
+  }
+
+  return visible
+}
+
+export function filterWorkflowOutlineRows(
+  rows: WorkflowOutlineRow[],
+  query: string,
+  searchTextForNode: (nodeId: string) => string,
+): WorkflowOutlineRow[] {
+  const normalizedQuery = query.trim().toLocaleLowerCase()
+  if (!normalizedQuery) return rows
+
+  const includedIndexes = new Set<number>()
+  for (const [index, row] of rows.entries()) {
+    if (!searchTextForNode(row.nodeId).toLocaleLowerCase().includes(normalizedQuery)) continue
+    includedIndexes.add(index)
+    let expectedParentDepth = row.depth - 1
+    for (let ancestorIndex = index - 1; ancestorIndex >= 0 && expectedParentDepth >= 0; ancestorIndex -= 1) {
+      if (rows[ancestorIndex].depth !== expectedParentDepth) continue
+      includedIndexes.add(ancestorIndex)
+      expectedParentDepth -= 1
+    }
+  }
+  return rows.filter((_, index) => includedIndexes.has(index))
+}
+
+export function workflowOutlineRowHasChildren(
+  rows: WorkflowOutlineRow[],
+  rowIndex: number,
+): boolean {
+  const row = rows[rowIndex]
+  const next = rows[rowIndex + 1]
+  return Boolean(row && next && next.depth > row.depth)
+}
+
+export function workflowUpstreamNodeIds(
+  nodeId: string,
+  edges: WorkflowEdge[],
+): Set<string> {
+  const sourcesByTarget = new Map<string, string[]>()
+  for (const edge of edges) {
+    sourcesByTarget.set(edge.target, [...(sourcesByTarget.get(edge.target) ?? []), edge.source])
+  }
+
+  const upstream = new Set<string>()
+  const queue = [...(sourcesByTarget.get(nodeId) ?? [])]
+  while (queue.length > 0) {
+    const source = queue.shift()
+    if (!source || upstream.has(source) || source === nodeId) continue
+    upstream.add(source)
+    queue.push(...(sourcesByTarget.get(source) ?? []))
+  }
+  return upstream
+}
+
+export function workflowDirectUpstreamNodeIds(
+  nodeId: string,
+  edges: WorkflowEdge[],
+): Set<string> {
+  return new Set(
+    edges
+      .filter((edge) => edge.target === nodeId)
+      .map((edge) => edge.source),
+  )
+}
+
+const WORKFLOW_INPUT_REFERENCE_PATH = /^[A-Za-z_][\w.-]*$/
+
+export function workflowInputReferenceForPort(portId: string): string | undefined {
+  const path = portId.trim()
+  return WORKFLOW_INPUT_REFERENCE_PATH.test(path) ? `{{${path}}}` : undefined
 }

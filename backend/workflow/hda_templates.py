@@ -8,7 +8,6 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
-from backend.workflow.tool_capabilities import resolve_workflow_tool_capability
 from backend.schemas.workflow import (
     WorkflowAdapterBinding,
     WorkflowPackageInternals,
@@ -17,6 +16,7 @@ from backend.schemas.workflow import (
     WorkflowProjectNode,
     WorkflowTopicCollapse,
 )
+from backend.workflow.tool_capabilities import resolve_workflow_tool_capability
 
 OPENCLI_MULTI_SOURCE_TEMPLATE = "opencli-multi-source"
 OPENCLI_SOURCE_POOL_CATALOG_ID = "intelligence.source.pool"
@@ -66,6 +66,9 @@ def _materialize_node(node: WorkflowProjectNode) -> WorkflowProjectNode:
         sources = _source_slots(node.params.get("sources"))
         if sources:
             expose_raw_source_items = node.params.get("exposeRawSourceItems") is True
+            failure_mode = _read_string(
+                _read_dict(node.params.get("execution")).get("failureMode")
+            )
             internals = _opencli_multi_source_internals(
                 sources,
                 expose_raw_source_items=expose_raw_source_items,
@@ -78,6 +81,7 @@ def _materialize_node(node: WorkflowProjectNode) -> WorkflowProjectNode:
                 "lockedInternals": node.params.get("lockedInternals", True),
                 "execution": {
                     "fanout": "parallel",
+                    **({"failureMode": failure_mode} if failure_mode else {}),
                 },
             }
             ui = {**(node.ui or {}), "catalogId": OPENCLI_HDA_CATALOG_ID}
