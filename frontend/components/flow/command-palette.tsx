@@ -154,6 +154,9 @@ const PALETTE_COPY = {
     opencliCapabilities: "OpenCLI 能力预设",
     loadingOpencli: "正在读取 OpenCLI 能力目录",
     featuredSites: "国内全网 OODA 数据源",
+    catalogIndex: "能力导航",
+    featuredDescription: "按 OODA 使用场景浏览常用国内数据源",
+    moreOpencliPresets: "更多站点能力",
     pluginTools: "插件与后端工具",
     noTools: "没有匹配的工具",
     createImport: "创建与导入",
@@ -215,6 +218,9 @@ const PALETTE_COPY = {
     opencliCapabilities: "OpenCLI capability presets",
     loadingOpencli: "Loading the OpenCLI capability catalog",
     featuredSites: "China-wide OODA sources",
+    catalogIndex: "Capability navigation",
+    featuredDescription: "Browse common China data sources by OODA use case",
+    moreOpencliPresets: "More site capabilities",
     pluginTools: "Plugin & backend tools",
     noTools: "No matching tools",
     createImport: "Create & import",
@@ -323,6 +329,56 @@ function openCLIPresetKind(item: WorkflowOpenCLIAdapterNode): "source_slot" | "t
 function openCLIPresetUnavailable(item: WorkflowOpenCLIAdapterNode): boolean {
   const materialization = openCLIAdapterNodeMaterialization(item)
   return materialization === "unavailable"
+}
+
+function OpenCLIPickerRow({
+  item,
+  language,
+  onClick,
+}: {
+  item: WorkflowOpenCLIAdapterNode
+  language: WorkflowLanguage
+  onClick: () => void
+}) {
+  const Icon = openCLIPresetKind(item) === "source_slot" ? Globe : Wrench
+  const presentation = openCLIAdapterNodePresentation(item, language)
+  const unavailable = openCLIPresetUnavailable(item)
+  const needsSetup = item.strategy === "cookie" ||
+    openCLIAdapterNodeMaterialization(item) !== "source_slot_ready"
+
+  return (
+    <button
+      type="button"
+      className="group flex min-h-20 w-full items-start gap-3 rounded-md border border-ops-line bg-ops-panel p-3 text-left outline-none transition-colors hover:border-ops-line-strong hover:bg-ops-raised focus-visible:ring-2 focus-visible:ring-primary-400/50 disabled:cursor-not-allowed disabled:opacity-55"
+      disabled={unavailable}
+      onClick={onClick}
+    >
+      <span className="grid size-8 shrink-0 place-items-center rounded-sm border border-ops-line bg-ops-raised text-primary-400">
+        <Icon className="size-4" />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block truncate font-mono text-3xs uppercase tracking-wide text-zinc-500">
+          {item.site} / {item.command}
+        </span>
+        <span className="mt-1 block truncate text-xs font-medium text-zinc-100">
+          {presentation.label}
+        </span>
+        <span className="mt-0.5 line-clamp-2 text-2xs leading-4 text-zinc-500">
+          {presentation.description}
+        </span>
+      </span>
+      <span
+        className={cn(
+          "mt-0.5 shrink-0 rounded-xs border px-1.5 py-0.5 font-mono text-3xs",
+          needsSetup
+            ? "border-warning/40 text-warning"
+            : "border-success/40 text-success",
+        )}
+      >
+        {openCLIStatusLabel(item, language)}
+      </span>
+    </button>
+  )
 }
 
 export type CompatibleConnectionPort = {
@@ -704,7 +760,13 @@ export function CommandPalette({
 
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center bg-background/80 px-4 pt-[7vh]" onClick={close} onKeyDown={(event) => { if (event.key === "Escape") close() }} role="dialog" aria-modal="true" aria-label={copy.search}>
-      <div className="flex max-h-[82vh] w-[46rem] max-w-full flex-col overflow-hidden rounded-xl border bg-popover shadow-2xl" onClick={(event) => event.stopPropagation()}>
+      <div
+        className={cn(
+          "flex max-h-[82vh] w-full flex-col overflow-hidden rounded-lg border border-ops-line bg-ops-raised shadow-overlay",
+          activeTab === "tools" ? "max-w-5xl" : "max-w-3xl",
+        )}
+        onClick={(event) => event.stopPropagation()}
+      >
         {aiMode ? (
           <div className="p-5">
             <button type="button" onClick={() => setAiMode(false)} className="mb-4 flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground"><ArrowLeft className="size-4" />{copy.backToStart}</button>
@@ -825,56 +887,117 @@ export function CommandPalette({
                 <>
                   {toolFilter !== "plugin" ? (
                     <section>
-                      <SectionLabel count={matchingOpenCLINodes.length}>{copy.opencliCapabilities}</SectionLabel>
                       {catalogBusy ? <div className="flex items-center gap-2 px-3 py-5 text-sm text-muted-foreground"><Loader2 className="size-4 animate-spin" />{copy.loadingOpencli}</div> : null}
-                      {!catalogBusy && commonOpenCLINodes.length > 0 ? (
-                        <div className="mb-2">
-                          <SectionLabel count={commonOpenCLINodes.length}>{copy.featuredSites}</SectionLabel>
-                          {commonOpenCLIGroups.map((group) => (
-                            <div key={group.id}>
-                              <SectionLabel count={group.nodes.length}>{group.label}</SectionLabel>
-                              {group.nodes.map((item) => {
-                                const presentation = openCLIAdapterNodePresentation(item, language)
-                                const needsSetup = item.strategy === "cookie" || openCLIAdapterNodeMaterialization(item) !== "source_slot_ready"
-                                return (
-                                  <PickerRow
-                                    key={item.id}
-                                    icon={Globe}
-                                    label={presentation.label}
-                                    description={presentation.description}
-                                    onClick={() => addOpenCLIAdapter(item)}
-                                    trailing={<span className={cn("rounded border px-1.5 py-0.5 font-mono text-[9px]", needsSetup ? "border-warning/40 text-warning" : "border-success/40 text-success")}>{openCLIStatusLabel(item, language)}</span>}
-                                  />
-                                )
-                              })}
+                      {!catalogBusy && matchingOpenCLINodes.length > 0 ? (
+                        <div
+                          className="grid min-h-0 gap-3 lg:grid-cols-[13rem_minmax(0,1fr)]"
+                          data-testid="opencli-preset-layout"
+                        >
+                          <aside
+                            className="self-start rounded-md border border-ops-line bg-ops-panel p-2 lg:sticky lg:top-0"
+                            data-testid="opencli-group-navigation"
+                          >
+                            <div className="border-b border-ops-line px-2 pb-3 pt-1">
+                              <span className="block text-3xs font-medium uppercase tracking-wide text-zinc-500">
+                                {copy.catalogIndex}
+                              </span>
+                              <span className="mt-1 flex items-end justify-between gap-2">
+                                <span className="text-xs font-medium text-zinc-100">{copy.opencliCapabilities}</span>
+                                <span className="font-mono text-2xs text-primary-400">{matchingOpenCLINodes.length}</span>
+                              </span>
                             </div>
-                          ))}
+                            <nav className="mt-2 grid gap-1" aria-label={copy.catalogIndex}>
+                              {commonOpenCLIGroups.map((group) => (
+                                <a
+                                  key={group.id}
+                                  href={`#opencli-group-${group.id}`}
+                                  className="flex min-h-9 items-center justify-between gap-2 rounded-xs border-l-2 border-transparent px-2 text-2xs text-zinc-400 transition-colors hover:border-primary-400 hover:bg-ops-raised hover:text-zinc-100 focus-visible:border-primary-400 focus-visible:text-zinc-100"
+                                >
+                                  <span className="min-w-0 truncate">{group.label}</span>
+                                  <span className="font-mono text-3xs text-zinc-500">{group.nodes.length}</span>
+                                </a>
+                              ))}
+                              {opencliPresetGroups.length ? (
+                                <a
+                                  href="#opencli-more-presets"
+                                  className="flex min-h-9 items-center justify-between gap-2 rounded-xs border-l-2 border-transparent px-2 text-2xs text-zinc-400 transition-colors hover:border-primary-400 hover:bg-ops-raised hover:text-zinc-100 focus-visible:border-primary-400 focus-visible:text-zinc-100"
+                                >
+                                  <span>{copy.moreOpencliPresets}</span>
+                                  <span className="font-mono text-3xs text-zinc-500">{visibleOpenCLINodes.length}</span>
+                                </a>
+                              ) : null}
+                            </nav>
+                          </aside>
+
+                          <div className="min-w-0">
+                            {commonOpenCLINodes.length > 0 ? (
+                              <section className="rounded-md border border-ops-line bg-ops-black p-3">
+                                <div className="flex items-end justify-between gap-4 border-b border-ops-line px-1 pb-3">
+                                  <span>
+                                    <span className="block text-sm font-medium text-zinc-100">{copy.featuredSites}</span>
+                                    <span className="mt-0.5 block text-2xs text-zinc-500">{copy.featuredDescription}</span>
+                                  </span>
+                                  <span className="font-mono text-2xs text-primary-400">{commonOpenCLINodes.length}</span>
+                                </div>
+                                <div className="mt-2 grid gap-4">
+                                  {commonOpenCLIGroups.map((group) => (
+                                    <section
+                                      key={group.id}
+                                      id={`opencli-group-${group.id}`}
+                                      className="scroll-mt-3"
+                                    >
+                                      <SectionLabel count={group.nodes.length}>{group.label}</SectionLabel>
+                                      <div className="grid gap-2 lg:grid-cols-2">
+                                        {group.nodes.map((item) => (
+                                          <OpenCLIPickerRow
+                                            key={item.id}
+                                            item={item}
+                                            language={language}
+                                            onClick={() => addOpenCLIAdapter(item)}
+                                          />
+                                        ))}
+                                      </div>
+                                    </section>
+                                  ))}
+                                </div>
+                              </section>
+                            ) : null}
+
+                            {opencliPresetGroups.length ? (
+                              <section
+                                id="opencli-more-presets"
+                                className="mt-3 rounded-md border border-ops-line bg-ops-black p-3 scroll-mt-3"
+                              >
+                                <div className="flex items-center justify-between gap-4 border-b border-ops-line px-1 pb-3">
+                                  <span className="text-sm font-medium text-zinc-100">{copy.moreOpencliPresets}</span>
+                                  <span className="font-mono text-2xs text-zinc-500">{visibleOpenCLINodes.length}</span>
+                                </div>
+                                <div className="mt-2 grid gap-4">
+                                  {opencliPresetGroups.map(([groupKey, items]) => {
+                                    const [site, presetKind] = groupKey.split(":")
+                                    const groupLabel = `${site} · ${presetKind === "source_slot" ? copy.dataRead : copy.operationTool}`
+                                    return (
+                                      <section key={groupKey}>
+                                        <SectionLabel count={items.length}>{groupLabel}</SectionLabel>
+                                        <div className="grid gap-2 lg:grid-cols-2">
+                                          {items.map((item) => (
+                                            <OpenCLIPickerRow
+                                              key={item.id}
+                                              item={item}
+                                              language={language}
+                                              onClick={() => addOpenCLIAdapter(item)}
+                                            />
+                                          ))}
+                                        </div>
+                                      </section>
+                                    )
+                                  })}
+                                </div>
+                              </section>
+                            ) : null}
+                          </div>
                         </div>
                       ) : null}
-                      {!catalogBusy ? opencliPresetGroups.map(([groupKey, items]) => {
-                        const [site, presetKind] = groupKey.split(":")
-                        const groupLabel = `${site} · ${presetKind === "source_slot" ? copy.dataRead : copy.operationTool}`
-                        return (
-                          <div key={groupKey}>
-                            <SectionLabel count={items.length}>{groupLabel}</SectionLabel>
-                            {items.map((item) => {
-                              const presentation = openCLIAdapterNodePresentation(item, language)
-                              const unavailable = openCLIPresetUnavailable(item)
-                              return (
-                                <PickerRow
-                                  key={item.id}
-                                  icon={openCLIPresetKind(item) === "source_slot" ? Globe : Wrench}
-                                  label={presentation.label}
-                                  description={presentation.description}
-                                  disabled={unavailable}
-                                  onClick={() => addOpenCLIAdapter(item)}
-                                  trailing={<span className={cn("rounded border px-1.5 py-0.5 font-mono text-[9px]", runtimeStatusTone(item.status))}>{openCLIStatusLabel(item, language)}</span>}
-                                />
-                              )
-                            })}
-                          </div>
-                        )
-                      }) : null}
                       {!catalogBusy && matchingOpenCLINodes.length > commonOpenCLINodes.length + visibleOpenCLINodes.length ? (
                         <p className="px-3 py-3 text-2xs text-muted-foreground">
                           {copy.shown} {commonOpenCLINodes.length + visibleOpenCLINodes.length} / {matchingOpenCLINodes.length}. {copy.refineSearch}

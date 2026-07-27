@@ -5,7 +5,12 @@ import { Handle, Position, useStore, useUpdateNodeInternals, type NodeProps } fr
 import type { WorkflowNode as WorkflowNodeType } from "@/lib/flow/types"
 import { useFlowStore } from "@/lib/flow/store"
 import { useSettingsStore } from "@/lib/flow/settings-store"
-import { getNodeDisplayId, localizeNodeText, type WorkflowLanguage } from "@/lib/workflow/node-i18n"
+import {
+  getNodeDisplayId,
+  localizeNodeText,
+  shouldPreserveNodeAuthoredText,
+  type WorkflowLanguage,
+} from "@/lib/workflow/node-i18n"
 import { getNodeVisualSignature } from "@/lib/workflow/node-visuals"
 import { runtimeStatusLabel, runtimeStatusTone } from "@/lib/workflow/capabilities"
 import { buildCanonicalNodeViewContract } from "@/lib/workflow/canonical-node-contract"
@@ -365,17 +370,25 @@ function WorkflowNodeComponent({ id, data, selected }: NodeProps<WorkflowNodeTyp
   const nodeShape = nodeDisplayShape(data)
   const clipPath = shapeClips[nodeShape]
   const borderColor = selected ? "var(--foreground)" : proposalFocused ? "#ff7a17" : "var(--border)"
-  const prefersCustomLabel = projectNode?.ui?.preferCustomLabel === true
+  const prefersCustomLabel =
+    projectNode?.ui?.preferCustomLabel === true || shouldPreserveNodeAuthoredText(data)
+  const systemText = localizeNodeText(
+    displayId,
+    { label: data.label, description: data.description },
+    language,
+  )
   const localized = prefersCustomLabel
     ? { label: data.label, description: data.description }
-    : localizeNodeText(displayId, { label: data.label, description: data.description }, language)
-  const businessLabel = businessNodeName({
-    label: localized.label,
-    kind: nodeViewContract.identity.kind as WorkflowNodeKind,
-    capability: nodeViewContract.identity.capability as WorkflowCapability,
-    params: implementationParams(projectNode) ?? canonical?.params,
-    language,
-  })
+    : systemText
+  const businessLabel = prefersCustomLabel
+    ? localized.label
+    : businessNodeName({
+        label: localized.label,
+        kind: nodeViewContract.identity.kind as WorkflowNodeKind,
+        capability: nodeViewContract.identity.capability as WorkflowCapability,
+        params: implementationParams(projectNode) ?? canonical?.params,
+        language,
+      })
   const visual = getNodeVisualSignature(data)
   const mapBadges = readMapBadges(data)
   const evidenceBatchItemCount = data.runtimeEvidenceBatches?.reduce((sum, batch) => sum + batch.itemCount, 0) ?? 0

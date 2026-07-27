@@ -144,6 +144,19 @@ test('core catalog nodes and common parameters expose Chinese and English copy',
     }),
     'Collect A-share market data',
   )
+  const customNodeData = {
+    label: 'A 股多源真实采集',
+    description: '自定义业务说明',
+    nodeType: 'action',
+    category: 'agent',
+    canonical: {
+      catalogId: 'package.opencli.multi-source-hda',
+      kind: 'agent',
+      capability: 'normalize',
+      params: { template: 'opencli-multi-source' },
+    },
+  }
+  assert.equal(i18n.shouldPreserveNodeAuthoredText(customNodeData), true)
 })
 
 test('backend node catalog overlays matching nodes without hiding runnable workflow capabilities', async () => {
@@ -310,7 +323,9 @@ test('node picker and inspector share the workflow language setting', async () =
   assert.match(inspector, /localizeNodeParameterText\(\s*field\.binding\.fieldId/)
   assert.match(inspector, /setLanguage\("language", nextLanguage\)/)
   assert.match(inspector, /language=\{language\}/)
-  assert.match(node, /language,\s*\}\)/)
+  assert.match(inspector, /shouldPreserveNodeAuthoredText/)
+  assert.match(inspector, /businessLevel && !prefersCustomLabel/)
+  assert.match(node, /businessNodeName\([\s\S]{0,320}language,\s*\}\)/)
 })
 
 test('tool picker exposes access and readiness as separate filter groups', async () => {
@@ -320,6 +335,16 @@ test('tool picker exposes access and readiness as separate filter groups', async
   assert.match(palette, /readinessFilter:\s*"就绪状态"/)
   assert.match(palette, /role="group" aria-label=\{copy\.accessFilter\}/)
   assert.match(palette, /role="group" aria-label=\{copy\.readinessFilter\}/)
+})
+
+test('OpenCLI preset results use a navigable two-pane catalog without changing node creation', async () => {
+  const palette = await readFrontendSource('components/flow/command-palette.tsx')
+
+  assert.match(palette, /data-testid="opencli-preset-layout"/)
+  assert.match(palette, /data-testid="opencli-group-navigation"/)
+  assert.match(palette, /href=\{`#opencli-group-\$\{group\.id\}`\}/)
+  assert.match(palette, /lg:grid-cols-2/)
+  assert.match(palette, /onClick=\{\(\) => addOpenCLIAdapter\(item\)\}/)
 })
 
 test('Studio materializes every searchable OpenCLI capability preset as a node', async () => {
