@@ -5,7 +5,7 @@ import { WorkflowProjectHeader } from '@/components/studio/workflow-project-head
 
 export default function WorkspaceWorkflowPage() {
   return (
-    <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden" aria-label="工作区节点工作流">
+    <div className="flex h-[calc(100dvh-3.5rem)] min-h-0 min-w-0 flex-col overflow-hidden" aria-label="工作区节点工作流">
       <Suspense fallback={<div className="h-14 shrink-0 border-b bg-card/30" aria-hidden />}>
         <WorkflowProjectHeader />
       </Suspense>

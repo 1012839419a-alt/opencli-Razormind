@@ -883,8 +883,20 @@ test('the right workflow dock keeps selection, locates nodes, and allows empty P
   assert.match(shell, /aria-label="定位到当前节点"/)
   assert.match(shell, /onPointerDown=\{\(event\) => event\.stopPropagation\(\)\}/)
   assert.match(surface, /<Inspector compact=\{props\.compactViewport\} onClose=\{props\.onCloseInspector\} \/>/)
-  assert.match(surface, /className=\{cn\(!inspectorVisible && ["']hidden["']\)\}/)
-  assert.match(surface, /className="flex min-w-0 flex-1 overflow-hidden"/)
+})
+
+test('the inspector host constrains long node configuration so the dock owns vertical scrolling', async () => {
+  const [page, surface] = await Promise.all([
+    readSource('app/(app)/studio/workflow/page.tsx'),
+    readSource('components/flow/workflow-canvas-surface.tsx'),
+  ])
+
+  assert.match(page, /className="flex h-\[calc\(100dvh-3\.5rem\)\] min-h-0 min-w-0 flex-col overflow-hidden"/)
+  assert.match(surface, /className="flex min-h-0 min-w-0 flex-1 overflow-hidden"/)
+  assert.match(
+    surface,
+    /className=\{cn\("h-full min-h-0 overflow-hidden", !inspectorVisible && ["']hidden["']\)\}/,
+  )
 })
 
 test('Houdini-style wiring uses native lifecycle hooks without validation toast side effects', async () => {

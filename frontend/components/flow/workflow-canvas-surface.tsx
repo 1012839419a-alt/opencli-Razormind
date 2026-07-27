@@ -273,7 +273,7 @@ export function WorkflowCanvasSurface(props: WorkflowCanvasSurfaceProps) {
   )
   const inspectorVisible = props.inspectorOpen && !props.projectSettingsOpen && !props.settingsOpen
   return (
-    <div className="flex min-w-0 flex-1 overflow-hidden">
+    <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
       <div
         ref={props.wrapperRef}
         className="relative min-w-0 flex-1"
@@ -372,7 +372,7 @@ export function WorkflowCanvasSurface(props: WorkflowCanvasSurfaceProps) {
 
       <WorkflowToast message={props.toast} />
       </div>
-      <div className={cn(!inspectorVisible && "hidden")} aria-hidden={!inspectorVisible}>
+      <div className={cn("h-full min-h-0 overflow-hidden", !inspectorVisible && "hidden")} aria-hidden={!inspectorVisible}>
         <Inspector compact={props.compactViewport} onClose={props.onCloseInspector} />
       </div>
     </div>
