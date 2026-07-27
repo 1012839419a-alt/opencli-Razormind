@@ -13,9 +13,13 @@ import {
   type NodeMouseHandler,
   type OnBeforeDelete,
   type OnConnect,
+  type OnConnectEnd,
+  type OnConnectStart,
   type OnEdgesChange,
   type OnNodeDrag,
   type OnNodesChange,
+  type OnReconnect,
+  type ReactFlowProps,
 } from "@xyflow/react"
 
 import type { CanvasSettings } from "@/lib/flow/settings-store"
@@ -31,6 +35,7 @@ import EditableEdge from "./edges/editable-edge"
 import RoutedEdge from "./edges/routed-edge"
 import WorkflowEdge_ from "./edges/workflow-edge"
 import { HelperLinesRenderer } from "./helper-lines-renderer"
+import { Inspector } from "./inspector"
 import { NodeContextMenu } from "./node-context-menu"
 import GroupNode from "./nodes/group-node"
 import MathNode from "./nodes/math-node"
@@ -62,7 +67,7 @@ const edgeTypes = {
   routed: RoutedEdge,
 }
 
-const defaultEdgeOptions = { type: "workflow", animated: true } as const
+const defaultEdgeOptions = { type: "workflow", animated: false } as const
 const proOptions = { hideAttribution: true } as const
 
 type PrimitiveMenuGroup = {
@@ -94,15 +99,21 @@ type WorkflowCanvasSurfaceProps = {
   onBeforeDelete: OnBeforeDelete<WorkflowNode, WorkflowEdge>
   onAddNodeFromMenu: () => void
   onAddNoteFromMenu: () => void
+  onConnectPortFromMenu: () => void
   onImportApp: () => void
   onTestRun: () => void
   onCanvasMouseDownCapture: (event: ReactMouseEvent<HTMLDivElement>) => void
   onCanvasMouseMoveCapture: (event: ReactMouseEvent<HTMLDivElement>) => void
   onCanvasMouseUpCapture: (event: ReactMouseEvent<HTMLDivElement>) => void
   onConnect: OnConnect
+  onConnectEnd: OnConnectEnd
+  onConnectStart: OnConnectStart
+  onClickConnectEnd: OnConnectEnd
+  onClickConnectStart: OnConnectStart
   onDragOver: (event: DragEvent) => void
   onDrop: (event: DragEvent) => void
   onEdgesChange: OnEdgesChange<WorkflowEdge>
+  onCloseInspector: () => void
   onMouseMove: (event: ReactMouseEvent<HTMLDivElement>) => void
   onNodeClick: NodeMouseHandler<WorkflowNode>
   onNodeContextMenu: NodeMouseHandler<WorkflowNode>
@@ -111,6 +122,9 @@ type WorkflowCanvasSurfaceProps = {
   onNodeDrag: OnNodeDrag<WorkflowNode>
   onNodeDragStop: OnNodeDrag<WorkflowNode>
   onNodesChange: OnNodesChange<WorkflowNode>
+  onReconnect: OnReconnect<WorkflowEdge>
+  onReconnectEnd: NonNullable<ReactFlowProps<WorkflowNode, WorkflowEdge>["onReconnectEnd"]>
+  onReconnectStart: NonNullable<ReactFlowProps<WorkflowNode, WorkflowEdge>["onReconnectStart"]>
   onProfileChange: FlowState["updateWorkflowProfile"]
   primitiveMenuGroups: PrimitiveMenuGroup[]
   projectSettingsOpen: boolean
@@ -123,6 +137,7 @@ type WorkflowCanvasSurfaceProps = {
   takeSnapshot: () => void
   toast: string | null
   toolMode: ToolMode
+  wiringState: "idle" | "wiring" | "picker" | "reconnecting"
   unlockInternals: (nodeId: string) => void
   workflowProfile: FlowState["workflowProject"]["profile"]
   workbenchMode: WorkflowWorkbenchMode | null
@@ -193,6 +208,7 @@ function NodeMenuOverlay({
   menu,
   onAddNode,
   onAddNote,
+  onConnectPort,
   onImportApp,
   onTestRun,
   wrapperElement,
@@ -200,6 +216,7 @@ function NodeMenuOverlay({
   menu: NodeMenuState | null
   onAddNode: () => void
   onAddNote: () => void
+  onConnectPort: () => void
   onImportApp: () => void
   onTestRun: () => void
   wrapperElement: HTMLElement | null
@@ -210,6 +227,7 @@ function NodeMenuOverlay({
       menu={menu}
       onAddNode={onAddNode}
       onAddNote={onAddNote}
+      onConnectPort={onConnectPort}
       onImportApp={onImportApp}
       onTestRun={onTestRun}
       wrapperElement={wrapperElement}
@@ -253,22 +271,32 @@ export function WorkflowCanvasSurface(props: WorkflowCanvasSurfaceProps) {
     }),
     [props.compactViewport],
   )
+  const inspectorVisible = props.inspectorOpen && !props.projectSettingsOpen && !props.settingsOpen
   return (
-    <div
-      ref={props.wrapperRef}
-      className="relative min-w-0 flex-1"
-      onMouseDownCapture={props.onCanvasMouseDownCapture}
-      onMouseMoveCapture={props.onCanvasMouseMoveCapture}
-      onMouseUpCapture={props.onCanvasMouseUpCapture}
-      onMouseMove={props.onMouseMove}
-      data-zoom-bucket={zoomBucket(props.zoom)}
-    >
-      <ReactFlow
+    <div className="flex min-w-0 flex-1 overflow-hidden">
+      <div
+        ref={props.wrapperRef}
+        className="relative min-w-0 flex-1"
+        onMouseDownCapture={props.onCanvasMouseDownCapture}
+        onMouseMoveCapture={props.onCanvasMouseMoveCapture}
+        onMouseUpCapture={props.onCanvasMouseUpCapture}
+        onMouseMove={props.onMouseMove}
+        data-zoom-bucket={zoomBucket(props.zoom)}
+        data-wiring-state={props.wiringState}
+      >
+      <ReactFlow<WorkflowNode, WorkflowEdge>
         nodes={props.nodes}
         edges={props.edges}
         onNodesChange={props.onNodesChange}
         onEdgesChange={props.onEdgesChange}
         onConnect={props.onConnect}
+        onConnectEnd={props.onConnectEnd}
+        onConnectStart={props.onConnectStart}
+        onClickConnectEnd={props.onClickConnectEnd}
+        onClickConnectStart={props.onClickConnectStart}
+        onReconnect={props.onReconnect}
+        onReconnectEnd={props.onReconnectEnd}
+        onReconnectStart={props.onReconnectStart}
         onNodeDragStart={props.takeSnapshot}
         onNodeDrag={props.onNodeDrag}
         onNodeDragStop={props.onNodeDragStop}
@@ -284,6 +312,12 @@ export function WorkflowCanvasSurface(props: WorkflowCanvasSurfaceProps) {
         fitView
         fitViewOptions={fitViewOptions}
         isValidConnection={props.isValidConnection}
+        connectionDragThreshold={2}
+        connectionRadius={32}
+        reconnectRadius={24}
+        edgesReconnectable
+        autoPanOnConnect
+        connectOnClick
         onBeforeDelete={props.onBeforeDelete}
         nodesDraggable={props.settings.nodesDraggable && !interactionLocked}
         nodesConnectable={props.settings.nodesConnectable && !props.isScissors}
@@ -311,13 +345,13 @@ export function WorkflowCanvasSurface(props: WorkflowCanvasSurfaceProps) {
         menu={props.nodeMenu}
         onAddNode={props.onAddNodeFromMenu}
         onAddNote={props.onAddNoteFromMenu}
+        onConnectPort={props.onConnectPortFromMenu}
         onImportApp={props.onImportApp}
         onTestRun={props.onTestRun}
         wrapperElement={props.wrapperRef.current}
       />
 
       <WorkflowFloatingPanels
-        inspectorOpen={props.inspectorOpen}
         nodeManagementOpen={props.nodeManagementOpen}
         onCloseNodeManagement={() => props.setNodeManagementOpen(false)}
         onProfileChange={props.onProfileChange}
@@ -337,6 +371,10 @@ export function WorkflowCanvasSurface(props: WorkflowCanvasSurfaceProps) {
       ) : null}
 
       <WorkflowToast message={props.toast} />
+      </div>
+      <div className={cn(!inspectorVisible && "hidden")} aria-hidden={!inspectorVisible}>
+        <Inspector compact={props.compactViewport} onClose={props.onCloseInspector} />
+      </div>
     </div>
   )
 }

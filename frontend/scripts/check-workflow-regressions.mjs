@@ -91,6 +91,41 @@ function sourceSection(source, start, end) {
   return source.slice(startIndex, endIndex)
 }
 
+test('right workflow dock derives its outline from graph structure and opens without a selection', async () => {
+  const [{ buildWorkflowOutlineRows }, shortcuts, inspector, shell] = await Promise.all([
+    importTypeScript('lib/workflow/workflow-outline.ts'),
+    readSource('components/flow/workflow-keyboard-shortcuts.ts'),
+    readSource('components/flow/inspector.tsx'),
+    readSource('components/flow/inspector-shell.tsx'),
+  ])
+  const nodes = [
+    { id: 'start', position: { x: 0, y: 0 }, data: {} },
+    { id: 'branch', position: { x: 0, y: 100 }, data: {} },
+    { id: 'leaf', position: { x: 0, y: 200 }, data: {} },
+    { id: 'orphan', position: { x: 500, y: 50 }, data: {} },
+  ]
+  const rows = buildWorkflowOutlineRows(nodes, [
+    { id: 'e1', source: 'start', target: 'branch', data: { label: 'yes' } },
+    { id: 'e2', source: 'branch', target: 'leaf', sourceHandle: 'result' },
+  ])
+
+  assert.deepStrictEqual(rows, [
+    { nodeId: 'start', depth: 0, branchLabel: undefined, disconnected: false },
+    { nodeId: 'branch', depth: 1, branchLabel: 'yes', disconnected: false },
+    { nodeId: 'leaf', depth: 2, branchLabel: 'result', disconnected: false },
+    { nodeId: 'orphan', depth: 0, branchLabel: undefined, disconnected: true },
+  ])
+  assert.match(shortcuts, /showToast\(["']右侧工具架已显示["']\)/)
+  assert.doesNotMatch(shortcuts, /请先选择一个节点或连线|selectedNodeCount|selectedEdgeCount/)
+  assert.match(inspector, /WORKFLOW::OUTLINE/)
+  assert.match(inspector, /buildWorkflowOutlineRows\(nodes, edges\)/)
+  assert.match(shell, /aria-label=["']工作流右侧工具架["']/)
+  assert.match(shell, />Workflow Dock</)
+  assert.match(shell, /data-dock-mode=\{compact \? ["']overlay["'] : ["']shared["']\}/)
+  assert.match(shell, /aria-label=["']调整右侧工具架宽度["']/)
+  assert.match(inspector, /pinnedNodeId/)
+})
+
 test('node workflow lives inside a project shell while the legacy canvas route redirects', async () => {
   const [navigation, canvasPage, workspaceWorkflowPage, projectOverviewPage, studioPage, rootPage] = await Promise.all([
     readSource('lib/navigation.ts'),
@@ -684,10 +719,11 @@ test('workflow separates lightweight canvas actions from the guided node picker'
     assert.match(palette, new RegExp(`label: ["']${tab}["']`))
   }
   assert.match(palette, /role="tablist"/)
-  assert.match(palette, /OpenCLI 实时数据源/)
+  assert.match(palette, /OpenCLI 能力预设/)
   assert.match(palette, /插件与后端工具/)
   assert.match(palette, /href="\/plugins"/)
-  assert.match(palette, /item\.category === ["']package["']/)
+  assert.match(palette, /workflowCatalogItemIsOpenCLIAdapterPreset/)
+  assert.match(palette, /catalogItemUnavailable/)
   assert.match(palette, /inNodeNetwork \? getWorkflowPrimitives\(\) : \[\]/)
   assert.match(palette, /item\.category === ["']annotation["'] \|\| item\.category === ["']shape["']/)
   assert.match(palette, /groupPrimitivesForNodeMenu/)
@@ -696,9 +732,10 @@ test('workflow separates lightweight canvas actions from the guided node picker'
 })
 
 test('workflow node ports show contract names without anonymous duplicates', async () => {
-  const [node, capabilities] = await Promise.all([
+  const [node, capabilities, canvasCss] = await Promise.all([
     readSource('components/flow/nodes/workflow-node.tsx'),
     readSource('lib/workflow/capabilities.ts'),
+    readSource('app/flow-canvas.css'),
   ])
 
   for (const label of ['触发信号', '条目', '候选记录', '记录', '投递结果', '已存储条目']) {
@@ -711,7 +748,15 @@ test('workflow node ports show contract names without anonymous duplicates', asy
   assert.match(node, /direction: ["']OUT["'] as const/)
   assert.match(node, /\{direction\} · \{port\.id \?\? ["']default["']\}/)
   assert.match(node, /\[\{port\.type\}\]/)
+  assert.match(node, /"data-port-direction": handleType === ["']source["'] \? ["']output["'] : ["']input["']/)
+  assert.match(node, /"data-port-id": port\.id \?\? ["']default["']/)
+  assert.match(node, /"data-port-type": port\.type \?\? ["']unknown["']/)
+  assert.match(node, /position=\{Position\.Top\}/)
+  assert.match(node, /position=\{Position\.Bottom\}/)
+  assert.match(node, /aria-label.*\$\{port\.id \?\? ["']default["']\}.*\$\{port\.type \?\? ["']unknown["']\}/)
   assert.doesNotMatch(node, /outputs: \[\{ id: undefined, label: ["']out["'] \}, \{ id: ["']out["'], label: ["']out["'] \}\]/)
+  assert.match(canvasCss, /\.workflow-port-name \{[\s\S]*opacity: 0/)
+  assert.match(canvasCss, /\.workflow-port-anchor:hover \.workflow-port-name,[\s\S]*opacity: 1/)
   assert.match(capabilities, /missingLabels: Array\.from\(new Set\(missing\.map\(displayMissingLabel\)\)\)/)
 })
 
@@ -803,14 +848,202 @@ test('editor selector remains shallow-stable for an unchanged store snapshot', a
   assert.match(editorSource, /useFlowStore\(useShallow\(selectEditorCanvasState\)\)/)
 })
 
-test('inspector is driven only by the single selected node and never falls back to schedule', async () => {
+test('inspector uses the selected node for configuration and the graph for its outline', async () => {
   const inspector = await readSource('components/flow/inspector.tsx')
+  const selectOutlineNode = sourceSection(inspector, 'const selectOutlineNode =', '/* ---- edge parameter interface ---- */')
 
-  assert.match(inspector, /const selected = nodes\.filter\(\(n\) => n\.selected\)/)
-  assert.match(inspector, /if \(selected\.length !== 1\) return null/)
+  assert.match(inspector, /const canvasSelected = nodes\.filter\(\(n\) => n\.selected\)/)
+  assert.match(inspector, /const selected = pinnedNode \? \[pinnedNode\] : canvasSelected/)
+  assert.match(inspector, /selected\.length !== 1 \|\| nodeTab === ["']outline["']/)
+  assert.doesNotMatch(inspector, /setNodeTab\(selectedNodeId \? ["']config["'] : ["']outline["']\)/)
+  assert.doesNotMatch(selectOutlineNode, /setNodeTab/)
+  assert.match(inspector, /onDoubleClick=\{\(\) => onOpenNode\(node\.id\)\}/)
+  assert.match(inspector, /event\.key !== ["']Enter["']/)
+  assert.match(inspector, /<WorkflowOutlinePanel/)
   assert.match(inspector, /const node = selected\[0\]/)
   assert.match(inspector, /findWorkflowProjectNodeByCanvasId\(workflowProject, node\.id\)/)
   assert.doesNotMatch(inspector, /fallback[\s\S]{0,80}schedule|schedule[\s\S]{0,80}fallback/i)
+})
+
+test('the right workflow dock keeps selection, locates nodes, and allows empty P toggles', async () => {
+  const [shortcuts, inspector, shell, surface] = await Promise.all([
+    readSource('components/flow/workflow-keyboard-shortcuts.ts'),
+    readSource('components/flow/inspector.tsx'),
+    readSource('components/flow/inspector-shell.tsx'),
+    readSource('components/flow/workflow-canvas-surface.tsx'),
+  ])
+
+  assert.match(shortcuts, /setInspectorOpen\(true\)[\s\S]*右侧工具架已显示/)
+  assert.doesNotMatch(shortcuts, /selectedNodeCount|selectedEdgeCount|请先选择一个节点或连线/)
+  assert.doesNotMatch(shortcuts, /setInspectorOpen\(\(open\) =>/)
+  assert.match(inspector, /getInternalNode\(node\.id\)[\s\S]*setCenter\(/)
+  assert.match(inspector, /getInternalNode\(nodeId\)[\s\S]*setCenter\(/)
+  assert.match(inspector, /onClose=\{onClose\}/)
+  assert.doesNotMatch(inspector, /onClose=\{deselectAll\}/)
+  assert.match(shell, /aria-label="定位到当前节点"/)
+  assert.match(shell, /onPointerDown=\{\(event\) => event\.stopPropagation\(\)\}/)
+  assert.match(surface, /<Inspector compact=\{props\.compactViewport\} onClose=\{props\.onCloseInspector\} \/>/)
+  assert.match(surface, /className=\{cn\(!inspectorVisible && ["']hidden["']\)\}/)
+  assert.match(surface, /className="flex min-w-0 flex-1 overflow-hidden"/)
+})
+
+test('Houdini-style wiring uses native lifecycle hooks without validation toast side effects', async () => {
+  const [interactions, surface, editor, palette, commandStrip] = await Promise.all([
+    readSource('components/flow/workflow-canvas-interactions.ts'),
+    readSource('components/flow/workflow-canvas-surface.tsx'),
+    readSource('components/flow/workflow-editor.tsx'),
+    readSource('components/flow/command-palette.tsx'),
+    readSource('components/flow/command-strip.tsx'),
+  ])
+  const guards = sourceSection(interactions, 'export function useConnectionGuards', 'export function useCanvasViewportCompaction')
+
+  assert.doesNotMatch(guards, /showToast|setToast/)
+  assert.match(surface, /onConnectStart=\{props\.onConnectStart\}/)
+  assert.match(surface, /onConnectEnd=\{props\.onConnectEnd\}/)
+  assert.match(surface, /onReconnect=\{props\.onReconnect\}/)
+  assert.match(surface, /connectionRadius=\{32\}/)
+  assert.match(surface, /reconnectRadius=\{24\}/)
+  assert.match(surface, /onClickConnectStart=\{props\.onClickConnectStart\}/)
+  assert.match(surface, /onClickConnectEnd=\{props\.onClickConnectEnd\}/)
+  assert.match(editor, /setPaletteAnchor\(connectionState\.pointer\)/)
+  assert.match(editor, /connectNodes\(connection, \{ suppressSnapshot: true \}\)/)
+  assert.match(editor, /onClickConnectStart=\{onConnectStart\}/)
+  assert.match(editor, /onClickConnectEnd=\{onConnectEnd\}/)
+  assert.match(editor, /compatiblePort=\{wiringState === ["']picker["'] \? compatiblePort : undefined\}/)
+  assert.match(palette, /getNodeContractByCatalogId\(item\.id\)/)
+  assert.match(palette, /originType === ["']unknown["'] \|\| port\.type\.trim\(\)\.toLowerCase\(\) !== ["']unknown["']/)
+  assert.match(palette, /const auxiliaryOperators = \(compatiblePort \? \[\] : NODE_PALETTE\)/)
+  assert.match(commandStrip, /autoLayout\(["']TB["'], ["']elk["'], true\)/)
+})
+
+test('the right inspector uses graph contracts instead of manual keys and field paths', async () => {
+  const [inspector, parameterInterface] = await Promise.all([
+    readSource('components/flow/inspector.tsx'),
+    readSource('lib/workflow/parameter-interface.ts'),
+  ])
+
+  assert.match(inspector, /fieldMappingGap/)
+  assert.match(inspector, /onReconnect\(currentEdge, connection\)/)
+  assert.match(inspector, /connectNodes\(connection\)/)
+  assert.match(inspector, /removeEdgesByIds\(currentEdges\.map\(\(edge\) => edge\.id\)\)/)
+  assert.match(inspector, /<SelectValue placeholder=\{copy\.inputUnbound\}/)
+  assert.doesNotMatch(inspector, /placeholder=["']data\.source["']/)
+  assert.doesNotMatch(inspector, /placeholder=["']data\.target["']/)
+  assert.doesNotMatch(parameterInterface, /Config \(JSON\)/)
+  assert.match(parameterInterface, /id: `operator\.config\.\$\{key\}`/)
+  assert.match(parameterInterface, /fieldId: `config\.\$\{key\}`/)
+})
+
+test('dropping a selected node on an edge rewrites root and nested canonical graphs in one undo', async () => {
+  const [{ useFlowStore }, { readCanonicalNetworkScope }] = await Promise.all([
+    importTypeScript('lib/flow/store.ts'),
+    importTypeScript('lib/flow/store-canonical-actions.ts'),
+  ])
+  const assertInserted = (edges, source, middle, target) => {
+    assert.deepStrictEqual(
+      edges.map((edge) => `${edge.source}->${edge.target}`).sort(),
+      [`${middle}->${target}`, `${source}->${middle}`].sort(),
+    )
+  }
+
+  const rootProject = workflowProjectFixture(
+    [
+      canonicalTestNode('left'),
+      canonicalTestNode('middle', { ui: { position: { x: 260, y: 0 } } }),
+      canonicalTestNode('right', { ui: { position: { x: 520, y: 0 } } }),
+    ],
+    [{ id: 'root-edge', source: 'left', target: 'right' }],
+  )
+  useFlowStore.getState().importWorkflowProject(rootProject)
+  useFlowStore.setState((state) => ({
+    nodes: state.nodes.map((node) => ({ ...node, selected: node.id === 'middle' })),
+  }))
+  useFlowStore.getState().takeSnapshot()
+  let snapshotCount = useFlowStore.getState().past.length
+  useFlowStore.getState().insertNodeOnEdge('root-edge')
+  let current = useFlowStore.getState()
+  assertInserted(current.workflowProject.edges, 'left', 'middle', 'right')
+  assert.equal(current.past.length, snapshotCount, 'edge replacement stays inside the drag snapshot')
+  current.undo()
+  assert.deepStrictEqual(useFlowStore.getState().workflowProject.edges, rootProject.edges)
+
+  const nestedProject = workflowProjectFixture([
+    canonicalTestNode('l1', {
+      internals: {
+        locked: false,
+        nodes: [
+          canonicalTestNode('left'),
+          canonicalTestNode('middle', { ui: { position: { x: 260, y: 0 } } }),
+          canonicalTestNode('right', { ui: { position: { x: 520, y: 0 } } }),
+        ],
+        edges: [{ id: 'nested-edge', source: 'left', target: 'right' }],
+      },
+    }),
+  ])
+  useFlowStore.getState().importWorkflowProject(nestedProject)
+  assert.equal(useFlowStore.getState().enterNodeNetwork('l1'), 3)
+  useFlowStore.setState((state) => ({
+    nodes: state.nodes.map((node) => ({ ...node, selected: node.id === 'l1__middle' })),
+    edges: [{
+      id: 'e-l1__nested-edge',
+      source: 'l1__left',
+      target: 'l1__right',
+      type: 'workflow',
+      data: { internalOf: 'l1', internalEdgeId: 'nested-edge' },
+    }],
+  }))
+  useFlowStore.getState().takeSnapshot()
+  snapshotCount = useFlowStore.getState().past.length
+  useFlowStore.getState().insertNodeOnEdge(useFlowStore.getState().edges[0].id)
+  current = useFlowStore.getState()
+  assertInserted(readCanonicalNetworkScope(current.workflowProject, 'l1').edges, 'left', 'middle', 'right')
+  assert.equal(current.past.length, snapshotCount, 'nested insertion also uses one drag snapshot')
+  current.undo()
+  assert.deepStrictEqual(readCanonicalNetworkScope(useFlowStore.getState().workflowProject, 'l1').edges, [
+    { id: 'nested-edge', source: 'left', target: 'right' },
+  ])
+})
+
+test('typed connection preview reads actual handle contracts and shake disconnect has a bounded gesture', async () => {
+  const [{ validateConnection }, { advanceShakeState }] = await Promise.all([
+    importTypeScript('lib/flow/graph.ts'),
+    importTypeScript('components/flow/workflow-canvas-interactions.ts'),
+  ])
+  const nodes = [
+    {
+      id: 'source',
+      data: { primitivePorts: [{ id: 'out', direction: 'output', type: 'EvidenceBatch' }] },
+    },
+    {
+      id: 'compatible',
+      data: { primitivePorts: [{ id: 'in', direction: 'input', type: 'evidencebatch' }] },
+    },
+    {
+      id: 'blocked',
+      data: { primitivePorts: [{ id: 'in', direction: 'input', type: 'URL' }] },
+    },
+  ]
+  const options = { preventCycles: true, typedHandles: true, nodes }
+
+  assert.deepStrictEqual(
+    validateConnection([], { source: 'source', target: 'compatible', sourceHandle: 'out', targetHandle: 'in' }, options),
+    { ok: true },
+  )
+  assert.match(
+    validateConnection([], { source: 'source', target: 'blocked', sourceHandle: 'out', targetHandle: 'in' }, options).reason,
+    /EvidenceBatch.*URL/,
+  )
+
+  let state = { lastX: 0, lastDirection: 0, turns: 0, disconnected: false, startedAt: 0 }
+  state = advanceShakeState(state, 20, 100)
+  state = advanceShakeState(state, -20, 200)
+  state = advanceShakeState(state, 20, 300)
+  state = advanceShakeState(state, -20, 400)
+  assert.equal(state.turns, 3)
+  assert.deepStrictEqual(
+    advanceShakeState(state, 20, 900),
+    { lastX: 20, lastDirection: 0, turns: 0, disconnected: false, startedAt: 900 },
+  )
 })
 
 test('event and projection actions retain the node reducer contract', async () => {
@@ -1094,12 +1327,31 @@ test('actual store actions keep root and nested canonical graphs undoable', asyn
   const rootProject = workflowProjectFixture([
     canonicalTestNode('root-a'),
     canonicalTestNode('root-b', { ui: { position: { x: 260, y: 0 } } }),
+    canonicalTestNode('root-c', { ui: { position: { x: 520, y: 0 } } }),
   ])
   useFlowStore.getState().importWorkflowProject(rootProject)
 
   useFlowStore.getState().onConnect({ source: 'root-a', target: 'root-b', sourceHandle: null, targetHandle: null })
   let current = useFlowStore.getState()
   assert.equal(current.workflowProject.edges.length, 1, 'root connect persists to the canonical graph')
+  const connectedEdgeId = current.edges[0].id
+  current.onReconnect(current.edges[0], {
+    source: 'root-a',
+    target: 'root-c',
+    sourceHandle: 'out',
+    targetHandle: 'in',
+  })
+  current = useFlowStore.getState()
+  assert.equal(current.edges.length, 1, 'reconnect preserves edge cardinality')
+  assert.equal(current.edges[0].id, connectedEdgeId, 'reconnect preserves the existing edge identity')
+  assert.equal(current.edges[0].target, 'root-c')
+  assert.equal(current.edges[0].data.sourcePort, 'out')
+  assert.equal(current.workflowProject.edges[0].target, 'root-c')
+  assert.equal(current.workflowProject.edges[0].targetPort, 'in')
+  current.undo()
+  current = useFlowStore.getState()
+  assert.equal(current.edges[0].target, 'root-b', 'one undo restores the previous reconnect target')
+  assert.equal(current.workflowProject.edges[0].target, 'root-b')
 
   current.onNodesChange([{ type: 'position', id: 'root-a', position: { x: 80, y: 120 }, dragging: false }])
   current = useFlowStore.getState()

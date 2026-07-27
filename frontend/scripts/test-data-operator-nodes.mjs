@@ -103,7 +103,8 @@ const interfaceProjection = createDataOperatorParameterInterface(
 )
 assert.ok(interfaceProjection)
 const operatorField = interfaceProjection.fields.find((field) => field.binding.fieldId === "operatorId")
-const configField = interfaceProjection.fields.find((field) => field.binding.fieldId === "config")
+const chunkSizeField = interfaceProjection.fields.find((field) => field.binding.fieldId === "config.chunkSize")
+const overlapField = interfaceProjection.fields.find((field) => field.binding.fieldId === "config.overlap")
 assert.equal(operatorField.type, "select")
 assert.equal(operatorField.value, dataOperatorSelectionValue("data.chunk", "1.0.0"))
 assert.deepEqual(operatorField.options.map((option) => option.value), [
@@ -112,23 +113,27 @@ assert.deepEqual(operatorField.options.map((option) => option.value), [
   dataOperatorSelectionValue("data.qa-extract", "1.0.0"),
 ])
 assert.match(operatorField.options[0].label, /builtin\.dataflow-deterministic@1\.0\.0 · runnable/)
-assert.deepEqual(configField.value, { chunkSize: 600 })
+assert.equal(chunkSizeField.type, "number")
+assert.equal(chunkSizeField.value, 600)
+assert.equal(overlapField.value, 0)
+assert.equal(
+  interfaceProjection.fields.some((field) => field.binding.fieldId === "config"),
+  false,
+  "operator config is projected as typed fields instead of raw JSON",
+)
 
 const parsed = parseJsonParameterValue('{"chunkSize":800,"overlap":80}')
 assert.equal(parsed.ok, true)
 assert.deepEqual(parsed.value, { chunkSize: 800, overlap: 80 })
-assert.equal(parseJsonParameterValue("[]").ok, false)
+assert.deepEqual(parseJsonParameterValue("[]"), { ok: true, value: [] })
 assert.equal(parseJsonParameterValue("{broken").ok, false)
 
 const updatedInterface = setParameterInterfaceFieldValue(
   interfaceProjection,
-  "operator.config",
-  parsed.value,
+  "operator.config.chunkSize",
+  800,
 )
-assert.deepEqual(
-  updatedInterface.fields.find((field) => field.id === "operator.config").value,
-  { chunkSize: 800, overlap: 80 },
-)
+assert.equal(updatedInterface.fields.find((field) => field.id === "operator.config.chunkSize").value, 800)
 
 const catalogCapabilities = {
   version: "data-operator-test",
@@ -216,7 +221,8 @@ assert.equal(
   "1.0.0",
   "applying a manifest with a newer version must not upgrade a saved node",
 )
-useFlowStore.getState().updateParameterInterfaceField("generated-node", "operator.config", parsed.value)
+useFlowStore.getState().updateParameterInterfaceField("generated-node", "operator.config.chunkSize", 800)
+useFlowStore.getState().updateParameterInterfaceField("generated-node", "operator.config.overlap", 80)
 assert.deepEqual(
   useFlowStore.getState().workflowProject.nodes[0].params.config,
   { chunkSize: 800, overlap: 80 },
@@ -232,16 +238,13 @@ assert.deepEqual(switchedNode.params, {
   packVersion: "1.1.0",
   config: {},
 })
-assert.deepEqual(
-  switchedNode.parameterInterface.fields.find((field) => field.id === "operator.config").value,
-  {},
-)
+assert.equal(switchedNode.parameterInterface.fields.find((field) => field.id === "operator.config.chunkSize").value, 500)
 assert.equal(
   useFlowStore.getState().nodes[0].data.fields.find((field) => field.id === "operatorId").value,
   "data.chunk",
   "Canvas debug fields must not persist the composite selector value as the operator id",
 )
-useFlowStore.getState().updateParameterInterfaceField("generated-node", "operator.config", parsed.value)
+useFlowStore.getState().updateParameterInterfaceField("generated-node", "operator.config.chunkSize", 900)
 useFlowStore.getState().updateParameterInterfaceField(
   "generated-node",
   "operator.operatorId",
@@ -252,6 +255,12 @@ assert.deepEqual(useFlowStore.getState().workflowProject.nodes[0].params, {
   packVersion: "1.0.0",
   config: {},
 })
+assert.deepEqual(
+  useFlowStore.getState().workflowProject.nodes[0].parameterInterface.fields
+    .filter((field) => field.binding.fieldId.startsWith("config."))
+    .map((field) => field.binding.fieldId),
+  ["config.questionField", "config.answerField"],
+)
 
 const draftState = {
   "generated-node:operator.config": '{"chunkSize":400}',
@@ -283,6 +292,8 @@ assert.match(inspectorSource, /field\.optional && !e\.target\.value/)
 console.log("Data operator Canvas projection: OK")
 
 function operator(id, kind, label, version = "1.0.0") {
+  const isChunk = id === "data.chunk"
+  const isQaExtract = id === "data.qa-extract"
   return {
     id,
     kind,
@@ -291,7 +302,29 @@ function operator(id, kind, label, version = "1.0.0") {
     version,
     status: "runnable",
     readiness: "runnable",
-    configKeys: kind === "generate" ? ["chunkSize", "overlap"] : ["fields"],
+    configKeys: isChunk
+      ? ["chunkSize", "overlap"]
+      : isQaExtract
+        ? ["questionField", "answerField"]
+        : ["fields"],
+    configSchema: isChunk
+      ? {
+          type: "object",
+          required: ["chunkSize"],
+          properties: {
+            chunkSize: { type: "integer", default: 500, minimum: 1 },
+            overlap: { type: "integer", default: 0, minimum: 0 },
+          },
+        }
+      : isQaExtract
+        ? {
+            type: "object",
+            properties: {
+              questionField: { type: "string", default: "question" },
+              answerField: { type: "string", default: "answer" },
+            },
+          }
+        : undefined,
   }
 }
 

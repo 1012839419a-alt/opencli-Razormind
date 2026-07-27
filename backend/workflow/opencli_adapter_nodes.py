@@ -13,7 +13,7 @@ import re
 import subprocess
 from collections import Counter
 from functools import lru_cache
-from typing import Any
+from typing import Any, Literal
 
 from backend.opencli_runtime import resolve_opencli_bin
 from backend.schemas.workflow import (
@@ -56,6 +56,16 @@ def list_opencli_adapter_nodes(
     site: str | None = None,
     q: str | None = None,
     include_write: bool = True,
+    access: Literal["read", "write"] | None = None,
+    capability: Literal["fetch", "store"] | None = None,
+    browser: bool | None = None,
+    preset_kind: Literal["source_slot", "tool_capability"] | None = None,
+    runtime_readiness: Literal[
+        "source_slot_ready",
+        "source_slot_requires_params",
+        "tool_capability_review_required",
+    ]
+    | None = None,
     limit: int | None = None,
     refresh: bool = False,
 ) -> WorkflowOpenCLIAdapterNodesResponse:
@@ -63,6 +73,20 @@ def list_opencli_adapter_nodes(
     nodes = [_build_adapter_node(entry) for entry in catalog]
     if not include_write:
         nodes = [node for node in nodes if node.access != "write"]
+    if access:
+        nodes = [node for node in nodes if node.access == access]
+    if capability:
+        nodes = [node for node in nodes if node.capability == capability]
+    if browser is not None:
+        nodes = [node for node in nodes if node.browser is browser]
+    if preset_kind:
+        nodes = [node for node in nodes if node.presetKind == preset_kind]
+    if runtime_readiness:
+        nodes = [
+            node
+            for node in nodes
+            if node.runtimeReadiness == runtime_readiness
+        ]
     if site:
         site_lower = site.lower()
         nodes = [node for node in nodes if node.site.lower() == site_lower]
@@ -79,12 +103,14 @@ def list_opencli_adapter_nodes(
         ]
     nodes.sort(key=lambda node: (node.site, node.command))
     summary = _summarize_nodes(nodes)
+    facets = _facet_nodes(nodes)
     total = len(nodes)
     if limit is not None:
         nodes = nodes[:limit]
     return WorkflowOpenCLIAdapterNodesResponse(
         total=total,
         summary=summary,
+        facets=facets,
         nodes=nodes,
     )
 
@@ -256,6 +282,8 @@ def _build_adapter_node(entry: dict[str, Any]) -> WorkflowOpenCLIAdapterNode:
     catalog_id = _OPENCLI_SOURCE_CATALOG_ID if is_read else _EXTERNAL_TOOL_CATALOG_ID
     kind = "source" if is_read else "action"
     capability = "fetch" if is_read else "store"
+    preset_kind = "source_slot" if is_read else "tool_capability"
+    runtime_readiness = _materialization(access, required_args)
     node_id = f"opencli.adapter.{_safe_id(site)}.{_safe_id(command)}"
     positional_required = [arg.name for arg in args if arg.required and arg.positional]
     named_required = [arg.name for arg in args if arg.required and not arg.positional]
@@ -281,6 +309,8 @@ def _build_adapter_node(entry: dict[str, Any]) -> WorkflowOpenCLIAdapterNode:
         catalogId=catalog_id,
         kind=kind,
         capability=capability,
+        presetKind=preset_kind,
+        runtimeReadiness=runtime_readiness,
         requiredArgs=required_args,
         args=args,
         adapter={
@@ -304,9 +334,11 @@ def _build_adapter_node(entry: dict[str, Any]) -> WorkflowOpenCLIAdapterNode:
                 "example": _read_string(entry.get("example")),
             },
             "canvas": {
-                "node": is_read,
+                "node": True,
+                "runBlocked": runtime_readiness != "source_slot_ready",
                 "catalogId": catalog_id,
-                "materialization": _materialization(access, required_args),
+                "materialization": runtime_readiness,
+                "presetKind": preset_kind,
                 "requiredArgs": required_args,
                 "positionalRequiredArgs": positional_required,
                 "namedRequiredArgs": named_required,
@@ -436,6 +468,22 @@ def _summarize_nodes(nodes: list[WorkflowOpenCLIAdapterNode]) -> dict[str, Any]:
             for node in nodes
             if node.manifest.get("canvas", {}).get("materialization")
             == "tool_capability_review_required"
+        ),
+    }
+
+
+def _facet_nodes(nodes: list[WorkflowOpenCLIAdapterNode]) -> dict[str, dict[str, int]]:
+    return {
+        "site": dict(Counter(node.site for node in nodes)),
+        "capability": dict(Counter(node.capability for node in nodes)),
+        "access": dict(Counter(node.access for node in nodes)),
+        "browser": dict(
+            Counter("browser" if node.browser else "non_browser" for node in nodes)
+        ),
+        "status": dict(Counter(node.status for node in nodes)),
+        "presetKind": dict(Counter(node.presetKind for node in nodes)),
+        "runtimeReadiness": dict(
+            Counter(node.runtimeReadiness for node in nodes)
         ),
     }
 

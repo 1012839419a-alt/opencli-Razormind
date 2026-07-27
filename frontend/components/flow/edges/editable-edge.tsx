@@ -135,6 +135,7 @@ function EditableEdgeComponent({
         className="workflow-edge-path"
         data-selected={selected ? "true" : "false"}
         data-draft={data?.internalOf ? "true" : "false"}
+        data-running={data?.runtimeEvidenceBatch?.status === "running" ? "true" : "false"}
         style={{
           strokeWidth,
           stroke,

@@ -87,9 +87,54 @@ def test_legacy_plugin_database_rejoins_current_migration_head(tmp_path: Path) -
     finally:
         connection.close()
 
-    assert revision == ("f3g4h5i6j7k8",)
+    assert revision == ("g4h5i6j7k8l9",)
     assert "version" in cursor_columns
     assert "identity_key" in record_columns
     assert "ix_collected_records_source_identity" in record_indexes
     assert cursor == ("source-1", '{"offset": 7}', 0)
     assert record == ("source-1", "workflow-1", "run-1", None)
+
+
+def test_current_database_repairs_missing_plugin_installation_table(tmp_path: Path) -> None:
+    database_path = tmp_path / "drifted-current.db"
+    connection = sqlite3.connect(database_path)
+    connection.executescript(
+        """
+        CREATE TABLE alembic_version (
+            version_num VARCHAR(32) NOT NULL PRIMARY KEY
+        );
+        INSERT INTO alembic_version VALUES ('f3g4h5i6j7k8');
+        """
+    )
+    connection.close()
+
+    result = subprocess.run(
+        [sys.executable, "-m", "alembic", "upgrade", "head"],
+        cwd=Path(__file__).parents[2],
+        env={
+            **os.environ,
+            "DATABASE_URL": f"sqlite+aiosqlite:///{database_path.as_posix()}",
+        },
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    connection = sqlite3.connect(database_path)
+    try:
+        revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()
+        table = connection.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type = 'table' AND name = 'plugin_installations'"
+        ).fetchone()
+        indexes = {
+            row[1] for row in connection.execute("PRAGMA index_list(plugin_installations)")
+        }
+    finally:
+        connection.close()
+
+    assert revision == ("g4h5i6j7k8l9",)
+    assert table == ("plugin_installations",)
+    assert "ix_plugin_installations_provider_key" in indexes

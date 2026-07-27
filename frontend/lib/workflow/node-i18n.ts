@@ -520,6 +520,197 @@ const NODE_TEXT: Record<string, Record<WorkflowLanguage, LocalizedNodeText>> = {
     "zh-CN": { label: "知识图导出", description: "导出 Canvas、OPML、Markdown、SVG 或 PNG 知识图" },
     "en-US": { label: "Knowledge Export", description: "Export Canvas, OPML, Markdown, SVG, or PNG knowledge maps" },
   },
+  "primitive.core.start": {
+    "zh-CN": { label: "开始 / 用户输入", description: "接收用户输入或工作流启动变量" },
+    "en-US": { label: "Start / User Input", description: "Receive user input or workflow start variables" },
+  },
+  "primitive.core.end": {
+    "zh-CN": { label: "结束", description: "结束工作流并映射最终输出" },
+    "en-US": { label: "End", description: "Finish the workflow and map its final output" },
+  },
+  "primitive.core.answer": {
+    "zh-CN": { label: "回答", description: "根据模板生成并返回最终回答" },
+    "en-US": { label: "Answer", description: "Generate and return a final answer from a template" },
+  },
+  "primitive.ai.llm": {
+    "zh-CN": { label: "LLM", description: "调用已配置的模型处理提示词并生成文本" },
+    "en-US": { label: "LLM", description: "Run a configured model with a prompt and generate text" },
+  },
+  "primitive.knowledge.retrieve": {
+    "zh-CN": { label: "知识检索", description: "从选定知识库中检索相关文档" },
+    "en-US": { label: "Knowledge Retrieval", description: "Retrieve relevant documents from a selected knowledge base" },
+  },
+  "primitive.knowledge.index": {
+    "zh-CN": { label: "知识索引", description: "把文档写入选定知识库的索引" },
+    "en-US": { label: "Knowledge Index", description: "Index documents in a selected knowledge base" },
+  },
+  "primitive.document.extract": {
+    "zh-CN": { label: "文档提取", description: "从支持的文件中提取可处理文本" },
+    "en-US": { label: "Document Extractor", description: "Extract processable text from supported files" },
+  },
+  "primitive.ai.question-classifier": {
+    "zh-CN": { label: "问题分类器", description: "用模型把输入问题路由到指定类别" },
+    "en-US": { label: "Question Classifier", description: "Use a model to route an input question to a defined class" },
+  },
+  "primitive.core.template-transform": {
+    "zh-CN": { label: "模板转换", description: "用上游数据渲染文本模板" },
+    "en-US": { label: "Template Transform", description: "Render a text template with upstream data" },
+  },
+  "primitive.core.variable-assign": {
+    "zh-CN": { label: "变量赋值", description: "设置或更新工作流变量" },
+    "en-US": { label: "Variable Assign", description: "Set or update workflow variables" },
+  },
+  "primitive.core.variable-aggregate": {
+    "zh-CN": { label: "变量聚合", description: "把多个变量合并为数组、对象或首个有效值" },
+    "en-US": { label: "Variable Aggregate", description: "Combine variables into a list, object, or first non-null value" },
+  },
+  "primitive.core.list-filter": {
+    "zh-CN": { label: "列表过滤", description: "按字段、操作符和值筛选列表项" },
+    "en-US": { label: "List Filter", description: "Filter list items by field, operator, and value" },
+  },
+  "primitive.core.list-sort": {
+    "zh-CN": { label: "列表排序", description: "按字段和升降序排列列表项" },
+    "en-US": { label: "List Sort", description: "Sort list items by field and direction" },
+  },
+  "primitive.core.iteration": {
+    "zh-CN": { label: "迭代", description: "逐项处理输入列表并汇总结果" },
+    "en-US": { label: "Iteration", description: "Process an input list item by item and collect the results" },
+  },
+  "primitive.core.loop": {
+    "zh-CN": { label: "循环", description: "在满足继续条件时重复执行，最多运行指定次数" },
+    "en-US": { label: "Loop", description: "Repeat while a condition holds, up to a configured limit" },
+  },
+  "primitive.ai.parameter-extract": {
+    "zh-CN": { label: "参数提取器", description: "按 Schema 从文本中提取结构化参数" },
+    "en-US": { label: "Parameter Extractor", description: "Extract structured parameters from text using a schema" },
+  },
+  "primitive.integration.http-request": {
+    "zh-CN": { label: "HTTP 请求", description: "发送 HTTP 请求并把响应交给后续节点" },
+    "en-US": { label: "HTTP Request", description: "Send an HTTP request and pass its response downstream" },
+  },
+  "primitive.ai.agent": {
+    "zh-CN": { label: "Agent", description: "让 Agent 按指令调用可用工具并完成任务" },
+    "en-US": { label: "Agent", description: "Let an agent follow instructions, use available tools, and complete a task" },
+  },
+  "primitive.human.approval": {
+    "zh-CN": { label: "人工审批", description: "暂停流程，等待人工批准或拒绝" },
+    "en-US": { label: "Human Approval", description: "Pause the flow until a person approves or rejects it" },
+  },
+  "primitive.plugin.trigger": {
+    "zh-CN": { label: "插件触发器", description: "由已安装插件提供的事件启动工作流" },
+    "en-US": { label: "Plugin Trigger", description: "Start the workflow from an event provided by an installed plugin" },
+  },
+  "primitive.plugin.datasource": {
+    "zh-CN": { label: "插件数据源", description: "从已安装插件提供的数据源读取条目" },
+    "en-US": { label: "Plugin Data Source", description: "Read items from a data source provided by an installed plugin" },
+  },
+  "package.compat.dify-workflow": {
+    "zh-CN": { label: "Dify 工作流包", description: "导入并运行 Dify 工作流；当前仍缺少 Graphon 兼容运行时" },
+    "en-US": { label: "Dify Workflow Package", description: "Import and run a Dify workflow; the Graphon compatibility runtime is still missing" },
+  },
+  "intelligence.data.generate": {
+    "zh-CN": { label: "生成数据", description: "从已注册的数据算子中选择生成、切分或训练数据节点" },
+    "en-US": { label: "Generate Data", description: "Choose a registered data operator for generation, chunking, or training data" },
+  },
+  "intelligence.data.filter": {
+    "zh-CN": { label: "过滤数据", description: "按规则、质量或重复条件筛选数据" },
+    "en-US": { label: "Filter Data", description: "Filter data by rules, quality, or duplicate conditions" },
+  },
+  "intelligence.data.evaluate": {
+    "zh-CN": { label: "评估数据", description: "运行质量、完整性和统计评估" },
+    "en-US": { label: "Evaluate Data", description: "Run quality, completeness, and statistical evaluation" },
+  },
+  "intelligence.data.refine": {
+    "zh-CN": { label: "精炼数据", description: "清洗字段、投影结构并转换训练格式" },
+    "en-US": { label: "Refine Data", description: "Clean fields, project schemas, and convert training formats" },
+  },
+  "intelligence.flow.merge": {
+    "zh-CN": { label: "合并", description: "合并多路输入，并保留来源血缘" },
+    "en-US": { label: "Merge", description: "Merge multiple inputs while preserving source lineage" },
+  },
+  "intelligence.sink.records": {
+    "zh-CN": { label: "记录写入", description: "只把已准入的记录写入成果与数据，并保留运行追踪" },
+    "en-US": { label: "Record Sink", description: "Write accepted records to Results & Data while preserving run trace" },
+  },
+  "external.tool.capability": {
+    "zh-CN": { label: "外部工具能力", description: "把外部运行时工具映射为受治理、可审查的能力节点" },
+    "en-US": { label: "External Tool Capability", description: "Map an external runtime tool into a governed, reviewable capability node" },
+  },
+  "package.collection.pipeline": {
+    "zh-CN": { label: "采集流水线", description: "组合调度、多源采集、标准化与去重；后端通道注册仍待接线" },
+    "en-US": { label: "Collection Pipeline", description: "Compose scheduling, multi-source collection, normalization, and dedupe; backend channel projection is still pending" },
+  },
+  "package.intelligence.situation-awareness": {
+    "zh-CN": { label: "近 30 天事态感知", description: "按严格时间窗采集、去重、聚合，并输出异常信号与证据简报" },
+    "en-US": { label: "30-day Situation Awareness", description: "Collect, deduplicate, and cluster a strict time window into anomaly signals and evidence briefs" },
+  },
+  "package.simulation.swarm-forecast": {
+    "zh-CN": { label: "群体智能推演", description: "运行可复现的本地或 MiroFish 群体模拟，输出轨迹与报告" },
+    "en-US": { label: "Swarm Intelligence Simulation", description: "Run reproducible local or MiroFish swarm simulations and produce trajectories and reports" },
+  },
+  "package.intelligence.native-lifecycle": {
+    "zh-CN": { label: "原生情报生命周期", description: "从研究、知识图谱和推演一路生成访谈、报告与问答结果" },
+    "en-US": { label: "Native Intelligence Lifecycle", description: "Run research, knowledge graph, simulation, interviews, reporting, and Q&A as one governed lifecycle" },
+  },
+  "package.dispatch.fanout": {
+    "zh-CN": { label: "分发扇出", description: "按规则把结果分发到多个通道；正式运行适配器仍待接线" },
+    "en-US": { label: "Dispatch Fanout", description: "Route results to multiple channels; the authoritative runtime adapter is still pending" },
+  },
+}
+
+const PARAMETER_TEXT: Record<string, Record<WorkflowLanguage, LocalizedNodeText>> = {
+  interval: {
+    "zh-CN": { label: "运行间隔", description: "两次自动运行之间的时间间隔" },
+    "en-US": { label: "Run interval", description: "Time between automatic runs" },
+  },
+  timezone: {
+    "zh-CN": { label: "时区", description: "解释计划时间时使用的时区" },
+    "en-US": { label: "Time zone", description: "Time zone used to interpret the schedule" },
+  },
+  enabled: {
+    "zh-CN": { label: "启用", description: "是否允许此节点参与运行" },
+    "en-US": { label: "Enabled", description: "Whether this node can participate in runs" },
+  },
+  language: {
+    "zh-CN": { label: "语言标记", description: "记录内容语言，不会自动翻译正文" },
+    "en-US": { label: "Language annotation", description: "Record the content language without translating the body" },
+  },
+  preserveSourceRefs: {
+    "zh-CN": { label: "保留来源引用", description: "在处理后继续保留原始来源定位信息" },
+    "en-US": { label: "Preserve source references", description: "Keep original source pointers after processing" },
+  },
+  mode: {
+    "zh-CN": { label: "运行模式" },
+    "en-US": { label: "Run mode" },
+  },
+  keys: {
+    "zh-CN": { label: "匹配字段", description: "用于比较、去重或聚合的字段" },
+    "en-US": { label: "Match fields", description: "Fields used for matching, dedupe, or aggregation" },
+  },
+  operatorId: {
+    "zh-CN": { label: "数据算子", description: "选择后端已注册的数据处理实现" },
+    "en-US": { label: "Data operator", description: "Choose a registered backend data operator" },
+  },
+  config: {
+    "zh-CN": { label: "算子配置", description: "传给所选数据算子的结构化参数" },
+    "en-US": { label: "Operator configuration", description: "Structured parameters passed to the selected data operator" },
+  },
+  template: {
+    "zh-CN": { label: "模板", description: "用上游数据渲染输出的模板" },
+    "en-US": { label: "Template", description: "Template rendered with upstream data" },
+  },
+  target: {
+    "zh-CN": { label: "写入目标" },
+    "en-US": { label: "Write target" },
+  },
+  writeMode: {
+    "zh-CN": { label: "写入方式" },
+    "en-US": { label: "Write mode" },
+  },
+  toolCapabilityId: {
+    "zh-CN": { label: "工具能力", description: "绑定到已注册、可治理的工具实现" },
+    "en-US": { label: "Tool capability", description: "Bind a registered, governed tool implementation" },
+  },
 }
 
 const COLLECTION_NEED_CATALOG_ID = "intelligence.input.collection-need"
@@ -586,4 +777,12 @@ function hasScheduleShape(params: Record<string, unknown> | undefined): boolean 
 export function localizeNodeText(id: string | undefined, fallback: LocalizedNodeText, language: WorkflowLanguage): LocalizedNodeText {
   if (!id) return fallback
   return NODE_TEXT[id]?.[language] ?? fallback
+}
+
+export function localizeNodeParameterText(
+  id: string,
+  fallback: LocalizedNodeText,
+  language: WorkflowLanguage,
+): LocalizedNodeText {
+  return PARAMETER_TEXT[id]?.[language] ?? fallback
 }

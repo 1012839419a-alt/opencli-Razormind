@@ -3,6 +3,7 @@ import type { StoreApi } from "zustand"
 import { animateNodes } from "./animate"
 import { nodeRect, resolveCollisions } from "./collision"
 import { getLayoutedElements } from "./layout"
+import { insertionConnections } from "./graph"
 import type { FlowState } from "./store"
 import { syncCanonicalNetworkNodePositions } from "./store-canonical-actions"
 import type { WorkflowNode } from "./types"
@@ -200,9 +201,26 @@ export function createLayoutActions(
     // masquerade as a canonical L2-L4 workflow network.
     addChildNode: () => {},
 
-    // Inserting a canvas-only node would create an unsaved graph alongside the
-    // canonical workflow. Re-enable only with a canonical node kind selected.
-    insertNodeOnEdge: () => {},
+    insertNodeOnEdge: (edgeId) => {
+      const state = get()
+      const edge = state.edges.find((candidate) => candidate.id === edgeId)
+      const node = state.nodes.find(
+        (candidate) =>
+          candidate.selected &&
+          candidate.type === "workflow" &&
+          candidate.id !== edge?.source &&
+          candidate.id !== edge?.target,
+      )
+      if (!edge || !node) return
+      const connections = insertionConnections(state.nodes, state.edges, edge, node)
+      if (!connections) return
+
+      // Node drag already owns the gesture snapshot. Keep the edge replacement
+      // inside that one undo entry while the canonical helpers update the model.
+      state.removeEdgesByIds([edge.id], { suppressSnapshot: true })
+      state.connectNodes(connections[0], { suppressSnapshot: true })
+      state.connectNodes(connections[1], { suppressSnapshot: true })
+    },
 
     resolveNodeCollisions: (movedId) => {
       set((state) => ({ nodes: resolveCollisions(state.nodes, movedId) }))

@@ -1,6 +1,6 @@
 "use client"
 
-import { memo, useEffect } from "react"
+import { memo, useEffect, type MouseEvent } from "react"
 import { Handle, Position, useStore, useUpdateNodeInternals, type NodeProps } from "@xyflow/react"
 import type { WorkflowNode as WorkflowNodeType } from "@/lib/flow/types"
 import { useFlowStore } from "@/lib/flow/store"
@@ -90,7 +90,7 @@ function paramSummary(data: WorkflowNodeType["data"]): string | null {
 }
 
 const handleCls =
-  "!size-1.5 !rounded-[1px] !border !border-background !bg-[#3a3d42] transition-colors hover:!bg-foreground"
+  "workflow-port-handle !size-1.5 !rounded-[1px] !border !border-background !bg-[#3a3d42] transition-colors hover:!bg-foreground"
 
 type SemanticNodeShape = "card" | "pill" | "input" | "soft" | "decision" | "flag" | "tray"
 
@@ -168,7 +168,13 @@ function NodeStatus({ status }: { status?: string }) {
   )
 }
 
-function RuntimeCapabilityBadge({ data }: { data: WorkflowNodeType["data"] }) {
+function RuntimeCapabilityBadge({
+  data,
+  title,
+}: {
+  data: WorkflowNodeType["data"]
+  title?: string
+}) {
   const runtimeCapability = data.runtimeCapability
   if (!runtimeCapability) return null
   return (
@@ -177,7 +183,7 @@ function RuntimeCapabilityBadge({ data }: { data: WorkflowNodeType["data"] }) {
         "inline-flex max-w-[5.25rem] shrink-0 rounded-[3px] border px-1 py-0.5 font-mono text-[8px] uppercase tracking-[0.08em]",
         runtimeStatusTone(runtimeCapability.status),
       )}
-      title={runtimeCapability.reason ?? runtimeCapability.label}
+      title={title ?? runtimeCapability.reason ?? runtimeCapability.label}
     >
       <span className="truncate">{runtimeStatusLabel(runtimeCapability.status)}</span>
     </span>
@@ -368,6 +374,7 @@ function WorkflowNodeComponent({ id, data, selected }: NodeProps<WorkflowNodeTyp
     kind: nodeViewContract.identity.kind as WorkflowNodeKind,
     capability: nodeViewContract.identity.capability as WorkflowCapability,
     params: implementationParams(projectNode) ?? canonical?.params,
+    language,
   })
   const visual = getNodeVisualSignature(data)
   const mapBadges = readMapBadges(data)
@@ -377,6 +384,32 @@ function WorkflowNodeComponent({ id, data, selected }: NodeProps<WorkflowNodeTyp
     borderRadius: clipPath ? undefined : 6,
     "--node-stripe": visual.stripe,
   } as React.CSSProperties
+  const handleProps = (
+    port: VisibleNodePort,
+    handleType: "source" | "target",
+  ) => ({
+    "aria-label": `${isBusinessLevel ? businessLabel : nodeViewContract.identity.label} · ${handleType === "source" ? "输出" : "输入"} · ${port.id ?? "default"} · ${port.type ?? "unknown"}`,
+    "data-port-direction": handleType === "source" ? "output" : "input",
+    "data-port-id": port.id ?? "default",
+    "data-port-name": port.label,
+    "data-port-type": port.type ?? "unknown",
+    onClickCapture: (event: MouseEvent) => {
+      if (!event.altKey) return
+      event.preventDefault()
+      event.stopPropagation()
+      window.dispatchEvent(new CustomEvent("opencli:workflow-port-menu", {
+        detail: {
+          nodeId: id,
+          handleId: port.id ?? null,
+          handleType,
+          label: port.label,
+          type: port.type ?? "unknown",
+          x: event.clientX,
+          y: event.clientY,
+        },
+      }))
+    },
+  })
 
   const sourceHandleStyle = (i: number) =>
     outputs.length === 1
@@ -413,6 +446,7 @@ function WorkflowNodeComponent({ id, data, selected }: NodeProps<WorkflowNodeTyp
             position={Position.Top}
             className={handleCls}
             style={targetHandleStyle(index)}
+            {...handleProps(input, "target")}
           />
         ))}
         {outputs.map((out) => (
@@ -423,6 +457,7 @@ function WorkflowNodeComponent({ id, data, selected }: NodeProps<WorkflowNodeTyp
             position={Position.Bottom}
             className={handleCls}
             style={sourceHandleStyle(outputs.indexOf(out))}
+            {...handleProps(out, "source")}
           />
         ))}
       </div>
@@ -471,7 +506,7 @@ function WorkflowNodeComponent({ id, data, selected }: NodeProps<WorkflowNodeTyp
                     : typeCaption(data.category, data.nodeType)}
             </span>
             <span className="flex min-w-0 shrink-0 items-center gap-1">
-              {prefersCustomLabel ? null : <RuntimeCapabilityBadge data={data} />}
+              {prefersCustomLabel ? null : <RuntimeCapabilityBadge data={data} title={localized.description} />}
               <NodeStatus status={data.status} />
             </span>
           </div>
@@ -541,24 +576,40 @@ function WorkflowNodeComponent({ id, data, selected }: NodeProps<WorkflowNodeTyp
 
       {/* handles aligned to port rows */}
       {inputs.map((input, index) => (
-        <Handle
+        <div
           key={portKey(input.id, "in")}
-          type="target"
-          id={input.id}
-          position={Position.Top}
-          className={handleCls}
+          className="workflow-port-anchor workflow-port-anchor-input"
           style={targetHandleStyle(index)}
-        />
+        >
+          <span className="workflow-port-name" title={`${input.label} · ${input.type ?? "unknown"}`}>
+            {input.label}
+          </span>
+          <Handle
+            type="target"
+            id={input.id}
+            position={Position.Top}
+            className={handleCls}
+            {...handleProps(input, "target")}
+          />
+        </div>
       ))}
       {outputs.map((out, i) => (
-        <Handle
+        <div
           key={portKey(out.id, "out")}
-          id={out.id}
-          type="source"
-          position={Position.Bottom}
-          className={handleCls}
+          className="workflow-port-anchor workflow-port-anchor-output"
           style={sourceHandleStyle(i)}
-        />
+        >
+          <span className="workflow-port-name" title={`${out.label} · ${out.type ?? "unknown"}`}>
+            {out.label}
+          </span>
+          <Handle
+            id={out.id}
+            type="source"
+            position={Position.Bottom}
+            className={handleCls}
+            {...handleProps(out, "source")}
+          />
+        </div>
       ))}
     </div>
   )

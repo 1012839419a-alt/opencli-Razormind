@@ -76,7 +76,77 @@ const composedNode = {
   missing: ['llm_classifier_composition'],
 }
 
-test('backend node catalog becomes the authoritative workflow catalog projection', async () => {
+test('core catalog nodes and common parameters expose Chinese and English copy', async () => {
+  const [i18n, businessNames] = await Promise.all([
+    importTypeScript('lib/workflow/node-i18n.ts'),
+    importTypeScript('lib/workflow/business-node-experience.ts'),
+  ])
+  const bilingualCatalogIds = [
+    'primitive.core.start',
+    'primitive.core.end',
+    'primitive.core.answer',
+    'primitive.ai.llm',
+    'primitive.knowledge.retrieve',
+    'primitive.knowledge.index',
+    'primitive.document.extract',
+    'primitive.ai.question-classifier',
+    'primitive.core.template-transform',
+    'primitive.core.variable-assign',
+    'primitive.core.variable-aggregate',
+    'primitive.core.list-filter',
+    'primitive.core.list-sort',
+    'primitive.core.iteration',
+    'primitive.core.loop',
+    'primitive.ai.parameter-extract',
+    'primitive.integration.http-request',
+    'primitive.ai.agent',
+    'primitive.human.approval',
+    'primitive.plugin.trigger',
+    'primitive.plugin.datasource',
+    'package.compat.dify-workflow',
+    'intelligence.data.generate',
+    'intelligence.data.filter',
+    'intelligence.data.evaluate',
+    'intelligence.data.refine',
+    'intelligence.flow.merge',
+    'intelligence.sink.records',
+    'external.tool.capability',
+    'package.collection.pipeline',
+    'package.intelligence.situation-awareness',
+    'package.simulation.swarm-forecast',
+    'package.intelligence.native-lifecycle',
+    'package.dispatch.fanout',
+  ]
+
+  for (const id of bilingualCatalogIds) {
+    const fallback = { label: '__fallback__', description: '__fallback__' }
+    const chinese = i18n.localizeNodeText(id, fallback, 'zh-CN')
+    const english = i18n.localizeNodeText(id, fallback, 'en-US')
+    assert.notEqual(chinese.label, fallback.label)
+    assert.notEqual(english.label, fallback.label)
+    assert.doesNotMatch(`${english.label} ${english.description}`, /[\u3400-\u9fff]/)
+  }
+
+  assert.equal(
+    i18n.localizeNodeParameterText('timezone', { label: 'timezone' }, 'zh-CN').label,
+    '时区',
+  )
+  assert.equal(
+    businessNames.businessNodeName({
+      label: 'Multi-site Data Collection',
+      kind: 'agent',
+      capability: 'normalize',
+      params: {
+        template: 'opencli-multi-source',
+        sources: [{ site: 'eastmoney', args: { market: 'hs-a' } }],
+      },
+      language: 'en-US',
+    }),
+    'Collect A-share market data',
+  )
+})
+
+test('backend node catalog overlays matching nodes without hiding runnable workflow capabilities', async () => {
   const [{ mergeBackendNodeCapabilityCatalog }, nodeCatalog] = await Promise.all([
     importTypeScript('lib/workflow/backend-node-capability-adapter.ts'),
     importTypeScript('lib/workflow/node-catalog.ts'),
@@ -92,14 +162,14 @@ test('backend node catalog becomes the authoritative workflow catalog projection
   assert.equal(
     nodeCatalog.getWorkflowNodeCatalog('intelligence', merged)
       .some((candidate) => candidate.id === 'intelligence.source.jin10'),
-    false,
+    true,
   )
   const projectNode = nodeCatalog.createWorkflowNodeFromCatalog(item, 'template-1', { x: 0, y: 0 })
   assert.deepEqual(projectNode.parameterInterface?.fields.map((field) => field.id), ['template'])
   assert.equal(projectNode.parameterInterface?.fields[0]?.binding.nodeId, 'template-1')
 })
 
-test('composed nodes remain preview-only until their runtime dependencies are verified', async () => {
+test('composed nodes remain addable drafts until their runtime dependencies are verified', async () => {
   const [{ mergeBackendNodeCapabilityCatalog }, nodeCatalog] = await Promise.all([
     importTypeScript('lib/workflow/backend-node-capability-adapter.ts'),
     importTypeScript('lib/workflow/node-catalog.ts'),
@@ -122,9 +192,10 @@ test('composed nodes remain preview-only until their runtime dependencies are ve
   assert.equal(projected.status, 'preview_only')
   assert.equal(projected.backendAvailable, false)
   assert.equal(projected.manifest.nodeCatalog.readiness, 'composed')
-  assert.equal(projected.manifest.canvas.locked, true)
+  assert.equal(projected.manifest.canvas.locked, false)
+  assert.equal(projected.manifest.canvas.runBlocked, true)
   assert.ok(item)
-  assert.equal(nodeCatalog.workflowCatalogItemLocked(item), true)
+  assert.equal(nodeCatalog.workflowCatalogItemLocked(item), false)
 })
 
 test('a runnable label without a verified runtime binding is blocked defensively', async () => {
@@ -139,7 +210,64 @@ test('a runnable label without a verified runtime binding is blocked defensively
   assert.equal(projected.status, 'blocked')
   assert.equal(projected.backendAvailable, false)
   assert.deepEqual(projected.missing, ['runtime_binding_unverified'])
-  assert.equal(projected.manifest.canvas.locked, true)
+  assert.equal(projected.manifest.canvas.locked, false)
+  assert.equal(projected.manifest.canvas.runBlocked, true)
+})
+
+test('backend primitive nodes preserve typed parameters and runtime port identity', async () => {
+  const [{ mergeBackendNodeCapabilityCatalog }, nodeCatalog, parameterInterface] = await Promise.all([
+    importTypeScript('lib/workflow/backend-node-capability-adapter.ts'),
+    importTypeScript('lib/workflow/node-catalog.ts'),
+    importTypeScript('lib/workflow/parameter-interface.ts'),
+  ])
+  const switchNode = {
+    ...backendCatalog.nodes[0],
+    id: 'primitive.core.switch',
+    label: 'Switch',
+    runtimeBinding: 'workflow.native.switch',
+    inputPorts: [{ name: 'in', type: 'any', required: true }],
+    outputPorts: [{ name: 'out', type: 'any', required: false }],
+    parameters: [
+      {
+        name: 'cases',
+        label: 'Cases',
+        type: 'array',
+        required: true,
+        default: [{ id: 'ready', condition: { field: 'ready', operator: 'exists' } }],
+        options: [],
+      },
+      {
+        name: 'condition',
+        label: 'Condition',
+        type: 'object',
+        required: true,
+        default: { field: 'ready', operator: 'exists' },
+        options: [],
+      },
+    ],
+  }
+  const merged = mergeBackendNodeCapabilityCatalog(null, {
+    ...backendCatalog,
+    nodes: [switchNode],
+  })
+  const item = nodeCatalog.getWorkflowNodeCatalog('intelligence', merged)
+    .find((candidate) => candidate.id === switchNode.id)
+
+  assert.ok(item)
+  const projectNode = nodeCatalog.createWorkflowNodeFromCatalog(item, 'switch-1', { x: 0, y: 0 })
+  assert.equal(projectNode.ui.primitiveId, switchNode.id)
+  assert.deepEqual(projectNode.ui.primitivePorts, [
+    { id: 'in', direction: 'input', type: 'any', required: true },
+    { id: 'out', direction: 'output', type: 'any', required: false },
+  ])
+  assert.deepEqual(
+    projectNode.parameterInterface?.fields.map((field) => [field.id, field.type]),
+    [['cases', 'json'], ['condition', 'json']],
+  )
+  assert.deepEqual(
+    parameterInterface.parseJsonParameterValue('[{"id":"ready"}]'),
+    { ok: true, value: [{ id: 'ready' }] },
+  )
 })
 
 test('Plugin Center and Studio consume the same backend catalog projection', async () => {
@@ -158,8 +286,157 @@ test('Plugin Center and Studio consume the same backend catalog projection', asy
   assert.doesNotMatch(page, /node\.readiness === 'runnable' \|\| node\.readiness === 'composed'/)
   assert.match(page, /组合方案可预览，等待依赖就绪/)
   assert.match(page, /providerNodeViews/)
-  assert.match(palette, /workflowCatalogIsBackendNode/)
+  assert.match(palette, /workflowCatalogItemIsOpenCLIAdapterPreset/)
+  assert.match(palette, /return workflowCatalogItemLocked\(item\)/)
+  assert.doesNotMatch(
+    palette,
+    /item\.runtimeCapability && item\.runtimeCapability\.status !== "runnable"/,
+  )
+  assert.match(palette, /\[capabilities, catalogItems, compatiblePort, inNodeNetwork, language, queryText, workflowProfile\]/)
   assert.match(palette, /插件与后端工具/)
+})
+
+test('node picker and inspector share the workflow language setting', async () => {
+  const [palette, inspector, node] = await Promise.all([
+    readFrontendSource('components/flow/command-palette.tsx'),
+    readFrontendSource('components/flow/inspector.tsx'),
+    readFrontendSource('components/flow/nodes/workflow-node.tsx'),
+  ])
+
+  assert.match(palette, /setLanguage\("language", candidate\)/)
+  assert.match(palette, /CATEGORY_LABELS\[category\]\?\.\[language\]/)
+  assert.match(palette, /openCLIAdapterNodePresentation\(item, language\)/)
+  assert.match(inspector, /localizeNodeParameterText/)
+  assert.match(inspector, /localizeNodeParameterText\(\s*field\.binding\.fieldId/)
+  assert.match(inspector, /setLanguage\("language", nextLanguage\)/)
+  assert.match(inspector, /language=\{language\}/)
+  assert.match(node, /language,\s*\}\)/)
+})
+
+test('tool picker exposes access and readiness as separate filter groups', async () => {
+  const palette = await readFrontendSource('components/flow/command-palette.tsx')
+
+  assert.match(palette, /accessFilter:\s*"能力类型"/)
+  assert.match(palette, /readinessFilter:\s*"就绪状态"/)
+  assert.match(palette, /role="group" aria-label=\{copy\.accessFilter\}/)
+  assert.match(palette, /role="group" aria-label=\{copy\.readinessFilter\}/)
+})
+
+test('Studio materializes every searchable OpenCLI capability preset as a node', async () => {
+  const [adapterNodes, adapterCatalog, palette, editor] = await Promise.all([
+    importTypeScript('lib/workflow/backend-opencli-adapter-nodes.ts'),
+    importTypeScript('lib/workflow/opencli-adapter-catalog.ts'),
+    readFrontendSource('components/flow/command-palette.tsx'),
+    readFrontendSource('components/flow/workflow-editor.tsx'),
+  ])
+  const sourcePreset = {
+    id: 'opencli.adapter.example.search',
+    label: 'Example · search',
+    description: 'Search public records',
+    status: 'runnable',
+    site: 'example',
+    command: 'search',
+    access: 'read',
+    browser: false,
+    strategy: null,
+    domain: 'example.com',
+    catalogId: 'intelligence.source.opencli-slot',
+    kind: 'source',
+    capability: 'fetch',
+    presetKind: 'source_slot',
+    runtimeReadiness: 'source_slot_ready',
+    requiredArgs: [],
+    args: [],
+    adapter: { id: 'opencli-example' },
+    params: { site: 'example', command: 'search' },
+    manifest: {
+      canvas: {
+        materialization: 'tool_capability_review_required',
+      },
+    },
+  }
+  const writePreset = {
+    ...sourcePreset,
+    id: 'opencli.adapter.example.publish',
+    label: 'Example · publish',
+    command: 'publish',
+    access: 'write',
+    kind: 'action',
+    capability: 'store',
+    presetKind: 'tool_capability',
+    runtimeReadiness: 'tool_capability_review_required',
+    status: 'blocked',
+  }
+
+  assert.equal(adapterNodes.openCLIAdapterNodeMaterialization(sourcePreset), 'source_slot_ready')
+  assert.match(adapterNodes.openCLIAdapterNodePresentation(sourcePreset, 'zh-CN').description, /从 example 读取 search 数据/)
+  assert.equal(adapterNodes.openCLIAdapterNodePresentation(sourcePreset, 'en-US').description, 'Search public records')
+  assert.match(adapterNodes.openCLIAdapterNodeSearchText(sourcePreset), /read source source-slot 数据读取/)
+  assert.match(adapterNodes.openCLIAdapterNodeSearchText(writePreset), /write tool action 操作工具/)
+  const oodaSourceIds = [
+    'opencli.adapter.eastmoney.index-quote',
+    'opencli.adapter.eastmoney.money-flow',
+    'opencli.adapter.xueqiu.stock-social',
+    'opencli.adapter.eastmoney.bbsj-summary',
+    'opencli.adapter.cninfo.disclosure-pdf',
+    'opencli.adapter.sse.announcements',
+    'opencli.adapter.cls.telegraph',
+    'opencli.adapter.jin10.kuaixun',
+    'opencli.adapter.gelonghui.kuaixun',
+    'opencli.adapter.xueqiu.news',
+  ]
+  assert.deepStrictEqual(
+    adapterNodes.featuredOpenCLIAdapterNodes(oodaSourceIds.map((id) => ({ id }))).map((node) => node.id),
+    oodaSourceIds,
+  )
+  assert.deepStrictEqual(
+    adapterNodes.featuredOpenCLIAdapterGroups(oodaSourceIds.map((id) => ({ id })), 'zh-CN')
+      .map((group) => group.label),
+    ['行情、资金与交易结构', '财报、公告、研报与 PDF', '财经媒体与实时快讯', '社交舆情与全网观察'],
+  )
+  assert.match(palette, /国内全网 OODA 数据源/)
+  assert.match(palette, /loginRequired:\s*"需登录"/)
+  assert.doesNotMatch(palette, /featuredOpenCLIAdapterNodes\(matchingOpenCLINodes\)\.filter/)
+  assert.equal(adapterCatalog.openCLIAdapterNodeToCatalogItem(sourcePreset).params.opencliAdapterNodeId, sourcePreset.id)
+  const writeItem = adapterCatalog.openCLIAdapterNodeToCatalogItem(writePreset)
+  assert.equal(writeItem.kind, 'action')
+  assert.equal(writeItem.adapter, undefined)
+  assert.equal(writeItem.runtimeCapability.status, 'blocked')
+  assert.equal(writeItem.params.opencliAdapterNode.id, writePreset.id)
+  const configuredSource = adapterNodes.workflowCatalogItemForOpenCLIAdapterNode({
+    ...sourcePreset,
+    status: 'blocked',
+    runtimeReadiness: 'source_slot_requires_params',
+    requiredArgs: ['keyword'],
+    args: [{ name: 'keyword', required: true, valueRequired: true, positional: false, choices: [] }],
+  }, { keyword: 'OpenCLI' })
+  assert.equal(configuredSource.params.opencliAdapterNodeId, sourcePreset.id)
+  assert.equal(configuredSource.params.args.keyword, 'OpenCLI')
+  assert.equal(
+    adapterNodes.workflowCatalogItemIsOpenCLIAdapterPreset({
+      id: sourcePreset.id,
+      runtimeCapability: { source: 'backend.workflow.opencli_adapter_nodes' },
+    }),
+    true,
+  )
+  assert.match(palette, /adapterCatalogResponse\?\.nodes \?\? fallbackOpenCLINodes/)
+  assert.match(palette, /includeWrite: true, limit: 5000/)
+  assert.match(palette, /!workflowCatalogItemIsOpenCLIAdapterPreset\(item\)/)
+  assert.match(palette, /OPENCLI_RESULT_LIMIT = 60/)
+  assert.match(palette, /OPENCLI_SEARCH_RESULT_LIMIT = 120/)
+  assert.match(palette, /opencliPresetGroups/)
+  assert.match(palette, /item\.site.*openCLIPresetKind\(item\)/s)
+  assert.match(palette, /运行前设置/)
+  assert.match(palette, /source_slot_requires_params/)
+  assert.match(
+    palette,
+    /materialization === "tool_capability_review_required"\)\s*\{\s*addWorkflowNodeFromCatalog\(openCLIAdapterNodeToCatalogItem\(item\), anchorPosition\(\)\)/s,
+  )
+  assert.match(palette, /return materialization === "unavailable"/)
+  assert.doesNotMatch(palette, /当前不能加入画布|requires review and cannot be added yet/)
+  assert.doesNotMatch(palette, /workflowCatalogItemRunnable/)
+  assert.match(editor, /mergeWorkflowNodeCatalog\([\s\S]*openCLIAdapterCatalogItems,[\s\S]*\)/)
+  assert.doesNotMatch(editor, /openCLIAdapterCatalogItems\.filter/)
 })
 
 test('node capabilities live inside Plugin Center and legacy factor links redirect there', async () => {

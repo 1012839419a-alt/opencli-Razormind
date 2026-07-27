@@ -1303,6 +1303,30 @@ def _resource_capabilities() -> list[WorkflowRuntimeCapability]:
                 "endpoint": "/api/v1/workflows/opencli-adapter-nodes",
                 "summary": opencli_adapter_summary,
                 "canvas": {"node": False},
+                "catalogModel": {
+                    "kind": "core_nodes_plus_presets",
+                    "coreNodes": {
+                        "endpoint": "/api/v1/workflows/capabilities",
+                        "role": "node_definition",
+                    },
+                    "adapterCommands": {
+                        "endpoint": "/api/v1/workflows/opencli-adapter-nodes",
+                        "role": "node_preset",
+                        "presetKinds": ["source_slot", "tool_capability"],
+                    },
+                },
+                "query": {
+                    "filters": [
+                        "site",
+                        "q",
+                        "access",
+                        "capability",
+                        "browser",
+                        "presetKind",
+                        "runtimeReadiness",
+                    ],
+                    "grouping": "facets",
+                },
                 "materialization": {
                     "readNoRequiredArgs": "intelligence.source.opencli-slot",
                     "readRequiredArgs": "intelligence.source.opencli-slot with params",

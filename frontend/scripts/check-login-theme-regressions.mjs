@@ -34,3 +34,27 @@ test('auth defaults return to the project list instead of a contextless workflow
   assert.match(oidc, /return ['"]\/studio['"]/)
   assert.doesNotMatch(oidc, /return ['"]\/studio\/workflow['"]/)
 })
+
+test('OIDC keeps PKCE in the browser while proxying CORS-blocked token and JWKS calls', async () => {
+  const [provider, header, oidc, nextConfig] = await Promise.all([
+    read('components/auth/auth-provider.tsx'),
+    read('components/shell/app-header.tsx'),
+    read('lib/auth/oidc.ts'),
+    read('next.config.mjs'),
+  ])
+
+  assert.match(provider, /acceptIdentityToken\(user\.id_token\)/)
+  assert.match(provider, /acceptIdentityToken\(oidcUser\.id_token\)/)
+  assert.doesNotMatch(provider, /acceptIdentityToken\(user\.access_token\)/)
+  assert.doesNotMatch(provider, /acceptIdentityToken\(oidcUser\.access_token\)/)
+  assert.match(oidc, /NEXT_PUBLIC_OIDC_AUTHORIZATION_ENDPOINT/)
+  assert.match(oidc, /token_endpoint: `\$\{origin\}\/api\/auth\/oidc\/token`/)
+  assert.match(oidc, /jwks_uri: `\$\{origin\}\/api\/auth\/oidc\/jwks`/)
+  assert.doesNotMatch(oidc, /login\/oauth/)
+  assert.match(nextConfig, /destination: OIDC_TOKEN_ENDPOINT/)
+  assert.match(nextConfig, /destination: OIDC_JWKS_URL/)
+  assert.doesNotMatch(nextConfig, /login\/oauth/)
+  assert.match(header, /<AvatarImage src=\{avatarUrl\}/)
+  assert.match(header, /identity\?\.picture/)
+  assert.match(header, /identity\?\.username/)
+})

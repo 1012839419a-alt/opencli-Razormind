@@ -31,6 +31,7 @@ import type {
   DashboardStats,
   EdgeNode,
   EdgeNodeEvent,
+  GovernedProjectSummary,
   KillSwitchState,
   NodeStats,
   NotificationLog,
@@ -44,6 +45,8 @@ import type {
   PresetsGrouped,
   Skill,
   SourceControlState,
+  SourceBinding,
+  SourceBindingInput,
   SourceMeasurementRecord,
   SystemConfig,
   TaskRun,
@@ -67,6 +70,7 @@ import type {
   Automation,
   WorkspaceSettingsRead,
   WorkspaceSettingsValues,
+  WorkspaceSource,
 } from './types'
 
 export const getWorkspaceSettings = () =>
@@ -86,6 +90,36 @@ export const listMyWorkspaces = () =>
 
 export const listWorkspaceProjects = (workspaceId: string) =>
   apiClient.get<ApiResponse<ProjectSummary[]>>(`/workspaces/${workspaceId}/projects`).then((r) => r.data.data)
+
+export const listGovernedWorkspaces = () =>
+  apiClient.get<ApiResponse<WorkspaceSummary[]>>('/governance/workspaces').then((r) => r.data.data)
+
+export const listGovernedWorkspaceProjects = (workspaceId: string) =>
+  apiClient
+    .get<ApiResponse<GovernedProjectSummary[]>>(`/governance/workspaces/${workspaceId}/projects`)
+    .then((r) => r.data.data)
+
+export const listWorkspaceSources = (workspaceId: string) =>
+  apiClient.get<ApiResponse<WorkspaceSource[]>>(`/workspaces/${workspaceId}/sources`).then((r) => r.data.data)
+
+export const listProjectSourceBindings = (workspaceId: string, projectId: string) =>
+  apiClient
+    .get<ApiResponse<SourceBinding[]>>(
+      `/workspaces/${workspaceId}/projects/${projectId}/source-bindings`,
+    )
+    .then((r) => r.data.data)
+
+export const createProjectSourceBinding = (
+  workspaceId: string,
+  projectId: string,
+  data: SourceBindingInput,
+) =>
+  apiClient
+    .post<ApiResponse<SourceBinding>>(
+      `/workspaces/${workspaceId}/projects/${projectId}/source-bindings`,
+      data,
+    )
+    .then((r) => r.data.data)
 
 export const deleteWorkspaceProject = (workspaceId: string, projectId: string) =>
   apiClient.delete<ApiResponse<null>>(`/workspaces/${workspaceId}/projects/${projectId}`).then((r) => r.data)
@@ -315,19 +349,6 @@ export const listTasks = (params?: {
   page?: number
   limit?: number
 }) => apiClient.get<ApiResponse<CollectionTask[]>>('/tasks', { params }).then((r) => r.data)
-
-export const triggerTask = (
-  source_id: string,
-  parameters?: Record<string, unknown>,
-  agent_id?: string,
-) =>
-  apiClient
-    .post<ApiResponse<{ task_id: string; celery_task_id: string }>>('/tasks/trigger', {
-      source_id,
-      parameters: parameters ?? {},
-      ...(agent_id ? { agent_id } : {}),
-    })
-    .then((r) => r.data.data)
 
 export const getTask = (id: string) =>
   apiClient.get<ApiResponse<CollectionTask>>(`/tasks/${id}`).then((r) => r.data.data)

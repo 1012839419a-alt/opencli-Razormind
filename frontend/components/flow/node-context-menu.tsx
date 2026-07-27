@@ -1,11 +1,12 @@
 "use client"
 
 import { useEffect, useRef, type KeyboardEvent } from "react"
-import { FileUp, Play, Plus, StickyNote } from "lucide-react"
+import { Cable, FileUp, Play, Plus, StickyNote } from "lucide-react"
 
 import { cn } from "@/lib/utils"
+import type { PortMenuTarget } from "./workflow-node-menu-actions"
 
-export type CanvasMenuState = { nodeId?: string; x: number; y: number }
+export type CanvasMenuState = { nodeId?: string; port?: PortMenuTarget; x: number; y: number }
 
 type MenuActionProps = {
   icon: typeof Plus
@@ -35,6 +36,7 @@ type NodeContextMenuProps = {
   menu: CanvasMenuState
   onAddNode: () => void
   onAddNote: () => void
+  onConnectPort: () => void
   onImportApp: () => void
   onTestRun: () => void
   wrapperElement: HTMLElement | null
@@ -44,6 +46,7 @@ export function NodeContextMenu({
   menu,
   onAddNode,
   onAddNote,
+  onConnectPort,
   onImportApp,
   onTestRun,
   wrapperElement,
@@ -82,10 +85,22 @@ export function NodeContextMenu({
       role="menu"
       aria-label="快捷操作"
     >
-      <MenuAction icon={Plus} label="添加节点" onClick={onAddNode} />
-      <MenuAction icon={StickyNote} label="添加注释" onClick={onAddNote} />
-      <MenuAction icon={Play} label="测试运行" onClick={onTestRun} />
-      <MenuAction icon={FileUp} label="导入应用" onClick={onImportApp} />
+      {menu.port ? (
+        <>
+          <div className="border-b border-border px-2.5 py-2 font-mono text-3xs text-muted-foreground">
+            <div className="truncate text-foreground">{menu.port.label}</div>
+            <div className="truncate">{menu.port.handleType === "source" ? "OUT" : "IN"} · {menu.port.type}</div>
+          </div>
+          <MenuAction icon={Cable} label="连接兼容节点" onClick={onConnectPort} />
+        </>
+      ) : (
+        <>
+          <MenuAction icon={Plus} label="添加节点" onClick={onAddNode} />
+          <MenuAction icon={StickyNote} label="添加注释" onClick={onAddNote} />
+          <MenuAction icon={Play} label="测试运行" onClick={onTestRun} />
+          <MenuAction icon={FileUp} label="导入应用" onClick={onImportApp} />
+        </>
+      )}
     </div>
   )
 }

@@ -944,6 +944,54 @@ export interface WorkspaceSummary {
   updated_at: string
 }
 
+export interface GovernedProjectSummary {
+  id: string
+  workspace_id: string
+  name: string
+  slug: string
+  description: string | null
+  archived: boolean
+  created_at: string
+  updated_at: string
+}
+
+export type SourceLifecycleStatus = 'active' | 'disabled' | 'revoked'
+
+export interface WorkspaceSource {
+  id: string
+  workspace_id: string
+  name: string
+  slug: string
+  adapter_type: string
+  description: string | null
+  status: SourceLifecycleStatus
+  current_revision_number: number
+  created_by_user_id: string
+  created_at: string
+  updated_at: string
+}
+
+export interface SourceBinding {
+  id: string
+  project_id: string
+  source_id: string
+  name: string
+  slug: string
+  status: SourceLifecycleStatus
+  current_revision_number: number
+  created_by_user_id: string
+  created_at: string
+  updated_at: string
+}
+
+export interface SourceBindingInput {
+  source_id: string
+  name: string
+  slug: string
+  source_revision_number: number
+  scope_config: Record<string, unknown>
+}
+
 export type ProjectAppType = 'chatbot' | 'agent' | 'chatflow' | 'workflow' | 'text-generator'
 
 export interface ProjectSummary {

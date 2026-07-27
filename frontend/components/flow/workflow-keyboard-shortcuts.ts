@@ -16,6 +16,7 @@ type WorkflowKeyboardShortcutOptions = {
   exitNodeNetwork: () => boolean
   fitView: (options?: { padding?: number; duration?: number }) => unknown
   groupSelection: () => void
+  inspectorOpen: boolean
   mousePosRef: WritableRef<Point>
   paste: (position?: Point) => void
   projectSettingsOpen: boolean
@@ -52,6 +53,7 @@ export function useWorkflowKeyboardShortcuts({
   exitNodeNetwork,
   fitView,
   groupSelection,
+  inspectorOpen,
   mousePosRef,
   paste,
   projectSettingsOpen,
@@ -120,18 +122,17 @@ export function useWorkflowKeyboardShortcuts({
         showToast(next ? "节点缩略图已显示" : "节点缩略图已隐藏")
       } else if (!mod && key === "p") {
         event.preventDefault()
+        if (inspectorOpen) {
+          setInspectorOpen(false)
+          showToast("右侧工具架已隐藏")
+          return
+        }
         if (settingsOpen || projectSettingsOpen) {
           setSettingsOpen(false)
           setProjectSettingsOpen(false)
-          setInspectorOpen(true)
-          showToast("Parameter Interface 已显示")
-          return
         }
-        setInspectorOpen((open) => {
-          const next = !open
-          showToast(next ? "Parameter Interface 已显示" : "Parameter Interface 已隐藏")
-          return next
-        })
+        setInspectorOpen(true)
+        showToast("右侧工具架已显示")
       } else if (!mod && key === "h") {
         event.preventDefault()
         if (useFlowStore.getState().nodes.length === 0) return
@@ -189,6 +190,7 @@ export function useWorkflowKeyboardShortcuts({
     exitNodeNetwork,
     fitView,
     groupSelection,
+    inspectorOpen,
     mousePosRef,
     paste,
     projectSettingsOpen,

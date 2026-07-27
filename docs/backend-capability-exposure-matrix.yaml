@@ -1,6 +1,6 @@
 version: 1
 source: backend.main.app.openapi
-openapi_operation_count: 205
+openapi_operation_count: 207
 allowed_dispositions:
 - operator_ui
 - studio_binding
@@ -1759,6 +1759,24 @@ operations:
   decision: Added by branch-consolidation merge; governance review pending.
   target_epic: Epic 8
   capability_id: platform.governance
+- method: GET
+  path: /api/v1/governance/workspaces
+  operation_id: list_accessible_workspaces_api_v1_governance_workspaces_get
+  disposition: operator_ui
+  frontend_route: /sources
+  wrapper: null
+  decision: Expose the authenticated Workspace context required by Source and Agent governance.
+  target_epic: Epic 8
+  capability_id: studio.sources
+- method: GET
+  path: /api/v1/governance/workspaces/{workspace_id}/projects
+  operation_id: list_governance_projects_api_v1_governance_workspaces__workspace_id__projects_get
+  disposition: operator_ui
+  frontend_route: /sources
+  wrapper: null
+  decision: Expose Workspace-owned Projects without colliding with the transitional Studio routes.
+  target_epic: Epic 8
+  capability_id: studio.sources
 - method: GET
   path: /api/v1/workspaces/{workspace_id}/automations
   operation_id: list_automations_api_v1_workspaces__workspace_id__automations_get

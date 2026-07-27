@@ -88,6 +88,12 @@ WorkflowCapabilitySurface = Literal[
     "resource",
 ]
 WorkflowCapabilityStatus = Literal["runnable", "blocked", "preview_only", "design_only"]
+WorkflowOpenCLIAdapterPresetKind = Literal["source_slot", "tool_capability"]
+WorkflowOpenCLIAdapterReadiness = Literal[
+    "source_slot_ready",
+    "source_slot_requires_params",
+    "tool_capability_review_required",
+]
 
 
 class WorkflowSourceAnchor(BaseModel):
@@ -467,6 +473,8 @@ class WorkflowOpenCLIAdapterNode(BaseModel):
     catalogId: str = Field(..., min_length=1)
     kind: WorkflowNodeKind
     capability: WorkflowCapability
+    presetKind: WorkflowOpenCLIAdapterPresetKind
+    runtimeReadiness: WorkflowOpenCLIAdapterReadiness
     requiredArgs: list[str] = Field(default_factory=list)
     args: list[WorkflowOpenCLIAdapterNodeArg] = Field(default_factory=list)
     adapter: dict[str, Any] = Field(default_factory=dict)
@@ -474,9 +482,22 @@ class WorkflowOpenCLIAdapterNode(BaseModel):
     manifest: dict[str, Any] = Field(default_factory=dict)
 
 
+class WorkflowOpenCLIAdapterNodeFacets(BaseModel):
+    site: dict[str, int] = Field(default_factory=dict)
+    capability: dict[str, int] = Field(default_factory=dict)
+    access: dict[str, int] = Field(default_factory=dict)
+    browser: dict[str, int] = Field(default_factory=dict)
+    status: dict[str, int] = Field(default_factory=dict)
+    presetKind: dict[str, int] = Field(default_factory=dict)
+    runtimeReadiness: dict[str, int] = Field(default_factory=dict)
+
+
 class WorkflowOpenCLIAdapterNodesResponse(BaseModel):
     total: int = Field(..., ge=0)
     summary: dict[str, Any] = Field(default_factory=dict)
+    facets: WorkflowOpenCLIAdapterNodeFacets = Field(
+        default_factory=WorkflowOpenCLIAdapterNodeFacets
+    )
     nodes: list[WorkflowOpenCLIAdapterNode] = Field(default_factory=list)
 
 

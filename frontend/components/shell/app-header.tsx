@@ -7,7 +7,7 @@ import { Fragment } from 'react'
 
 import { useAuth } from '@/components/auth/auth-provider'
 import { ROUTE_LABELS } from '@/lib/navigation'
-import { Avatar, AvatarFallback } from '@/components/ui/avatar'
+import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
 import {
   Breadcrumb,
@@ -49,7 +49,16 @@ export function AppHeader({
   const router = useRouter()
   const { identity, signOut } = useAuth()
   const labels = resolveLabels(pathname)
-  const displayName = identity?.name || identity?.email || identity?.subject || 'User'
+  const displayName =
+    identity?.name || identity?.username || identity?.email || identity?.subject || 'User'
+  const accountLabel =
+    identity?.email ||
+    identity?.username ||
+    (identity?.is_platform_admin ? 'Platform Admin' : identity?.auth_method)
+  const avatarUrl =
+    identity?.picture?.startsWith('https://') || identity?.picture?.startsWith('http://')
+      ? identity.picture
+      : undefined
   const initials = displayName.slice(0, 2).toUpperCase()
 
   async function handleSignOut() {
@@ -120,6 +129,7 @@ export function AppHeader({
             }
           >
             <Avatar className="size-7">
+              {avatarUrl ? <AvatarImage src={avatarUrl} alt={`${displayName} 头像`} /> : null}
               <AvatarFallback className="text-[10px]">{initials}</AvatarFallback>
             </Avatar>
           </DropdownMenuTrigger>
@@ -127,9 +137,7 @@ export function AppHeader({
             <DropdownMenuGroup>
               <DropdownMenuLabel className="font-normal">
                 <span className="block truncate text-sm font-medium text-foreground">{displayName}</span>
-                <span className="block truncate text-xs">
-                  {identity?.is_platform_admin ? 'Platform Admin' : identity?.auth_method}
-                </span>
+                <span className="block truncate text-xs">{accountLabel}</span>
               </DropdownMenuLabel>
             </DropdownMenuGroup>
             <DropdownMenuSeparator />

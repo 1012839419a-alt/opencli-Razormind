@@ -62,6 +62,8 @@ async def test_oidc_verifies_issuer_audience_and_jwks(monkeypatch):
             "iss": settings.issuer,
             "aud": settings.audience,
             "email": "u@example.com",
+            "preferred_username": "org-user",
+            "picture": "https://id.example/avatar.png",
         },
         PRIVATE_PEM,
         algorithm="RS256",
@@ -71,6 +73,32 @@ async def test_oidc_verifies_issuer_audience_and_jwks(monkeypatch):
         identity = await OIDCVerifier(settings, client=client).verify(token)
     assert identity.subject == "user-1"
     assert identity.email == "u@example.com"
+    assert identity.name == "org-user"
+    assert identity.username == "org-user"
+    assert identity.picture == "https://id.example/avatar.png"
+
+
+@pytest.mark.asyncio
+async def test_oidc_discovers_provider_jwks_without_assuming_a_path():
+    settings = IdentitySettings("https://id.example", "opencli")
+    public_jwk = {**PUBLIC_JWK, "kid": "one"}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/.well-known/openid-configuration":
+            return httpx.Response(200, json={"jwks_uri": "https://keys.example/current"})
+        if request.url == httpx.URL("https://keys.example/current"):
+            return httpx.Response(200, json={"keys": [public_jwk]})
+        return httpx.Response(404)
+
+    token = jwt.encode(
+        {"sub": "user-1", "iss": settings.issuer, "aud": settings.audience},
+        PRIVATE_PEM,
+        algorithm="RS256",
+        headers={"kid": "one"},
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        identity = await OIDCVerifier(settings, client=client).verify(token)
+    assert identity.subject == "user-1"
 
 
 @pytest.mark.asyncio

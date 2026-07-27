@@ -26,6 +26,56 @@ export function useWorkspaceProjects(workspaceId: string | null) {
   })
 }
 
+export function useGovernedWorkspaces() {
+  return useQuery({
+    queryKey: ['governance-workspaces'],
+    queryFn: api.listGovernedWorkspaces,
+  })
+}
+
+export function useGovernedWorkspaceProjects(workspaceId: string | null) {
+  return useQuery({
+    queryKey: ['governance-workspace-projects', workspaceId],
+    queryFn: () => api.listGovernedWorkspaceProjects(workspaceId as string),
+    enabled: !!workspaceId,
+  })
+}
+
+export function useWorkspaceSources(workspaceId: string | null) {
+  return useQuery({
+    queryKey: ['workspace-sources', workspaceId],
+    queryFn: () => api.listWorkspaceSources(workspaceId as string),
+    enabled: !!workspaceId,
+  })
+}
+
+export function useProjectSourceBindings(workspaceId: string | null, projectId: string | null) {
+  return useQuery({
+    queryKey: ['project-source-bindings', workspaceId, projectId],
+    queryFn: () => api.listProjectSourceBindings(workspaceId as string, projectId as string),
+    enabled: !!workspaceId && !!projectId,
+  })
+}
+
+export function useCreateProjectSourceBinding() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({
+      workspaceId,
+      projectId,
+      data,
+    }: {
+      workspaceId: string
+      projectId: string
+      data: Parameters<typeof api.createProjectSourceBinding>[2]
+    }) => api.createProjectSourceBinding(workspaceId, projectId, data),
+    onSuccess: (_result, { workspaceId, projectId }) =>
+      queryClient.invalidateQueries({
+        queryKey: ['project-source-bindings', workspaceId, projectId],
+      }),
+  })
+}
+
 export function useDeleteWorkspaceProject() {
   const queryClient = useQueryClient()
   return useMutation({

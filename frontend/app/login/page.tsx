@@ -354,8 +354,7 @@ function LoginForm() {
                 </Button>
               ) : (
                 <div className="rounded-lg border bg-muted/40 p-3 text-sm text-muted-foreground">
-                  当前未配置 OIDC。设置 <code>NEXT_PUBLIC_OIDC_AUTHORITY</code> 和{' '}
-                  <code>NEXT_PUBLIC_OIDC_CLIENT_ID</code> 后即可启用组织账号登录。
+                  当前未配置组织登录。请配置 OIDC issuer、client ID 和授权端点。
                 </div>
               )}
 

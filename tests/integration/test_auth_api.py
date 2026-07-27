@@ -110,6 +110,8 @@ async def test_fleet_token_header_leaves_authorization_for_oidc(client, auth_ena
         "subject": "bootstrap-admin",
         "email": None,
         "name": "Bootstrap Admin",
+        "username": None,
+        "picture": None,
         "is_platform_admin": True,
         "auth_method": "bootstrap",
     }

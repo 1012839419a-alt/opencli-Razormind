@@ -3,7 +3,7 @@
 ## Source of truth
 
 - Status: Active
-- Last refreshed: 2026-07-25
+- Last refreshed: 2026-07-27
 - Primary product surfaces: 概览、任务与通知、项目、工作流编排、项目数据工作台、3D 逻辑与证据、插件中心、自动化与 Agent、成果与数据、执行资源、模型与连接。
 - Authority order:
   1. 本文档定义产品体验、信息架构和交互决策。
@@ -24,11 +24,18 @@
   - `frontend/components/shell/app-shell.tsx`
   - `frontend/components/shell/app-sidebar.tsx`
   - `frontend/components/flow/workflow-editor.tsx`
+  - `frontend/components/flow/workflow-editor-overlays.tsx`
+  - `frontend/components/flow/workflow-keyboard-shortcuts.ts`
   - `frontend/components/flow/nodes/workflow-node.tsx`
   - `frontend/components/flow/command-palette.tsx`
   - `frontend/components/flow/inspector.tsx`
+  - `frontend/components/flow/inspector-shell.tsx`
+  - `frontend/components/flow/workflow-workbench-panel.tsx`
   - `frontend/lib/workflow/node-catalog.ts`
   - `frontend/lib/workflow/node-contracts.ts`
+  - `backend/plugins/capability_catalog.py`
+  - Dify official node documentation for Question Classifier, If-Else, Iteration, Agent, Tool, single-node testing, orchestration logic, and hotkeys.
+  - User-supplied Dify Learn screenshots for the node picker, Question Classifier inspector, branch “next step” actions, and provider-grouped tool picker.
   - Browser evidence for `/studio/workflow` at 1398 × 1288, including Normalize Items, Dedupe Items, Record Acceptance Gate, Record Sink, and Webhook Notify.
 
 ## Brand
@@ -112,6 +119,7 @@
 - Principle 5 — Progressive disclosure: 画布保持低噪声，参数进 Inspector，运行事件进 Trace，管理对象留在各自管理页面。
 - Principle 6 — Recovery is part of the state: BLOCKED 和错误态必须同时给出原因、缺失对象和下一步动作。
 - Principle 7 — OpenCLI shell, replaceable engines: 导航、权限、项目上下文、视觉 token 与状态语义由 OpenCLI 统一；Perspective、DuckDB、OpenTelemetry、Langfuse、OpenLineage 等成熟能力只通过适配器进入，不把第三方产品外壳直接复制进来。
+- Principle 8 — Borrow proven behavior, keep OpenCLI authority: 对 Dify 等成熟编排器，优先内化高频节点心智、专用编辑器、变量绑定、分支下一步和单节点调试等已验证行为；不复制品牌外壳、前端静态节点表或与 OpenCLI runtime/治理相冲突的实现。
 - Tradeoffs:
   - 为提高信息密度可使用紧凑节点，但关键状态和正文不得牺牲可读性。
   - 包降低主画布复杂度，但必须保留进入内部图、查看版本与派生自定义节点的路径。
@@ -146,6 +154,63 @@
   - 新节点和新 UI 不再根据 L1-L4 深度硬贴角色标签；迁移期间旧四层图可读、可运行，但新建 Native 图应收敛到上述三种语义角色。
   - Managed 外部执行包可以由 L2 自身作为运行权威；Native L2 包以内含的 L3 执行节点作为运行权威。
 
+## Dify workflow UX internalization
+
+- Meaning of “Copy”:
+  - Copy 指复制并内化经验证的任务模型和交互契约，不指直接复制 Dify 源码、品牌、像素样式或独立前端运行模型。
+  - 每个借鉴行为必须落到 OpenCLI 的后端 Capability Catalog、typed ports、parameter interface、运行绑定、权限和 trace 契约；UI 不以节点 ID switch 或第二份静态清单伪造能力。
+- Directly internalize:
+  - 使用用户已熟悉的高频节点名和职责边界：Start/User Input、LLM、Knowledge Retrieval、Output/Answer、Agent、Question Classifier、If-Else、Human Input、Iteration、Loop、Code、Template、Parameter Extractor、Variable Aggregator/Assigner、Document Extractor、List Operator、HTTP Request、Tool。
+  - 高频节点使用任务专用编辑器：分类器编辑“模型 + 输入变量 + 分类标题/描述”；If-Else 编辑“IF/ELIF/ELSE + AND/OR 条件组”；Iteration/Loop 编辑输入集合、内部 scope、并发/终止与失败策略；Agent 编辑策略、模型、工具、指令、上下文和安全上限。
+  - Router/control 节点的每个输出分支同时具有稳定 port、可读标签和“添加下一步”入口；从某分支添加节点时必须保留 source handle，不让用户再手工补连线。
+  - 输入字段优先从上游 typed variables 选择，支持搜索、来源节点、字段路径和类型检查；高级用户仍可输入表达式或打开原始 JSON，但原始 JSON 不是普通任务的默认编辑面。
+  - 支持节点级试运行与“上次运行”：普通节点可提供测试输入，结果显示输入、输出、耗时、错误和 trace；Answer/End 等无意义的单节点运行显式不提供该动作。
+  - 工具按真实 Provider 分组，并保留动作级选择；OpenCLI 预设、已安装插件、OpenAPI、Workflow-as-Tool、MCP 只有在后端目录存在对应来源时才展示。
+- Adapt for OpenCLI:
+  - Global Agent 是跨页面的协作者，可读取上下文并提交图变更 proposal；Agent Node 是工作流内有输入输出、运行边界、工具白名单和最大迭代数的可执行步骤。Global Agent 不替代需要精确、可测试、可审计的直接节点。
+  - BLOCKED/需配置节点仍可加入草稿并完整编辑；试运行和发布保持阻断，并从节点配置直接跳到缺少的模型、连接、凭证、插件、知识库或执行资源。
+  - Iteration/Loop 复用现有可展开 node scope；外层图继续保持可编译的有向结构，重复执行发生在节点内部，不以任意回边破坏当前 compiler/run 不变量。
+  - 跨工作流复制节点时携带可移植配置和 typed contract；目标工作区的变量、知识库、模型、插件、凭证与连接必须重新解析，失效引用转为可恢复的 BLOCKED，不静默换成别的资源。
+- Do not copy:
+  - 不复制 Dify 导航、品牌、Marketplace 外壳、固定面板宽度或视觉 token。
+  - 不引入只存在于前端的“看起来可用”节点，不隐藏 runtime readiness，不把凭证或权限错误伪装成普通参数错误。
+  - 不让插件注入任意 React 前端；插件只能声明 schema、本地化文案、参数、端口、动作、状态和有限的 experience descriptor，由平台组件渲染。
+  - 不把所有节点都做成独立定制页面。低频或简单能力先使用 typed schema 表单；只有任务复杂度和使用频率证明需要时才提升为专用编辑器。
+- Node experience levels:
+  - `dedicated`：高频或结构性节点的专用编辑器，首批覆盖 LLM、Agent、Knowledge Retrieval、Question Classifier、If-Else、Iteration、Loop、Code、Template、Parameter Extractor、Human Input、HTTP Request 与 Tool。
+  - `schema`：由现有 parameter interface 自动生成的 typed form，适用于直接输入/输出、简单 transform、插件能力和长尾节点。
+  - `advanced`：JSON/原始 contract/内部 binding，仅作为高级折叠区或降级路径。
+  - experience level 和 editor key 应扩展在后端 `manifest.presentation` 中，由 catalog adapter 投影；前端按 editor key 选择平台内建 renderer，不按 capability ID 维护平行判断表。
+- Application-quality acceptance:
+  - `dedicated` 节点不能以一个通用 JSON textarea 作为主配置面；必须提供业务字段、合理默认值、输入来源、输出说明、空状态和就地校验。
+  - Router/control 节点的分支标签、端口、画布连线、右侧大纲和运行 trace 必须使用同一个 branch ID。
+  - 节点名称、说明、字段、空状态、错误和恢复动作同时提供中文与英文；稳定标识符保持英文。
+  - UI 展示的端口、字段和动作必须来自同一后端能力投影，Agent proposal、人工编辑、校验器和 runtime 不得各自定义一套。
+
+## Workflow right dock and outline
+
+- Role:
+  - 右侧 Dock 是画布的结构导航和节点工作区，不是第二个图编辑器，也不再把“参数面板”“画布工作台”“大纲”作为互相遮挡的独立浮层。
+  - Dock 提供 `大纲 / 配置 / 上次运行 / Trace` 四个模式。未选节点时默认显示大纲；选择节点后打开配置；运行完成后可切换上次运行和 Trace，模式切换不改变画布选择。
+  - `P` 只负责显示/隐藏右侧 Dock；不再因为没有选中节点而拒绝打开。关闭后焦点回到画布，重新打开恢复上次模式。
+- Outline projection:
+  - 大纲直接从当前 canonical graph、typed ports 和 node scope 派生，不持有第二份节点顺序或连接状态。
+  - 顶层按入口节点开始，以稳定拓扑顺序展示；并行分支和 router branches 形成可折叠树；未连接、循环无效或无法到达的节点进入“未连接/需处理”分组，而不是从大纲消失。
+  - Iteration、Loop 和 Package 显示为可展开 scope；展开只预览内部结构，进入 scope 才改变画布 breadcrumb。
+  - 每行仅显示节点图标、业务名、能力/运行状态和问题计数。选中、hover、运行中、失败不能只靠颜色区分。
+  - Router 行按 branch ID 展示分支标签；分支下方提供“添加下一步”，沿该 branch port 打开现有节点选择器。大纲和画布双向同步选择与定位。
+- Outline actions:
+  - 单击：选中并定位；双击或 Enter：打开配置；展开箭头：展开分支或内部 scope。
+  - 行菜单只保留重命名、复制、删除、进入内部图/派生（适用时）和查看节点信息；不恢复此前删除的 Table、AI 对话、编辑此节点工具架动作。
+  - 大纲拖拽首版只允许改变同级视觉排序/布局提示，不直接改边或运行语义；连接关系必须通过画布或明确的“添加下一步/连接到”动作修改。
+- Keyboard:
+  - `P` 开关 Dock；上下键移动大纲焦点；左右键折叠/展开；Enter 定位并打开配置；Escape 返回画布。
+  - 大纲使用 tree/treeitem 或等价可访问语义，分支和 scope 声明层级、展开状态、选中状态与问题摘要。
+- Scale and layout:
+  - 桌面使用右侧停靠面板，与画布共享可用宽度；不再以多个 `absolute` 浮层堆叠覆盖。
+  - 窄屏转为互斥 Sheet，保留四个模式和选中同步；打开 Sheet 时不重置画布 viewport。
+  - 首版使用现有图数据生成稳定投影；超过 200 个可见 outline rows 时再启用虚拟化，未达到阈值不新增依赖。
+
 ## Visual language
 
 - Color:
@@ -174,6 +239,8 @@
   - Global Agent Dock：由 AppShell 持有会话，在所有产品页面从固定 Header 入口打开；当前路由和查询上下文随消息发送。读取动作可直接执行，所有写动作继续使用 proposal → diff → 人工确认，不再把“与 Agent 创建”作为独立创建模式。
   - Canvas context action menu：右键不再直接展开节点全集，也不在菜单内嵌 DOP/primitive 多级目录。空白画布和节点都先提供短动作菜单：`添加节点`、`添加注释`、`测试运行`、`导入应用`；节点右键再以“当前节点”分组提供进入内部网络、选择流程分支、参数与节点信息。
   - Node picker：由原来的“⌘K + 所有操作/节点混排”改为渐进式目录，顶部固定 `节点 / 工具 / 开始` 三个入口和当前入口专属搜索。`节点` 按业务/逻辑/数据/输出等真实 catalog 分类展示，`工具` 聚合 OpenCLI、插件与运行工具并提供来源筛选，`开始` 承载 AI 生成、导入应用和画布起始动作；目录项仍只消费后端能力投影与现有节点定义。
+  - Dedicated node editors：在现有 Inspector/parameter interface 上增量增加平台内建 editor renderer；共享变量选择器、模型/资源选择器、branch editor、test-run result 和 recovery banner，不为每个节点复制完整面板 Shell。
+  - Workflow right dock：复用现有 `Inspector`、`RunTracePanel`、selection store 和 node scope breadcrumb，将当前互斥浮层收敛为一个 Dock；新增 Outline 只派生结构投影，不创建新的图状态 store。
   - Context-to-picker placement：右键位置只决定新节点落点；选择器自身保持居中、可滚动且不随画布边缘裁切。通过顶部“添加节点”打开时，落点为当前视口中心。
   - Annotation action：`添加注释` 直接创建现有 `note` palette item，不再要求用户先进入完整节点目录；流程图形与分组容器仍留在节点选择器的辅助分类。
   - Import action：`导入应用` 复用现有 Dify / n8n / canonical JSON / Mermaid 导入链路，不引入第二套解析逻辑。
@@ -203,6 +270,7 @@
 - Keyboard/focus behavior:
   - 所有按钮、链接、节点菜单、Inspector tabs、对话框和画布工具必须有可见 `:focus-visible`。
   - `Ctrl/Cmd+K` 打开全局命令，节点选择器提供键盘搜索、分组导航和 Escape 关闭。
+  - `P` 在无选中节点时也可打开右侧 Dock 的大纲；大纲支持树形键盘导航，选择和焦点必须可区分。
   - 右键动作菜单使用真实 button 和 menu 语义；打开节点选择器后焦点进入搜索框，Tab 可遍历页签和目录项，Enter 选择首个搜索结果，Escape 关闭并返回画布。
   - 节点必须可被键盘选中；进入/退出内部图、打开参数和运行节点都要有非鼠标路径。
   - 焦点不能被画布缩放、抽屉或路由转场吞掉。
@@ -220,6 +288,7 @@
 - Supported breakpoints/devices: 桌面是完整编排目标；平板支持查看、选择、配置与运行；手机至少支持查看状态、处理 Inbox 和打开只读运行证据。
 - Layout adaptations:
   - 桌面保留侧栏、项目头、画布、可开合 Inspector/Trace。
+  - 桌面右侧只保留一个可开合 Dock；大纲、配置、上次运行和 Trace 在 Dock 内切换，不允许多个面板覆盖同一交互区域。
   - 窄屏侧栏折叠为 rail；Inspector、Trace 和节点选择器转为互斥 Sheet，不与画布并排挤压。
   - 画布节点不为适配屏宽而缩小关键文字；使用 viewport fit、平移和聚焦选中节点。
   - 表格使用自身横向滚动；Shell 不产生页面级水平滚动。
@@ -234,6 +303,8 @@
 - Disabled: 保留控件上下文，并用邻近说明或 Tooltip 解释具体前置条件。
 - Offline/slow network: 保留最近一次已知状态并标记陈旧；保存与发布需要明确 pending/failed，不静默丢失编辑。
 - Blocked capability: 节点仍可在草稿中查看和配置，但运行/发布入口显示缺少的插件、连接、凭证、权限或执行资源，并链接到正确管理面。
+- Dedicated editor fallback: 专用编辑器描述缺失或 renderer 不可用时回退到 typed schema form，并显示“使用通用配置界面”；不得回退为空面板、丢字段或自动修改节点配置。
+- Outline graph anomalies: 未连接、不可达、循环无效、端口失配和缺失节点定义在大纲内进入明确问题分组，并可定位到画布；不得为了生成树而丢弃异常节点。
 - Locked package: 可改公开参数、可进入只读内部图；结构性编辑只能通过显式“派生为项目节点”，必须展示来源和差异。
 - Run trace: `records` 是可路由输出；`rejected`、`metrics`、duplicate evidence 和 lineage 是可检查 trace artifacts，不在父级画布暴露成普通输出端口。
 
@@ -271,6 +342,7 @@
   - 画布平移、缩放、拖拽和流式运行事件不得导致无关节点重挂载。
   - 节点卡片只渲染摘要；大型 JSON、事件和工件按需在 Inspector/Trace 加载。
   - 命令面板和目录搜索应在本地索引可用时即时响应，远端能力状态增量合并。
+  - 大纲只订阅节点结构、选择和摘要状态；运行事件更新不得重建整个树。可见行超过 200 时再使用现有虚拟列表能力或轻量窗口化。
 - Compatibility constraints:
   - 保留现有 WorkflowProject、节点目录、运行能力投影、端口契约和四段物理嵌套兼容校验，直到完成旧图迁移；产品文案和新图只使用三种显式语义角色。
   - 中英文混排需保持布局稳定；新增用户可见文本必须进入现有工作流 i18n 边界或明确记录迁移债务。
@@ -280,6 +352,11 @@
   - 真实业务工作流只有同时满足“非 fixture 数据运行、数据工作台可见实际记录、至少一条记录可检查来源/血缘、修改节点参数后可重跑并对比前后批次”才算业务跑通；缺少任一项只能算 runtime smoke。
   - 浏览器 smoke 覆盖 `/plugins` 与 `/studio/workflow`；桌面基线使用约 1398 × 1288，并额外检查窄屏 Sheet/rail 行为。
   - 视觉改动应保存前后截图或自动化证据；当前仓库尚无完整 Playwright/Cypress 视觉回归基线，这是已知验证缺口。
+- Delivery slices:
+  - Slice 1 — 结构闭环：统一右侧 Dock，完成 Outline 拓扑/分支/scope 投影、画布双向选择、`P` 开关和 branch “添加下一步”；补 Question Classifier 与 If-Else 专用编辑器，证明动态分支端口闭环。
+  - Slice 2 — 高频应用：补 LLM、Agent、Knowledge Retrieval、Tool/HTTP、Template/Parameter/Variable 类专用编辑体验；工具目录按真实 OpenCLI/Plugin/OpenAPI/Workflow/MCP Provider 分组；接入 typed variable/resource picker。
+  - Slice 3 — 运行闭环：补 Iteration/Loop 内部 scope、Human Input、单节点试运行、上次运行和可编辑测试变量；完成跨工作流复制后的资源重解析与 BLOCKED 恢复。
+  - 每个 Slice 都必须保持 blocked 可编辑、中文/英文、同一 branch ID/port contract、无 frontend-only 节点，并通过 catalog regression、TypeScript、ESLint 与桌面/窄屏 browser smoke。
 
 ## Open questions
 
@@ -292,4 +369,6 @@
 - [ ] Responsive / 手机端是否正式支持编辑工作流，还是定义为只读与运行处置？在确定前不得通过缩小字号强行塞入完整画布。
 - [ ] Design system / `frontend/app/globals.css` 的 shadcn 语义色与 `docs/DESIGN_SYSTEM.md` 的 ops/primary/signal token 何时单轨化？新工作不得扩大现有漂移。
 - [ ] i18n / 导航与 Studio 的中文硬编码何时迁移到统一语言资源？影响英文界面和插件本地化验收。
+- [ ] Workflow UX / `manifest.presentation` 的 experience descriptor 首版字段名和版本如何定义，使内建专用编辑器可声明但不把任意插件前端带入平台？
+- [ ] Workflow UX / 跨工作流复制首版是否仅支持同一 OpenCLI 实例，还是同时定义跨实例剪贴板格式与兼容性报告？
 - [ ] Workbench engines / Perspective + DuckDB-Wasm 与 OpenTelemetry + Langfuse 的首个生产适配器边界、数据量阈值和许可证复核何时进入 ADR？当前页面只验证 OpenCLI 内的信息架构与真实数据交互。

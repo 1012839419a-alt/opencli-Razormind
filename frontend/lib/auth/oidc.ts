@@ -5,7 +5,8 @@ let manager: UserManager | null = null
 export function isOidcConfigured(): boolean {
   return Boolean(
     process.env.NEXT_PUBLIC_OIDC_AUTHORITY?.trim() &&
-      process.env.NEXT_PUBLIC_OIDC_CLIENT_ID?.trim(),
+      process.env.NEXT_PUBLIC_OIDC_CLIENT_ID?.trim() &&
+      process.env.NEXT_PUBLIC_OIDC_AUTHORIZATION_ENDPOINT?.trim(),
   )
 }
 
@@ -14,15 +15,23 @@ export function getOidcManager(): UserManager | null {
   if (manager) return manager
 
   const origin = window.location.origin
+  const authority = process.env.NEXT_PUBLIC_OIDC_AUTHORITY!.trim().replace(/\/$/, '')
+  const authorizationEndpoint = process.env.NEXT_PUBLIC_OIDC_AUTHORIZATION_ENDPOINT!.trim()
   const sessionStore = new WebStorageStateStore({ store: window.sessionStorage })
   manager = new UserManager({
-    authority: process.env.NEXT_PUBLIC_OIDC_AUTHORITY!.trim(),
+    authority,
     client_id: process.env.NEXT_PUBLIC_OIDC_CLIENT_ID!.trim(),
     redirect_uri: process.env.NEXT_PUBLIC_OIDC_REDIRECT_URI?.trim() || `${origin}/auth/callback`,
     post_logout_redirect_uri:
       process.env.NEXT_PUBLIC_OIDC_POST_LOGOUT_REDIRECT_URI?.trim() || `${origin}/login`,
     response_type: 'code',
     scope: process.env.NEXT_PUBLIC_OIDC_SCOPE?.trim() || 'openid profile email',
+    metadata: {
+      issuer: authority,
+      authorization_endpoint: authorizationEndpoint,
+      token_endpoint: `${origin}/api/auth/oidc/token`,
+      jwks_uri: `${origin}/api/auth/oidc/jwks`,
+    },
     automaticSilentRenew: true,
     loadUserInfo: false,
     monitorSession: false,

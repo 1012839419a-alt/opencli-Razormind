@@ -93,13 +93,15 @@ export function createDataOperatorParameterInterface(
   ) {
     options.unshift({ value: selectionValue, label: `${operatorId} · ${packVersion} · unavailable` })
   }
-  const configGuide = operators
-    .filter((operator) => operator.configKeys.length > 0)
-    .map((operator) => `${operator.id}: ${operator.configKeys.join(", ")}`)
-    .join("; ")
+  const configFields = selected
+    ? dataOperatorConfigFields(parentNodeId, selected.configKeys, selected.configSchema, config)
+    : []
 
   return {
-    groups: [{ id: "operator", label: "Data Operator", order: 1 }],
+    groups: [
+      { id: "operator", label: "Data Operator", order: 1 },
+      ...(configFields.length > 0 ? [{ id: "operator-config", label: "Configuration", order: 2 }] : []),
+    ],
     fields: [
       {
         id: "operator.operatorId",
@@ -114,27 +116,94 @@ export function createDataOperatorParameterInterface(
         value: selectionValue,
         options,
       },
-      {
-        id: "operator.config",
-        label: "Config (JSON)",
-        groupId: "operator",
-        type: "json",
-        binding: { nodeId: parentNodeId, source: "params", fieldId: "config" },
-        description: configGuide
-          ? `Accepted keys by operator — ${configGuide}`
-          : "Operator-specific configuration object.",
-        order: 2,
-        value: config,
-        placeholder: "{}",
-      },
+      ...configFields,
     ],
   }
 }
 
-export function parseJsonParameterValue(value: string): { ok: true; value: Record<string, unknown> } | { ok: false; error: string } {
+function dataOperatorConfigFields(
+  parentNodeId: string,
+  configKeys: string[],
+  configSchema: Record<string, unknown> | undefined,
+  config: Record<string, unknown>,
+): ParameterInterfaceField[] {
+  const properties = isJsonRecord(configSchema?.properties)
+    ? configSchema.properties
+    : configSchema && !("type" in configSchema)
+      ? Object.fromEntries(
+          (configKeys.length > 0 ? configKeys : Object.keys(configSchema))
+            .filter((key) => isJsonRecord(configSchema[key]))
+            .map((key) => [key, configSchema[key]]),
+        )
+      : {}
+  const schemaKeys = Object.keys(properties)
+  const keys = Array.from(new Set([...configKeys, ...schemaKeys]))
+  const required = new Set(Array.isArray(configSchema?.required)
+    ? configSchema.required.filter((value): value is string => typeof value === "string")
+    : [])
+
+  return keys.map((key, order) => {
+    const schema = isJsonRecord(properties[key]) ? properties[key] : {}
+    const enumValues = Array.isArray(schema.enum)
+      ? schema.enum.filter((value): value is string | number | boolean =>
+          typeof value === "string" || typeof value === "number" || typeof value === "boolean",
+        )
+      : []
+    const itemSchema = isJsonRecord(schema.items) ? schema.items : {}
+    const itemEnum = Array.isArray(itemSchema.enum)
+      ? itemSchema.enum.filter((value): value is string => typeof value === "string")
+      : []
+    const schemaType = typeof schema.type === "string" ? schema.type : undefined
+    const fieldType: ParameterInterfaceField["type"] =
+      enumValues.length > 0 ? "select"
+        : schemaType === "boolean" ? "boolean"
+          : schemaType === "integer" || schemaType === "number" ? "number"
+            : schemaType === "array" && itemEnum.length > 0 ? "tokens"
+              : schemaType === "object" || schemaType === "array" ? "json"
+                : "text"
+    const value = config[key] ?? schema.default ?? (
+      fieldType === "boolean" ? false
+        : fieldType === "tokens" ? []
+          : fieldType === "json" ? (schemaType === "array" ? [] : {})
+            : ""
+    )
+
+    return {
+      id: `operator.config.${key}`,
+      label: typeof schema.title === "string" ? schema.title : humanizeConfigKey(key),
+      groupId: "operator-config",
+      type: fieldType,
+      binding: { nodeId: parentNodeId, source: "params", fieldId: `config.${key}` },
+      description: typeof schema.description === "string"
+        ? schema.description
+        : `Operator configuration key: ${key}`,
+      order,
+      optional: !required.has(key),
+      value,
+      placeholder: typeof schema.placeholder === "string" ? schema.placeholder : undefined,
+      min: typeof schema.minimum === "number" ? schema.minimum : undefined,
+      max: typeof schema.maximum === "number" ? schema.maximum : undefined,
+      step: schemaType === "integer" ? 1 : undefined,
+      options: enumValues.length > 0
+        ? enumValues.map((option) => ({ value: String(option), label: String(option) }))
+        : itemEnum.map((option) => ({ value: option, label: option })),
+    }
+  })
+}
+
+function humanizeConfigKey(value: string): string {
+  return value
+    .replace(/[_-]+/g, " ")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/\b\w/g, (character) => character.toUpperCase())
+}
+
+export function parseJsonParameterValue(value: string): { ok: true; value: Record<string, unknown> | unknown[] } | { ok: false; error: string } {
   try {
     const parsed: unknown = JSON.parse(value)
-    if (!isJsonRecord(parsed)) return { ok: false, error: "Config must be a JSON object." }
+    if (!isJsonRecord(parsed) && !Array.isArray(parsed)) {
+      return { ok: false, error: "Value must be a JSON object or array." }
+    }
     return { ok: true, value: parsed }
   } catch {
     return { ok: false, error: "Invalid JSON." }
@@ -146,11 +215,13 @@ export function buildParameterInterfaceView({
   adapter,
   nodes = [],
   allowedParamIds,
+  runtimeCapability,
 }: {
   node: WorkflowProjectNode | undefined
   adapter?: AdapterBinding
   nodes?: WorkflowNode[]
   allowedParamIds?: string[]
+  runtimeCapability?: WorkflowRuntimeCapability
 }): ParameterInterfaceView | undefined {
   if (!node) return undefined
   const restrict = (view: ParameterInterfaceView) => restrictParameterInterface(view, allowedParamIds)
@@ -159,7 +230,11 @@ export function buildParameterInterfaceView({
     return restrict(templateInterfaceView(node, adapter, template))
   }
 
-  const parameterInterface = node.parameterInterface ?? createParameterInterfaceFromInternals(node.id, getNodeInternals(node))
+  const catalogId = typeof node.ui?.catalogId === "string" ? node.ui.catalogId : ""
+  const parameterInterface =
+    createDataOperatorParameterInterface(node.id, catalogId, node.params, runtimeCapability) ??
+    node.parameterInterface ??
+    createParameterInterfaceFromInternals(node.id, getNodeInternals(node))
 
   if (parameterInterface && parameterInterface.fields.length > 0) {
     const isPackage = typeof node.ui?.catalogId === "string" && node.ui.catalogId.startsWith("package.")
@@ -200,7 +275,7 @@ function restrictParameterInterface(
         !allowed ||
         allowed.has(field.id) ||
         allowed.has(field.binding.fieldId) ||
-        (field.binding.fieldId === "config" && allowed.has("params"))
+        (field.binding.fieldId.startsWith("config.") && allowed.has("params"))
       ),
     ),
   }
@@ -270,15 +345,15 @@ export function setParameterInterfaceFieldValue(
     target?.binding.source === "params" &&
     target.binding.fieldId === "operatorId" &&
     parameterInterface.fields.some(
-      (field) => field.binding.source === "params" && field.binding.fieldId === "config",
+      (field) => field.binding.source === "params" && field.binding.fieldId.startsWith("config."),
     )
   return {
     ...parameterInterface,
     groups: [...parameterInterface.groups],
     fields: parameterInterface.fields.map((field) => {
       if (field.id === fieldId) return { ...field, value }
-      if (resetOperatorConfig && field.binding.source === "params" && field.binding.fieldId === "config") {
-        return { ...field, value: {} }
+      if (resetOperatorConfig && field.binding.source === "params" && field.binding.fieldId.startsWith("config.")) {
+        return { ...field, value: undefined }
       }
       return field
     }),
@@ -309,6 +384,10 @@ function readParameterFieldValue(
         return operatorId && packVersion
           ? dataOperatorSelectionValue(operatorId, packVersion)
           : field.value ?? ""
+      }
+      if (field.binding.fieldId.startsWith("config.")) {
+        const config = isJsonRecord(node.params.config) ? node.params.config : {}
+        return config[field.binding.fieldId.slice("config.".length)] ?? field.value ?? ""
       }
       return node.params[field.binding.fieldId] ?? field.value ?? ""
     }

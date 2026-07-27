@@ -35,6 +35,8 @@ const DEVELOPMENT_IDENTITY: AuthIdentity = {
   subject: 'bootstrap-admin',
   email: null,
   name: 'Local Development',
+  username: null,
+  picture: null,
   is_platform_admin: true,
   auth_method: 'development',
 }
@@ -73,7 +75,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       try {
         const oidcUser = await getOidcManager()?.getUser()
         if (oidcUser && !oidcUser.expired) {
-          await acceptIdentityToken(oidcUser.access_token)
+          if (!oidcUser.id_token) throw new Error('OIDC 未返回身份令牌')
+          await acceptIdentityToken(oidcUser.id_token)
           return
         }
 
@@ -108,8 +111,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const manager = getOidcManager()
     if (!manager) return
 
-    const onUserLoaded = (user: { access_token: string }) => {
-      void acceptIdentityToken(user.access_token)
+    const onUserLoaded = (user: { id_token?: string }) => {
+      if (user.id_token) void acceptIdentityToken(user.id_token)
     }
     const onSessionEnded = () => becomeAnonymous()
 
@@ -143,7 +146,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const manager = getOidcManager()
     if (!manager) throw new Error('OIDC 登录尚未配置')
     const user = await manager.signinRedirectCallback()
-    await acceptIdentityToken(user.access_token)
+    if (!user.id_token) throw new Error('OIDC 未返回身份令牌')
+    await acceptIdentityToken(user.id_token)
     return oidcReturnTo(user)
   }, [acceptIdentityToken])
 

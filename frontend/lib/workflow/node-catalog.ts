@@ -1248,9 +1248,11 @@ export function getWorkflowNodeCatalog(
     const item = backendNodeCatalogItem(runtimeCapability)
     return item ? [item] : []
   })
-  // The backend capability catalog is the source of truth once it is available.
-  // Static entries remain only as an offline and legacy-workflow compatibility fallback.
-  return dynamicBackendCatalog.length > 0 ? dynamicBackendCatalog : staticCatalog
+  const catalogById = new Map<string, WorkflowNodeCatalogItem>(
+    staticCatalog.map((item) => [item.id, item]),
+  )
+  for (const item of dynamicBackendCatalog) catalogById.set(item.id, item)
+  return [...catalogById.values()]
 }
 
 export function workflowCatalogItemLocked(item: WorkflowNodeCatalogItem): boolean {
@@ -1383,7 +1385,8 @@ function catalogParameterDefaults(value: unknown): Record<string, unknown> {
   return Object.fromEntries(value.flatMap((entry) => {
     const parameter = readCatalogRecord(entry)
     const name = typeof parameter?.name === "string" ? parameter.name : null
-    return name && "default" in (parameter ?? {}) ? [[name, parameter?.default]] : []
+    const defaultValue = backendParameterDefault(parameter)
+    return name && defaultValue !== undefined ? [[name, defaultValue]] : []
   }))
 }
 
@@ -1400,6 +1403,7 @@ function backendCatalogParameterInterface(
     const parameter = readCatalogRecord(entry)
     const name = typeof parameter?.name === "string" ? parameter.name : null
     if (!parameter || !name) return []
+    const value = backendParameterDefault(parameter)
     return [{
       id: name,
       label: typeof parameter.label === "string" ? parameter.label : name,
@@ -1407,7 +1411,8 @@ function backendCatalogParameterInterface(
       type: backendParameterFieldType(name, parameter),
       binding: { nodeId, source: "params", fieldId: name },
       order,
-      value: "default" in parameter ? parameter.default : undefined,
+      optional: parameter.required !== true,
+      value,
       options: backendParameterOptions(parameter.options),
     }]
   })
@@ -1421,9 +1426,18 @@ function backendParameterFieldType(name: string, parameter: Record<string, unkno
   if (type === "boolean") return "boolean"
   if (type === "number" || type === "integer") return "number"
   if (type === "select" && backendParameterOptions(parameter.options).length > 0) return "select"
-  if (type === "array") return backendParameterOptions(parameter.options).length > 0 ? "tokens" : "textarea"
-  if (type === "object" || type === "code" || /prompt|template|instruction|body|schema/i.test(name)) return "textarea"
+  if (type === "array") return backendParameterOptions(parameter.options).length > 0 ? "tokens" : "json"
+  if (type === "object") return "json"
+  if (type === "code" || /prompt|template|instruction|body|schema/i.test(name)) return "textarea"
   return "text"
+}
+
+function backendParameterDefault(parameter: Record<string, unknown> | null): unknown {
+  if (!parameter) return undefined
+  if (parameter.default !== null && parameter.default !== undefined) return parameter.default
+  if (parameter.type === "array") return []
+  if (parameter.type === "object") return {}
+  return undefined
 }
 
 function backendParameterOptions(value: unknown): Array<{ value: string; label: string }> {
@@ -1442,11 +1456,40 @@ function readCatalogRecord(value: unknown): Record<string, unknown> | null {
   return value as Record<string, unknown>
 }
 
+function backendCatalogPrimitivePorts(
+  item: WorkflowNodeCatalogItem,
+): Array<{ id: string; direction: "input" | "output"; type: string; required: boolean }> {
+  const manifest = readCatalogRecord(item.runtimeCapability?.manifest)
+  const ports = readCatalogRecord(manifest?.ports)
+  const collect = (
+    values: unknown,
+    direction: "input" | "output",
+  ): Array<{ id: string; direction: "input" | "output"; type: string; required: boolean }> => (
+    Array.isArray(values)
+      ? values.flatMap((entry) => {
+          const port = readCatalogRecord(entry)
+          const id = typeof port?.name === "string" ? port.name : null
+          const type = typeof port?.type === "string" ? port.type : null
+          return id && type
+            ? [{ id, direction, type, required: port?.required === true }]
+            : []
+        })
+      : []
+  )
+  return [
+    ...collect(ports?.inputs, "input"),
+    ...collect(ports?.outputs, "output"),
+  ]
+}
+
 export function createWorkflowNodeFromCatalog(
   item: WorkflowNodeCatalogItem,
   id: string,
   position: { x: number; y: number },
 ): WorkflowProjectNode {
+  const primitiveId = workflowCatalogIsBackendNode(item) && item.id.startsWith("primitive.")
+    ? item.id
+    : undefined
   const parameterInterface = createDataOperatorParameterInterface(
     id,
     item.id,
@@ -1483,6 +1526,9 @@ export function createWorkflowNodeFromCatalog(
       color: item.color,
       position,
       catalogId: item.id,
+      ...(primitiveId
+        ? { primitiveId, primitivePorts: backendCatalogPrimitivePorts(item) }
+        : {}),
       runtimeCapability: cloneCatalogValue(item.runtimeCapability),
       runtimeContract: cloneCatalogValue(item.runtimeContract),
     },

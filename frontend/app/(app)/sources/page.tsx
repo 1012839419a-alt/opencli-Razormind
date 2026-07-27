@@ -1,23 +1,17 @@
 'use client'
 
-import { useState } from 'react'
-import Link from 'next/link'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { ChevronRight, Play } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
+import { useRouter, useSearchParams } from 'next/navigation'
+import { Building2, FolderKanban, Link2 } from 'lucide-react'
 import { toast } from 'sonner'
 
-import * as api from '@/lib/api/endpoints'
-import { useSources } from '@/lib/api/hooks'
-import type { DataSource } from '@/lib/api/types'
-import { formatRelative } from '@/lib/format'
 import { BACKEND_HINT, EmptyState, ErrorState, LoadingState } from '@/components/shell/data-states'
 import { PageContainer } from '@/components/shell/page-container'
 import { AUTOMATION_TABS, RouteTabs } from '@/components/shell/route-tabs'
-import { StatusBadge } from '@/components/shell/status-badge'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
-import { Switch } from '@/components/ui/switch'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import {
   Table,
   TableBody,
@@ -26,185 +20,258 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
+import {
+  useCreateProjectSourceBinding,
+  useGovernedWorkspaces,
+  useGovernedWorkspaceProjects,
+  useProjectSourceBindings,
+  useWorkspaceSources,
+} from '@/lib/api/hooks'
+import type { WorkspaceSource } from '@/lib/api/types'
+import { formatRelative } from '@/lib/format'
 
-const CHANNEL_LABEL: Record<DataSource['channel_type'], string> = {
-  opencli: 'OpenCLI',
-  web_scraper: '网页抓取',
-  api: 'API',
-  rss: 'RSS',
-  cli: 'CLI',
-  skill: '技能',
-  crawl4ai: 'Crawl4AI',
-  browser_act: 'BrowserAct 采集',
+const STATUS_LABEL = {
+  active: '活跃',
+  disabled: '停用',
+  revoked: '已撤销',
+} as const
+
+function SourceStatusBadge({ status }: { status: WorkspaceSource['status'] }) {
+  return (
+    <Badge
+      variant={status === 'revoked' ? 'destructive' : 'secondary'}
+      className={status === 'active' ? 'bg-success/10 text-success' : undefined}
+    >
+      {STATUS_LABEL[status]}
+    </Badge>
+  )
+}
+
+function bindingSlug(source: WorkspaceSource) {
+  const base = source.name
+    .normalize('NFKD')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '') || 'source'
+  return `${base.slice(0, 91)}-${source.id.slice(0, 8)}`
 }
 
 export default function SourcesPage() {
-  const [enabledFilter, setEnabledFilter] = useState<'all' | 'enabled' | 'disabled'>('all')
-  const [page, setPage] = useState(1)
-  const queryClient = useQueryClient()
-  const params = {
-    page,
-    limit: 50,
-    ...(enabledFilter === 'all' ? {} : { enabled: enabledFilter === 'enabled' }),
+  const router = useRouter()
+  const searchParams = useSearchParams()
+  const workspaces = useGovernedWorkspaces()
+  const [workspaceId, setWorkspaceId] = useState<string | null>(searchParams.get('workspace'))
+  const projects = useGovernedWorkspaceProjects(workspaceId)
+  const [projectId, setProjectId] = useState<string | null>(searchParams.get('project'))
+  const sources = useWorkspaceSources(workspaceId)
+  const bindings = useProjectSourceBindings(workspaceId, projectId)
+  const createBinding = useCreateProjectSourceBinding()
+
+  useEffect(() => {
+    if (!workspaces.data?.length) return
+    if (workspaceId && workspaces.data.some((workspace) => workspace.id === workspaceId)) return
+    setWorkspaceId(workspaces.data[0].id)
+  }, [workspaceId, workspaces.data])
+
+  useEffect(() => {
+    if (!projects.data) return
+    if (!projects.data.length) {
+      setProjectId(null)
+      return
+    }
+    if (projectId && projects.data.some((project) => project.id === projectId)) return
+    setProjectId(projects.data[0].id)
+  }, [projectId, projects.data])
+
+  useEffect(() => {
+    const params = new URLSearchParams(searchParams.toString())
+    if (workspaceId) params.set('workspace', workspaceId)
+    else params.delete('workspace')
+    if (projectId) params.set('project', projectId)
+    else params.delete('project')
+    const query = params.toString()
+    if (query !== searchParams.toString()) router.replace(query ? `/sources?${query}` : '/sources')
+  }, [projectId, router, searchParams, workspaceId])
+
+  const selectedWorkspace = workspaces.data?.find((workspace) => workspace.id === workspaceId)
+  const selectedProject = projects.data?.find((project) => project.id === projectId)
+  const sourceById = useMemo(
+    () => new Map((sources.data ?? []).map((source) => [source.id, source])),
+    [sources.data],
+  )
+  const boundSourceIds = useMemo(
+    () => new Set((bindings.data ?? []).map((binding) => binding.source_id)),
+    [bindings.data],
+  )
+
+  async function bindSource(source: WorkspaceSource) {
+    if (!workspaceId || !projectId) return
+    try {
+      await createBinding.mutateAsync({
+        workspaceId,
+        projectId,
+        data: {
+          source_id: source.id,
+          name: source.name,
+          slug: bindingSlug(source),
+          source_revision_number: source.current_revision_number,
+          scope_config: {},
+        },
+      })
+      toast.success(`已将“${source.name}”绑定到 ${selectedProject?.name ?? '项目'}`)
+    } catch (reason) {
+      toast.error(reason instanceof Error ? reason.message : '绑定 Source 失败')
+    }
   }
-  const { data, isLoading, isError, error } = useSources(params)
 
-  const toggle = useMutation({
-    mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
-      api.updateSource(id, { enabled }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['sources'] })
-      toast.success('已更新数据源状态')
-    },
-    onError: (e: Error) => toast.error(e.message),
-  })
-
-  const trigger = useMutation({
-    mutationFn: (id: string) => api.triggerTask(id),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['tasks'] })
-      toast.success('已触发采集任务')
-    },
-    onError: (e: Error) => toast.error(e.message),
-  })
-
-  const sources = data?.data ?? []
-  const pagination = data?.meta
-
-  const filters: { key: typeof enabledFilter; label: string }[] = [
-    { key: 'all', label: '全部' },
-    { key: 'enabled', label: '启用' },
-    { key: 'disabled', label: '停用' },
-  ]
+  const error = workspaces.error ?? projects.error ?? sources.error ?? bindings.error
+  const isLoading = workspaces.isLoading
+    || (!!workspaceId && (projects.isLoading || sources.isLoading))
+    || (!!projectId && bindings.isLoading)
 
   return (
     <PageContainer
-      eyebrow="Automation"
-      title="自动化与 Agent"
-      description="从数据入口、触发调度到 Agent 处理和技能执行，集中管理完整自动化链路。"
+      eyebrow="Workspace · Sources"
+      title="Source"
+      description="在 Workspace 维护可复用数据入口，并将固定版本绑定到具体 Project。"
       tabs={<RouteTabs tabs={AUTOMATION_TABS} />}
       actions={
-        <div className="flex items-center gap-1 rounded-md border p-0.5">
-          {filters.map((f) => (
-            <Button
-              key={f.key}
-              size="sm"
-              variant={enabledFilter === f.key ? 'secondary' : 'ghost'}
-              className="h-7"
-              onClick={() => {
-                setEnabledFilter(f.key)
-                setPage(1)
-              }}
-            >
-              {f.label}
-            </Button>
-          ))}
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <Select
+            value={workspaceId ?? ''}
+            onValueChange={(value) => {
+              setWorkspaceId(value || null)
+              setProjectId(null)
+            }}
+          >
+            <SelectTrigger className="min-w-48" aria-label="选择 Workspace">
+              <Building2 className="size-3.5 text-muted-foreground" aria-hidden />
+              <SelectValue>{selectedWorkspace?.name ?? '选择 Workspace'}</SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              {(workspaces.data ?? []).map((workspace) => (
+                <SelectItem key={workspace.id} value={workspace.id}>{workspace.name}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select value={projectId ?? ''} onValueChange={(value) => setProjectId(value || null)}>
+            <SelectTrigger className="min-w-48" aria-label="选择 Project" disabled={!projects.data?.length}>
+              <FolderKanban className="size-3.5 text-muted-foreground" aria-hidden />
+              <SelectValue>{selectedProject?.name ?? '选择 Project'}</SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              {(projects.data ?? []).map((project) => (
+                <SelectItem key={project.id} value={project.id}>{project.name}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
       }
     >
       {isLoading ? (
         <LoadingState />
-      ) : isError ? (
-        <ErrorState message={(error as Error)?.message} hint={BACKEND_HINT} />
-      ) : sources.length === 0 ? (
-        <EmptyState title="暂无数据源" description="连接后端后，已配置的采集入口将显示在此。" />
+      ) : error ? (
+        <ErrorState message={error.message} hint={BACKEND_HINT} />
+      ) : !workspaceId ? (
+        <EmptyState title="暂无 Workspace" description="创建 Workspace 后即可维护可复用 Source。" />
       ) : (
-        <Card className="overflow-hidden py-0">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>名称</TableHead>
-                <TableHead>渠道</TableHead>
-                <TableHead>标签</TableHead>
-                <TableHead>状态</TableHead>
-                <TableHead>更新时间</TableHead>
-                <TableHead className="text-right">操作</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {sources.map((s) => (
-                <TableRow key={s.id}>
-                  <TableCell>
-                    <Link
-                      href={`/sources/${s.id}`}
-                      className="group inline-flex items-center gap-1 font-medium hover:text-primary"
-                    >
-                      {s.name}
-                      <ChevronRight className="size-3.5 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
-                    </Link>
-                    {s.review_required ? (
-                      <Badge variant="destructive" className="ml-2">
-                        待复核
-                      </Badge>
-                    ) : null}
-                  </TableCell>
-                  <TableCell className="text-muted-foreground">
-                    {CHANNEL_LABEL[s.channel_type] ?? s.channel_type}
-                  </TableCell>
-                  <TableCell>
-                    <div className="flex flex-wrap gap-1">
-                      {s.tags.slice(0, 3).map((t) => (
-                        <Badge key={t} variant="outline">
-                          {t}
-                        </Badge>
-                      ))}
-                      {s.tags.length === 0 ? <span className="text-muted-foreground">—</span> : null}
-                    </div>
-                  </TableCell>
-                  <TableCell>
-                    <StatusBadge status={s.enabled ? 'enabled' : 'disabled'} />
-                  </TableCell>
-                  <TableCell className="text-muted-foreground">{formatRelative(s.updated_at)}</TableCell>
-                  <TableCell>
-                    <div className="flex items-center justify-end gap-2">
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        className="h-7 gap-1"
-                        disabled={!s.enabled || trigger.isPending}
-                        onClick={() => trigger.mutate(s.id)}
-                      >
-                        <Play className="size-3.5" />
-                        采集
-                      </Button>
-                      <Switch
-                        checked={s.enabled}
-                        disabled={toggle.isPending}
-                        onCheckedChange={(v) => toggle.mutate({ id: s.id, enabled: v })}
-                        aria-label="启用/停用"
-                      />
-                    </div>
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-          {pagination && pagination.pages > 1 ? (
-            <div className="flex items-center justify-between border-t px-4 py-3">
-              <span className="text-sm text-muted-foreground">
-                共 {pagination.total} 个数据源 · 第 {pagination.page}/{pagination.pages} 页
-              </span>
-              <div className="flex items-center gap-2">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={pagination.page <= 1}
-                  onClick={() => setPage((current) => Math.max(1, current - 1))}
-                >
-                  上一页
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={pagination.page >= pagination.pages}
-                  onClick={() => setPage((current) => Math.min(pagination.pages, current + 1))}
-                >
-                  下一页
-                </Button>
-              </div>
+        <div className="space-y-6">
+          <section className="space-y-3" aria-labelledby="workspace-sources-title">
+            <div>
+              <h2 id="workspace-sources-title" className="text-sm font-semibold">Workspace Sources</h2>
+              <p className="text-xs text-muted-foreground">这些 Source 可被当前 Workspace 下的多个 Project 复用。</p>
             </div>
-          ) : null}
-        </Card>
+            {!sources.data?.length ? (
+              <EmptyState title="暂无 Source" description="当前 Workspace 还没有可复用数据入口。" />
+            ) : (
+              <Card className="overflow-hidden py-0">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>名称</TableHead>
+                      <TableHead>Adapter</TableHead>
+                      <TableHead>状态</TableHead>
+                      <TableHead>当前 Revision</TableHead>
+                      <TableHead>更新时间</TableHead>
+                      <TableHead className="text-right">Project 绑定</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {sources.data.map((source) => {
+                      const isBound = boundSourceIds.has(source.id)
+                      return (
+                        <TableRow key={source.id}>
+                          <TableCell>
+                            <div className="font-medium">{source.name}</div>
+                            <div className="font-mono text-2xs text-muted-foreground">{source.slug}</div>
+                          </TableCell>
+                          <TableCell className="font-mono text-xs text-muted-foreground">{source.adapter_type}</TableCell>
+                          <TableCell><SourceStatusBadge status={source.status} /></TableCell>
+                          <TableCell className="font-mono">r{source.current_revision_number}</TableCell>
+                          <TableCell className="text-muted-foreground">{formatRelative(source.updated_at)}</TableCell>
+                          <TableCell className="text-right">
+                            <Button
+                              size="sm"
+                              variant={isBound ? 'ghost' : 'outline'}
+                              className="h-7 gap-1"
+                              disabled={!projectId || source.status !== 'active' || isBound || createBinding.isPending}
+                              onClick={() => void bindSource(source)}
+                            >
+                              <Link2 className="size-3.5" aria-hidden />
+                              {isBound ? '已绑定' : '绑定当前 Revision'}
+                            </Button>
+                          </TableCell>
+                        </TableRow>
+                      )
+                    })}
+                  </TableBody>
+                </Table>
+              </Card>
+            )}
+          </section>
+
+          <section className="space-y-3" aria-labelledby="project-bindings-title">
+            <div>
+              <h2 id="project-bindings-title" className="text-sm font-semibold">Project SourceBindings</h2>
+              <p className="text-xs text-muted-foreground">
+                {selectedProject ? `${selectedProject.name} 当前的 Source 绑定记录。` : '选择 Project 查看绑定。'}
+              </p>
+            </div>
+            {!projectId ? (
+              <EmptyState title="暂无 Project" description="当前 Workspace 还没有可用于绑定 Source 的 Project。" />
+            ) : !bindings.data?.length ? (
+              <EmptyState title="暂无 SourceBinding" description="从上方选择一个活跃 Source 绑定其当前 Revision。" />
+            ) : (
+              <Card className="overflow-hidden py-0">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>绑定名称</TableHead>
+                      <TableHead>Source</TableHead>
+                      <TableHead>状态</TableHead>
+                      <TableHead>Binding Revision</TableHead>
+                      <TableHead>更新时间</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {bindings.data.map((binding) => (
+                      <TableRow key={binding.id}>
+                        <TableCell>
+                          <div className="font-medium">{binding.name}</div>
+                          <div className="font-mono text-2xs text-muted-foreground">{binding.slug}</div>
+                        </TableCell>
+                        <TableCell>{sourceById.get(binding.source_id)?.name ?? binding.source_id}</TableCell>
+                        <TableCell><SourceStatusBadge status={binding.status} /></TableCell>
+                        <TableCell className="font-mono">r{binding.current_revision_number}</TableCell>
+                        <TableCell className="text-muted-foreground">{formatRelative(binding.updated_at)}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </Card>
+            )}
+          </section>
+        </div>
       )}
     </PageContainer>
   )
