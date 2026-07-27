@@ -11,7 +11,7 @@ import type {
   WorkflowProject,
   WorkflowProjectNode,
 } from "./schema"
-import { parseWorkflowProject } from "./schema"
+import { adapterBindingSchema, parseWorkflowProject } from "./schema"
 import { getNodeInternals } from "./node-internals"
 import {
   createDataOperatorParameterInterface,
@@ -1298,6 +1298,8 @@ function backendNodeCatalogItem(
     ? backendCatalogCategory(nodeCatalog.category)
     : pluginCatalogCategory(typeof plugin?.family === "string" ? plugin.family : "tool")
   const origin = typeof nodeCatalog?.origin === "string" ? nodeCatalog.origin : "plugin"
+  const parsedAdapter = adapterBindingSchema.safeParse(nodeCatalog?.adapter)
+  const adapter = parsedAdapter.success ? parsedAdapter.data : undefined
   const description = typeof presentation?.description === "string"
     ? presentation.description
     : runtimeCapability.reason ?? "后端节点能力"
@@ -1315,6 +1317,8 @@ function backendNodeCatalogItem(
     capability,
     icon,
     color: "var(--muted-foreground)",
+    adapter: adapter?.id,
+    requiredAdapters: adapter ? [adapter] : undefined,
     params: {
       ...catalogParameterDefaults(presentation?.parameters),
       pluginInstallationId: plugin?.installationId,
@@ -1359,7 +1363,7 @@ function pluginCatalogCategory(family: string): WorkflowNodeCatalogCategory {
 
 function backendCatalogCategory(value: string): WorkflowNodeCatalogCategory {
   if (value === "input" || value === "trigger") return "trigger"
-  if (value === "knowledge") return "source"
+  if (value === "source" || value === "knowledge") return "source"
   if (value === "logic") return "decision"
   if (value === "flow") return "flow"
   if (value === "human") return "control"
