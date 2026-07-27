@@ -60,6 +60,7 @@ def build_workflow_capabilities(
             *_catalog_capabilities(
                 dify_runtime_ready=_dify_runtime_ready(plugin_installations or [])
             ),
+            *_tool_catalog_capabilities(),
             *_plugin_catalog_capabilities(plugin_installations or []),
         ],
         primitives=_primitive_capabilities(),
@@ -1362,6 +1363,119 @@ def _resource_capabilities() -> list[WorkflowRuntimeCapability]:
         )
         for tool in list_workflow_tool_capabilities().tools
     )
+    return rows
+
+
+def _tool_catalog_capabilities() -> list[WorkflowRuntimeCapability]:
+    rows: list[WorkflowRuntimeCapability] = []
+    for tool in list_workflow_tool_capabilities().tools:
+        canvas = tool.manifest.get("canvas")
+        node_catalog = tool.manifest.get("nodeCatalog")
+        if (
+            not isinstance(canvas, dict)
+            or canvas.get("node") is not True
+            or not isinstance(node_catalog, dict)
+            or node_catalog.get("authority") != "backend"
+        ):
+            continue
+
+        catalog_id = node_catalog.get("id")
+        kind = node_catalog.get("kind")
+        capability = node_catalog.get("capability")
+        if (
+            not isinstance(catalog_id, str)
+            or kind
+            not in {
+                "schedule",
+                "source",
+                "agent",
+                "router",
+                "notify",
+                "inbox",
+                "action",
+                "flow",
+                "control",
+                "sink",
+            }
+            or capability
+            not in {
+                "trigger",
+                "fetch",
+                "normalize",
+                "dedupe",
+                "summarize",
+                "score",
+                "tag",
+                "route",
+                "send",
+                "store",
+                "merge",
+                "accept",
+            }
+        ):
+            continue
+
+        presentation = tool.manifest.get("presentation")
+        presentation = dict(presentation) if isinstance(presentation, dict) else {}
+        parameters = presentation.get("parameters")
+        parameters = list(parameters) if isinstance(parameters, list) else []
+        tool_capability = {
+            "id": tool.id,
+            "versionPin": tool.versionPin.model_dump() if tool.versionPin else None,
+            "inputPorts": [port.model_dump() for port in tool.inputPorts],
+            "outputPorts": [port.model_dump() for port in tool.outputPorts],
+            "executor": tool.executor.model_dump(),
+        }
+        manifest = {
+            **tool.manifest,
+            "toolCapability": tool_capability,
+            "presentation": {
+                **presentation,
+                "parameters": [
+                    {
+                        "name": "toolCapability",
+                        "label": "系统工具绑定 / Tool binding",
+                        "type": "object",
+                        "required": True,
+                        "default": {
+                            "id": tool.id,
+                            "versionPin": tool_capability["versionPin"],
+                            "executor": tool_capability["executor"],
+                        },
+                    },
+                    {
+                        "name": "toolParams",
+                        "label": "运行参数 / Runtime parameters",
+                        "type": "object",
+                        "required": False,
+                        "default": dict(tool.executor.params),
+                    },
+                    *parameters,
+                ],
+            },
+        }
+        rows.append(
+            _capability(
+                id=catalog_id,
+                label=tool.label,
+                surface="catalog",
+                status=tool.status,
+                backend_available=tool.status == "runnable",
+                kind=kind,
+                capability=capability,
+                provider=tool.provider,
+                runtime_binding=_read_manifest_runtime_binding(tool.manifest),
+                reason=tool.description,
+                missing=(
+                    []
+                    if tool.status == "runnable"
+                    else ["tool_capability_unavailable"]
+                ),
+                tags=["catalog", "tool-capability", *tool.tags],
+                source="backend.workflow.tool_capabilities",
+                manifest=manifest,
+            )
+        )
     return rows
 
 
