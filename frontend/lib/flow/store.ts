@@ -128,6 +128,8 @@ export type FlowState = {
   onNodesChange: (changes: NodeChange<WorkflowNode>[]) => void
   onEdgesChange: (changes: EdgeChange<WorkflowEdge>[]) => void
   onConnect: (connection: Connection) => void
+  connectNodes: (connection: Connection, options?: { suppressSnapshot?: boolean }) => void
+  onReconnect: (oldEdge: WorkflowEdge, connection: Connection) => void
 
   takeSnapshot: () => void
   undo: () => void
@@ -158,8 +160,8 @@ export type FlowState = {
   updateNodeData: (id: string, data: Partial<WorkflowNodeData>) => void
   deleteSelected: () => void
   disconnectSelectedConnections: () => number
-  disconnectNodeConnections: (nodeId: string) => number
-  removeEdgesByIds: (edgeIds: string[]) => number
+  disconnectNodeConnections: (nodeId: string, options?: { suppressSnapshot?: boolean }) => number
+  removeEdgesByIds: (edgeIds: string[], options?: { suppressSnapshot?: boolean }) => number
   selectConnectedComponent: (nodeId: string) => { nodeIds: string[]; edgeIds: string[] }
   duplicateSelected: () => void
 
@@ -794,7 +796,10 @@ function writeBoundValueToNode(
   value: unknown,
 ): WorkflowNode {
   if (source === "params" || source === "adapter") {
-    const nextValue = String(value ?? "")
+    const nextValue =
+      value && typeof value === "object"
+        ? JSON.stringify(value)
+        : String(value ?? "")
     const fields = node.data.fields ?? []
     const hasField = fields.some((field) => field.id === fieldId)
     return {
@@ -809,6 +814,16 @@ function writeBoundValueToNode(
   }
   if (source === "data") return { ...node, data: { ...node.data, [fieldId]: value } }
   return node
+}
+
+function configKeyFromBinding(fieldId: string): string | undefined {
+  return fieldId.startsWith("config.") ? fieldId.slice("config.".length) || undefined : undefined
+}
+
+function configRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {}
 }
 
 export const useFlowStore = create<FlowState>((set, get) => ({
@@ -1029,6 +1044,9 @@ export const useFlowStore = create<FlowState>((set, get) => ({
       if (!parentProjectNode || !parameterInterface || !targetField || targetField.readonly) return {}
 
       const binding = targetField.binding
+      const configKey = binding.source === "params"
+        ? configKeyFromBinding(binding.fieldId)
+        : undefined
       const parentCatalogId = typeof parentProjectNode.ui?.catalogId === "string"
         ? parentProjectNode.ui.catalogId
         : ""
@@ -1037,7 +1055,9 @@ export const useFlowStore = create<FlowState>((set, get) => ({
         binding.source === "params" &&
         binding.fieldId === "operatorId" &&
         parameterInterface.fields.some(
-          (field) => field.binding.source === "params" && field.binding.fieldId === "config",
+          (field) =>
+            field.binding.source === "params" &&
+            (field.binding.fieldId === "config" || configKeyFromBinding(field.binding.fieldId) !== undefined),
         )
       const operatorSelection = resetOperatorConfig
         ? parseDataOperatorSelectionValue(value)
@@ -1045,14 +1065,16 @@ export const useFlowStore = create<FlowState>((set, get) => ({
       if (resetOperatorConfig && !operatorSelection) return {}
       const updatedParameterInterface = setParameterInterfaceFieldValue(parameterInterface, fieldId, value)
       const nextParameterInterface = resetOperatorConfig
-        ? {
-            ...updatedParameterInterface,
-            fields: updatedParameterInterface.fields.map((field) =>
-              field.binding.source === "params" && field.binding.fieldId === "config"
-                ? { ...field, value: {} }
-                : field,
-            ),
-          }
+        ? createDataOperatorParameterInterface(
+            parentProjectNode.id,
+            parentCatalogId,
+            {
+              operatorId: operatorSelection?.operatorId,
+              packVersion: operatorSelection?.packVersion,
+              config: {},
+            },
+            parentNode?.data.runtimeCapability,
+          ) ?? updatedParameterInterface
         : updatedParameterInterface
       const bindsParent = binding.nodeId === parentProjectNode.id || binding.nodeId === nodeId
       const directBindingNode = bindsParent
@@ -1078,6 +1100,9 @@ export const useFlowStore = create<FlowState>((set, get) => ({
               ? binding.nodeId
             : nodeId
       const backingProjectNode = boundProjectNode ?? parentProjectNode
+      const nextConfig = configKey
+        ? { ...configRecord(backingProjectNode.params.config), [configKey]: value }
+        : undefined
 
       let projectNodes = updateCanonicalProjectNodeByCanvasId(state.workflowProject, nodeId, (node) => ({
         ...node,
@@ -1092,7 +1117,9 @@ export const useFlowStore = create<FlowState>((set, get) => ({
                 packVersion: operatorSelection?.packVersion,
                 config: {},
               }
-            : { ...node.params, [binding.fieldId]: value },
+            : configKey
+              ? { ...node.params, config: nextConfig }
+              : { ...node.params, [binding.fieldId]: value },
         }))
       } else if (binding.source === "data") {
         projectNodes = updateCanonicalProjectNodeByCanvasId(projectNodes, backingNodeId, (node) => ({
@@ -1118,7 +1145,12 @@ export const useFlowStore = create<FlowState>((set, get) => ({
               ? { ...node, data: { ...node.data, parameterInterface: nextParameterInterface } }
               : node
           if (node.id === backingNodeId) {
-            const withValue = writeBoundValueToNode(withParentInterface, binding.source, binding.fieldId, value)
+            const withValue = writeBoundValueToNode(
+              withParentInterface,
+              binding.source,
+              configKey ? "config" : binding.fieldId,
+              configKey ? nextConfig : value,
+            )
             return resetOperatorConfig
               ? writeBoundValueToNode(
                   writeBoundValueToNode(

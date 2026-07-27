@@ -475,7 +475,7 @@ export function CommandStrip({
                 <Eraser className="size-3.5" />
                 清除画布标注
               </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => void autoLayout("LR", "elk", true)}>
+              <DropdownMenuItem onClick={() => void autoLayout("TB", "elk", true)}>
                 <Network className="size-3.5" />
                 自动整理节点
               </DropdownMenuItem>

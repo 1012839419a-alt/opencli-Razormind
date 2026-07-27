@@ -1,6 +1,6 @@
 # opencli-admin 后端架构声明（分支归一后）
 
-> 基线：main `b65708b`（2026-07-26）。三条产品线——安全加固线（`fix/sec-correctness-hardening`）、运营治理线（`notification-ack-cleanup-work`）、unified 产品线（`codex/unified-product-3002`）——已全部并入 main；迁移头归一后由 Source/Binding V1 顺延为 `f3g4h5i6j7k8`；八处跨线接缝已缝合（见 [#43](https://github.com/2233admin/opencli-admin/issues/43)）。
+> 基线：main `b65708b`（2026-07-26）。三条产品线——安全加固线（`fix/sec-correctness-hardening`）、运营治理线（`notification-ack-cleanup-work`）、unified 产品线（`codex/unified-product-3002`）——已全部并入 main；迁移头归一后由 Source/Binding V1 顺延，并由缺失插件表修复迁移推进到 `g4h5i6j7k8l9`；八处跨线接缝已缝合（见 [#43](https://github.com/2233admin/opencli-admin/issues/43)）。
 >
 > 本文是给协作 Agent / 新会话的**架构声明**：动 `backend/` 前先读这份。`docs/ARCHITECTURE.md` 为合并前的旧全量文档, 与本文冲突处以本文为准。
 
@@ -9,7 +9,7 @@
 | v1 API 路由模块 | 34 |
 | OpenAPI operations（治理台账对账后） | 205（台账：`docs/backend-capability-exposure-matrix.yaml`） |
 | 测试 | unit+compat+integration ≈ 2374 通过, 0 xfail |
-| Alembic | 单头 `f3g4h5i6j7k8` |
+| Alembic | 单头 `g4h5i6j7k8l9` |
 
 ## 1. 分层总图
 
@@ -92,7 +92,7 @@ flowchart LR
 
 ## 5. 存储与迁移
 
-- SQLite（dev, `aiosqlite`）/ PostgreSQL（compose）。迁移单头 `f3g4h5i6j7k8`——`1901f6da7138` 汇合运营线与产品线后，Source/Binding V1 单链顺延。
+- SQLite（dev, `aiosqlite`）/ PostgreSQL（compose）。迁移单头 `g4h5i6j7k8l9`——`1901f6da7138` 汇合运营线与产品线、Source/Binding V1 单链顺延后，幂等修复曾被标记完成但实际缺失的 `plugin_installations` 表。
 - **Legacy 升级路径已验证**：旧 plugin-hub 链 rejoin 拓扑下, 版本化迁移对缺失的 `workflow_runs` 表容忍跳过（online inspector guard；offline SQL 渲染不受影响）。模式参照 spine 迁移的缺表 early-return 惯例。
 - **去重是存储层保证**：`store_records` 按 `(source, content_hash)` 拦截。实测：A 股采集两轮 125→126, 仅真实新增入库。
 

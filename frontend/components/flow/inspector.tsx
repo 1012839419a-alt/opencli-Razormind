@@ -2,15 +2,28 @@
 
 import { useEffect, useState } from "react"
 import Link from "next/link"
-import { AlertTriangle, Database, ExternalLink, Plus, PlugZap, Trash2 } from "lucide-react"
+import {
+  AlertTriangle,
+  Database,
+  ExternalLink,
+  GitBranch,
+  Plus,
+  PlugZap,
+  Trash2,
+  Unplug,
+} from "lucide-react"
+import { useReactFlow } from "@xyflow/react"
 import { clearParameterDraftEntry, useFlowStore } from "@/lib/flow/store"
+import { portTypesCompatible, wouldCreateCycle } from "@/lib/flow/graph"
+import { useSettingsStore } from "@/lib/flow/settings-store"
 import { useSources } from "@/lib/api/hooks"
 import type {
   FieldConfig,
   GeneratedWorkflowEdgeMapping,
+  WorkflowEdge,
+  WorkflowNode,
   WorkflowNodeData,
 } from "@/lib/flow/types"
-import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
@@ -33,6 +46,13 @@ import {
 import { blockedActionViewForRuntime } from "@/lib/workflow/capabilities"
 import { businessNodeName } from "@/lib/workflow/business-node-experience"
 import { buildCanonicalNodeViewContract } from "@/lib/workflow/canonical-node-contract"
+import {
+  getNodeDisplayId,
+  localizeNodeParameterText,
+  localizeNodeText,
+  type WorkflowLanguage,
+} from "@/lib/workflow/node-i18n"
+import { buildWorkflowOutlineRows } from "@/lib/workflow/workflow-outline"
 import { findWorkflowProjectNodeByCanvasId } from "@/lib/workflow/node-path"
 import {
   isOpenCLISourceSlotArray,
@@ -69,6 +89,166 @@ const edgeTypeHints: Record<string, string> = {
   routed: "自动绕开中间节点的正交折线，适合密集流程图。",
 }
 
+const INSPECTOR_COPY = {
+  "zh-CN": {
+    switchLanguage: "切换节点语言",
+    tabs: { outline: "大纲", config: "配置", run: "上次运行", trace: "Trace" },
+    outlineHelp: "按真实连线生成流程大纲。单击选择并定位，双击或按 Enter 打开配置。",
+    connectedFlow: "流程结构",
+    needsAttention: "待连接节点",
+    noNodes: "当前工作流还没有节点。",
+    nodes: "节点",
+    connections: "连线",
+    promptSection: "节点提示词配置",
+    promptHelp: "这里只显示节点已保存的提示词配置和测试用例。AI 编辑生成的是待审阅提案，确认应用后才会更新工作流。",
+    configuredPrompt: "已配置提示词",
+    testInput: "测试输入",
+    expectedOutput: "期望输出",
+    noPrompt: "当前节点未配置提示词测试用例。真实运行输入和输出只在执行时产生，请在“运行结果”或 Run Trace 中查看。",
+    runResult: "运行结果",
+    runHelp: "明确的运行结果会记录在 Run Trace 中；此处展示该节点的运行身份与产物摘要。",
+    trace: "执行过程",
+    traceHelp: "试运行后，可在 Run Trace 中按节点 ID 查看有序执行事件。",
+    businessConfig: "业务配置",
+    businessHelp: "名称和说明会直接显示在画布节点上。",
+    systemNode: "系统能力",
+    nodeName: "节点名称",
+    nodeNamePlaceholder: "例如：采集 A 股市场数据",
+    nodeDescription: "节点说明",
+    nodeDescriptionPlaceholder: "说明这个节点为业务流程完成什么",
+    blockedAction: "受阻动作",
+    noPublicParameters: "此分组没有可配置参数。",
+    contract: "运行契约",
+    required: "必填",
+    internals: "内部步骤",
+    steps: "步",
+    advanced: "高级设置",
+    interface: "接口",
+    inputs: "输入连接",
+    inputsHelp: "每个输入端口只列出类型兼容的真实上游输出。可在这里重接或解绑。",
+    inputUnbound: "未连接",
+    noCompatibleOutputs: "没有可用的兼容输出。",
+    fieldMapping: "字段映射",
+    fieldMappingGap: "上下游契约尚未提供字段 schema，暂不允许手填来源或目标字段路径。已有旧映射只读保留。",
+    legacyMapping: "旧映射",
+    transform: "高级转换",
+    compatibility: "兼容性",
+    compilable: "可编译",
+    blocked: "阻止发布 / 运行",
+    noContract: "后端尚未为此节点投影输入/输出契约。",
+    debug: "调试信息",
+    dataSources: "数据来源",
+    sourceHelp: "选择系统中已经连接的数据源，执行时自动并行采集。",
+    manageSources: "管理数据源",
+    sources: "个来源",
+    parallel: "智能多源 · 并行执行",
+    addConnectedSource: "添加已连接的数据源",
+    loading: "加载中",
+    addSource: "添加数据源",
+    sourceUnavailable: "数据源目录暂时不可用。现有配置仍可使用，连接后端后即可选择其他来源。",
+    noOtherSources: "全局目录中暂无其他已连接的 OpenCLI 数据源。",
+    allSourcesAdded: "所有已连接的 OpenCLI 数据源都已添加到当前节点。",
+    collectionTopic: "采集主题",
+    collectionTopicPlaceholder: "例如：人工智能、贵州茅台",
+    collectionTopicHint: "一次设置会同步到所有搜索型来源。",
+    market: "市场范围",
+    collectionOptions: "采集选项",
+    items: "项",
+    opencliMapping: "OpenCLI 映射",
+    site: "站点",
+    command: "命令",
+    autoSaveHint: "配置会自动保存。使用画布顶部“试运行”检查真实返回和数据新鲜度。",
+    parameters: "参数",
+    jsonObjectRequired: "参数必须是 JSON 对象",
+    invalidJson: "JSON 格式不正确",
+    removeSource: "移除来源",
+    sourceName: "名称",
+  },
+  "en-US": {
+    switchLanguage: "Switch node language",
+    tabs: { outline: "Outline", config: "Configure", run: "Last run", trace: "Trace" },
+    outlineHelp: "Derived from real connections. Click to select and locate; double-click or press Enter to configure.",
+    connectedFlow: "Flow",
+    needsAttention: "Needs connection",
+    noNodes: "This workflow has no nodes yet.",
+    nodes: "nodes",
+    connections: "connections",
+    promptSection: "Node prompt configuration",
+    promptHelp: "This shows only saved prompt configuration and test cases. AI edits remain review proposals until you apply them.",
+    configuredPrompt: "Configured prompt",
+    testInput: "Test input",
+    expectedOutput: "Expected output",
+    noPrompt: "This node has no prompt test case. Real inputs and outputs are created only during a run; inspect Run Result or Run Trace.",
+    runResult: "Run result",
+    runHelp: "Authoritative results live in Run Trace; this view summarizes the node identity and produced artifacts.",
+    trace: "Execution trace",
+    traceHelp: "After a test run, inspect ordered execution events by node ID in Run Trace.",
+    businessConfig: "Business configuration",
+    businessHelp: "The name and description appear directly on the canvas node.",
+    systemNode: "System capability",
+    nodeName: "Node name",
+    nodeNamePlaceholder: "Example: Collect A-share market data",
+    nodeDescription: "Node description",
+    nodeDescriptionPlaceholder: "Explain what this node does for the business workflow",
+    blockedAction: "Blocked action",
+    noPublicParameters: "No configurable parameters in this group.",
+    contract: "Runtime contract",
+    required: "required",
+    internals: "Internal steps",
+    steps: "steps",
+    advanced: "Advanced",
+    interface: "Interface",
+    inputs: "Inputs",
+    inputsHelp: "Each input lists only type-compatible outputs from real upstream nodes. Reconnect or unbind here.",
+    inputUnbound: "Unbound",
+    noCompatibleOutputs: "No compatible outputs are available.",
+    fieldMapping: "Field mapping",
+    fieldMappingGap: "The upstream and downstream contracts do not expose field schemas yet. Manual source and target field paths are disabled; legacy mappings remain read-only.",
+    legacyMapping: "Legacy mapping",
+    transform: "Advanced transform",
+    compatibility: "Compatibility",
+    compilable: "Compilable",
+    blocked: "Blocks publish / run",
+    noContract: "No backend input/output contract is projected for this node.",
+    debug: "Debug",
+    dataSources: "Data sources",
+    sourceHelp: "Choose connected data sources; the node collects from them in parallel at runtime.",
+    manageSources: "Manage sources",
+    sources: "sources",
+    parallel: "Smart multi-source · parallel execution",
+    addConnectedSource: "Add a connected data source",
+    loading: "Loading",
+    addSource: "Add source",
+    sourceUnavailable: "The data source catalog is temporarily unavailable. Existing configuration remains usable.",
+    noOtherSources: "No other connected OpenCLI data sources are available in the global catalog.",
+    allSourcesAdded: "All connected OpenCLI data sources are already added to this node.",
+    collectionTopic: "Collection topic",
+    collectionTopicPlaceholder: "Example: artificial intelligence, Apple",
+    collectionTopicHint: "One value is synchronized to every search-based source.",
+    market: "Market scope",
+    collectionOptions: "Collection options",
+    items: "items",
+    opencliMapping: "OpenCLI mapping",
+    site: "Site",
+    command: "Command",
+    autoSaveHint: "Configuration saves automatically. Use Test Run to verify live results and data freshness.",
+    parameters: "Parameters",
+    jsonObjectRequired: "Parameters must be a JSON object",
+    invalidJson: "Invalid JSON",
+    removeSource: "Remove source",
+    sourceName: "Name",
+  },
+} as const
+
+const PARAMETER_GROUP_TEXT: Record<string, Record<WorkflowLanguage, string>> = {
+  "Parameter Interface": { "zh-CN": "参数配置", "en-US": "Parameters" },
+  Configuration: { "zh-CN": "配置", "en-US": "Configuration" },
+  Internals: { "zh-CN": "内部参数", "en-US": "Internals" },
+  Advanced: { "zh-CN": "高级参数", "en-US": "Advanced" },
+  Input: { "zh-CN": "输入", "en-US": "Input" },
+  Output: { "zh-CN": "输出", "en-US": "Output" },
+}
+
 const internalStatusLabel: Record<NodeInternalStatus, string> = {
   ready: "READY",
   simulated: "SIM",
@@ -94,6 +274,199 @@ const houdiniDetailsClass = "overflow-hidden rounded-[3px] border border-[#20242
 
 const houdiniSummaryClass =
   "flex cursor-pointer list-none items-center justify-between gap-3 bg-[#171a1f] px-3 py-2 font-mono text-[10px] uppercase tracking-[0.16em] text-muted-foreground transition-colors hover:text-foreground"
+
+type InspectorMode = keyof typeof INSPECTOR_COPY["zh-CN"]["tabs"]
+
+function InspectorLanguageToggle({
+  language,
+  onChange,
+}: {
+  language: WorkflowLanguage
+  onChange: (language: WorkflowLanguage) => void
+}) {
+  const copy = INSPECTOR_COPY[language]
+  return (
+    <div className="flex items-center justify-end">
+      <div className="flex items-center rounded-xs border bg-background p-0.5" role="group" aria-label={copy.switchLanguage}>
+        {(["zh-CN", "en-US"] as const).map((candidate) => (
+          <button
+            key={candidate}
+            type="button"
+            aria-pressed={language === candidate}
+            onClick={() => onChange(candidate)}
+            className={cn(
+              "min-h-7 rounded-xs px-2 font-mono text-2xs transition-colors",
+              language === candidate
+                ? "bg-primary text-primary-foreground"
+                : "text-muted-foreground hover:text-foreground",
+            )}
+          >
+            {candidate === "zh-CN" ? "中" : "EN"}
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function InspectorModeTabs({
+  active,
+  copy,
+  hasSelection,
+  onChange,
+}: {
+  active: InspectorMode
+  copy: typeof INSPECTOR_COPY[WorkflowLanguage]
+  hasSelection: boolean
+  onChange: (mode: InspectorMode) => void
+}) {
+  return (
+    <div className="grid grid-cols-4 overflow-hidden rounded-[3px] border border-[#20242a] bg-[#171a1f] font-mono text-[10px] uppercase">
+      {(["outline", "config", "run", "trace"] as const).map((mode) => {
+        const disabled = mode !== "outline" && !hasSelection
+        return (
+          <button
+            key={mode}
+            type="button"
+            disabled={disabled}
+            onClick={() => onChange(mode)}
+            className={cn(
+              "border-r border-[#2b3037] px-2 py-2 transition-colors last:border-r-0",
+              active === mode
+                ? "bg-[#050607] text-foreground"
+                : "text-muted-foreground hover:bg-[#252a31] hover:text-foreground",
+              disabled && "cursor-not-allowed opacity-35",
+            )}
+          >
+            {copy.tabs[mode]}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
+function WorkflowOutlinePanel({
+  compact,
+  edges,
+  language,
+  nodes,
+  onClose,
+  onLanguageChange,
+  onModeChange,
+  onOpenNode,
+  onSelectNode,
+  selectedNodeId,
+  title,
+}: {
+  compact: boolean
+  edges: WorkflowEdge[]
+  language: WorkflowLanguage
+  nodes: WorkflowNode[]
+  onClose: () => void
+  onLanguageChange: (language: WorkflowLanguage) => void
+  onModeChange: (mode: InspectorMode) => void
+  onOpenNode: (nodeId: string) => void
+  onSelectNode: (nodeId: string) => void
+  selectedNodeId?: string
+  title: string
+}) {
+  const copy = INSPECTOR_COPY[language]
+  const nodeById = new Map(nodes.map((node) => [node.id, node]))
+  const rows = buildWorkflowOutlineRows(nodes, edges)
+  const connectedRows = rows.filter((row) => !row.disconnected)
+  const disconnectedRows = rows.filter((row) => row.disconnected)
+  const renderRows = (sectionRows: typeof rows) => (
+    <div role="tree" className="overflow-hidden rounded-[3px] border border-[#20242a] bg-[#101216]/84">
+      {sectionRows.map((row) => {
+        const node = nodeById.get(row.nodeId)
+        if (!node) return null
+        const localized = localizeNodeText(
+          getNodeDisplayId(node.data),
+          { label: node.data.label, description: node.data.description },
+          language,
+        )
+        return (
+          <button
+            key={node.id}
+            type="button"
+            role="treeitem"
+            aria-level={row.depth + 1}
+            aria-selected={selectedNodeId === node.id}
+            onClick={() => onSelectNode(node.id)}
+            onDoubleClick={() => onOpenNode(node.id)}
+            onKeyDown={(event) => {
+              if (event.key !== "Enter") return
+              event.preventDefault()
+              onOpenNode(node.id)
+            }}
+            style={{ paddingLeft: 12 + row.depth * 16 }}
+            className={cn(
+              "flex w-full items-center gap-2 border-b border-[#20242a] py-2 pr-3 text-left transition-colors last:border-b-0 hover:bg-[#1b1f25]",
+              selectedNodeId === node.id && "bg-[#20252c] text-foreground",
+            )}
+          >
+            <span
+              className={cn(
+                "size-1.5 shrink-0 rounded-full",
+                node.data.status === "error" ? "bg-destructive" : "bg-[#4ade80]",
+              )}
+            />
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-[11px] font-medium text-foreground">{localized.label}</span>
+              <span className="block truncate font-mono text-[9px] text-muted-foreground">
+                {row.branchLabel ? `${row.branchLabel} · ` : ""}{node.data.nodeType}
+              </span>
+            </span>
+          </button>
+        )
+      })}
+    </div>
+  )
+
+  return (
+    <PanelShell compact={compact} title={title} typeLine="WORKFLOW::OUTLINE · V1.0" onClose={onClose}>
+      <div className="space-y-4 p-4">
+        <InspectorLanguageToggle language={language} onChange={onLanguageChange} />
+        <InspectorModeTabs
+          active="outline"
+          copy={copy}
+          hasSelection={Boolean(selectedNodeId)}
+          onChange={onModeChange}
+        />
+        <div className="rounded-[3px] border border-[#20242a] bg-[#101216]/84 p-3">
+          <p className="text-[11px] leading-relaxed text-muted-foreground">{copy.outlineHelp}</p>
+          <p className="mt-2 font-mono text-[9px] uppercase tracking-[0.14em] text-muted-foreground/70">
+            {nodes.length} {copy.nodes} · {edges.length} {copy.connections}
+          </p>
+        </div>
+        {nodes.length === 0 ? (
+          <p className="rounded-[3px] border border-dashed border-[#2a3038] p-4 text-[11px] text-muted-foreground">
+            {copy.noNodes}
+          </p>
+        ) : null}
+        {connectedRows.length > 0 ? (
+          <section className="space-y-2">
+            <div className="flex items-center gap-2">
+              <GitBranch className="size-3 text-muted-foreground" />
+              <SectionCaption>{copy.connectedFlow}</SectionCaption>
+            </div>
+            {renderRows(connectedRows)}
+          </section>
+        ) : null}
+        {disconnectedRows.length > 0 ? (
+          <section className="space-y-2">
+            <div className="flex items-center gap-2">
+              <Unplug className="size-3 text-[#f59e0b]" />
+              <SectionCaption>{copy.needsAttention}</SectionCaption>
+            </div>
+            {renderRows(disconnectedRows)}
+          </section>
+        ) : null}
+      </div>
+    </PanelShell>
+  )
+}
 
 type ProjectNodeWithIdentity = {
   params: Record<string, unknown>
@@ -135,7 +508,24 @@ function nodeParameterDisplayValue(value: unknown): string | undefined {
   return undefined
 }
 
-export function Inspector() {
+const UNBOUND_INPUT_VALUE = "__opencli_unbound__"
+
+function inputBindingValue(nodeId: string, portId: string | null): string {
+  return JSON.stringify([nodeId, portId])
+}
+
+function parseInputBindingValue(value: string): { nodeId: string; portId: string | null } | undefined {
+  try {
+    const parsed: unknown = JSON.parse(value)
+    if (!Array.isArray(parsed) || typeof parsed[0] !== "string") return undefined
+    if (parsed[1] !== null && typeof parsed[1] !== "string") return undefined
+    return { nodeId: parsed[0], portId: parsed[1] }
+  } catch {
+    return undefined
+  }
+}
+
+export function Inspector({ compact = false, onClose }: { compact?: boolean; onClose: () => void }) {
   const nodes = useFlowStore((s) => s.nodes)
   const edges = useFlowStore((s) => s.edges)
   const workflowProject = useFlowStore((s) => s.workflowProject)
@@ -146,19 +536,53 @@ export function Inspector() {
   const toggleEdgeAnimated = useFlowStore((s) => s.toggleEdgeAnimated)
   const updateWorkflowNodeParams = useFlowStore((s) => s.updateWorkflowNodeParams)
   const updateParameterInterfaceField = useFlowStore((s) => s.updateParameterInterfaceField)
+  const connectNodes = useFlowStore((s) => s.connectNodes)
+  const onReconnect = useFlowStore((s) => s.onReconnect)
+  const removeEdgesByIds = useFlowStore((s) => s.removeEdgesByIds)
   const takeSnapshot = useFlowStore((s) => s.takeSnapshot)
   const setNodes = useFlowStore((s) => s.setNodes)
   const onEdgesChange = useFlowStore((s) => s.onEdgesChange)
-  const [nodeTab, setNodeTab] = useState<"config" | "prompt" | "run" | "trace">("config")
+  const [nodeTab, setNodeTab] = useState<InspectorMode>("outline")
   const [parameterGroupTab, setParameterGroupTab] = useState("")
   const [jsonDrafts, setJsonDrafts] = useState<Record<string, string>>({})
   const [jsonErrors, setJsonErrors] = useState<Record<string, string>>({})
+  const [pinnedNodeId, setPinnedNodeId] = useState<string>()
+  const language = useSettingsStore((state) => state.language)
+  const setLanguage = useSettingsStore((state) => state.set)
+  const copy = INSPECTOR_COPY[language]
+  const { getInternalNode, setCenter } = useReactFlow<WorkflowNode, WorkflowEdge>()
 
-  const selected = nodes.filter((n) => n.selected)
+  const canvasSelected = nodes.filter((n) => n.selected)
+  const pinnedNode = pinnedNodeId ? nodes.find((node) => node.id === pinnedNodeId) : undefined
+  const selected = pinnedNode ? [pinnedNode] : canvasSelected
   const selectedEdges = edges.filter((e) => e.selected)
-  const deselectAll = () => {
-    setNodes((ns) => ns.map((n) => (n.selected ? { ...n, selected: false } : n)))
-    onEdgesChange(edges.filter((e) => e.selected).map((e) => ({ id: e.id, type: "select" as const, selected: false })))
+  const selectedNodeId = selected.length === 1 ? selected[0].id : undefined
+
+  useEffect(() => {
+    if (pinnedNodeId && !pinnedNode) setPinnedNodeId(undefined)
+  }, [pinnedNode, pinnedNodeId])
+
+  const locateOutlineNode = (nodeId: string) => {
+    const outlineNode = nodes.find((candidate) => candidate.id === nodeId)
+    if (!outlineNode) return
+    const internalNode = getInternalNode(nodeId)
+    const position = internalNode?.internals.positionAbsolute ?? outlineNode.position
+    const width = internalNode?.measured.width ?? outlineNode.measured?.width ?? 0
+    const height = internalNode?.measured.height ?? outlineNode.measured?.height ?? 0
+    void setCenter(position.x + width / 2, position.y + height / 2, { zoom: 1, duration: 300 })
+  }
+  const selectOutlineNode = (nodeId: string) => {
+    if (pinnedNodeId) setPinnedNodeId(nodeId)
+    setNodes((current) => current.map((candidate) => ({
+      ...candidate,
+      selected: candidate.id === nodeId,
+    })))
+    onEdgesChange(
+      edges
+        .filter((edge) => edge.selected)
+        .map((edge) => ({ id: edge.id, type: "select" as const, selected: false })),
+    )
+    locateOutlineNode(nodeId)
   }
 
   /* ---- edge parameter interface ---- */
@@ -173,43 +597,30 @@ export function Inspector() {
       conflicts: [],
     }
     const updateMapping = (patch: Partial<GeneratedWorkflowEdgeMapping>) => {
-      const nextFields = patch.fields ?? mapping.fields
-      const structuralConflicts = nextFields.flatMap((field, index) => {
-        if (!field.source.trim() || !field.target.trim()) {
-          return [`映射 ${index + 1} 必须同时填写来源与目标字段。`]
-        }
-        return []
-      })
       updateEdgeData(edge.id, {
         mapping: {
           ...mapping,
           ...patch,
-          ...(patch.fields
-            ? {
-                compatible: structuralConflicts.length === 0,
-                conflicts: structuralConflicts,
-              }
-            : {}),
           preserveRaw: true,
         },
       })
     }
-    const updateMappingField = (
+    const updateMappingTransform = (
       index: number,
-      patch: Partial<GeneratedWorkflowEdgeMapping["fields"][number]>,
+      transform: string | undefined,
     ) => {
       updateMapping({
-        mode: "override",
         fields: mapping.fields.map((field, fieldIndex) =>
-          fieldIndex === index ? { ...field, ...patch } : field,
+          fieldIndex === index ? { ...field, transform } : field,
         ),
       })
     }
     return (
       <PanelShell
+        compact={compact}
         title="Connection"
         typeLine={`EDGE::${edgeType.toUpperCase()}`}
-        onClose={deselectAll}
+        onClose={onClose}
       >
         <div className="space-y-4 p-4">
           <div className="space-y-1.5">
@@ -228,83 +639,58 @@ export function Inspector() {
           <div className="space-y-3 rounded-md border bg-card p-3">
             <div className="flex items-start justify-between gap-3">
               <div>
-                <SectionCaption>Field Mapping</SectionCaption>
+                <SectionCaption>{copy.fieldMapping}</SectionCaption>
                 <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
-                  自动映射可改为人工覆盖；原始结构始终保留在 data.raw。
+                  {copy.fieldMappingGap}
                 </p>
               </div>
-              <Select
-                value={mapping.mode}
-                onValueChange={(value) =>
-                  value && updateMapping({ mode: value as GeneratedWorkflowEdgeMapping["mode"] })
-                }
-              >
-                <SelectTrigger className="w-24">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="auto">自动</SelectItem>
-                  <SelectItem value="override">覆盖</SelectItem>
-                </SelectContent>
-              </Select>
+              <span className="shrink-0 rounded-xs border border-ops-line bg-ops-raised px-2 py-1 font-mono text-3xs uppercase text-zinc-400">
+                {mapping.mode}
+              </span>
             </div>
 
             {mapping.fields.map((field, index) => (
               <div key={index} className="space-y-2 rounded-md border bg-background p-2">
-                <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2">
-                  <Input
-                    aria-label={`映射 ${index + 1} 来源字段`}
-                    value={field.source}
-                    onFocus={takeSnapshot}
-                    onChange={(event) => updateMappingField(index, { source: event.target.value })}
-                    placeholder="data.source"
-                  />
+                <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2 font-mono text-2xs">
+                  <span className="truncate rounded-xs border border-ops-line bg-ops-raised px-2 py-1.5 text-zinc-300" title={field.source}>
+                    {field.source}
+                  </span>
                   <span className="font-mono text-xs text-muted-foreground">→</span>
-                  <Input
-                    aria-label={`映射 ${index + 1} 目标字段`}
-                    value={field.target}
-                    onFocus={takeSnapshot}
-                    onChange={(event) => updateMappingField(index, { target: event.target.value })}
-                    placeholder="data.target"
-                  />
+                  <span className="truncate rounded-xs border border-ops-line bg-ops-raised px-2 py-1.5 text-zinc-300" title={field.target}>
+                    {field.target}
+                  </span>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="space-y-1">
+                  <Label htmlFor={`edge-transform-${index}`} className="font-mono text-3xs uppercase tracking-wider text-zinc-500">
+                    {copy.transform}
+                  </Label>
                   <Input
+                    id={`edge-transform-${index}`}
                     aria-label={`映射 ${index + 1} 转换`}
                     value={field.transform ?? ""}
                     onFocus={takeSnapshot}
-                    onChange={(event) => updateMappingField(index, { transform: event.target.value || undefined })}
-                    placeholder="可选转换表达式"
+                    onChange={(event) => updateMappingTransform(index, event.target.value || undefined)}
+                    placeholder={language === "zh-CN" ? "可选转换表达式" : "Optional transform expression"}
+                    className={houdiniInputClass}
                   />
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => updateMapping({ mode: "override", fields: mapping.fields.filter((_, fieldIndex) => fieldIndex !== index) })}
-                  >
-                    移除
-                  </Button>
                 </div>
               </div>
             ))}
 
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              className="w-full"
-              onClick={() => updateMapping({
-                mode: "override",
-                fields: [...mapping.fields, { source: "data.", target: "data." }],
-              })}
-            >
-              添加字段映射
-            </Button>
+            {mapping.fields.length === 0 ? (
+              <p className="rounded-xs border border-dashed border-ops-line p-3 text-2xs leading-relaxed text-zinc-500">
+                {copy.fieldMappingGap}
+              </p>
+            ) : (
+              <p className="font-mono text-3xs uppercase tracking-wider text-zinc-500">
+                {copy.legacyMapping} · {mapping.fields.length}
+              </p>
+            )}
 
             <div className="flex items-center justify-between gap-2 font-mono text-[10px]">
-              <span className="text-muted-foreground">兼容性</span>
+              <span className="text-muted-foreground">{copy.compatibility}</span>
               <span className={mapping.compatible ? "text-success" : "text-destructive"}>
-                {mapping.compatible ? "可编译" : "阻止发布 / 运行"}
+                {mapping.compatible ? copy.compilable : copy.blocked}
               </span>
             </div>
             {mapping.conflicts.map((conflict) => (
@@ -360,8 +746,26 @@ export function Inspector() {
     )
   }
 
-  /* ---- nothing (or multiple) selected: stay out of the way ---- */
-  if (selected.length !== 1) return null
+  if (selected.length !== 1 || nodeTab === "outline") {
+    return (
+      <WorkflowOutlinePanel
+        compact={compact}
+        edges={edges}
+        language={language}
+        nodes={nodes}
+        onClose={onClose}
+        onLanguageChange={(nextLanguage) => setLanguage("language", nextLanguage)}
+        onModeChange={setNodeTab}
+        onOpenNode={(nodeId) => {
+          selectOutlineNode(nodeId)
+          setNodeTab("config")
+        }}
+        onSelectNode={selectOutlineNode}
+        selectedNodeId={selectedNodeId}
+        title={workflowProject.name}
+      />
+    )
+  }
 
   /* ---- node parameter interface ---- */
   const node = selected[0]
@@ -382,11 +786,19 @@ export function Inspector() {
   const nodeTemplate = getNodeTemplate(configurationNode)
   const nodeViewContract = buildCanonicalNodeViewContract(projectNode, data, node.id)
   const isBusinessLevel = networkStackLength === 0
+  const localizedNodeText = projectNode?.ui?.preferCustomLabel === true
+    ? { label: data.label, description: data.description }
+    : localizeNodeText(
+        getNodeDisplayId(data),
+        { label: data.label, description: data.description },
+        language,
+      )
   const businessLabel = businessNodeName({
-    label: data.label,
+    label: localizedNodeText.label,
     kind: nodeViewContract.identity.kind as WorkflowNodeKind,
     capability: nodeViewContract.identity.capability as WorkflowCapability,
     params: configurationNode?.params ?? canonical?.params,
+    language,
   })
   const parameterInterfaceView = buildParameterInterfaceView({
     node: configurationNode,
@@ -395,6 +807,7 @@ export function Inspector() {
     allowedParamIds: implementationNode
       ? undefined
       : nodeViewContract.params.map((param) => param.id),
+    runtimeCapability: data.runtimeCapability,
   })
   const nodeInternals = nodeViewContract.internals
   const nodeContract = nodeViewContract.staticContract
@@ -427,10 +840,10 @@ export function Inspector() {
   const updateParameterField = (field: ParameterInterfaceViewField, value: unknown) => {
     if (field.readonly) return
     if (field.binding.source === "params" && field.binding.fieldId === "operatorId") {
-      const configField = parameterInterfaceView?.fields.find(
-        (candidate) => candidate.binding.source === "params" && candidate.binding.fieldId === "config",
-      )
-      if (configField) {
+      const configFields = parameterInterfaceView?.fields.filter(
+        (candidate) => candidate.binding.source === "params" && candidate.binding.fieldId.startsWith("config."),
+      ) ?? []
+      for (const configField of configFields) {
         setJsonDrafts((drafts) => clearParameterDraftEntry(drafts, configurationNodeId, configField.id))
         setJsonErrors((errors) => clearParameterDraftEntry(errors, configurationNodeId, configField.id))
       }
@@ -457,14 +870,19 @@ export function Inspector() {
   const renderParameterField = (field: ParameterInterfaceViewField) => {
     const raw = field.value
     const fieldId = `parameter-${field.id}`
+    const fieldText = localizeNodeParameterText(
+      field.binding.fieldId,
+      { label: field.label, description: field.description },
+      language,
+    )
     const label = (
       <div className="min-w-0 pt-1 text-right">
         <Label
           htmlFor={fieldId}
-          title={field.description}
+          title={fieldText.description}
           className="block truncate font-mono text-[10px] uppercase tracking-[0.04em] text-muted-foreground"
         >
-          {field.label}
+          {fieldText.label}
         </Label>
       </div>
     )
@@ -670,7 +1088,7 @@ export function Inspector() {
             readOnly={field.readonly}
             onChange={(e) => updateParameterField(field, Number(e.target.value))}
             className={cn(houdiniInputClass, "h-7 w-[4.25rem] px-1.5 text-right")}
-            aria-label={`${field.label} numeric value`}
+            aria-label={`${fieldText.label} numeric value`}
           />
         </div>,
         "items-center",
@@ -724,80 +1142,91 @@ export function Inspector() {
     type: port.type,
     description: port.description,
   }))
+  const inputPorts = ports.filter((port) => port.dir === "input")
+  const incomingEdgesForPort = (portName: string) => edges.filter((edge) =>
+    edge.target === node.id &&
+    (
+      edge.targetHandle === portName ||
+      (edge.targetHandle == null && inputPorts.length === 1)
+    ),
+  )
+  const inputOptions = (targetPort: (typeof inputPorts)[number], currentEdge?: WorkflowEdge) =>
+    nodes.flatMap((candidate) => {
+      if (candidate.id === node.id) return []
+      const candidateProjectNode = hydrateProjectNodeIdentity(
+        findWorkflowProjectNodeByCanvasId(workflowProject, candidate.id),
+        candidate.data,
+      )
+      const candidateContract = buildCanonicalNodeViewContract(
+        candidateProjectNode,
+        candidate.data,
+        candidate.id,
+      )
+      const graphWithoutCurrent = currentEdge
+        ? edges.filter((edge) => edge.id !== currentEdge.id)
+        : edges
+      if (wouldCreateCycle(graphWithoutCurrent, candidate.id, node.id)) return []
+      const localized = localizeNodeText(
+        getNodeDisplayId(candidate.data),
+        { label: candidate.data.label, description: candidate.data.description },
+        language,
+      )
+      return candidateContract.ports
+        .filter((port) =>
+          port.direction === "output" &&
+          portTypesCompatible(port.type, targetPort.type),
+        )
+        .map((port) => ({
+          value: inputBindingValue(candidate.id, port.id),
+          label: `${localized.label} · ${port.id} (${port.type})`,
+          nodeId: candidate.id,
+          portId: port.id,
+        }))
+    })
   const parameterGroups = parameterInterfaceView?.groups ?? []
   const activeParameterGroupId = parameterGroups.some((group) => group.id === parameterGroupTab)
     ? parameterGroupTab
     : parameterGroups[0]?.id
   const activeParameterFields = parameterInterfaceView?.fields.filter((field) => field.groupId === activeParameterGroupId) ?? []
   const blockedAction = blockedActionViewForRuntime(data)
+  const locateNode = () => {
+    const internalNode = getInternalNode(node.id)
+    const position = internalNode?.internals.positionAbsolute ?? node.position
+    const width = internalNode?.measured.width ?? node.measured?.width ?? 0
+    const height = internalNode?.measured.height ?? node.measured?.height ?? 0
+    void setCenter(position.x + width / 2, position.y + height / 2, { zoom: 1, duration: 300 })
+  }
   const openCLISources = isOpenCLISourceSlotArray(configurationNode?.params.sources)
     ? configurationNode.params.sources
     : undefined
   return (
     <PanelShell
+      compact={compact}
       title={isBusinessLevel ? businessLabel : data.label}
       typeLine={`${nodeViewContract.identity.kind}::${nodeViewContract.identity.capability}`.toUpperCase() + " · V1.0"}
       status={data.status}
-      onClose={deselectAll}
+      onClose={onClose}
+      onLocate={locateNode}
+      pinned={pinnedNodeId === node.id}
+      onTogglePin={() => setPinnedNodeId((current) => current === node.id ? undefined : node.id)}
     >
       <div className="space-y-4 p-4">
-        <div className="grid grid-cols-4 overflow-hidden rounded-[3px] border border-[#20242a] bg-[#171a1f] font-mono text-[10px] uppercase">
-          {(["config", "prompt", "run", "trace"] as const).map((tab) => (
-            <button
-              key={tab}
-              type="button"
-              onClick={() => {
-                if (tab === "prompt" && !promptCapable) return
-                setNodeTab(tab)
-              }}
-              className={cn(
-                "border-r border-[#2b3037] px-2 py-2 transition-colors last:border-r-0",
-                nodeTab === tab ? "bg-[#050607] text-foreground" : "text-muted-foreground hover:bg-[#252a31] hover:text-foreground",
-                tab === "prompt" && !promptCapable && "opacity-40",
-              )}
-            >
-              {tab === "config" ? "配置" : tab === "prompt" ? "提示词" : tab === "run" ? "运行结果" : "执行过程"}
-            </button>
-          ))}
-        </div>
+        <InspectorLanguageToggle
+          language={language}
+          onChange={(nextLanguage) => setLanguage("language", nextLanguage)}
+        />
+        <InspectorModeTabs
+          active={nodeTab}
+          copy={copy}
+          hasSelection
+          onChange={setNodeTab}
+        />
 
-        {nodeTab === "prompt" ? (
+        {nodeTab === "run" ? (
           <div className="space-y-3">
-            <SectionCaption>节点提示词配置</SectionCaption>
+            <SectionCaption>{copy.runResult}</SectionCaption>
             <div className="rounded-md border bg-card p-3 text-[11px] leading-relaxed text-muted-foreground">
-              这里只显示节点已保存的提示词配置和测试用例，不会注入演示文本。通过 AI 编辑生成的是待审阅提案，确认应用后才会更新工作流。
-            </div>
-            {promptConfiguration.map(({ key, value }) => <MonoRow key={key} k={key} v={value} />)}
-            {configuredPrompt ? (
-              <div className="space-y-1.5">
-                <Label className="font-mono text-[10px] uppercase tracking-wider">已配置提示词</Label>
-                <Textarea readOnly rows={4} className="font-mono text-xs" value={configuredPrompt} />
-              </div>
-            ) : null}
-            {testInput || expectedOutput ? <Separator /> : null}
-            {testInput ? (
-              <div className="space-y-1.5">
-                <Label className="font-mono text-[10px] uppercase tracking-wider">测试输入</Label>
-                <Textarea readOnly rows={3} className="font-mono text-xs" value={testInput} />
-              </div>
-            ) : null}
-            {expectedOutput ? (
-              <div className="space-y-1.5">
-                <Label className="font-mono text-[10px] uppercase tracking-wider">期望输出</Label>
-                <Textarea readOnly rows={4} className="font-mono text-xs" value={expectedOutput} />
-              </div>
-            ) : null}
-            {!configuredPrompt && !testInput && !expectedOutput ? (
-              <div className="rounded-md border border-dashed bg-card p-3 text-[11px] leading-relaxed text-muted-foreground">
-                当前节点未配置提示词测试用例。真实运行输入和输出只在执行时产生，请在“运行结果”或 Run Trace 中查看。
-              </div>
-            ) : null}
-          </div>
-        ) : nodeTab === "run" ? (
-          <div className="space-y-3">
-            <SectionCaption>Run Result</SectionCaption>
-            <div className="rounded-md border bg-card p-3 text-[11px] leading-relaxed text-muted-foreground">
-              Explicit run results live in Run Trace. This node is ready for deterministic simulation.
+              {copy.runHelp}
             </div>
             <MonoRow k="node" v={node.id} />
             {canonical?.capability ? <MonoRow k="capability" v={canonical.capability} /> : null}
@@ -807,9 +1236,9 @@ export function Inspector() {
           </div>
         ) : nodeTab === "trace" ? (
           <div className="space-y-3">
-            <SectionCaption>Trace</SectionCaption>
+            <SectionCaption>{copy.trace}</SectionCaption>
             <div className="rounded-md border bg-card p-3 text-[11px] leading-relaxed text-muted-foreground">
-              Open Run Trace, press Run, then inspect ordered node events by id.
+              {copy.traceHelp}
             </div>
             <MonoRow k="profile" v={workflowProject.profile} />
             {canonical?.kind ? <MonoRow k="kind" v={canonical.kind} /> : null}
@@ -821,27 +1250,30 @@ export function Inspector() {
           <>
         <section className="space-y-3 rounded-[3px] border border-[#20242a] bg-[#101216]/84 p-3">
           <div>
-            <SectionCaption>业务配置</SectionCaption>
+            <SectionCaption>{copy.businessConfig}</SectionCaption>
             <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
-              名称和说明会直接显示在画布节点上。
+              {copy.businessHelp}
+            </p>
+            <p className="mt-1 font-mono text-3xs text-muted-foreground">
+              {copy.systemNode}: {localizedNodeText.label}
             </p>
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="node-label" className="font-mono text-[10px] uppercase tracking-wider">
-              节点名称
+              {copy.nodeName}
             </Label>
             <Input
               id="node-label"
-              value={isBusinessLevel ? businessLabel : data.label}
+              value={data.label}
               onFocus={takeSnapshot}
               onChange={(event) => update({ label: event.target.value })}
-              placeholder="例如：采集 A 股市场数据"
+              placeholder={copy.nodeNamePlaceholder}
               className={houdiniInputClass}
             />
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="node-desc" className="font-mono text-[10px] uppercase tracking-wider">
-              节点说明
+              {copy.nodeDescription}
             </Label>
             <Textarea
               id="node-desc"
@@ -849,18 +1281,57 @@ export function Inspector() {
               value={data.description ?? ""}
               onFocus={takeSnapshot}
               onChange={(event) => update({ description: event.target.value })}
-              placeholder="说明这个节点为业务流程完成什么"
+              placeholder={copy.nodeDescriptionPlaceholder}
               className={houdiniTextareaClass}
             />
           </div>
         </section>
+
+        {promptCapable ? (
+          <details className={houdiniDetailsClass}>
+            <summary className={houdiniSummaryClass}>
+              <span>{copy.promptSection}</span>
+              <span className="truncate text-[10px] normal-case tracking-normal">
+                {promptConfiguration.find((item) => item.key === "model")?.value ?? copy.systemNode}
+              </span>
+            </summary>
+            <div className="space-y-3 border-t p-3">
+              <p className="text-[11px] leading-relaxed text-muted-foreground">{copy.promptHelp}</p>
+              {promptConfiguration.map(({ key, value }) => <MonoRow key={key} k={key} v={value} />)}
+              {configuredPrompt ? (
+                <div className="space-y-1.5">
+                  <Label className="font-mono text-[10px] uppercase tracking-wider">{copy.configuredPrompt}</Label>
+                  <Textarea readOnly rows={4} className="font-mono text-xs" value={configuredPrompt} />
+                </div>
+              ) : null}
+              {testInput || expectedOutput ? <Separator /> : null}
+              {testInput ? (
+                <div className="space-y-1.5">
+                  <Label className="font-mono text-[10px] uppercase tracking-wider">{copy.testInput}</Label>
+                  <Textarea readOnly rows={3} className="font-mono text-xs" value={testInput} />
+                </div>
+              ) : null}
+              {expectedOutput ? (
+                <div className="space-y-1.5">
+                  <Label className="font-mono text-[10px] uppercase tracking-wider">{copy.expectedOutput}</Label>
+                  <Textarea readOnly rows={4} className="font-mono text-xs" value={expectedOutput} />
+                </div>
+              ) : null}
+              {!configuredPrompt && !testInput && !expectedOutput ? (
+                <p className="rounded-md border border-dashed bg-card p-3 text-[11px] leading-relaxed text-muted-foreground">
+                  {copy.noPrompt}
+                </p>
+              ) : null}
+            </div>
+          </details>
+        ) : null}
 
         {blockedAction ? (
           <div className="overflow-hidden rounded-[3px] border border-[#7f1d1d]/60 bg-[#180b0b]/70">
             <div className="flex items-center justify-between gap-3 border-b border-[#7f1d1d]/50 bg-[#2a1010]/72 px-3 py-2">
               <div className="flex min-w-0 items-center gap-2">
                 <AlertTriangle className="size-3.5 shrink-0 text-[#f87171]" />
-                <SectionCaption>Blocked Action</SectionCaption>
+                <SectionCaption>{copy.blockedAction}</SectionCaption>
               </div>
               <Link
                 href={blockedAction.href}
@@ -891,9 +1362,103 @@ export function Inspector() {
         {openCLISources ? (
           <OpenCLISourceEditor
             sources={openCLISources}
+            language={language}
             onChange={(sources) => updateWorkflowNodeParams(configurationNodeId, { sources })}
           />
         ) : null}
+
+        <details className={houdiniDetailsClass} open>
+          <summary className={houdiniSummaryClass}>
+            <span>{copy.inputs}</span>
+            <span className="text-3xs normal-case tracking-normal">{inputPorts.length} IN</span>
+          </summary>
+          <div className="space-y-3 border-t border-ops-line p-3">
+            <p className="text-2xs leading-relaxed text-zinc-500">{copy.inputsHelp}</p>
+            {inputPorts.map((port) => {
+              const currentEdges = incomingEdgesForPort(port.name)
+              const currentEdge = currentEdges[0]
+              const options = inputOptions(port, currentEdge)
+              const currentOption = currentEdge
+                ? options.find((option) =>
+                    option.nodeId === currentEdge.source &&
+                    (
+                      option.portId === currentEdge.sourceHandle ||
+                      currentEdge.sourceHandle == null
+                    ),
+                  )
+                : undefined
+              const legacyValue = currentEdge ? `__opencli_legacy__${currentEdge.id}` : undefined
+              const currentValue = currentOption?.value ?? legacyValue ?? UNBOUND_INPUT_VALUE
+              return (
+                <div key={port.name} className="space-y-1.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <Label className="truncate font-mono text-2xs text-zinc-200">{port.name}</Label>
+                    <span className="shrink-0 font-mono text-3xs uppercase text-zinc-500">{port.type}</span>
+                  </div>
+                  <Select
+                    value={currentValue}
+                    onValueChange={(value) => {
+                      if (!value) return
+                      if (value === UNBOUND_INPUT_VALUE) {
+                        if (currentEdges.length > 0) removeEdgesByIds(currentEdges.map((edge) => edge.id))
+                        return
+                      }
+                      const binding = parseInputBindingValue(value)
+                      if (!binding) return
+                      const connection = {
+                        source: binding.nodeId,
+                        sourceHandle: binding.portId,
+                        target: node.id,
+                        targetHandle: port.name,
+                      }
+                      if (
+                        currentEdge &&
+                        currentEdge.source === connection.source &&
+                        currentEdge.sourceHandle === connection.sourceHandle &&
+                        currentEdge.targetHandle === connection.targetHandle
+                      ) return
+                      if (currentEdge) onReconnect(currentEdge, connection)
+                      else connectNodes(connection)
+                    }}
+                  >
+                    <SelectTrigger
+                      aria-label={`${copy.inputs}: ${port.name}`}
+                      className={houdiniSelectTriggerClass}
+                    >
+                      <SelectValue placeholder={copy.inputUnbound} />
+                    </SelectTrigger>
+                    <SelectContent className="rounded-xs border border-ops-line bg-ops-raised font-mono text-2xs">
+                      <SelectItem value={UNBOUND_INPUT_VALUE}>{copy.inputUnbound}</SelectItem>
+                      {currentEdge && !currentOption && legacyValue ? (
+                        <SelectItem value={legacyValue} disabled>
+                          {copy.legacyMapping} · {currentEdge.source}:{currentEdge.sourceHandle ?? "default"}
+                        </SelectItem>
+                      ) : null}
+                      {options.map((option) => (
+                        <SelectItem key={option.value} value={option.value}>
+                          {option.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  {options.length === 0 ? (
+                    <p className="text-3xs text-zinc-500">{copy.noCompatibleOutputs}</p>
+                  ) : null}
+                  {currentEdge && !currentOption ? (
+                    <p className="text-3xs leading-relaxed text-signal-warning">
+                      {language === "zh-CN"
+                        ? `当前旧连接 ${currentEdge.source}:${currentEdge.sourceHandle ?? "default"} 未被输入契约识别。`
+                        : `The legacy connection ${currentEdge.source}:${currentEdge.sourceHandle ?? "default"} is not recognized by the input contract.`}
+                    </p>
+                  ) : null}
+                </div>
+              )
+            })}
+            {inputPorts.length === 0 ? (
+              <p className="text-2xs leading-relaxed text-signal-danger">{copy.noContract}</p>
+            ) : null}
+          </div>
+        </details>
 
         {parameterInterfaceView ? (
           <div className="overflow-hidden rounded-[3px] border border-[#20242a] bg-[#101216]/84">
@@ -910,13 +1475,13 @@ export function Inspector() {
                       : "text-muted-foreground hover:bg-[#252a31] hover:text-foreground",
                   )}
                 >
-                  {group.label}
+                  {PARAMETER_GROUP_TEXT[group.label]?.[language] ?? group.label}
                 </button>
               ))}
             </div>
             <div className="px-2 py-1">{activeParameterFields.map((field) => renderParameterField(field))}</div>
             {activeParameterFields.length === 0 ? (
-              <p className="px-3 py-4 text-[11px] text-muted-foreground">No public parameters in this group.</p>
+              <p className="px-3 py-4 text-[11px] text-muted-foreground">{copy.noPublicParameters}</p>
             ) : null}
           </div>
         ) : null}
@@ -924,7 +1489,7 @@ export function Inspector() {
         {nodeContract || data.runtimeContract ? (
           <details className={houdiniDetailsClass}>
             <summary className={houdiniSummaryClass}>
-              <span>Contract</span>
+              <span>{copy.contract}</span>
               <span className="truncate text-[10px] normal-case tracking-normal">
                 {data.runtimeContract?.bindingId ?? nodeContract?.dataModel}
               </span>
@@ -946,7 +1511,7 @@ export function Inspector() {
                   <div key={param.id} className="flex items-center justify-between gap-2 font-mono text-[10px]">
                     <span className="truncate text-foreground">{param.id}</span>
                     <span className="shrink-0 text-muted-foreground">
-                      {param.type ?? "runtime"}{param.required ? " · required" : ""}
+                      {param.type ?? "runtime"}{param.required ? ` · ${copy.required}` : ""}
                     </span>
                   </div>
                 ))}
@@ -970,8 +1535,8 @@ export function Inspector() {
         {nodeInternals ? (
           <details className={houdiniDetailsClass}>
             <summary className={houdiniSummaryClass}>
-              <span>Internals</span>
-              <span className="text-[10px] normal-case tracking-normal">{nodeInternals.steps.length} steps</span>
+              <span>{copy.internals}</span>
+              <span className="text-[10px] normal-case tracking-normal">{nodeInternals.steps.length} {copy.steps}</span>
             </summary>
             <div className="space-y-3 border-t p-3">
               <div className="space-y-1">
@@ -1014,7 +1579,7 @@ export function Inspector() {
         {isCondition || (!nodeTemplate && data.fields && data.fields.length > 0) ? (
           <details className={houdiniDetailsClass}>
             <summary className={houdiniSummaryClass}>
-              <span>高级设置</span>
+              <span>{copy.advanced}</span>
               <span className="truncate text-[10px] normal-case tracking-normal">{data.label}</span>
             </summary>
             <div className="space-y-3 border-t p-3">
@@ -1060,7 +1625,7 @@ export function Inspector() {
         {data.nodeType !== "note" && data.nodeType !== "group" ? (
           <details className={houdiniDetailsClass}>
             <summary className={houdiniSummaryClass}>
-              <span>接口</span>
+              <span>{copy.interface}</span>
               <span className="text-[10px] normal-case tracking-normal">
                 {ports.filter((port) => port.dir === "input").length} IN · {ports.filter((port) => port.dir === "output").length} OUT
               </span>
@@ -1088,7 +1653,7 @@ export function Inspector() {
               ))}
               {ports.length === 0 ? (
                 <p className="text-[11px] leading-relaxed text-[#f87171]">
-                  No backend node I/O contract is projected for this node.
+                  {copy.noContract}
                 </p>
               ) : null}
             </div>
@@ -1097,7 +1662,7 @@ export function Inspector() {
 
         <details className={houdiniDetailsClass}>
           <summary className={houdiniSummaryClass}>
-            <span>Debug</span>
+            <span>{copy.debug}</span>
             <span className="truncate text-[10px] normal-case tracking-normal">{node.id}</span>
           </summary>
           <div className="space-y-1.5 border-t p-3">
@@ -1127,11 +1692,14 @@ function findImplementationNode(node: WorkflowProjectNode | undefined): Workflow
 
 function OpenCLISourceEditor({
   sources,
+  language,
   onChange,
 }: {
   sources: OpenCLISourceSlot[]
+  language: WorkflowLanguage
   onChange: (sources: OpenCLISourceSlot[]) => void
 }) {
+  const copy = INSPECTOR_COPY[language]
   const sourceCatalog = useSources({ enabled: true, limit: 100 })
   const registeredSources = (sourceCatalog.data?.data ?? [])
     .map(openCLISlotFromDataSource)
@@ -1158,16 +1726,16 @@ function OpenCLISourceEditor({
       <div className="space-y-3 border-b border-[#24282f] bg-[#171a1f] p-3">
         <div className="flex items-start justify-between gap-3">
           <div>
-            <SectionCaption>数据来源</SectionCaption>
+            <SectionCaption>{copy.dataSources}</SectionCaption>
             <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
-              选择系统中已经连接的数据源，执行时自动并行采集。
+              {copy.sourceHelp}
             </p>
           </div>
           <Link
             href="/sources"
             className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-[2px] border border-[#343a43] px-2 text-[10px] text-muted-foreground transition-colors hover:border-[#5f6976] hover:text-foreground"
           >
-            管理数据源
+            {copy.manageSources}
             <ExternalLink className="size-3" />
           </Link>
         </div>
@@ -1177,17 +1745,17 @@ function OpenCLISourceEditor({
               <Database className="size-3.5" />
             </span>
             <div className="min-w-0">
-              <p className="text-[11px] font-medium text-foreground">{sources.length} 个来源</p>
-              <p className="truncate text-[10px] text-muted-foreground">智能多源 · 并行执行</p>
+              <p className="text-[11px] font-medium text-foreground">{sources.length} {copy.sources}</p>
+              <p className="truncate text-[10px] text-muted-foreground">{copy.parallel}</p>
             </div>
           </div>
           <Select onValueChange={addSource} disabled={sourceCatalog.isLoading || availableSources.length === 0}>
             <SelectTrigger
-              aria-label="添加已连接的数据源"
+              aria-label={copy.addConnectedSource}
               className="h-7 w-auto min-w-28 rounded-[2px] border-[#343a43] bg-[#111317] px-2 text-[11px] shadow-none focus:ring-0"
             >
               <Plus className="size-3" />
-              <SelectValue placeholder={sourceCatalog.isLoading ? "加载中" : "添加数据源"} />
+              <SelectValue placeholder={sourceCatalog.isLoading ? copy.loading : copy.addSource} />
             </SelectTrigger>
             <SelectContent>
               {availableSources.map((source) => (
@@ -1200,15 +1768,15 @@ function OpenCLISourceEditor({
         </div>
         {sourceCatalog.isError ? (
           <p className="text-[10px] leading-relaxed text-[#fca5a5]">
-            数据源目录暂时不可用。现有配置仍可使用，连接后端后即可选择其他来源。
+            {copy.sourceUnavailable}
           </p>
         ) : !sourceCatalog.isLoading && registeredSources.length === 0 ? (
           <p className="text-[10px] leading-relaxed text-muted-foreground">
-            当前节点已有 {sources.length} 个来源；全局目录中暂无其他已连接的 OpenCLI 数据源。
+            {language === "zh-CN" ? `当前节点已有 ${sources.length} 个来源；` : `This node has ${sources.length} sources; `}{copy.noOtherSources}
           </p>
         ) : !sourceCatalog.isLoading && availableSources.length === 0 ? (
           <p className="text-[10px] leading-relaxed text-muted-foreground">
-            所有已连接的 OpenCLI 数据源都已添加到当前节点。
+            {copy.allSourcesAdded}
           </p>
         ) : null}
       </div>
@@ -1218,21 +1786,21 @@ function OpenCLISourceEditor({
           {businessQuery !== undefined ? (
             <div className="space-y-1.5">
               <Label htmlFor="source-business-query" className="text-[11px] font-medium text-foreground">
-                采集主题
+                {copy.collectionTopic}
               </Label>
               <Input
                 id="source-business-query"
                 value={businessQuery}
                 onChange={(event) => onChange(updateSourceBusinessQuery(sources, event.target.value))}
-                placeholder="例如：人工智能、贵州茅台"
+                placeholder={copy.collectionTopicPlaceholder}
                 className="h-8 rounded-[3px] border-[#303640] bg-[#080a0c] text-xs focus-visible:ring-0"
               />
-              <p className="text-[10px] text-muted-foreground">一次设置会同步到所有搜索型来源。</p>
+              <p className="text-[10px] text-muted-foreground">{copy.collectionTopicHint}</p>
             </div>
           ) : null}
           {market !== undefined ? (
             <div className="space-y-1.5">
-              <Label className="text-[11px] font-medium text-foreground">市场范围</Label>
+              <Label className="text-[11px] font-medium text-foreground">{copy.market}</Label>
               <Select value={market} onValueChange={(value) => value && onChange(updateSourceMarket(sources, value))}>
                 <SelectTrigger className="h-8 rounded-[3px] border-[#303640] bg-[#080a0c] text-xs focus:ring-0">
                   <SelectValue />
@@ -1263,12 +1831,12 @@ function OpenCLISourceEditor({
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-xs font-medium text-foreground">{source.label}</p>
                   <p className="truncate text-[10px] text-muted-foreground">
-                    {source.site} · {source.sourceGroup || "数据采集"}
+                    {source.site} · {source.sourceGroup || (language === "zh-CN" ? "数据采集" : "Data collection")}
                   </p>
                 </div>
                 <button
                   type="button"
-                  aria-label={`移除来源 ${source.label}`}
+                  aria-label={`${copy.removeSource} ${source.label}`}
                   disabled={sources.length <= 1}
                   onClick={() => onChange(sources.filter((_, sourceIndex) => sourceIndex !== index))}
                   className="inline-flex size-7 shrink-0 items-center justify-center rounded-[2px] border border-[#2c3036] text-muted-foreground transition-colors hover:border-[#7f1d1d] hover:text-[#f87171] disabled:cursor-not-allowed disabled:opacity-30"
@@ -1279,7 +1847,7 @@ function OpenCLISourceEditor({
               {businessArguments.length > 0 ? (
                 <details className="border-t border-[#20242a]">
                   <summary className="cursor-pointer list-none px-2.5 py-2 text-[10px] text-muted-foreground transition-colors hover:text-foreground">
-                    采集选项 · {businessArguments.length} 项
+                    {copy.collectionOptions} · {businessArguments.length} {copy.items}
                   </summary>
                   <div className="grid gap-2 border-t border-[#20242a] p-2.5">
                     {businessArguments.map(([key, value]) => (
@@ -1287,6 +1855,7 @@ function OpenCLISourceEditor({
                         key={key}
                         argumentKey={key}
                         value={value}
+                        language={language}
                         onChange={(nextValue) => updateSource(index, { args: { ...source.args, [key]: nextValue } })}
                       />
                     ))}
@@ -1300,32 +1869,32 @@ function OpenCLISourceEditor({
 
       <details className="border-t border-[#24282f] bg-[#111317]/74">
         <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2 font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground transition-colors hover:text-foreground">
-          <span>高级设置</span>
-          <span className="normal-case tracking-normal">OpenCLI 映射</span>
+          <span>{copy.advanced}</span>
+          <span className="normal-case tracking-normal">{copy.opencliMapping}</span>
         </summary>
         <div className="space-y-2 border-t border-[#24282f] p-2">
           {sources.map((source, index) => (
             <div key={source.id} className="space-y-2 rounded-[3px] border border-[#252a31] bg-[#090a0c]/70 p-2.5">
               <Input
-                aria-label={`来源 ${index + 1} 名称`}
+                aria-label={`${language === "zh-CN" ? "来源" : "Source"} ${index + 1} ${copy.sourceName}`}
                 value={source.label}
                 onChange={(event) => updateSource(index, { label: event.target.value })}
                 className={houdiniInputClass}
               />
               <div className="grid grid-cols-2 gap-2">
                 <div className="space-y-1">
-                  <Label className="font-mono text-[9px] uppercase tracking-wider text-muted-foreground">站点</Label>
+                  <Label className="font-mono text-[9px] uppercase tracking-wider text-muted-foreground">{copy.site}</Label>
                   <Input
-                    aria-label={`来源 ${index + 1} 站点`}
+                    aria-label={`${language === "zh-CN" ? "来源" : "Source"} ${index + 1} ${copy.site}`}
                     value={source.site}
                     onChange={(event) => updateSource(index, { site: event.target.value })}
                     className={houdiniInputClass}
                   />
                 </div>
                 <div className="space-y-1">
-                  <Label className="font-mono text-[9px] uppercase tracking-wider text-muted-foreground">命令</Label>
+                  <Label className="font-mono text-[9px] uppercase tracking-wider text-muted-foreground">{copy.command}</Label>
                   <Input
-                    aria-label={`来源 ${index + 1} 命令`}
+                    aria-label={`${language === "zh-CN" ? "来源" : "Source"} ${index + 1} ${copy.command}`}
                     value={source.command}
                     onChange={(event) => updateSource(index, { command: event.target.value })}
                     className={houdiniInputClass}
@@ -1335,6 +1904,7 @@ function OpenCLISourceEditor({
               <SourceArgsEditor
                 sourceId={source.id}
                 value={source.args}
+                language={language}
                 onCommit={(args) => updateSource(index, { args })}
               />
             </div>
@@ -1343,7 +1913,7 @@ function OpenCLISourceEditor({
       </details>
       <div className="border-t border-[#24282f] bg-[#0d0f12] px-3 py-2">
         <p className="text-[10px] leading-relaxed text-muted-foreground">
-          配置会自动保存。使用画布顶部“试运行”检查真实返回和数据新鲜度。
+          {copy.autoSaveHint}
         </p>
       </div>
     </section>
@@ -1353,13 +1923,17 @@ function OpenCLISourceEditor({
 function SourceBusinessArgument({
   argumentKey,
   value,
+  language,
   onChange,
 }: {
   argumentKey: string
   value: string | number | boolean
+  language: WorkflowLanguage
   onChange: (value: string | number | boolean) => void
 }) {
-  const label = SOURCE_ARGUMENT_LABELS[argumentKey] ?? argumentKey
+  const label = language === "zh-CN"
+    ? SOURCE_ARGUMENT_LABELS[argumentKey] ?? argumentKey
+    : argumentKey.replace(/[_-]+/g, " ").replace(/\b\w/g, (character) => character.toUpperCase())
   if (typeof value === "boolean") {
     return (
       <div className="flex items-center justify-between gap-3 rounded-[3px] border border-[#252a31] bg-[#0d0f12] px-2.5 py-2">
@@ -1384,12 +1958,15 @@ function SourceBusinessArgument({
 function SourceArgsEditor({
   sourceId,
   value,
+  language,
   onCommit,
 }: {
   sourceId: string
   value: Record<string, unknown>
+  language: WorkflowLanguage
   onCommit: (value: Record<string, unknown>) => void
 }) {
+  const copy = INSPECTOR_COPY[language]
   const serialized = JSON.stringify(value, null, 2)
   const [draft, setDraft] = useState(serialized)
   const [error, setError] = useState("")
@@ -1403,20 +1980,20 @@ function SourceArgsEditor({
     try {
       const parsed = JSON.parse(draft) as unknown
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-        setError("参数必须是 JSON 对象")
+        setError(copy.jsonObjectRequired)
         return
       }
       setError("")
       onCommit(parsed as Record<string, unknown>)
     } catch {
-      setError("JSON 格式不正确")
+      setError(copy.invalidJson)
     }
   }
 
   return (
     <div className="space-y-1">
       <Label htmlFor={`source-args-${sourceId}`} className="font-mono text-[9px] uppercase tracking-wider text-muted-foreground">
-        参数
+        {copy.parameters}
       </Label>
       <Textarea
         id={`source-args-${sourceId}`}
@@ -1432,6 +2009,6 @@ function SourceArgsEditor({
 }
 
 function formatJsonParameterValue(value: unknown): string {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return "{}"
+  if (!value || typeof value !== "object") return "{}"
   return JSON.stringify(value, null, 2)
 }

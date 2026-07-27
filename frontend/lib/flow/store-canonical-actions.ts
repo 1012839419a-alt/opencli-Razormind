@@ -101,6 +101,18 @@ export function appendCanonicalNetworkEdge(
   }))
 }
 
+export function updateCanonicalNetworkEdge(
+  project: WorkflowProject,
+  parentCanvasId: CanonicalScopeId,
+  edgeId: string,
+  updater: (edge: WorkflowProjectEdge) => WorkflowProjectEdge,
+): WorkflowProject {
+  return updateCanonicalNetworkScope(project, parentCanvasId, (scope) => ({
+    ...scope,
+    edges: scope.edges.map((edge) => edge.id === edgeId ? updater(edge) : edge),
+  }))
+}
+
 export function removeCanonicalNetworkItems(
   project: WorkflowProject,
   parentCanvasId: CanonicalScopeId,

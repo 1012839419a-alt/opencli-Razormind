@@ -6,13 +6,18 @@ import {
   type RefObject,
   type SetStateAction,
 } from "react"
-import type { IsValidConnection, Node, OnBeforeDelete, OnNodeDrag } from "@xyflow/react"
+import type { Connection, IsValidConnection, Node, OnBeforeDelete, OnNodeDrag } from "@xyflow/react"
 
 import { useFlowStore } from "@/lib/flow/store"
 import type { CanvasSettings } from "@/lib/flow/settings-store"
 import { validateConnection } from "@/lib/flow/graph"
 import type { PaletteItem, WorkflowEdge, WorkflowNode } from "@/lib/flow/types"
-import { edgeIdsAtScreenPoint, localPoint, type CanvasPoint } from "./workflow-canvas-geometry"
+import {
+  edgeIdIntersectingNode,
+  edgeIdsAtScreenPoint,
+  localPoint,
+  type CanvasPoint,
+} from "./workflow-canvas-geometry"
 
 type WritableRef<T> = { current: T }
 type ScreenToFlowPosition = (position: CanvasPoint) => CanvasPoint
@@ -23,6 +28,24 @@ export type ShakeState = {
   lastDirection: -1 | 0 | 1
   turns: number
   disconnected: boolean
+  startedAt: number
+}
+
+const SHAKE_MIN_DELTA = 18
+const SHAKE_TURN_LIMIT = 3
+const SHAKE_WINDOW_MS = 650
+
+export function advanceShakeState(current: ShakeState, x: number, now = Date.now()): ShakeState {
+  if (now - current.startedAt > SHAKE_WINDOW_MS) {
+    return { lastX: x, lastDirection: 0, turns: 0, disconnected: false, startedAt: now }
+  }
+  const delta = x - current.lastX
+  if (Math.abs(delta) < SHAKE_MIN_DELTA) return { ...current, lastX: x }
+  const direction = delta > 0 ? 1 : -1
+  const turns = current.lastDirection !== 0 && current.lastDirection !== direction
+    ? current.turns + 1
+    : current.turns
+  return { ...current, lastX: x, lastDirection: direction, turns }
 }
 
 export function usePaletteDrop(options: {
@@ -51,23 +74,25 @@ export function usePaletteDrop(options: {
 export function useScissorCanvasHandlers(options: {
   cutRef: WritableRef<Set<string>>
   draggingRef: WritableRef<boolean>
-  removeEdgesByIds: (ids: string[]) => number
+  removeEdgesByIds: (ids: string[], options?: { suppressSnapshot?: boolean }) => number
   setTrail: Dispatch<SetStateAction<CanvasPoint[]>>
   showToast: ShowToast
+  takeSnapshot: () => void
   toolMode: string
   wrapperRef: RefObject<HTMLElement | null>
 }) {
-  const { cutRef, draggingRef, removeEdgesByIds, setTrail, showToast, toolMode, wrapperRef } = options
+  const { cutRef, draggingRef, removeEdgesByIds, setTrail, showToast, takeSnapshot, toolMode, wrapperRef } = options
   const cutEdgesAtPoint = useCallback(
     (event: ReactMouseEvent) => {
       const hits = edgeIdsAtScreenPoint({ x: event.clientX, y: event.clientY })
       const fresh = hits.filter((id) => !cutRef.current.has(id))
       if (fresh.length === 0) return
+      if (cutRef.current.size === 0) takeSnapshot()
       fresh.forEach((id) => cutRef.current.add(id))
-      const removed = removeEdgesByIds(fresh)
+      const removed = removeEdgesByIds(fresh, { suppressSnapshot: true })
       if (removed > 0) showToast(`已剪断 ${removed} 条连接`)
     },
-    [cutRef, removeEdgesByIds, showToast],
+    [cutRef, removeEdgesByIds, showToast, takeSnapshot],
   )
 
   const onCanvasMouseDownCapture = useCallback(
@@ -116,8 +141,9 @@ export function useWorkflowNodeDragHandlers(options: {
   attachToParent: (nodeId: string, parentId: string) => void
   clearHelperLines: () => void
   detachFromParent: (nodeId: string) => void
-  disconnectNodeConnections: (nodeId: string) => number
+  disconnectNodeConnections: (nodeId: string, options?: { suppressSnapshot?: boolean }) => number
   getInternalNode: (nodeId: string) => { internals?: { positionAbsolute?: CanvasPoint } } | undefined
+  insertNodeOnEdge: (edgeId: string) => void
   resizeGroupToFit: (nodeId: string) => void
   resolveNodeCollisions: (nodeId: string) => void
   shakeRef: WritableRef<Map<string, ShakeState>>
@@ -129,6 +155,7 @@ export function useWorkflowNodeDragHandlers(options: {
     detachFromParent,
     disconnectNodeConnections,
     getInternalNode,
+    insertNodeOnEdge,
     resizeGroupToFit,
     resolveNodeCollisions,
     shakeRef,
@@ -142,17 +169,11 @@ export function useWorkflowNodeDragHandlers(options: {
         lastDirection: 0,
         turns: 0,
         disconnected: false,
+        startedAt: Date.now(),
       }
-      const delta = node.position.x - current.lastX
-      if (Math.abs(delta) < 14) {
-        shakeRef.current.set(node.id, { ...current, lastX: node.position.x })
-        return
-      }
-      const direction = delta > 0 ? 1 : -1
-      const turns = current.lastDirection !== 0 && current.lastDirection !== direction ? current.turns + 1 : current.turns
-      const next = { lastX: node.position.x, lastDirection: direction as -1 | 1, turns, disconnected: current.disconnected }
-      if (!next.disconnected && turns >= 4) {
-        const removed = disconnectNodeConnections(node.id)
+      const next = advanceShakeState(current, node.position.x)
+      if (!next.disconnected && next.turns >= SHAKE_TURN_LIMIT) {
+        const removed = disconnectNodeConnections(node.id, { suppressSnapshot: true })
         if (removed > 0) {
           next.disconnected = true
           showToast(`已断开 ${removed} 条连接`)
@@ -170,6 +191,27 @@ export function useWorkflowNodeDragHandlers(options: {
       if (node.type === "group") {
         resizeGroupToFit(node.id)
         return
+      }
+
+      const state = useFlowStore.getState()
+      const connectedEdges = new Set(
+        state.edges
+          .filter((edge) => edge.source === node.id || edge.target === node.id)
+          .map((edge) => edge.id),
+      )
+      const intersectedEdgeId = edgeIdIntersectingNode(node.id, connectedEdges)
+      if (intersectedEdgeId) {
+        useFlowStore.setState((current) => ({
+          nodes: current.nodes.map((candidate) => ({
+            ...candidate,
+            selected: candidate.id === node.id,
+          })),
+        }))
+        insertNodeOnEdge(intersectedEdgeId)
+        if (!useFlowStore.getState().edges.some((edge) => edge.id === intersectedEdgeId)) {
+          showToast("已将节点插入连线")
+          return
+        }
       }
 
       const internal = getInternalNode(node.id)
@@ -190,20 +232,24 @@ export function useWorkflowNodeDragHandlers(options: {
       else if (targetGroup && workflowNode.parentId === targetGroup.id) resizeGroupToFit(targetGroup.id)
       resolveNodeCollisions(node.id)
     },
-    [attachToParent, clearHelperLines, detachFromParent, getInternalNode, resizeGroupToFit, resolveNodeCollisions, shakeRef],
+    [attachToParent, clearHelperLines, detachFromParent, getInternalNode, insertNodeOnEdge, resizeGroupToFit, resolveNodeCollisions, shakeRef, showToast],
   )
 
   return { onNodeDrag, onNodeDragStop }
 }
 
 export function useConnectionGuards(options: {
+  ignoredEdgeIdRef?: RefObject<string | null>
   settings: Pick<CanvasSettings, "confirmDelete" | "maxSourceConnections" | "maxTargetConnections" | "preventCycles" | "typedHandles">
-  showToast: ShowToast
 }) {
-  const { settings, showToast } = options
-  const isValidConnection: IsValidConnection<WorkflowEdge> = useCallback(
-    (connection) => {
-      const res = validateConnection(useFlowStore.getState().edges, {
+  const { ignoredEdgeIdRef, settings } = options
+  const getConnectionValidation = useCallback(
+    (connection: Connection) => {
+      const state = useFlowStore.getState()
+      const edges = ignoredEdgeIdRef?.current
+        ? state.edges.filter((edge) => edge.id !== ignoredEdgeIdRef.current)
+        : state.edges
+      return validateConnection(edges, {
         source: connection.source,
         target: connection.target,
         sourceHandle: connection.sourceHandle ?? null,
@@ -213,13 +259,21 @@ export function useConnectionGuards(options: {
         maxSourceConnections: settings.maxSourceConnections,
         maxTargetConnections: settings.maxTargetConnections,
         typedHandles: settings.typedHandles,
-        nodes: useFlowStore.getState().nodes,
+        nodes: state.nodes,
       })
-      if (res.ok) return true
-      showToast(res.reason)
-      return false
     },
-    [settings.maxSourceConnections, settings.maxTargetConnections, settings.preventCycles, settings.typedHandles, showToast],
+    [ignoredEdgeIdRef, settings.maxSourceConnections, settings.maxTargetConnections, settings.preventCycles, settings.typedHandles],
+  )
+  const isValidConnection: IsValidConnection<WorkflowEdge> = useCallback(
+    (connection) => {
+      return getConnectionValidation({
+        source: connection.source,
+        sourceHandle: connection.sourceHandle ?? null,
+        target: connection.target,
+        targetHandle: connection.targetHandle ?? null,
+      }).ok
+    },
+    [getConnectionValidation],
   )
 
   const onBeforeDelete: OnBeforeDelete<WorkflowNode, WorkflowEdge> = useCallback(
@@ -232,7 +286,7 @@ export function useConnectionGuards(options: {
     [settings.confirmDelete],
   )
 
-  return { isValidConnection, onBeforeDelete }
+  return { getConnectionValidation, isValidConnection, onBeforeDelete }
 }
 
 export function useCanvasViewportCompaction(options: {

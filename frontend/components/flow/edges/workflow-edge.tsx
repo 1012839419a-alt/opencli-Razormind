@@ -56,6 +56,7 @@ function WorkflowEdgeComponent({
         markerEnd={markerEnd}
         className="workflow-edge-path"
         data-selected={selected ? "true" : "false"}
+        data-running={data?.runtimeEvidenceBatch?.status === "running" ? "true" : "false"}
         style={{
           strokeWidth,
           stroke,

@@ -35,6 +35,8 @@ class RequestIdentity:
     subject: str
     email: str | None = None
     name: str | None = None
+    username: str | None = None
+    picture: str | None = None
     is_platform_admin: bool = False
     auth_method: str = "oidc"
     claims: Mapping[str, Any] | None = None
@@ -76,23 +78,38 @@ class OIDCVerifier:
         subject = claims.get("sub")
         if not isinstance(subject, str) or not subject:
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Token has no subject")
+        username = _string_claim(claims, "preferred_username")
         return RequestIdentity(
             subject=subject,
-            email=claims.get("email"),
-            name=claims.get("name") or claims.get("preferred_username"),
+            email=_string_claim(claims, "email"),
+            name=_string_claim(claims, "name") or username,
+            username=username,
+            picture=_string_claim(claims, "picture"),
             claims=claims,
         )
 
     async def _get_jwks(self) -> dict[str, Any]:
         if self._jwks is None:
-            url = self.settings.jwks_url or f"{self.settings.issuer}/.well-known/jwks.json"
             if self._client is not None:
-                response = await self._client.get(url)
+                client = self._client
             else:
-                async with httpx.AsyncClient(timeout=5.0) as client:
-                    response = await client.get(url)
-            response.raise_for_status()
-            self._jwks = response.json()
+                client = httpx.AsyncClient(timeout=5.0)
+            try:
+                url = self.settings.jwks_url
+                if not url:
+                    discovery = await client.get(
+                        f"{self.settings.issuer}/.well-known/openid-configuration"
+                    )
+                    discovery.raise_for_status()
+                    url = discovery.json().get("jwks_uri", "")
+                    if not isinstance(url, str) or not url:
+                        raise httpx.HTTPError("OIDC discovery has no jwks_uri")
+                response = await client.get(url)
+                response.raise_for_status()
+                self._jwks = response.json()
+            finally:
+                if self._client is None:
+                    await client.aclose()
         return self._jwks
 
 
@@ -127,3 +144,8 @@ def identity_dependency(
 
 
 get_request_identity = identity_dependency()
+
+
+def _string_claim(claims: Mapping[str, Any], key: str) -> str | None:
+    value = claims.get(key)
+    return value if isinstance(value, str) and value else None

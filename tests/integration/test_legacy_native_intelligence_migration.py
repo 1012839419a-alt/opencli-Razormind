@@ -65,7 +65,7 @@ def test_legacy_plugin_head_rejoins_native_intelligence_head(tmp_path: Path) -> 
             )
         }
 
-    assert revision == ("f3g4h5i6j7k8",)
+    assert revision == ("g4h5i6j7k8l9",)
     assert marker == ("workspace-1", "native-intelligence-workspace")
     assert "intelligence_sessions" in tables
     assert "intelligence_artifacts" in tables

@@ -1,15 +1,24 @@
 "use client"
 
-import { useCallback, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react"
-import { ReactFlowProvider, useReactFlow, type NodeMouseHandler } from "@xyflow/react"
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react"
+import {
+  ReactFlowProvider,
+  useReactFlow,
+  type Connection,
+  type NodeMouseHandler,
+  type OnConnectEnd,
+  type OnConnectStart,
+  type ReactFlowProps,
+} from "@xyflow/react"
 import { useShallow } from "zustand/react/shallow"
 import "@xyflow/react/dist/style.css"
 
 import { useFlowStore } from "@/lib/flow/store"
+import { nodeHandleDescriptor, nodeHandleIds } from "@/lib/flow/graph"
 import { useSettingsStore } from "@/lib/flow/settings-store"
 import type { WorkflowNode, WorkflowEdge, ToolMode } from "@/lib/flow/types"
 import { CommandStrip } from "./command-strip"
-import { CommandPalette } from "./command-palette"
+import { CommandPalette, type CompatibleConnectionPort } from "./command-palette"
 import { NODE_PALETTE } from "@/lib/flow/palette"
 import {
   getWorkflowNodeCatalog,
@@ -45,8 +54,11 @@ import {
   useSharedWorkflowImport,
 } from "./workflow-editor-effects"
 
-function buildPrimitiveMenuGroups() {
-  return groupPrimitivesForNodeMenu(getWorkflowPrimitives())
+type PendingConnection = {
+  handleId: string | null
+  handleType: "source" | "target"
+  nodeId: string
+  type: string
 }
 
 function EditorCanvas({
@@ -62,6 +74,7 @@ function EditorCanvas({
     attachToParent,
     autoLayout,
     clearHelperLines,
+    connectNodes,
     copy,
     cut,
     deleteSelected,
@@ -73,10 +86,12 @@ function EditorCanvas({
     exitNodeNetwork,
     groupSelection,
     helperLines,
+    insertNodeOnEdge,
     lockNodeInternals,
     networkStack,
     nodes,
     onConnect,
+    onReconnect,
     onEdgesChange,
     onNodesChange,
     paste,
@@ -105,6 +120,8 @@ function EditorCanvas({
   const scissorDraggingRef = useRef(false)
   const scissorCutRef = useRef<Set<string>>(new Set())
   const yMomentaryModeRef = useRef<ToolMode | null>(null)
+  const pendingConnectionRef = useRef<PendingConnection | null>(null)
+  const reconnectingEdgeIdRef = useRef<string | null>(null)
   const [scissorTrail, setScissorTrail] = useState<{ x: number; y: number }[]>([])
   const [toast, setToast] = useState<string | null>(null)
   const [paletteOpen, setPaletteOpen] = useState(false)
@@ -119,9 +136,12 @@ function EditorCanvas({
   const [zoom, setZoom] = useState(1)
   const [compactViewport, setCompactViewport] = useState(false)
   const [nodeMenu, setNodeMenu] = useState<NodeMenuState | null>(null)
+  const [wiringState, setWiringState] = useState<"idle" | "wiring" | "picker" | "reconnecting">("idle")
+  const [compatiblePort, setCompatiblePort] = useState<CompatibleConnectionPort | undefined>()
   const { capabilities } = useWorkflowCapabilities(true)
   const {
     items: openCLIAdapterCatalogItems,
+    response: openCLIAdapterCatalogResponse,
     error: openCLIAdapterCatalogError,
     loading: openCLIAdapterCatalogLoading,
   } = useOpenCLIAdapterCatalog(true)
@@ -139,7 +159,7 @@ function EditorCanvas({
             ? nativeIntelligenceCatalogItems(nativeIntelligenceTools)
             : []),
         ],
-        openCLIAdapterCatalogItems.filter((item) => item.profile === workflowProject.profile),
+        openCLIAdapterCatalogItems,
       ),
     [
       workflowProject.profile,
@@ -148,7 +168,10 @@ function EditorCanvas({
       nativeIntelligenceTools,
     ],
   )
-  const [primitiveMenuGroups] = useState(buildPrimitiveMenuGroups)
+  const primitiveMenuGroups = useMemo(
+    () => groupPrimitivesForNodeMenu(getWorkflowPrimitives(), settings.language),
+    [settings.language],
+  )
 
   const showToast = useCallback((msg: string) => setToast(msg), [])
   const setMiniMapVisible = useCallback((visible: boolean) => settings.set("showMiniMap", visible), [settings])
@@ -170,6 +193,7 @@ function EditorCanvas({
     exitNodeNetwork,
     fitView,
     groupSelection,
+    inspectorOpen,
     mousePosRef: mousePos,
     paste,
     projectSettingsOpen,
@@ -198,6 +222,7 @@ function EditorCanvas({
     removeEdgesByIds,
     setTrail: setScissorTrail,
     showToast,
+    takeSnapshot,
     toolMode,
     wrapperRef,
   })
@@ -207,6 +232,7 @@ function EditorCanvas({
     detachFromParent,
     disconnectNodeConnections,
     getInternalNode,
+    insertNodeOnEdge,
     resizeGroupToFit,
     resolveNodeCollisions,
     shakeRef,
@@ -243,7 +269,11 @@ function EditorCanvas({
   )
 
   const onNodeClick: NodeMouseHandler<WorkflowNode> = useCallback(() => {
-    if (!workbenchMode) setInspectorOpen(true)
+    if (!workbenchMode) {
+      setSettingsOpen(false)
+      setProjectSettingsOpen(false)
+      setInspectorOpen(true)
+    }
   }, [workbenchMode])
 
   const onNodeContextMenu: NodeMouseHandler<WorkflowNode> = useCallback((event, node) => {
@@ -251,6 +281,22 @@ function EditorCanvas({
     event.stopPropagation()
     setPaletteOpen(false)
     setNodeMenu({ nodeId: node.id, x: event.clientX, y: event.clientY })
+  }, [])
+
+  useEffect(() => {
+    const openPortMenu = (event: Event) => {
+      const detail = (event as CustomEvent<NodeMenuState["port"] & { x: number; y: number }>).detail
+      if (!detail) return
+      setPaletteOpen(false)
+      setNodeMenu({
+        nodeId: detail.nodeId,
+        port: detail,
+        x: detail.x,
+        y: detail.y,
+      })
+    }
+    window.addEventListener("opencli:workflow-port-menu", openPortMenu)
+    return () => window.removeEventListener("opencli:workflow-port-menu", openPortMenu)
   }, [])
 
   const onPaneContextMenu = useCallback((event: ReactMouseEvent<Element> | MouseEvent) => {
@@ -301,7 +347,129 @@ function EditorCanvas({
     importInputRef.current?.click()
   }, [])
 
-  const { isValidConnection, onBeforeDelete } = useConnectionGuards({ settings, showToast })
+  const { getConnectionValidation, isValidConnection, onBeforeDelete } = useConnectionGuards({
+    ignoredEdgeIdRef: reconnectingEdgeIdRef,
+    settings,
+  })
+  const clearWiringSession = useCallback(() => {
+    pendingConnectionRef.current = null
+    reconnectingEdgeIdRef.current = null
+    setWiringState("idle")
+    setCompatiblePort(undefined)
+  }, [])
+  const onConnectStart: OnConnectStart = useCallback((_event, params) => {
+    if (!params.nodeId || !params.handleType) return
+    const node = useFlowStore.getState().nodes.find((candidate) => candidate.id === params.nodeId)
+    const port = nodeHandleDescriptor(node, params.handleId, params.handleType)
+    pendingConnectionRef.current = {
+      nodeId: params.nodeId,
+      handleId: params.handleId,
+      handleType: params.handleType,
+      type: port?.type ?? "unknown",
+    }
+    setCompatiblePort({ handleType: params.handleType, type: port?.type ?? "unknown" })
+    setWiringState("wiring")
+  }, [])
+  const onConnectEnd: OnConnectEnd = useCallback((_event, connectionState) => {
+    if (connectionState.isValid) {
+      clearWiringSession()
+      return
+    }
+    const pending = pendingConnectionRef.current
+    if (!pending) {
+      clearWiringSession()
+      return
+    }
+    if (!connectionState.toNode && connectionState.pointer) {
+      setPaletteAnchor(connectionState.pointer)
+      setPaletteOpen(true)
+      setWiringState("picker")
+      return
+    }
+    if (connectionState.toHandle) {
+      const connection: Connection = pending.handleType === "source"
+        ? {
+            source: pending.nodeId,
+            sourceHandle: pending.handleId,
+            target: connectionState.toHandle.nodeId,
+            targetHandle: connectionState.toHandle.id ?? null,
+          }
+        : {
+            source: connectionState.toHandle.nodeId,
+            sourceHandle: connectionState.toHandle.id ?? null,
+            target: pending.nodeId,
+            targetHandle: pending.handleId,
+          }
+      const result = getConnectionValidation(connection)
+      if (!result.ok) showToast(result.reason)
+    }
+    clearWiringSession()
+  }, [clearWiringSession, getConnectionValidation, showToast])
+  const onReconnectStart: NonNullable<ReactFlowProps<WorkflowNode, WorkflowEdge>["onReconnectStart"]> = useCallback((_event, edge) => {
+    reconnectingEdgeIdRef.current = edge.id
+    setWiringState("reconnecting")
+  }, [])
+  const onReconnectEnd: NonNullable<ReactFlowProps<WorkflowNode, WorkflowEdge>["onReconnectEnd"]> = useCallback(
+    (_event, _edge, _handleType, connectionState) => {
+      if (!connectionState.isValid && connectionState.toHandle) {
+        const from = connectionState.fromHandle
+        const to = connectionState.toHandle
+        const connection: Connection = from.type === "source"
+          ? { source: from.nodeId, sourceHandle: from.id ?? null, target: to.nodeId, targetHandle: to.id ?? null }
+          : { source: to.nodeId, sourceHandle: to.id ?? null, target: from.nodeId, targetHandle: from.id ?? null }
+        const result = getConnectionValidation(connection)
+        if (!result.ok) showToast(result.reason)
+      }
+      clearWiringSession()
+    },
+    [clearWiringSession, getConnectionValidation, showToast],
+  )
+  const connectPortFromMenu = useCallback(() => {
+    const port = nodeMenu?.port
+    if (!port) return
+    pendingConnectionRef.current = {
+      nodeId: port.nodeId,
+      handleId: port.handleId,
+      handleType: port.handleType,
+      type: port.type,
+    }
+    setCompatiblePort({ handleType: port.handleType, type: port.type })
+    setPaletteAnchor({ x: nodeMenu.x, y: nodeMenu.y })
+    setPaletteOpen(true)
+    setNodeMenu(null)
+    setWiringState("picker")
+  }, [nodeMenu])
+  const onPaletteNodeCreated = useCallback(() => {
+    const pending = pendingConnectionRef.current
+    if (!pending) {
+      setInspectorOpen(true)
+      return
+    }
+    const newNode = useFlowStore.getState().nodes.find((node) => node.selected)
+    if (!newNode) {
+      clearWiringSession()
+      return
+    }
+    const targetDirection = pending.handleType === "source" ? "target" : "source"
+    const connection = nodeHandleIds(newNode, targetDirection)
+      .map<Connection>((handleId) => pending.handleType === "source"
+        ? {
+            source: pending.nodeId,
+            sourceHandle: pending.handleId,
+            target: newNode.id,
+            targetHandle: handleId,
+          }
+        : {
+            source: newNode.id,
+            sourceHandle: handleId,
+            target: pending.nodeId,
+            targetHandle: pending.handleId,
+          })
+      .find((candidate) => getConnectionValidation(candidate).ok)
+    if (connection) connectNodes(connection, { suppressSnapshot: true })
+    else showToast("新节点没有兼容端口，已保留节点")
+    clearWiringSession()
+  }, [clearWiringSession, connectNodes, getConnectionValidation, showToast])
 
   const isDraw = toolMode === "draw"
   const isScissors = toolMode === "scissors"
@@ -355,6 +523,7 @@ function EditorCanvas({
           exitCurrentNetwork={exitCurrentNetwork}
           helperLines={helperLines}
           inspectorOpen={inspectorOpen}
+          onCloseInspector={() => setInspectorOpen(false)}
           isDraw={isDraw}
           isScissors={isScissors}
           isValidConnection={isValidConnection}
@@ -367,16 +536,24 @@ function EditorCanvas({
           onBeforeDelete={onBeforeDelete}
           onAddNodeFromMenu={openNodePickerFromMenu}
           onAddNoteFromMenu={addNoteFromMenu}
+          onConnectPortFromMenu={connectPortFromMenu}
           onImportApp={importAppFromMenu}
           onTestRun={testRunFromMenu}
           onCanvasMouseDownCapture={onCanvasMouseDownCapture}
           onCanvasMouseMoveCapture={onCanvasMouseMoveCapture}
           onCanvasMouseUpCapture={onCanvasMouseUpCapture}
           onConnect={onConnect}
+          onConnectEnd={onConnectEnd}
+          onConnectStart={onConnectStart}
+          onClickConnectEnd={onConnectEnd}
+          onClickConnectStart={onConnectStart}
           onDragOver={onDragOver}
           onDrop={onDrop}
           onEdgesChange={onEdgesChange}
           onMouseMove={onCanvasMouseMove}
+          onReconnect={onReconnect}
+          onReconnectEnd={onReconnectEnd}
+          onReconnectStart={onReconnectStart}
           onNodeContextMenu={onNodeContextMenu}
           onPaneContextMenu={onPaneContextMenu}
           onNodeClick={onNodeClick}
@@ -396,6 +573,7 @@ function EditorCanvas({
           takeSnapshot={takeSnapshot}
           toast={toast}
           toolMode={toolMode}
+          wiringState={wiringState}
           unlockInternals={unlockInternals}
           workflowProfile={workflowProject.profile}
           workbenchMode={workbenchMode}
@@ -409,15 +587,18 @@ function EditorCanvas({
       <CommandPalette
         adapterCatalogError={openCLIAdapterCatalogError ?? nativeIntelligenceToolsError}
         adapterCatalogLoading={openCLIAdapterCatalogLoading || nativeIntelligenceToolsLoading}
+        adapterCatalogResponse={openCLIAdapterCatalogResponse}
         catalogItems={dopNodeMenuItems}
+        compatiblePort={wiringState === "picker" ? compatiblePort : undefined}
         open={paletteOpen}
         onImportApp={() => importInputRef.current?.click()}
         onClose={() => {
           setPaletteOpen(false)
           setPaletteAnchor(null)
+          clearWiringSession()
         }}
         onMessage={showToast}
-        onNodeCreated={() => setInspectorOpen(true)}
+        onNodeCreated={onPaletteNodeCreated}
         getAnchor={() => screenToFlowPosition(paletteAnchor ?? mousePos.current)}
       />
     </div>

@@ -545,10 +545,15 @@ const CONTRACTS: Record<string, NodeContract> = {
   ),
 }
 
+export function getNodeContractByCatalogId(catalogId: string | undefined): NodeContract | undefined {
+  return catalogId ? CONTRACTS[catalogId] : undefined
+}
+
 export function getNodeContract(node: WorkflowProjectNode | undefined): NodeContract | undefined {
   if (!node) return undefined
-  const catalogId = typeof node.ui?.catalogId === "string" ? node.ui.catalogId : undefined
-  return catalogId ? CONTRACTS[catalogId] : undefined
+  return getNodeContractByCatalogId(
+    typeof node.ui?.catalogId === "string" ? node.ui.catalogId : undefined,
+  )
 }
 
 export function buildProjectContractReport(project: WorkflowProject): ProjectContractReport {

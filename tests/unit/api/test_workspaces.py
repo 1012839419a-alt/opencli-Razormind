@@ -5,6 +5,7 @@ from sqlalchemy import select
 from backend.api.v1.workspaces import router
 from backend.database import get_db
 from backend.models.identity import User, Workspace, WorkspaceMembership, WorkspaceRole
+from backend.models.workflow import Project
 from backend.security.identity import RequestIdentity, get_request_identity
 
 
@@ -43,6 +44,54 @@ async def _seed_workspace(db_session):
     )
     await db_session.commit()
     return admin, maintainer, workspace
+
+
+async def test_governance_context_lists_only_accessible_workspaces(db_session):
+    _, _, workspace = await _seed_workspace(db_session)
+    db_session.add(Workspace(name="Hidden", slug="hidden-workspace"))
+    await db_session.commit()
+
+    client = await _client(db_session, RequestIdentity(subject="workspace-admin"))
+    async with client:
+        response = await client.get("/governance/workspaces")
+
+    assert response.status_code == 200
+    assert [item["id"] for item in response.json()["data"]] == [workspace.id]
+
+
+async def test_governance_context_lists_workspace_projects(db_session):
+    admin, _, workspace = await _seed_workspace(db_session)
+    project = Project(
+        workspace_id=workspace.id,
+        name="Research",
+        slug="research",
+        created_by_user_id=admin.id,
+    )
+    archived = Project(
+        workspace_id=workspace.id,
+        name="Archived",
+        slug="archived",
+        created_by_user_id=admin.id,
+        archived=True,
+    )
+    db_session.add_all((project, archived))
+    await db_session.commit()
+
+    client = await _client(db_session, RequestIdentity(subject="workspace-admin"))
+    async with client:
+        response = await client.get(f"/governance/workspaces/{workspace.id}/projects")
+
+    assert response.status_code == 200
+    assert [item["id"] for item in response.json()["data"]] == [project.id]
+
+
+async def test_governance_context_rejects_non_member_project_access(db_session):
+    _, _, workspace = await _seed_workspace(db_session)
+    client = await _client(db_session, RequestIdentity(subject="workspace-outsider"))
+    async with client:
+        response = await client.get(f"/governance/workspaces/{workspace.id}/projects")
+
+    assert response.status_code == 403
 
 
 async def test_platform_admin_creates_workspace_with_explicit_first_admin(db_session):

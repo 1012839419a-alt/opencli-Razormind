@@ -1,6 +1,7 @@
 """WorkflowProject compile and runtime endpoints."""
 
 import uuid
+from typing import Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -132,6 +133,13 @@ def get_opencli_adapter_nodes(
     site: str | None = None,
     q: str | None = None,
     include_write: bool = Query(True, alias="includeWrite"),
+    access: Literal["read", "write"] | None = None,
+    capability: Literal["fetch", "store"] | None = None,
+    browser: bool | None = None,
+    preset_kind: workflow_schemas.WorkflowOpenCLIAdapterPresetKind
+    | None = Query(None, alias="presetKind"),
+    runtime_readiness: workflow_schemas.WorkflowOpenCLIAdapterReadiness
+    | None = Query(None, alias="runtimeReadiness"),
     limit: int = Query(2000, ge=1, le=5000),
     refresh: bool = False,
 ) -> ApiResponse[workflow_schemas.WorkflowOpenCLIAdapterNodesResponse]:
@@ -142,6 +150,11 @@ def get_opencli_adapter_nodes(
             site=site,
             q=q,
             include_write=include_write,
+            access=access,
+            capability=capability,
+            browser=browser,
+            preset_kind=preset_kind,
+            runtime_readiness=runtime_readiness,
             limit=limit,
             refresh=refresh,
         )

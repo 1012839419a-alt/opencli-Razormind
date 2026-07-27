@@ -511,6 +511,20 @@ async def test_workflow_capabilities_project_real_backend_surfaces(client, monke
     assert adapter_registry["manifest"]["canvas"]["node"] is False
     assert adapter_registry["manifest"]["endpoint"] == ("/api/v1/workflows/opencli-adapter-nodes")
     assert adapter_registry["manifest"]["summary"]["total"] == 3
+    assert adapter_registry["manifest"]["catalogModel"] == {
+        "kind": "core_nodes_plus_presets",
+        "coreNodes": {
+            "endpoint": "/api/v1/workflows/capabilities",
+            "role": "node_definition",
+        },
+        "adapterCommands": {
+            "endpoint": "/api/v1/workflows/opencli-adapter-nodes",
+            "role": "node_preset",
+            "presetKinds": ["source_slot", "tool_capability"],
+        },
+    }
+    assert adapter_registry["manifest"]["query"]["grouping"] == "facets"
+    assert not any(item_id.startswith("opencli.adapter.") for item_id in catalog)
     assert adapter_registry["manifest"]["materialization"]["write"] == (
         "external.tool.capability with review"
     )
@@ -550,6 +564,10 @@ def test_opencli_adapter_nodes_classify_manifest_entries(monkeypatch):
     bbc = nodes["opencli.adapter.bbc.news"]
     assert bbc.status == "runnable"
     assert bbc.catalogId == "intelligence.source.opencli-slot"
+    assert bbc.presetKind == "source_slot"
+    assert bbc.runtimeReadiness == "source_slot_ready"
+    assert bbc.manifest["canvas"]["node"] is True
+    assert bbc.manifest["canvas"]["runBlocked"] is False
     assert bbc.manifest["canvas"]["materialization"] == "source_slot_ready"
     assert bbc.params == {"site": "bbc", "command": "news", "format": "json", "args": {}}
 
@@ -557,13 +575,20 @@ def test_opencli_adapter_nodes_classify_manifest_entries(monkeypatch):
     assert twitter_search.status == "blocked"
     assert twitter_search.catalogId == "intelligence.source.opencli-slot"
     assert twitter_search.requiredArgs == ["query"]
+    assert twitter_search.presetKind == "source_slot"
+    assert twitter_search.runtimeReadiness == "source_slot_requires_params"
+    assert twitter_search.manifest["canvas"]["node"] is True
+    assert twitter_search.manifest["canvas"]["runBlocked"] is True
     assert twitter_search.manifest["canvas"]["materialization"] == ("source_slot_requires_params")
     assert twitter_search.manifest["canvas"]["positionalRequiredArgs"] == ["query"]
 
     twitter_post = nodes["opencli.adapter.twitter.post"]
     assert twitter_post.status == "blocked"
     assert twitter_post.catalogId == "external.tool.capability"
-    assert twitter_post.manifest["canvas"]["node"] is False
+    assert twitter_post.presetKind == "tool_capability"
+    assert twitter_post.runtimeReadiness == "tool_capability_review_required"
+    assert twitter_post.manifest["canvas"]["node"] is True
+    assert twitter_post.manifest["canvas"]["runBlocked"] is True
     assert twitter_post.manifest["canvas"]["materialization"] == ("tool_capability_review_required")
     assert response.summary == {
         "total": 3,
@@ -573,6 +598,19 @@ def test_opencli_adapter_nodes_classify_manifest_entries(monkeypatch):
         "sourceSlotReady": 1,
         "sourceSlotRequiresParams": 1,
         "toolCapabilityReviewRequired": 1,
+    }
+    assert response.facets.model_dump() == {
+        "site": {"bbc": 1, "twitter": 2},
+        "capability": {"fetch": 2, "store": 1},
+        "access": {"read": 2, "write": 1},
+        "browser": {"non_browser": 1, "browser": 2},
+        "status": {"runnable": 1, "blocked": 2},
+        "presetKind": {"source_slot": 2, "tool_capability": 1},
+        "runtimeReadiness": {
+            "source_slot_ready": 1,
+            "source_slot_requires_params": 1,
+            "tool_capability_review_required": 1,
+        },
     }
 
 
@@ -623,6 +661,43 @@ async def test_opencli_adapter_nodes_endpoint_filters_and_limits(client, monkeyp
     assert data["total"] == 1
     assert data["summary"]["access"] == {"read": 1}
     assert [node["id"] for node in data["nodes"]] == ["opencli.adapter.twitter.search"]
+
+
+@pytest.mark.asyncio
+async def test_opencli_adapter_nodes_endpoint_filters_presets_and_returns_facets(
+    client, monkeypatch
+):
+    monkeypatch.setattr(
+        "backend.workflow.opencli_adapter_nodes._load_opencli_catalog",
+        _fixture_opencli_catalog,
+    )
+
+    response = await client.get(
+        "/api/v1/workflows/opencli-adapter-nodes",
+        params={
+            "access": "read",
+            "capability": "fetch",
+            "browser": True,
+            "presetKind": "source_slot",
+            "runtimeReadiness": "source_slot_requires_params",
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["total"] == 1
+    assert data["facets"] == {
+        "site": {"twitter": 1},
+        "capability": {"fetch": 1},
+        "access": {"read": 1},
+        "browser": {"browser": 1},
+        "status": {"blocked": 1},
+        "presetKind": {"source_slot": 1},
+        "runtimeReadiness": {"source_slot_requires_params": 1},
+    }
+    assert data["nodes"][0]["id"] == "opencli.adapter.twitter.search"
+    assert data["nodes"][0]["presetKind"] == "source_slot"
+    assert data["nodes"][0]["runtimeReadiness"] == "source_slot_requires_params"
 
 
 @pytest.mark.asyncio

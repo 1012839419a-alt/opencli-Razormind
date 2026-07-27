@@ -76,29 +76,9 @@
   }
 }
 
-@keyframes workflow-node-scan {
-  from {
-    transform: translateX(-120%);
-  }
-  to {
-    transform: translateX(120%);
-  }
-}
-
 @keyframes workflow-edge-flow {
   to {
     stroke-dashoffset: -28;
-  }
-}
-
-@keyframes workflow-edge-confirm {
-  0% {
-    stroke-dashoffset: 16;
-    opacity: 0.62;
-  }
-  100% {
-    stroke-dashoffset: 0;
-    opacity: 1;
   }
 }
 
@@ -196,16 +176,6 @@
   shape-rendering: geometricPrecision;
 }
 
-.workflow-node-card[data-selected="true"]::after,
-.workflow-node-card[data-package-state="draft"]::after {
-  content: "";
-  pointer-events: none;
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(90deg, transparent, rgb(255 255 255 / 0.08), transparent);
-  animation: workflow-node-scan 1.7s linear infinite;
-}
-
 .workflow-node-card[data-selected="true"] {
   box-shadow: 0 0 0 1px rgb(255 255 255 / 0.16), 0 0 24px rgb(255 255 255 / 0.08);
 }
@@ -225,14 +195,17 @@
 }
 
 .react-flow .workflow-edge-path {
-  stroke-dasharray: 7 7;
-  animation:
-    workflow-edge-confirm var(--motion-slow) var(--motion-ease-out) both,
-    workflow-edge-flow 1.3s linear infinite !important;
+  animation: none !important;
+  stroke-dasharray: none !important;
   transition:
     stroke var(--motion-fast) linear,
     stroke-width var(--motion-fast) var(--motion-ease-out),
     opacity var(--motion-fast) linear;
+}
+
+.react-flow .workflow-edge-path[data-running="true"] {
+  stroke-dasharray: 7 7 !important;
+  animation: workflow-edge-flow 1.3s linear infinite !important;
 }
 
 .react-flow .workflow-edge-path[data-selected="true"] {
@@ -241,7 +214,106 @@
 }
 
 .react-flow .workflow-edge-path[data-draft="true"] {
-  stroke-dasharray: 4 6;
+  stroke-dasharray: 4 6 !important;
+}
+
+.react-flow .workflow-port-handle {
+  transform-origin: center;
+  transition:
+    transform var(--motion-fast) var(--motion-ease-out),
+    background-color var(--motion-fast) linear,
+    box-shadow var(--motion-fast) linear,
+    opacity var(--motion-fast) linear;
+}
+
+.react-flow .workflow-port-handle::after {
+  content: "";
+  position: absolute;
+  inset: -10px;
+  border-radius: 999px;
+}
+
+.workflow-port-anchor {
+  position: absolute;
+  z-index: 4;
+  width: 0;
+  pointer-events: none;
+}
+
+.workflow-port-anchor-input {
+  top: 0;
+}
+
+.workflow-port-anchor-output {
+  bottom: 0;
+}
+
+.workflow-port-anchor .workflow-port-handle {
+  pointer-events: auto;
+}
+
+.workflow-port-name {
+  position: absolute;
+  left: 50%;
+  max-width: 72px;
+  transform: translateX(-50%);
+  overflow: hidden;
+  border: 1px solid var(--oc-line);
+  border-radius: 2px;
+  background: var(--oc-surface-raised);
+  padding: 1px 4px;
+  color: var(--muted-foreground);
+  font-family: var(--font-code);
+  font-size: 10px;
+  line-height: 12px;
+  opacity: 0;
+  text-overflow: ellipsis;
+  transition: opacity var(--motion-fast) linear;
+  white-space: nowrap;
+}
+
+.workflow-port-anchor-input .workflow-port-name {
+  top: -18px;
+}
+
+.workflow-port-anchor-output .workflow-port-name {
+  bottom: -18px;
+}
+
+.workflow-port-anchor:hover .workflow-port-name,
+[data-wiring-state="wiring"] .workflow-port-name,
+[data-wiring-state="reconnecting"] .workflow-port-name {
+  opacity: 1;
+}
+
+[data-wiring-state="wiring"] .react-flow .workflow-port-handle,
+[data-wiring-state="reconnecting"] .react-flow .workflow-port-handle {
+  opacity: 0.52;
+}
+
+[data-wiring-state] .react-flow .workflow-port-handle.connectingfrom,
+[data-wiring-state] .react-flow .workflow-port-handle.connectionindicator {
+  opacity: 1;
+}
+
+.react-flow .workflow-port-handle.connectingto.valid {
+  opacity: 1;
+  transform: scale(1.85);
+  background: var(--primary) !important;
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--primary) 18%, transparent), 0 0 14px color-mix(in srgb, var(--primary) 42%, transparent);
+}
+
+.react-flow .workflow-port-handle.connectingto:not(.valid) {
+  opacity: 1;
+  transform: scale(1.45);
+  background: var(--destructive) !important;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--destructive) 18%, transparent);
+}
+
+.react-flow__connection-path {
+  stroke: var(--primary);
+  stroke-width: 1.75;
+  filter: drop-shadow(0 0 4px color-mix(in srgb, var(--primary) 34%, transparent));
 }
 
 .workflow-floating-panel {
@@ -384,12 +456,12 @@
 
 @media (prefers-reduced-motion: reduce) {
   .workflow-node-card,
-  .workflow-node-card:hover,
-  .workflow-node-card:active,
-  .workflow-node-card[data-status="running"],
-  .workflow-node-card[data-selected="true"]::after,
-  .workflow-node-card[data-package-state="draft"]::after,
-  .react-flow .workflow-edge-path,
+   .workflow-node-card:hover,
+   .workflow-node-card:active,
+   .workflow-node-card[data-status="running"],
+   .react-flow .workflow-edge-path,
+   .react-flow .workflow-port-handle,
+   .react-flow__connection-path,
   .workflow-floating-panel,
   .workflow-context-menu,
   .workflow-toast,

@@ -1,5 +1,5 @@
 import { nanoid } from "nanoid"
-import { addEdge, applyEdgeChanges, applyNodeChanges } from "@xyflow/react"
+import { addEdge, applyEdgeChanges, applyNodeChanges, reconnectEdge } from "@xyflow/react"
 import type { StoreApi } from "zustand"
 import { applyHelperLines } from "./helper-lines"
 import { useSettingsStore } from "./settings-store"
@@ -13,6 +13,7 @@ import {
   readCanonicalNetworkScope,
   removeCanonicalNetworkItems,
   syncCanonicalNetworkNodePositions,
+  updateCanonicalNetworkEdge,
   updateCanonicalNetworkScope,
   type CanonicalScopeId,
 } from "./store-canonical-actions"
@@ -78,7 +79,60 @@ export function createWhiteboardActions(
 export function createCanvasChangeActions(
   set: FlowSet,
   get: FlowGet,
-): Pick<FlowState, "onNodesChange" | "onEdgesChange" | "onConnect" | "setNodes" | "setSelectedIds" | "clearHelperLines"> {
+): Pick<FlowState, "onNodesChange" | "onEdgesChange" | "onConnect" | "connectNodes" | "onReconnect" | "setNodes" | "setSelectedIds" | "clearHelperLines"> {
+  const connectNodes: FlowState["connectNodes"] = (connection, options) => {
+    if (!options?.suppressSnapshot) get().takeSnapshot()
+    const state = get()
+    const parentNetwork = state.networkStack.at(-1)
+    const scopeId = parentNetwork?.nodeId ?? null
+    const canonicalScope = readCanonicalNetworkScope(state.workflowProject, scopeId)
+    if (canonicalScope) {
+      const sourceNode = state.nodes.find((node) => node.id === connection.source)
+      const targetNode = state.nodes.find((node) => node.id === connection.target)
+      const source = sourceNode ? canonicalNodeId(scopeId, sourceNode) : null
+      const target = targetNode ? canonicalNodeId(scopeId, targetNode) : null
+      const canonicalNodeIds = new Set(canonicalScope.nodes.map((node) => node.id))
+      if (source && target && canonicalNodeIds.has(source) && canonicalNodeIds.has(target)) {
+        const internalEdgeId = `edge-${nanoid(6)}`
+        const edge: WorkflowEdge = {
+          id: parentNetwork ? `e-${parentNetwork.nodeId}__${internalEdgeId}` : internalEdgeId,
+          source: connection.source,
+          target: connection.target,
+          sourceHandle: connection.sourceHandle,
+          targetHandle: connection.targetHandle,
+          type: "workflow",
+          animated: false,
+          data: {
+            ...(parentNetwork ? { internalOf: parentNetwork.nodeId, internalEdgeId } : {}),
+            sourcePort: connection.sourceHandle ?? undefined,
+            targetPort: connection.targetHandle ?? undefined,
+          },
+        }
+        const workflowProject = parseWorkflowProject(
+          appendCanonicalNetworkEdge(state.workflowProject, scopeId, {
+            id: internalEdgeId,
+            source,
+            target,
+            sourcePort: connection.sourceHandle ?? undefined,
+            targetPort: connection.targetHandle ?? undefined,
+          }),
+        )
+        set({ workflowProject, edges: addEdge(edge, state.edges) })
+        return
+      }
+    }
+    set({
+      edges: addEdge(
+        {
+          ...connection,
+          type: "workflow",
+          animated: false,
+        },
+        state.edges,
+      ),
+    })
+  }
+
   return {
     onNodesChange: (changes) => {
       const state = get()
@@ -133,56 +187,45 @@ export function createCanvasChangeActions(
       })
     },
 
-    onConnect: (connection) => {
+    onConnect: (connection) => connectNodes(connection),
+    connectNodes,
+
+    onReconnect: (oldEdge, connection) => {
       get().takeSnapshot()
       const state = get()
       const parentNetwork = state.networkStack.at(-1)
       const scopeId = parentNetwork?.nodeId ?? null
       const canonicalScope = readCanonicalNetworkScope(state.workflowProject, scopeId)
-      if (canonicalScope) {
-        const sourceNode = state.nodes.find((node) => node.id === connection.source)
-        const targetNode = state.nodes.find((node) => node.id === connection.target)
-        const source = sourceNode ? canonicalNodeId(scopeId, sourceNode) : null
-        const target = targetNode ? canonicalNodeId(scopeId, targetNode) : null
-        const canonicalNodeIds = new Set(canonicalScope.nodes.map((node) => node.id))
-        if (source && target && canonicalNodeIds.has(source) && canonicalNodeIds.has(target)) {
-          const internalEdgeId = `edge-${nanoid(6)}`
-          const edge: WorkflowEdge = {
-            id: parentNetwork ? `e-${parentNetwork.nodeId}__${internalEdgeId}` : internalEdgeId,
-            source: connection.source,
-            target: connection.target,
-            sourceHandle: connection.sourceHandle,
-            targetHandle: connection.targetHandle,
-            type: "workflow",
-            animated: true,
-            data: {
-              ...(parentNetwork ? { internalOf: parentNetwork.nodeId, internalEdgeId } : {}),
-              sourcePort: connection.sourceHandle ?? undefined,
-              targetPort: connection.targetHandle ?? undefined,
-            },
-          }
-          const workflowProject = parseWorkflowProject(
-            appendCanonicalNetworkEdge(state.workflowProject, scopeId, {
-              id: internalEdgeId,
+      const sourceNode = state.nodes.find((node) => node.id === connection.source)
+      const targetNode = state.nodes.find((node) => node.id === connection.target)
+      const source = sourceNode ? canonicalNodeId(scopeId, sourceNode) : null
+      const target = targetNode ? canonicalNodeId(scopeId, targetNode) : null
+      const canonicalId = canonicalEdgeId(scopeId, oldEdge)
+      const nextEdges = reconnectEdge(oldEdge, connection, state.edges, { shouldReplaceId: false }).map((edge) =>
+        edge.id === oldEdge.id
+          ? {
+              ...edge,
+              data: {
+                ...edge.data,
+                sourcePort: connection.sourceHandle ?? undefined,
+                targetPort: connection.targetHandle ?? undefined,
+              },
+            }
+          : edge,
+      )
+      const workflowProject =
+        canonicalScope && canonicalId && source && target
+          ? parseWorkflowProject(updateCanonicalNetworkEdge(state.workflowProject, scopeId, canonicalId, (edge) => ({
+              ...edge,
               source,
               target,
               sourcePort: connection.sourceHandle ?? undefined,
               targetPort: connection.targetHandle ?? undefined,
-            }),
-          )
-          set({ workflowProject, edges: addEdge(edge, state.edges) })
-          return
-        }
-      }
+            })))
+          : state.workflowProject
       set({
-        edges: addEdge(
-          {
-            ...connection,
-            type: "workflow",
-            animated: true,
-          },
-          state.edges,
-        ),
+        workflowProject,
+        edges: nextEdges,
       })
     },
 
@@ -300,13 +343,13 @@ export function createSelectionActions(
       return removed
     },
 
-    disconnectNodeConnections: (nodeId) => {
+    disconnectNodeConnections: (nodeId, options) => {
       const { workflowProject, edges, networkStack } = get()
       const nextEdges = edges.filter((e) => e.source !== nodeId && e.target !== nodeId)
       const removedEdges = edges.filter((edge) => !nextEdges.includes(edge))
       const removed = edges.length - nextEdges.length
       if (removed === 0) return 0
-      get().takeSnapshot()
+      if (!options?.suppressSnapshot) get().takeSnapshot()
       const scopeId = networkStack.at(-1)?.nodeId ?? null
       set({
         workflowProject: removeCanonicalCanvasItems(workflowProject, scopeId, [], removedEdges),
@@ -315,7 +358,7 @@ export function createSelectionActions(
       return removed
     },
 
-    removeEdgesByIds: (edgeIds) => {
+    removeEdgesByIds: (edgeIds, options) => {
       const ids = new Set(edgeIds)
       if (ids.size === 0) return 0
       const { workflowProject, edges, networkStack } = get()
@@ -323,7 +366,7 @@ export function createSelectionActions(
       const removedEdges = edges.filter((edge) => ids.has(edge.id))
       const removed = edges.length - nextEdges.length
       if (removed === 0) return 0
-      get().takeSnapshot()
+      if (!options?.suppressSnapshot) get().takeSnapshot()
       const scopeId = networkStack.at(-1)?.nodeId ?? null
       set({
         workflowProject: removeCanonicalCanvasItems(workflowProject, scopeId, [], removedEdges),

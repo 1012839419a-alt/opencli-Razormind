@@ -28,13 +28,14 @@ const INITIAL_STATE: OpenCLIAdapterCatalogState = {
 export function useOpenCLIAdapterCatalog(enabled = true) {
   const [state, setState] = useState<OpenCLIAdapterCatalogState>(INITIAL_STATE)
 
-  const refresh = useCallback(async (signal?: AbortSignal) => {
+  const load = useCallback(async (signal?: AbortSignal, forceRefresh = false) => {
     setState((current) => ({ ...current, error: null, loading: true }))
     try {
       const response = await fetchWorkflowOpenCLIAdapterNodes({
         includeWrite: true,
         limit: 5000,
-        refresh: true,
+        refresh: forceRefresh,
+        signal,
       })
       if (signal?.aborted) return
       setState({
@@ -59,9 +60,11 @@ export function useOpenCLIAdapterCatalog(enabled = true) {
       return
     }
     const controller = new AbortController()
-    void refresh(controller.signal)
+    void load(controller.signal)
     return () => controller.abort()
-  }, [enabled, refresh])
+  }, [enabled, load])
+
+  const refresh = useCallback(() => load(undefined, true), [load])
 
   return { ...state, refresh }
 }

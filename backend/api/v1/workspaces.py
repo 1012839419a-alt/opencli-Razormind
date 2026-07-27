@@ -4,7 +4,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.database import get_db
 from backend.models.identity import User, Workspace, WorkspaceMembership, WorkspaceRole
+from backend.models.workflow import Project
 from backend.schemas.common import ApiResponse
+from backend.schemas.workflow_asset import ProjectRead
 from backend.schemas.workspace import (
     WorkspaceCreate,
     WorkspaceCreatedRead,
@@ -51,6 +53,59 @@ async def _get_or_create_user(
     elif user.disabled:
         raise HTTPException(status.HTTP_409_CONFLICT, "Disabled user cannot join a Workspace")
     return user
+
+
+@router.get(
+    "/governance/workspaces",
+    response_model=ApiResponse[list[WorkspaceRead]],
+)
+async def list_accessible_workspaces(
+    identity: RequestIdentity = Depends(get_request_identity),
+    db: AsyncSession = Depends(get_db),
+) -> ApiResponse:
+    rows = (
+        (
+            await db.execute(
+                select(Workspace)
+                .join(WorkspaceMembership, WorkspaceMembership.workspace_id == Workspace.id)
+                .join(User, User.id == WorkspaceMembership.user_id)
+                .where(
+                    User.subject == identity.subject,
+                    User.disabled.is_(False),
+                    Workspace.active.is_(True),
+                )
+                .order_by(Workspace.name)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return ApiResponse.ok([WorkspaceRead.model_validate(row) for row in rows])
+
+
+@router.get(
+    "/governance/workspaces/{workspace_id}/projects",
+    response_model=ApiResponse[list[ProjectRead]],
+)
+async def list_governance_projects(
+    workspace_id: str,
+    identity: RequestIdentity = Depends(get_request_identity),
+    db: AsyncSession = Depends(get_db),
+) -> ApiResponse:
+    access = await get_workspace_access(db, workspace_id, identity)
+    require_permission(access, WorkspacePermission.READ)
+    rows = (
+        (
+            await db.execute(
+                select(Project)
+                .where(Project.workspace_id == workspace_id, Project.archived.is_(False))
+                .order_by(Project.updated_at.desc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return ApiResponse.ok([ProjectRead.model_validate(row) for row in rows])
 
 
 @router.post(

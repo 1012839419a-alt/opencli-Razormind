@@ -3,6 +3,16 @@
 
 import type { Edge, Node, Connection } from "@xyflow/react"
 
+export type HandleDirection = "source" | "target"
+type NodePort = { id?: string; name?: string; direction?: string; type?: string }
+
+export type NodeHandleDescriptor = {
+  id: string | null
+  name: string
+  type: string
+  direction: HandleDirection
+}
+
 /** Would adding `source → target` introduce a directed cycle in `edges`? */
 export function wouldCreateCycle(edges: Edge[], source: string, target: string): boolean {
   if (source === target) return true
@@ -57,6 +67,95 @@ export interface ValidateConnectionOptions {
   nodes?: Node[]
 }
 
+function nodePorts(node: Node, direction: HandleDirection): NodePort[] {
+  const data = node.data as Record<string, unknown>
+  const primitivePorts = Array.isArray(data.primitivePorts) ? data.primitivePorts as NodePort[] : []
+  if (primitivePorts.length > 0) {
+    const expected = direction === "source" ? "output" : "input"
+    return primitivePorts.filter((port) => port.direction === expected)
+  }
+
+  const contract = data.runtimeContract as {
+    inputShape?: { ports?: NodePort[] }
+    outputShape?: { ports?: NodePort[] }
+  } | undefined
+  return direction === "source"
+    ? contract?.outputShape?.ports ?? []
+    : contract?.inputShape?.ports ?? []
+}
+
+export function nodeHandleDescriptors(node: Node, direction: HandleDirection): NodeHandleDescriptor[] {
+  if (node.type && node.type !== "workflow") return []
+  const descriptors = nodePorts(node, direction).map((port) => ({
+    id: port.id ?? port.name ?? null,
+    name: port.name ?? port.id ?? (direction === "source" ? "output" : "input"),
+    type: port.type ?? "unknown",
+    direction,
+  }))
+  return descriptors.length > 0
+    ? descriptors
+    : [{ id: null, name: direction === "source" ? "output" : "input", type: "unknown", direction }]
+}
+
+export function nodeHandleIds(node: Node, direction: HandleDirection): Array<string | null> {
+  return nodeHandleDescriptors(node, direction).map((port) => port.id)
+}
+
+export function nodeHandleDescriptor(
+  node: Node | undefined,
+  handleId: string | null | undefined,
+  direction: HandleDirection,
+): NodeHandleDescriptor | undefined {
+  return node
+    ? nodeHandleDescriptors(node, direction).find((port) => port.id === (handleId ?? null))
+    : undefined
+}
+
+export function portTypesCompatible(sourceType: string, targetType: string): boolean {
+  const source = sourceType.trim().toLowerCase()
+  const target = targetType.trim().toLowerCase()
+  return source === target || source === "any" || target === "any" || source === "unknown" || target === "unknown"
+}
+
+function nodeHandleType(node: Node | undefined, handleId: string | null | undefined, direction: HandleDirection) {
+  return nodeHandleDescriptor(node, handleId, direction)?.type
+}
+
+export function insertionConnections(
+  nodes: Node[],
+  edges: Edge[],
+  edge: Edge,
+  node: Node,
+): [Connection, Connection] | null {
+  if (node.id === edge.source || node.id === edge.target) return null
+  const withoutEdge = edges.filter((candidate) => candidate.id !== edge.id)
+  for (const input of nodeHandleDescriptors(node, "target")) {
+    const incoming: Connection = {
+      source: edge.source,
+      sourceHandle: edge.sourceHandle ?? null,
+      target: node.id,
+      targetHandle: input.id,
+    }
+    if (!validateConnection(withoutEdge, incoming, { preventCycles: true, typedHandles: true, nodes }).ok) continue
+    for (const output of nodeHandleDescriptors(node, "source")) {
+      const outgoing: Connection = {
+        source: node.id,
+        sourceHandle: output.id,
+        target: edge.target,
+        targetHandle: edge.targetHandle ?? null,
+      }
+      if (validateConnection([...withoutEdge, incoming as Edge], outgoing, {
+        preventCycles: true,
+        typedHandles: true,
+        nodes,
+      }).ok) {
+        return [incoming, outgoing]
+      }
+    }
+  }
+  return null
+}
+
 export function validateConnection(
   edges: Edge[],
   connection: Connection,
@@ -84,9 +183,11 @@ export function validateConnection(
   if (opts.typedHandles && opts.nodes) {
     const s = opts.nodes.find((n) => n.id === source)
     const t = opts.nodes.find((n) => n.id === target)
-    const sType = (s?.data as { handleType?: string } | undefined)?.handleType
-    const tType = (t?.data as { handleType?: string } | undefined)?.handleType
-    if (sType && tType && sType !== tType) {
+    const sType = nodeHandleType(s, sourceHandle, "source")
+      ?? (s?.data as { handleType?: string } | undefined)?.handleType
+    const tType = nodeHandleType(t, targetHandle, "target")
+      ?? (t?.data as { handleType?: string } | undefined)?.handleType
+    if (sType && tType && !portTypesCompatible(sType, tType)) {
       return { ok: false, reason: `端口类型不兼容：${sType} → ${tType}` }
     }
   }

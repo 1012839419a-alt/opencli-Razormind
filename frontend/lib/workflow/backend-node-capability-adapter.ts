@@ -101,8 +101,9 @@ export function projectBackendNodeCapability(
         : undefined,
       canvas: {
         node: true,
-        locked: !runtimeVerified,
-        lockReason: runtimeVerified ? null : reason,
+        locked: false,
+        runBlocked: !runtimeVerified,
+        runBlockReason: runtimeVerified ? null : reason,
       },
     },
   }

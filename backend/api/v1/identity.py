@@ -19,6 +19,8 @@ async def read_identity(
             "subject": identity.subject,
             "email": identity.email,
             "name": identity.name,
+            "username": identity.username,
+            "picture": identity.picture,
             "is_platform_admin": identity.is_platform_admin,
             "auth_method": identity.auth_method,
         }

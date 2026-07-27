@@ -29,6 +29,9 @@ type AgentProposal = {
   args: Record<string, unknown>
   summary: string
   diff: string
+  work_item_id?: string | null
+  workspace_id?: string | null
+  proposal_version?: string | null
 }
 
 type AgentReply = {
@@ -64,12 +67,25 @@ export function GlobalAgentDock({
     setError(null)
     setSending(true)
     try {
+      const searchParams = new URLSearchParams(window.location.search)
+      const workspaceId = searchParams.get('workspace')
+      const projectId = searchParams.get('project')
+        ?? pathname.match(/^\/studio\/projects\/([^/]+)/)?.[1]
+        ?? null
+      const workflowId = searchParams.get('workflow')
+      const sourceId = searchParams.get('source')
+        ?? pathname.match(/^\/sources\/([^/]+)/)?.[1]
+        ?? null
       const response = await apiClient.post<ApiResponse<AgentReply>>('/chat', {
         messages: nextMessages,
         context: {
           surface: ROUTE_LABELS[pathname] ?? pathname,
           pathname,
-          search: typeof window === 'undefined' ? '' : window.location.search,
+          search: searchParams.toString(),
+          workspace_id: workspaceId,
+          project_id: projectId,
+          workflow_id: workflowId,
+          source_id: sourceId,
         },
       })
       const reply = response.data.data
@@ -101,7 +117,13 @@ export function GlobalAgentDock({
       setProposal(null)
       await queryClient.invalidateQueries()
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '操作执行失败')
+      const status = reason instanceof Error && 'status' in reason ? reason.status : undefined
+      const message = reason instanceof Error ? reason.message : '操作执行失败'
+      setError(
+        status === 409
+          ? `提案已失效或目标已变化：${message}。请拒绝后重新发起。`
+          : message,
+      )
     } finally {
       setConfirming(false)
     }
@@ -123,6 +145,7 @@ export function GlobalAgentDock({
           </SheetTitle>
           <SheetDescription>
             当前上下文：{ROUTE_LABELS[pathname] ?? pathname}。读取可直接执行，写入操作先生成确认提案。
+            未明确指定 Workspace 时，仅在后端能解析出唯一授权范围时允许确认写操作。
           </SheetDescription>
         </SheetHeader>
 
@@ -162,6 +185,11 @@ export function GlobalAgentDock({
                 <div className="mt-3 rounded-xs border bg-background/70 p-2 font-mono text-2xs">
                   {proposal.diff}
                 </div>
+                <div className="mt-2 space-y-1 font-mono text-3xs text-muted-foreground">
+                  <div>工作项：{proposal.work_item_id ?? '未生成'}</div>
+                  <div>工作区：{proposal.workspace_id ?? '未绑定'}</div>
+                  <div>提案版本：{proposal.proposal_version ?? '未生成'}</div>
+                </div>
                 <div className="mt-3 flex justify-end gap-2">
                   <Button
                     variant="ghost"
@@ -172,7 +200,16 @@ export function GlobalAgentDock({
                     <X aria-hidden />
                     拒绝
                   </Button>
-                  <Button size="sm" disabled={confirming} onClick={() => void confirmProposal()}>
+                  <Button
+                    size="sm"
+                    disabled={
+                      confirming
+                      || !proposal.work_item_id
+                      || !proposal.workspace_id
+                      || !proposal.proposal_version
+                    }
+                    onClick={() => void confirmProposal()}
+                  >
                     {confirming ? <Loader2 className="animate-spin" aria-hidden /> : <Check aria-hidden />}
                     确认执行
                   </Button>

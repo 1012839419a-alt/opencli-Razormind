@@ -8,7 +8,20 @@ import type { WorkflowPrimitive } from "@/lib/workflow/node-primitives"
 import { NODE_NETWORK_DEPTH_LIMIT_REACHED } from "@/lib/workflow/node-hierarchy"
 import type { CanvasPoint } from "./workflow-canvas-geometry"
 
-export type NodeMenuState = { nodeId?: string; x: number; y: number }
+export type PortMenuTarget = {
+  nodeId: string
+  handleId: string | null
+  handleType: "source" | "target"
+  label: string
+  type: string
+}
+
+export type NodeMenuState = {
+  nodeId?: string
+  port?: PortMenuTarget
+  x: number
+  y: number
+}
 
 type FitView = (options?: { padding?: number; duration?: number; nodes?: { id: string }[] }) => unknown
 

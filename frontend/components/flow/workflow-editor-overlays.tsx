@@ -1,4 +1,3 @@
-import { Inspector } from "./inspector"
 import { InteractionSettingsPanel } from "./interaction-settings-panel"
 import { ProjectSettingsPanel } from "./project-settings-panel"
 import { RunTracePanel } from "./run-trace-panel"
@@ -79,7 +78,6 @@ export function NetworkBreadcrumb({
 }
 
 export function WorkflowFloatingPanels({
-  inspectorOpen,
   nodeManagementOpen,
   onCloseNodeManagement,
   onProfileChange,
@@ -89,7 +87,6 @@ export function WorkflowFloatingPanels({
   settingsOpen,
   workflowProfile,
 }: {
-  inspectorOpen: boolean
   nodeManagementOpen: boolean
   onCloseNodeManagement: () => void
   onProfileChange: (profile: WorkflowProfile) => void
@@ -116,10 +113,6 @@ export function WorkflowFloatingPanels({
       ) : settingsOpen ? (
         <div className="workflow-floating-panel contents">
           <InteractionSettingsPanel />
-        </div>
-      ) : inspectorOpen ? (
-        <div className="workflow-floating-panel contents">
-          <Inspector />
         </div>
       ) : null}
     </>
