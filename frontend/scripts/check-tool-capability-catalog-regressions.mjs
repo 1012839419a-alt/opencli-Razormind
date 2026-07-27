@@ -134,7 +134,6 @@ test("backend source preset materializes its real adapter", async () => {
       channelType: "rest",
       method: "GET",
       query: { format: "json" },
-      resultPath: "results",
     },
   }
   const runtimeCapability = {
