@@ -304,6 +304,11 @@ def _tool_capabilities() -> list[WorkflowToolCapability]:
                     "topK": 10,
                 },
             ),
+            catalog={
+                "id": SITUATION_AWARENESS_TOOL_CAPABILITY_ID,
+                "category": "processing",
+                "icon": "Radar",
+            },
         ),
         _realtime_tool(
             id=SWARM_SIMULATION_TOOL_CAPABILITY_ID,
@@ -335,6 +340,11 @@ def _tool_capabilities() -> list[WorkflowToolCapability]:
                     "enableGraphMemoryUpdate": False,
                 },
             ),
+            catalog={
+                "id": SWARM_SIMULATION_TOOL_CAPABILITY_ID,
+                "category": "processing",
+                "icon": "Network",
+            },
         ),
         *[_native_intelligence_tool(action) for action in NATIVE_INTELLIGENCE_ACTIONS],
     ]
@@ -375,6 +385,7 @@ def _realtime_tool(
     schema: str,
     resources: list[str],
     executor: WorkflowToolCapabilityExecutor | None = None,
+    catalog: dict[str, str] | None = None,
 ) -> WorkflowToolCapability:
     return WorkflowToolCapability(
         id=id,
@@ -404,6 +415,21 @@ def _realtime_tool(
                     "completed",
                 ]
             },
-            "canvas": {"node": False},
+            "canvas": {"node": catalog is not None},
+            **(
+                {
+                    "nodeCatalog": {
+                        "id": catalog["id"],
+                        "authority": "backend",
+                        "origin": "tool-capability",
+                        "category": catalog["category"],
+                        "kind": "action",
+                        "capability": "store",
+                    },
+                    "presentation": {"icon": catalog["icon"]},
+                }
+                if catalog is not None
+                else {}
+            ),
         },
     )
