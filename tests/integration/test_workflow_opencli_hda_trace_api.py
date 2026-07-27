@@ -2111,13 +2111,18 @@ async def test_workflow_run_executes_live_http_sources(
     for node in project["nodes"]:
         if node["id"] in {"source-bilibili", "source-xhs"}:
             node["params"].pop("fixtureItems")
+        if node["id"] == "source-bilibili":
+            node["params"]["query"] = {"q": "OpenCLI"}
     project["adapters"] = [
         {
             "id": "opencli-bilibili",
             "type": "source",
             "provider": "http",
             "mode": "live",
-            "config": {"url": "https://feeds.example.test/bilibili"},
+            "config": {
+                "url": "https://feeds.example.test/bilibili",
+                "query": {"format": "json"},
+            },
         },
         {
             "id": "opencli-xhs",
@@ -2151,6 +2156,12 @@ async def test_workflow_run_executes_live_http_sources(
 
         async def request(self, method, url, **kwargs):
             assert method == "GET"
+            expected_query = (
+                {"format": "json", "q": "OpenCLI"}
+                if url.endswith("/bilibili")
+                else None
+            )
+            assert kwargs["params"] == expected_query
             return FakeResponse(live_payloads[url])
 
     async def fake_guarded_async_client(url, **kwargs):
