@@ -1134,7 +1134,12 @@ def _is_inbox_store_node(node: WorkflowProjectNode) -> bool:
 
 
 def _is_external_tool_capability(node: WorkflowProjectNode) -> bool:
-    return _read_string((node.ui or {}).get("catalogId")) == "external.tool.capability"
+    catalog_id = _read_string((node.ui or {}).get("catalogId"))
+    if catalog_id == "external.tool.capability":
+        return True
+    tool_capability = _read_dict(node.params.get("toolCapability"))
+    tool_id = _read_string(tool_capability.get("id"))
+    return tool_id is not None and catalog_id == tool_id
 
 
 def _is_schedule_trigger(node: WorkflowProjectNode) -> bool:

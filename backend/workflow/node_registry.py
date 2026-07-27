@@ -231,6 +231,8 @@ def resolve_node_origin(node: WorkflowProjectNode) -> WorkflowNodeOrigin:
 
     if catalog_id in WORKFLOW_CATALOG_IDS:
         return WorkflowNodeOrigin(kind="node_library", catalog_id=catalog_id)
+    if _is_registered_tool_capability_node(node, catalog_id):
+        return WorkflowNodeOrigin(kind="node_library", catalog_id=catalog_id)
     if primitive_id in WORKFLOW_PRIMITIVE_IDS:
         return WorkflowNodeOrigin(kind="primitive_library", primitive_id=primitive_id)
     if n8n is not None:
@@ -248,6 +250,23 @@ def resolve_node_origin(node: WorkflowProjectNode) -> WorkflowNodeOrigin:
     if missing_capability:
         notes.append(f"missing capability: {missing_capability}")
     return WorkflowNodeOrigin(kind="legacy", missing_capability=missing_capability, notes=notes)
+
+
+def _is_registered_tool_capability_node(
+    node: WorkflowProjectNode,
+    catalog_id: str | None,
+) -> bool:
+    tool = node.params.get("toolCapability")
+    if not isinstance(tool, dict):
+        return False
+    tool_id = _read_string(tool.get("id"))
+    if tool_id is None or catalog_id != tool_id:
+        return False
+
+    # Local import avoids making the registry depend on this origin guard at import time.
+    from backend.workflow.tool_capabilities import resolve_workflow_tool_capability
+
+    return resolve_workflow_tool_capability(tool_id) is not None
 
 
 def forbidden_node_definition_keys(node: WorkflowProjectNode) -> list[str]:
