@@ -1298,8 +1298,12 @@ function backendNodeCatalogItem(
     ? backendCatalogCategory(nodeCatalog.category)
     : pluginCatalogCategory(typeof plugin?.family === "string" ? plugin.family : "tool")
   const origin = typeof nodeCatalog?.origin === "string" ? nodeCatalog.origin : "plugin"
-  const parsedAdapter = adapterBindingSchema.safeParse(nodeCatalog?.adapter)
-  const adapter = parsedAdapter.success ? parsedAdapter.data : undefined
+  const adapterValue = nodeCatalog?.adapter
+  const parsedAdapter = adapterValue === undefined
+    ? undefined
+    : adapterBindingSchema.safeParse(adapterValue)
+  if (parsedAdapter && !parsedAdapter.success) return null
+  const adapter = parsedAdapter?.data
   const description = typeof presentation?.description === "string"
     ? presentation.description
     : runtimeCapability.reason ?? "后端节点能力"
