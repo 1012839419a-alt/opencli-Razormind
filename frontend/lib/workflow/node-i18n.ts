@@ -779,6 +779,13 @@ export function localizeNodeText(id: string | undefined, fallback: LocalizedNode
   return NODE_TEXT[id]?.[language] ?? fallback
 }
 
+export function shouldPreserveNodeAuthoredText(data: WorkflowNodeData): boolean {
+  const id = getNodeDisplayId(data)
+  if (!id || !NODE_TEXT[id]) return false
+  const label = data.label.trim()
+  return label !== NODE_TEXT[id]["zh-CN"].label && label !== NODE_TEXT[id]["en-US"].label
+}
+
 export function localizeNodeParameterText(
   id: string,
   fallback: LocalizedNodeText,

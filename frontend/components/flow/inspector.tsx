@@ -50,6 +50,7 @@ import {
   getNodeDisplayId,
   localizeNodeParameterText,
   localizeNodeText,
+  shouldPreserveNodeAuthoredText,
   type WorkflowLanguage,
 } from "@/lib/workflow/node-i18n"
 import { buildWorkflowOutlineRows } from "@/lib/workflow/workflow-outline"
@@ -72,6 +73,7 @@ import {
 import type {
   WorkflowCapability,
   WorkflowNodeKind,
+  WorkflowProject,
   WorkflowProjectNode,
 } from "@/lib/workflow/schema"
 import { MonoRow, PanelShell, SectionCaption } from "./inspector-shell"
@@ -347,6 +349,7 @@ function InspectorModeTabs({
 }
 
 function WorkflowOutlinePanel({
+  businessLevel,
   compact,
   edges,
   language,
@@ -358,7 +361,9 @@ function WorkflowOutlinePanel({
   onSelectNode,
   selectedNodeId,
   title,
+  workflowProject,
 }: {
+  businessLevel: boolean
   compact: boolean
   edges: WorkflowEdge[]
   language: WorkflowLanguage
@@ -370,6 +375,7 @@ function WorkflowOutlinePanel({
   onSelectNode: (nodeId: string) => void
   selectedNodeId?: string
   title: string
+  workflowProject: WorkflowProject
 }) {
   const copy = INSPECTOR_COPY[language]
   const nodeById = new Map(nodes.map((node) => [node.id, node]))
@@ -381,11 +387,28 @@ function WorkflowOutlinePanel({
       {sectionRows.map((row) => {
         const node = nodeById.get(row.nodeId)
         if (!node) return null
-        const localized = localizeNodeText(
+        const projectNode = findWorkflowProjectNodeByCanvasId(workflowProject, node.id)
+        const configurationNode = findImplementationNode(projectNode) ?? projectNode
+        const nodeViewContract = buildCanonicalNodeViewContract(projectNode, node.data, node.id)
+        const systemText = localizeNodeText(
           getNodeDisplayId(node.data),
           { label: node.data.label, description: node.data.description },
           language,
         )
+        const prefersCustomLabel =
+          projectNode?.ui?.preferCustomLabel === true || shouldPreserveNodeAuthoredText(node.data)
+        const localized = prefersCustomLabel
+          ? { label: node.data.label, description: node.data.description }
+          : systemText
+        const displayLabel = businessLevel && !prefersCustomLabel
+          ? businessNodeName({
+              label: localized.label,
+              kind: nodeViewContract.identity.kind as WorkflowNodeKind,
+              capability: nodeViewContract.identity.capability as WorkflowCapability,
+              params: configurationNode?.params ?? readCanonical(node.data)?.params,
+              language,
+            })
+          : localized.label
         return (
           <button
             key={node.id}
@@ -413,7 +436,7 @@ function WorkflowOutlinePanel({
               )}
             />
             <span className="min-w-0 flex-1">
-              <span className="block truncate text-[11px] font-medium text-foreground">{localized.label}</span>
+              <span className="block truncate text-[11px] font-medium text-foreground">{displayLabel}</span>
               <span className="block truncate font-mono text-[9px] text-muted-foreground">
                 {row.branchLabel ? `${row.branchLabel} · ` : ""}{node.data.nodeType}
               </span>
@@ -749,6 +772,7 @@ export function Inspector({ compact = false, onClose }: { compact?: boolean; onC
   if (selected.length !== 1 || nodeTab === "outline") {
     return (
       <WorkflowOutlinePanel
+        businessLevel={networkStackLength === 0}
         compact={compact}
         edges={edges}
         language={language}
@@ -763,6 +787,7 @@ export function Inspector({ compact = false, onClose }: { compact?: boolean; onC
         onSelectNode={selectOutlineNode}
         selectedNodeId={selectedNodeId}
         title={workflowProject.name}
+        workflowProject={workflowProject}
       />
     )
   }
@@ -786,20 +811,25 @@ export function Inspector({ compact = false, onClose }: { compact?: boolean; onC
   const nodeTemplate = getNodeTemplate(configurationNode)
   const nodeViewContract = buildCanonicalNodeViewContract(projectNode, data, node.id)
   const isBusinessLevel = networkStackLength === 0
-  const localizedNodeText = projectNode?.ui?.preferCustomLabel === true
-    ? { label: data.label, description: data.description }
-    : localizeNodeText(
-        getNodeDisplayId(data),
-        { label: data.label, description: data.description },
-        language,
-      )
-  const businessLabel = businessNodeName({
-    label: localizedNodeText.label,
-    kind: nodeViewContract.identity.kind as WorkflowNodeKind,
-    capability: nodeViewContract.identity.capability as WorkflowCapability,
-    params: configurationNode?.params ?? canonical?.params,
+  const localizedSystemText = localizeNodeText(
+    getNodeDisplayId(data),
+    { label: data.label, description: data.description },
     language,
-  })
+  )
+  const prefersCustomLabel =
+    projectNode?.ui?.preferCustomLabel === true || shouldPreserveNodeAuthoredText(data)
+  const localizedNodeText = prefersCustomLabel
+    ? { label: data.label, description: data.description }
+    : localizedSystemText
+  const businessLabel = prefersCustomLabel
+    ? localizedNodeText.label
+    : businessNodeName({
+        label: localizedNodeText.label,
+        kind: nodeViewContract.identity.kind as WorkflowNodeKind,
+        capability: nodeViewContract.identity.capability as WorkflowCapability,
+        params: configurationNode?.params ?? canonical?.params,
+        language,
+      })
   const parameterInterfaceView = buildParameterInterfaceView({
     node: configurationNode,
     adapter: projectAdapter,
@@ -1255,7 +1285,7 @@ export function Inspector({ compact = false, onClose }: { compact?: boolean; onC
               {copy.businessHelp}
             </p>
             <p className="mt-1 font-mono text-3xs text-muted-foreground">
-              {copy.systemNode}: {localizedNodeText.label}
+              {copy.systemNode}: {localizedSystemText.label}
             </p>
           </div>
           <div className="space-y-1.5">
