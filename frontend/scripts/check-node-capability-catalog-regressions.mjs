@@ -322,6 +322,16 @@ test('tool picker exposes access and readiness as separate filter groups', async
   assert.match(palette, /role="group" aria-label=\{copy\.readinessFilter\}/)
 })
 
+test('OpenCLI preset results use a navigable two-pane catalog without changing node creation', async () => {
+  const palette = await readFrontendSource('components/flow/command-palette.tsx')
+
+  assert.match(palette, /data-testid="opencli-preset-layout"/)
+  assert.match(palette, /data-testid="opencli-group-navigation"/)
+  assert.match(palette, /href=\{`#opencli-group-\$\{group\.id\}`\}/)
+  assert.match(palette, /lg:grid-cols-2/)
+  assert.match(palette, /onClick=\{\(\) => addOpenCLIAdapter\(item\)\}/)
+})
+
 test('Studio materializes every searchable OpenCLI capability preset as a node', async () => {
   const [adapterNodes, adapterCatalog, palette, editor] = await Promise.all([
     importTypeScript('lib/workflow/backend-opencli-adapter-nodes.ts'),
