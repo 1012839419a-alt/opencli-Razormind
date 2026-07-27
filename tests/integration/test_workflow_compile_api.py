@@ -134,6 +134,65 @@ def test_run_status_marks_only_mixed_terminal_outcomes_partial_success():
     assert _run_status(in_flight_output_states, True, in_flight_output_nodes) == "failed"
 
 
+def test_run_status_preserves_collect_per_source_failures_as_partial_success():
+    from backend.workflow.opencli_hda_tracer import _run_status
+
+    runtime_nodes = [
+        SimpleNamespace(
+            id="source-package",
+            params={"execution": {"failureMode": "collect-per-source"}},
+            runtime={},
+        ),
+        SimpleNamespace(
+            id="source-package::healthy",
+            params={"sourceGroup": "market"},
+            runtime={"node_path": ["source-package", "healthy"]},
+        ),
+        SimpleNamespace(
+            id="source-package::failed",
+            params={"sourceGroup": "filings"},
+            runtime={"node_path": ["source-package", "failed"]},
+        ),
+        SimpleNamespace(id="records-output", params={}, runtime={}),
+    ]
+    states = [
+        SimpleNamespace(
+            nodeId="source-package",
+            status="completed",
+            nodePath=["source-package"],
+            sourceGroups=[],
+        ),
+        SimpleNamespace(
+            nodeId="source-package::healthy",
+            status="completed",
+            nodePath=["source-package", "healthy"],
+            sourceGroups=["market"],
+        ),
+        SimpleNamespace(
+            nodeId="source-package::failed",
+            status="failed",
+            nodePath=["source-package", "failed"],
+            sourceGroups=["filings"],
+        ),
+        SimpleNamespace(
+            nodeId="records-output",
+            status="completed",
+            nodePath=["records-output"],
+            sourceGroups=[],
+        ),
+    ]
+
+    assert _run_status(states, True, runtime_nodes) == "partial_success"
+    all_failed_states = [
+        SimpleNamespace(**vars(state))
+        for state in states
+    ]
+    all_failed_states[1].status = "failed"
+    assert _run_status(all_failed_states, True, runtime_nodes) == "failed"
+    runtime_nodes[0].params["execution"]["failureMode"] = "fail-fast"
+    assert _run_status(states, True, runtime_nodes) == "failed"
+
+
 def test_runtime_trigger_selection_isolates_each_hybrid_entry_run():
     from backend.schemas.workflow import CompiledWorkflowNode
     from backend.workflow.opencli_hda_tracer import _select_runtime_nodes_for_trigger
@@ -1729,6 +1788,7 @@ async def test_compile_materializes_opencli_hda_sources_from_ai_params_in_parall
                 "lockedInternals": True,
                 "execution": {
                     "fanout": "serial",
+                    "failureMode": "collect-per-source",
                 },
                 "sources": [
                     {
@@ -1780,7 +1840,10 @@ async def test_compile_materializes_opencli_hda_sources_from_ai_params_in_parall
     normalize = runtime["nodes"][4]
     collection_output = runtime["nodes"][5]
     assert package_node["params"]["execution"]["fanout"] == "parallel"
-    assert package_node["params"]["execution"] == {"fanout": "parallel"}
+    assert package_node["params"]["execution"] == {
+        "fanout": "parallel",
+        "failureMode": "collect-per-source",
+    }
     assert source_pool["depends_on"] == []
     assert source_pool["runtime"]["binding"]["binding_id"] == (
         "workflow.source-pool.parallel-fanout"

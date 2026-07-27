@@ -968,6 +968,111 @@ async def test_opencli_hda_trace_accepts_ai_source_slots_without_static_internal
 
 
 @pytest.mark.asyncio
+async def test_opencli_hda_collects_per_source_failures_without_blocking_package(
+    client,
+    monkeypatch,
+):
+    project = _multi_source_opencli_hda_project()
+    project["nodes"][0]["params"] = {
+        "execution": {"failureMode": "collect-per-source"}
+    }
+
+    async def fake_dispatch(dispatch, fleet_match, *, node):
+        if dispatch.sourceGroup == "social":
+            return [], {
+                "attempted": True,
+                "success": False,
+                "error": "source unavailable",
+            }
+        return [{"title": "market item"}], {
+            "attempted": True,
+            "success": True,
+            "itemCount": 1,
+        }
+
+    monkeypatch.setattr(
+        "backend.workflow.opencli_hda_tracer._dispatch_opencli_source_to_fleet",
+        fake_dispatch,
+    )
+
+    response = await client.post(
+        "/api/v1/workflows/runs",
+        json={
+            "project": project,
+            "packageNodeId": "multi-source-opencli",
+            "runId": "run-collect-per-source",
+            "traceId": "trace-collect-per-source",
+        },
+    )
+
+    assert response.status_code == 202
+    data = response.json()["data"]
+    assert data["status"] == "partial_success"
+    states = {state["nodeId"]: state for state in data["nodeStates"]}
+    assert states["multi-source-opencli"]["status"] == "completed"
+    assert states["multi-source-opencli::source-xiaohongshu"]["status"] == "failed"
+    events = (
+        await client.get("/api/v1/workflows/runs/run-collect-per-source/events")
+    ).json()["data"]
+    assert not any(
+        event["nodeId"] == "multi-source-opencli"
+        and event["eventType"] == "blocked"
+        for event in events
+    )
+
+
+@pytest.mark.asyncio
+async def test_opencli_hda_collect_per_source_blocks_package_when_all_sources_fail(
+    client,
+    monkeypatch,
+):
+    project = _multi_source_opencli_hda_project()
+    project["nodes"][0]["params"] = {
+        "execution": {"failureMode": "collect-per-source"}
+    }
+
+    async def fake_dispatch(dispatch, fleet_match, *, node):
+        return [], {
+            "attempted": True,
+            "success": False,
+            "error": f"{dispatch.sourceGroup} unavailable",
+        }
+
+    monkeypatch.setattr(
+        "backend.workflow.opencli_hda_tracer._dispatch_opencli_source_to_fleet",
+        fake_dispatch,
+    )
+
+    response = await client.post(
+        "/api/v1/workflows/runs",
+        json={
+            "project": project,
+            "packageNodeId": "multi-source-opencli",
+            "runId": "run-collect-per-source-all-failed",
+            "traceId": "trace-collect-per-source-all-failed",
+        },
+    )
+
+    assert response.status_code == 202
+    data = response.json()["data"]
+    assert data["status"] == "failed"
+    states = {state["nodeId"]: state for state in data["nodeStates"]}
+    assert states["multi-source-opencli"]["status"] == "blocked"
+    assert states["multi-source-opencli::source-bilibili"]["status"] == "failed"
+    assert states["multi-source-opencli::source-xiaohongshu"]["status"] == "failed"
+    events = (
+        await client.get(
+            "/api/v1/workflows/runs/run-collect-per-source-all-failed/events"
+        )
+    ).json()["data"]
+    assert not any(
+        event["nodeId"] == "multi-source-opencli"
+        and event["eventType"] == "completed"
+        for event in events
+    )
+
+
+@pytest.mark.asyncio
 async def test_opencli_hda_trace_reports_package_without_opencli_source_bindings(client):
     project = _multi_source_opencli_hda_project()
     project["nodes"][0]["internals"]["nodes"] = [

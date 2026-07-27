@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -72,16 +71,16 @@ from backend.workflow.joyai_vl_executor import (
     JoyAIVLExecutionError,
     execute_joyai_vl_interaction,
 )
-from backend.workflow.native_node_runtime import (
-    NATIVE_BINDING_IDS,
-    NativeNodeValidationError,
-    execute_native_node,
-)
 from backend.workflow.last30days_provider import Last30DaysProviderError
 from backend.workflow.native_intelligence_executor import (
     NATIVE_INTELLIGENCE_ACTION_BY_TOOL_ID,
     NATIVE_INTELLIGENCE_EXECUTOR,
     execute_native_intelligence_action,
+)
+from backend.workflow.native_node_runtime import (
+    NATIVE_BINDING_IDS,
+    NativeNodeValidationError,
+    execute_native_node,
 )
 from backend.workflow.realtime_market_executor import (
     OKX_MARKET_TICKER_SNAPSHOT_EXECUTOR,
@@ -98,8 +97,8 @@ from backend.workflow.rss_source_executor import (
     execute_workflow_rss_source,
 )
 from backend.workflow.runtime_registry import (
-    DATA_OPERATOR_CATALOG_BINDINGS,
     COLLECTION_OUTPUT_BINDING_ID,
+    DATA_OPERATOR_CATALOG_BINDINGS,
     DEDUPE_BINDING_ID,
     DIFY_GRAPHON_BINDING_ID,
     EXTERNAL_TOOL_BINDING_ID,
@@ -1253,11 +1252,67 @@ async def start_workflow_run(
 
         internal_reasons = blocked_by_package.get(package_node.id, [])
         if internal_reasons:
+            descendant_ids = {
+                node.id
+                for node in runtime_nodes
+                if package_node.id in _package_ancestor_ids(node)
+            }
+            source_node_ids = {
+                node.id
+                for node in runtime_nodes
+                if node.id in descendant_ids
+                and (
+                    _read_string(node.params.get("sourceGroup"))
+                    or _read_string(node.params.get("source_group"))
+                )
+            }
+            terminal_events_by_node: dict[str, WorkflowNodeRunEvent] = {}
+            for event in emitter.events:
+                if (
+                    event.nodeId in descendant_ids
+                    and event.eventType in {"completed", "failed", "blocked"}
+                ):
+                    terminal_events_by_node[event.nodeId] = event
+            source_terminal_events = [
+                event
+                for event in terminal_events_by_node.values()
+                if event.nodeId in source_node_ids
+            ]
+            has_successful_source = any(
+                event.eventType == "completed" for event in source_terminal_events
+            )
+            has_source_failure = any(
+                event.eventType in {"failed", "blocked"}
+                for event in source_terminal_events
+            )
+            has_non_source_failure = any(
+                event.eventType in {"failed", "blocked"}
+                and event.nodeId not in source_node_ids
+                for event in terminal_events_by_node.values()
+            )
+            tolerates_internal_reasons = (
+                _collects_per_source_failures(package_node)
+                and has_successful_source
+                and has_source_failure
+                and not has_non_source_failure
+            )
             emitter.emit(
                 package_node,
                 "partial",
-                message="Package produced partial source results before an internal block",
+                message=(
+                    "Package collected available source results with per-source failures"
+                    if tolerates_internal_reasons
+                    else "Package produced partial source results before an internal block"
+                ),
             )
+            if tolerates_internal_reasons:
+                emitter.emit(
+                    package_node,
+                    "completed",
+                    message="Package completed with per-source failures preserved in the trace",
+                    details={"sourceFailureCount": len(internal_reasons)},
+                )
+                continue
             emitter.emit(
                 package_node,
                 "blocked",
@@ -2065,6 +2120,38 @@ def _run_status(
     if not valid:
         return "failed"
     statuses = {state.status for state in node_states}
+    collect_per_source_package_ids_by_state = (
+        {
+            state.nodeId: _collect_per_source_package_ids(state, runtime_nodes)
+            for state in node_states
+        }
+        if runtime_nodes
+        else {}
+    )
+    successful_source_package_ids = {
+        package_id
+        for state in node_states
+        if state.status == "completed"
+        for package_id in collect_per_source_package_ids_by_state.get(state.nodeId, set())
+    }
+    tolerated_source_failure_ids = (
+        {
+            state.nodeId
+            for state in node_states
+            if state.status in {"failed", "blocked"}
+            and (
+                collect_per_source_package_ids_by_state.get(state.nodeId, set())
+                & successful_source_package_ids
+            )
+        }
+        if runtime_nodes
+        else set()
+    )
+    effective_statuses = {
+        state.status
+        for state in node_states
+        if state.nodeId not in tolerated_source_failure_ids
+    }
     if runtime_nodes:
         terminal_ids = {node.id for node in runtime_nodes if _is_builder_output(node)}
         terminal_statuses = {state.status for state in node_states if state.nodeId in terminal_ids}
@@ -2076,15 +2163,51 @@ def _run_status(
             and terminal_statuses.intersection({"failed", "blocked"})
         ):
             return "partial_success"
-    if "failed" in statuses:
+    if "failed" in effective_statuses:
         return "failed"
-    if "blocked" in statuses:
+    if "blocked" in effective_statuses:
         return "blocked"
-    if "running" in statuses or "partial" in statuses:
+    if "running" in effective_statuses or "partial" in effective_statuses:
         return "partial"
+    if tolerated_source_failure_ids and effective_statuses and effective_statuses <= {"completed"}:
+        return "partial_success"
     if statuses and statuses <= {"completed"}:
         return "completed"
     return "queued"
+
+
+def _collects_per_source_failures(node: CompiledWorkflowNode) -> bool:
+    execution = _read_dict(node.params.get("execution"))
+    return _read_string(execution.get("failureMode")) == "collect-per-source"
+
+
+def _collect_per_source_package_ids(
+    state: WorkflowRunNodeState,
+    runtime_nodes: list[CompiledWorkflowNode],
+) -> set[str]:
+    source_groups = getattr(state, "sourceGroups", [])
+    node_path = getattr(state, "nodePath", [])
+    runtime_node = next(
+        (node for node in runtime_nodes if node.id == state.nodeId),
+        None,
+    )
+    if (
+        not source_groups
+        or runtime_node is None
+        or not (
+            _read_string(runtime_node.params.get("sourceGroup"))
+            or _read_string(runtime_node.params.get("source_group"))
+        )
+    ):
+        return set()
+    tolerant_package_ids = {
+        node.id for node in runtime_nodes if _collects_per_source_failures(node)
+    }
+    return {
+        INTERNAL_ID_SEPARATOR.join(node_path[:depth])
+        for depth in range(1, len(node_path))
+        if INTERNAL_ID_SEPARATOR.join(node_path[:depth]) in tolerant_package_ids
+    }
 
 
 def _is_builder_output(node: CompiledWorkflowNode) -> bool:
