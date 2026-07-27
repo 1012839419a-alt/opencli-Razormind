@@ -235,4 +235,24 @@ test("backend source preset materializes its real adapter", async () => {
   )
   assert.deepEqual(project.adapters, [sourceAdapter])
   assert.equal(project.nodes.at(-1).adapter, sourceAdapter.id)
+
+  const malformedCapability = {
+    ...runtimeCapability,
+    id: "intelligence.source.malformed",
+    manifest: {
+      ...runtimeCapability.manifest,
+      nodeCatalog: {
+        ...runtimeCapability.manifest.nodeCatalog,
+        adapter: { id: "missing-required-fields" },
+      },
+    },
+  }
+  const malformedCatalog = getWorkflowNodeCatalog("intelligence", {
+    ...capabilities,
+    catalog: [malformedCapability],
+  })
+  assert.equal(
+    malformedCatalog.some((candidate) => candidate.id === malformedCapability.id),
+    false,
+  )
 })
