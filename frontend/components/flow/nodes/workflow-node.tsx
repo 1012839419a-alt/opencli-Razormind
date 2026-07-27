@@ -1,6 +1,6 @@
 "use client"
 
-import { memo, useEffect, type MouseEvent } from "react"
+import { memo, useEffect, type KeyboardEvent, type MouseEvent } from "react"
 import { Handle, Position, useStore, useUpdateNodeInternals, type NodeProps } from "@xyflow/react"
 import type { WorkflowNode as WorkflowNodeType } from "@/lib/flow/types"
 import { useFlowStore } from "@/lib/flow/store"
@@ -400,14 +400,11 @@ function WorkflowNodeComponent({ id, data, selected }: NodeProps<WorkflowNodeTyp
   const handleProps = (
     port: VisibleNodePort,
     handleType: "source" | "target",
-  ) => ({
-    "aria-label": `${isBusinessLevel ? businessLabel : nodeViewContract.identity.label} · ${handleType === "source" ? "输出" : "输入"} · ${port.id ?? "default"} · ${port.type ?? "unknown"}`,
-    "data-port-direction": handleType === "source" ? "output" : "input",
-    "data-port-id": port.id ?? "default",
-    "data-port-name": port.label,
-    "data-port-type": port.type ?? "unknown",
-    onClickCapture: (event: MouseEvent) => {
-      if (!event.altKey) return
+  ) => {
+    const openPortMenu = (
+      event: MouseEvent | KeyboardEvent,
+      position: { x: number; y: number },
+    ) => {
       event.preventDefault()
       event.stopPropagation()
       window.dispatchEvent(new CustomEvent("opencli:workflow-port-menu", {
@@ -417,12 +414,38 @@ function WorkflowNodeComponent({ id, data, selected }: NodeProps<WorkflowNodeTyp
           handleType,
           label: port.label,
           type: port.type ?? "unknown",
-          x: event.clientX,
-          y: event.clientY,
+          x: position.x,
+          y: position.y,
         },
       }))
-    },
-  })
+    }
+
+    return {
+      "aria-haspopup": "menu" as const,
+      "aria-label": `${isBusinessLevel ? businessLabel : nodeViewContract.identity.label} · ${handleType === "source" ? "输出" : "输入"} · ${port.id ?? "default"} · ${port.type ?? "unknown"}`,
+      "data-port-direction": handleType === "source" ? "output" : "input",
+      "data-port-id": port.id ?? "default",
+      "data-port-name": port.label,
+      "data-port-type": port.type ?? "unknown",
+      tabIndex: 0,
+      onClickCapture: (event: MouseEvent) => {
+        if (!event.altKey) return
+        openPortMenu(event, { x: event.clientX, y: event.clientY })
+      },
+      onContextMenu: (event: MouseEvent) => {
+        openPortMenu(event, { x: event.clientX, y: event.clientY })
+      },
+      onKeyDown: (event: KeyboardEvent) => {
+        const opensMenu = event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")
+        if (!opensMenu) return
+        const bounds = event.currentTarget.getBoundingClientRect()
+        openPortMenu(event, {
+          x: bounds.left + bounds.width / 2,
+          y: bounds.top + bounds.height / 2,
+        })
+      },
+    }
+  }
 
   const sourceHandleStyle = (i: number) =>
     outputs.length === 1

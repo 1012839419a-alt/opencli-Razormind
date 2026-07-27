@@ -46,7 +46,11 @@ import { workflowNodeDepthFromNetworkStack, workflowNodeLayerAtDepth } from "@/l
 import { localizeNodeText, type WorkflowLanguage } from "@/lib/workflow/node-i18n"
 import { groupPrimitivesForNodeMenu } from "@/lib/workflow/node-menu"
 import { getNodeContractByCatalogId } from "@/lib/workflow/node-contracts"
-import { getWorkflowPrimitives, type WorkflowPrimitive } from "@/lib/workflow/node-primitives"
+import {
+  getDifyCommonWorkflowPrimitives,
+  getWorkflowPrimitives,
+  type WorkflowPrimitive,
+} from "@/lib/workflow/node-primitives"
 import { openCLIAdapterNodeToCatalogItem } from "@/lib/workflow/opencli-adapter-catalog"
 import { useWorkflowCapabilities } from "@/lib/workflow/use-workflow-capabilities"
 import { cn } from "@/lib/utils"
@@ -642,6 +646,7 @@ export function CommandPalette({
       workflowCatalogPluginProvenance(item) === null &&
       item.runtimeCapability?.source !== "backend.workflow.tool_capabilities",
   )
+  const catalogOperatorIds = new Set(catalogOperators.map((item) => item.id))
   const pluginTools = allCatalogItems.filter(
     (item) =>
       catalogAcceptsConnection(item, compatiblePort) &&
@@ -679,7 +684,8 @@ export function CommandPalette({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [capabilities, catalogItems, compatiblePort, inNodeNetwork, language, queryText, workflowProfile])
   const primitiveGroups = groupPrimitivesForNodeMenu(
-    (inNodeNetwork ? getWorkflowPrimitives() : []).filter((item) => {
+    (inNodeNetwork ? getWorkflowPrimitives() : getDifyCommonWorkflowPrimitives()).filter((item) => {
+      if (catalogOperatorIds.has(item.id)) return false
       if (!primitiveAcceptsConnection(item, compatiblePort)) return false
       if (!queryText) return true
       const text = localizeNodeText(item.id, { label: item.label, description: item.description }, language)
@@ -748,9 +754,23 @@ export function CommandPalette({
             <div className="min-w-0"><div className="truncate text-sm font-medium">{selectedPresentation.label}</div><div className="truncate text-xs text-muted-foreground">{copy.requiredBeforeAdd}</div></div>
           </div>
           <div className="grid max-h-[52vh] gap-3 overflow-y-auto p-4">
-            {selectedOpenCLI.args.filter((arg) => arg.required).map((arg) => (
-              <label key={arg.name} className="grid gap-1.5 text-xs"><span>{arg.name}<span className="ml-1 text-destructive">*</span></span><input value={requiredValues[arg.name] ?? ""} onChange={(event) => setRequiredValues((current) => ({ ...current, [arg.name]: event.target.value }))} placeholder={arg.help ?? `${copy.input} ${arg.name}`} className="min-h-11 rounded-md border bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring/50" autoFocus={selectedOpenCLI.requiredArgs[0] === arg.name} /></label>
-            ))}
+            {selectedOpenCLI.args.filter((arg) => arg.required).map((arg) => {
+              const value = requiredValues[arg.name] ?? (arg.default == null ? "" : String(arg.default))
+              const onChange = (next: string) => setRequiredValues((current) => ({ ...current, [arg.name]: next }))
+              return (
+                <label key={arg.name} className="grid gap-1.5 text-xs">
+                  <span>{arg.name}<span className="ml-1 text-destructive">*</span></span>
+                  {arg.choices.length > 0 ? (
+                    <select value={value} onChange={(event) => onChange(event.target.value)} className="min-h-11 rounded-md border bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring/50" autoFocus={selectedOpenCLI.requiredArgs[0] === arg.name}>
+                      <option value="">{arg.help ?? `${copy.input} ${arg.name}`}</option>
+                      {arg.choices.map((choice) => <option key={String(choice)} value={String(choice)}>{String(choice)}</option>)}
+                    </select>
+                  ) : (
+                    <input type={arg.type?.toLowerCase().includes("int") || arg.type?.toLowerCase().includes("float") ? "number" : "text"} value={value} onChange={(event) => onChange(event.target.value)} placeholder={arg.help ?? `${copy.input} ${arg.name}`} className="min-h-11 rounded-md border bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring/50" autoFocus={selectedOpenCLI.requiredArgs[0] === arg.name} />
+                  )}
+                </label>
+              )
+            })}
           </div>
           <div className="flex justify-end gap-2 border-t p-4"><button type="button" className="min-h-10 rounded-md border px-4 text-xs" onClick={() => setSelectedOpenCLI(null)}>{copy.cancel}</button><button type="submit" className="min-h-10 rounded-md bg-primary px-4 text-xs text-primary-foreground disabled:opacity-50" disabled={missingRequired.length > 0}>{copy.addSource}</button></div>
         </form>

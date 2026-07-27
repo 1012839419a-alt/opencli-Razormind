@@ -727,7 +727,7 @@ test('workflow separates lightweight canvas actions from the guided node picker'
   assert.match(palette, /href="\/plugins"/)
   assert.match(palette, /workflowCatalogItemIsOpenCLIAdapterPreset/)
   assert.match(palette, /catalogItemUnavailable/)
-  assert.match(palette, /inNodeNetwork \? getWorkflowPrimitives\(\) : \[\]/)
+  assert.match(palette, /inNodeNetwork \? getWorkflowPrimitives\(\) : getDifyCommonWorkflowPrimitives\(\)/)
   assert.match(palette, /item\.category === ["']annotation["'] \|\| item\.category === ["']shape["']/)
   assert.match(palette, /groupPrimitivesForNodeMenu/)
   assert.match(effects, /event\.key === ["']Escape["']/)
@@ -903,12 +903,13 @@ test('the inspector host constrains long node configuration so the dock owns ver
 })
 
 test('Houdini-style wiring uses native lifecycle hooks without validation toast side effects', async () => {
-  const [interactions, surface, editor, palette, commandStrip] = await Promise.all([
+  const [interactions, surface, editor, palette, commandStrip, workflowNode] = await Promise.all([
     readSource('components/flow/workflow-canvas-interactions.ts'),
     readSource('components/flow/workflow-canvas-surface.tsx'),
     readSource('components/flow/workflow-editor.tsx'),
     readSource('components/flow/command-palette.tsx'),
     readSource('components/flow/command-strip.tsx'),
+    readSource('components/flow/nodes/workflow-node.tsx'),
   ])
   const guards = sourceSection(interactions, 'export function useConnectionGuards', 'export function useCanvasViewportCompaction')
 
@@ -929,6 +930,11 @@ test('Houdini-style wiring uses native lifecycle hooks without validation toast 
   assert.match(palette, /originType === ["']unknown["'] \|\| port\.type\.trim\(\)\.toLowerCase\(\) !== ["']unknown["']/)
   assert.match(palette, /const auxiliaryOperators = \(compatiblePort \? \[\] : NODE_PALETTE\)/)
   assert.match(commandStrip, /autoLayout\(["']TB["'], ["']elk["'], true\)/)
+  assert.match(workflowNode, /tabIndex: 0/)
+  assert.match(workflowNode, /onContextMenu: \(event: MouseEvent\) =>/)
+  assert.match(workflowNode, /event\.key === ["']ContextMenu["'] \|\| \(event\.shiftKey && event\.key === ["']F10["']\)/)
+  assert.match(workflowNode, /if \(!event\.altKey\) return/)
+  assert.match(workflowNode, /new CustomEvent\(["']opencli:workflow-port-menu["']/)
 })
 
 test('the right inspector uses graph contracts instead of manual keys and field paths', async () => {

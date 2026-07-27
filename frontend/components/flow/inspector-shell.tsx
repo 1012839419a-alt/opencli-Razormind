@@ -4,7 +4,7 @@ import { useRef, useState, type KeyboardEvent, type PointerEvent, type ReactNode
 import { LocateFixed, Pin, X } from "lucide-react"
 import { cn } from "@/lib/utils"
 
-const stateText: Record<string, string> = {
+export const workflowStatusText: Record<string, string> = {
   idle: "Idle",
   running: "Running",
   success: "Done",
@@ -12,7 +12,7 @@ const stateText: Record<string, string> = {
   error: "Error",
 }
 
-const stateDotClass: Record<string, string> = {
+export const workflowStatusDotClass: Record<string, string> = {
   idle: "border-muted-foreground/50 bg-transparent",
   running: "border-info bg-info",
   success: "border-success bg-success",
@@ -54,10 +54,10 @@ function PanelStatus({ status }: { status?: string }) {
   return (
     <span
       className="inline-flex shrink-0 items-center gap-1.5 text-muted-foreground"
-      title={`Status: ${stateText[status] ?? status}`}
+      title={`Status: ${workflowStatusText[status] ?? status}`}
     >
-      <span className={cn("size-1.5 rounded-full border", stateDotClass[status] ?? stateDotClass.idle)} />
-      <span>{stateText[status] ?? status}</span>
+      <span className={cn("size-1.5 rounded-full border", workflowStatusDotClass[status] ?? workflowStatusDotClass.idle)} />
+      <span>{workflowStatusText[status] ?? status}</span>
     </span>
   )
 }

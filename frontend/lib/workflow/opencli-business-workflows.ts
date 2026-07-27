@@ -9,11 +9,39 @@ import {
 } from "./node-catalog"
 import { parseWorkflowProject, type WorkflowProjectNode } from "./schema"
 
+export const DOMESTIC_OODA_SOURCE_GROUPS = [
+  "market",
+  "filings",
+  "macro",
+  "news",
+  "social",
+] as const
+
+export const DOMESTIC_OODA_SOURCE_GAPS = [
+  {
+    site: "gelonghui",
+    status: "unavailable",
+    reason: "当前 OpenCLI 注册表没有格隆汇命令；保留为明确缺口，不生成伪节点。",
+  },
+  {
+    site: "jin10",
+    command: "kuaixun",
+    status: "degraded",
+    reason: "命令已注册，但最近一次真实请求为空；运行时按 empty 展示。",
+  },
+  {
+    site: "cninfo",
+    command: "disclosure-pdf",
+    status: "degraded",
+    reason: "命令已注册，但最近一次真实请求为空；保留官方 PDF 来源并公开健康状态。",
+  },
+] as const
+
 export const ASHARE_OPENCLI_SOURCES: OpenCLISourceSlot[] = [
   {
     id: "market-breadth",
     label: "沪深京 A 股行情全景",
-    sourceGroup: "market-breadth",
+    sourceGroup: "market",
     site: "eastmoney",
     command: "gridlist",
     args: { market: "hs-a", sort: "turnover", limit: 100 },
@@ -21,32 +49,88 @@ export const ASHARE_OPENCLI_SOURCES: OpenCLISourceSlot[] = [
   {
     id: "watchlist-quotes",
     label: "A 股样本实时行情",
-    sourceGroup: "quotes",
+    sourceGroup: "market",
     site: "eastmoney",
     command: "quote",
     args: {},
     positionalArgs: ["600519,000001,300750"],
   },
   {
+    id: "ths-hot",
+    label: "同花顺强势股与题材归因",
+    sourceGroup: "market",
+    site: "ths",
+    command: "hot",
+    args: { limit: 50 },
+  },
+  {
     id: "fundamentals",
-    label: "上市公司财务摘要",
-    sourceGroup: "fundamentals",
+    label: "东方财富上市公司财务摘要",
+    sourceGroup: "filings",
     site: "eastmoney",
     command: "bbsj-summary",
     args: { code: "600519", limit: 8 },
   },
   {
     id: "announcements",
-    label: "沪深京上市公司公告",
-    sourceGroup: "announcements",
+    label: "东方财富沪深京上市公司公告",
+    sourceGroup: "filings",
     site: "eastmoney",
     command: "announcement",
     args: { market: "SHA,SZA,BJA", limit: 100 },
   },
   {
+    id: "sse-announcements",
+    label: "上交所官方公告与 PDF",
+    sourceGroup: "filings",
+    site: "sse",
+    command: "announcements",
+    args: { limit: 30 },
+  },
+  {
+    id: "szse-home",
+    label: "深交所市场概况与最新公告",
+    sourceGroup: "filings",
+    site: "szse",
+    command: "home",
+    args: { limit: 30 },
+  },
+  {
+    id: "bse-announcements",
+    label: "北交所官方公告",
+    sourceGroup: "filings",
+    site: "bse",
+    command: "announcement",
+    args: { limit: 30 },
+  },
+  {
+    id: "cninfo-pdf",
+    label: "巨潮资讯公告 PDF",
+    sourceGroup: "filings",
+    site: "cninfo",
+    command: "disclosure-pdf",
+    args: { market: "沪深京", limit: 30 },
+  },
+  {
+    id: "macro-flash",
+    label: "金十数据宏观快讯",
+    sourceGroup: "macro",
+    site: "jin10",
+    command: "kuaixun",
+    args: { limit: 30 },
+  },
+  {
+    id: "macro-news",
+    label: "新浪财经宏观新闻",
+    sourceGroup: "macro",
+    site: "sinafinance",
+    command: "news",
+    args: { type: 2, limit: 30 },
+  },
+  {
     id: "breaking-news",
     label: "财联社实时电报",
-    sourceGroup: "breaking-news",
+    sourceGroup: "news",
     site: "cls",
     command: "telegraph",
     args: { limit: 30 },
@@ -54,9 +138,17 @@ export const ASHARE_OPENCLI_SOURCES: OpenCLISourceSlot[] = [
   {
     id: "finance-news",
     label: "新浪财经新闻",
-    sourceGroup: "finance-news",
+    sourceGroup: "news",
     site: "sinafinance",
     command: "news",
+    args: { type: 1, limit: 30 },
+  },
+  {
+    id: "xueqiu-hot",
+    label: "雪球人气个股热度榜",
+    sourceGroup: "social",
+    site: "xueqiu",
+    command: "hot-stocks",
     args: { limit: 30 },
   },
 ]
@@ -215,11 +307,22 @@ export function buildAshareMarketWorkflow(name: string) {
     workflowId: "ashare-market-intelligence",
     cadence: "5m",
     sources: ASHARE_OPENCLI_SOURCES,
-    sourceLabel: "A 股多源真实采集",
-    sourceDescription: "行情、财务、公告与实时新闻并行采集；逐来源显示完成、空结果或失败",
+    sourceLabel: "国内全网 OODA 数据源",
+    sourceDescription: "行情、公告与 PDF、宏观、新闻、社交五类来源并行采集；逐来源显示完成、空结果或失败",
     recordsLabel: "A 股金融数据集",
-    maxItemsPerRun: 500,
-    allowedDomains: ["eastmoney.com", "cls.cn", "sina.com.cn"],
+    maxItemsPerRun: 1_000,
+    allowedDomains: [
+      "eastmoney.com",
+      "10jqka.com.cn",
+      "xueqiu.com",
+      "cninfo.com.cn",
+      "sse.com.cn",
+      "szse.cn",
+      "bse.cn",
+      "jin10.com",
+      "cls.cn",
+      "sina.com.cn",
+    ],
   })
 }
 

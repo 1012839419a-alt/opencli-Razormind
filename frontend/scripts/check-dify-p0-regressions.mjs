@@ -94,6 +94,53 @@ test('all 25 user-visible Dify node families resolve to stable OpenCLI capabilit
   }
 })
 
+test('root canvas exposes the curated Dify common-node set without hiding design-only primitives', async () => {
+  const [{ DIFY_NODE_CAPABILITY_IDS }, primitives, palette] = await Promise.all([
+    importTypeScript('lib/workflow/dify-capability-map.ts'),
+    importTypeScript('lib/workflow/node-primitives.ts'),
+    readFrontendSource('components/flow/command-palette.tsx'),
+  ])
+  const expectedIds = [
+    DIFY_NODE_CAPABILITY_IDS.start,
+    DIFY_NODE_CAPABILITY_IDS.end,
+    DIFY_NODE_CAPABILITY_IDS.answer,
+    DIFY_NODE_CAPABILITY_IDS.llm,
+    DIFY_NODE_CAPABILITY_IDS.agent,
+    DIFY_NODE_CAPABILITY_IDS.knowledgeRetrieval,
+    DIFY_NODE_CAPABILITY_IDS.questionClassifier,
+    DIFY_NODE_CAPABILITY_IDS.ifElse,
+    DIFY_NODE_CAPABILITY_IDS.switch,
+    DIFY_NODE_CAPABILITY_IDS.humanInput,
+    DIFY_NODE_CAPABILITY_IDS.iteration,
+    DIFY_NODE_CAPABILITY_IDS.loop,
+    DIFY_NODE_CAPABILITY_IDS.code,
+    DIFY_NODE_CAPABILITY_IDS.templateTransform,
+    DIFY_NODE_CAPABILITY_IDS.variableAssign,
+    DIFY_NODE_CAPABILITY_IDS.variableAggregate,
+    DIFY_NODE_CAPABILITY_IDS.parameterExtract,
+    DIFY_NODE_CAPABILITY_IDS.documentExtract,
+    DIFY_NODE_CAPABILITY_IDS.httpRequest,
+  ]
+
+  assert.deepEqual(primitives.DIFY_COMMON_NODE_CAPABILITY_IDS, expectedIds)
+  assert.equal(new Set(expectedIds).size, expectedIds.length)
+  for (const id of expectedIds) {
+    assert.equal(
+      primitives.WORKFLOW_PRIMITIVES.filter((item) => item.id === id).length,
+      1,
+      `${id} must reuse one exact primitive instead of adding a duplicate`,
+    )
+  }
+  assert.deepEqual(
+    primitives.getDifyCommonWorkflowPrimitives().map((item) => item.id),
+    expectedIds,
+  )
+  assert.ok(primitives.getWorkflowPrimitives().length > expectedIds.length, 'nested networks retain the full primitive library')
+  assert.match(palette, /inNodeNetwork\s*\?\s*getWorkflowPrimitives\(\)\s*:\s*getDifyCommonWorkflowPrimitives\(\)/)
+  assert.match(palette, /catalogOperatorIds\.has\(item\.id\)/)
+  assert.doesNotMatch(palette, /getDifyCommonWorkflowPrimitives\(\)[\s\S]{0,200}catalogItemUnavailable/)
+})
+
 test('Dify preview preserves sanitized source config and reports ambiguous or missing mappings', async () => {
   const { translateDifyWorkflowToWorkflowProject } = await importTypeScript('lib/workflow/dify-translator.ts')
   const translated = translateDifyWorkflowToWorkflowProject({
@@ -251,7 +298,9 @@ test('projected plugin nodes show provenance and stay locked in the palette', as
   assert.match(catalog, /backend\.services\.plugin_registry_service/)
   assert.match(catalog, /workflowCatalogItemLocked/)
   assert.match(catalog, /workflowCatalogPluginProvenance/)
-  assert.match(palette, /disabled=\{locked\}/)
+  assert.match(palette, /function catalogItemUnavailable/)
+  assert.match(palette, /return workflowCatalogItemLocked\(item\)/)
+  assert.match(palette, /disabled=\{catalogItemUnavailable\(item\)\}/)
   assert.ok(
     /workflowCatalogPluginProvenance\(item\) !== null/.test(palette) ||
       !/filter\(\(item\) => item\.category === "package"\)/.test(palette),
