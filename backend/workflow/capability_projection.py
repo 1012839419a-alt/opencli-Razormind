@@ -295,6 +295,168 @@ def _catalog_capabilities(*, dify_runtime_ready: bool) -> list[WorkflowRuntimeCa
             ),
         ),
         _capability(
+            id="intelligence.source.searxng",
+            label="SearXNG 元搜索 / Metasearch",
+            surface="catalog",
+            status="runnable",
+            backend_available=True,
+            kind="source",
+            capability="fetch",
+            provider="http",
+            channel_type="rest",
+            runtime_binding=SOURCE_FETCH_BINDING_ID,
+            reason=(
+                "Runs a configured SearXNG JSON Search API through the guarded "
+                "HTTP source executor and emits results as workflow items."
+            ),
+            tags=["source", "osint", "searxng", "metasearch", "live"],
+            source="backend.workflow.http_source_executor",
+            manifest={
+                **_manifest(
+                    schema="capability.source.searxng.v1",
+                    input_ports=[_port("in", "trigger")],
+                    output_ports=[_port("out", "items[]")],
+                    resources=["searxng_service", "allowed_domains"],
+                    permissions=["canFetchNetwork"],
+                    runtime_binding=SOURCE_FETCH_BINDING_ID,
+                    probes=["searxng_json_enabled", "source_domain_allowed"],
+                ),
+                "canvas": {"node": True},
+                "nodeCatalog": {
+                    "authority": "backend",
+                    "origin": "source-preset",
+                    "category": "source",
+                    "kind": "source",
+                    "capability": "fetch",
+                    "adapter": {
+                        "id": "source-searxng-http",
+                        "type": "source",
+                        "provider": "http",
+                        "mode": "live",
+                        "config": {
+                            "channelType": "rest",
+                            "method": "GET",
+                            "query": {"format": "json"},
+                        },
+                    },
+                },
+                "presentation": {
+                    "icon": "Search",
+                    "description": (
+                        "连接自托管 SearXNG JSON API；查询参数随节点保存，"
+                        "域名仍受工作流网络权限约束。"
+                    ),
+                    "parameters": [
+                        {
+                            "name": "endpoint",
+                            "label": "搜索地址 / Search endpoint",
+                            "type": "string",
+                            "required": True,
+                        },
+                        {
+                            "name": "query",
+                            "label": "查询参数 / Query parameters",
+                            "type": "object",
+                            "required": True,
+                            "default": {
+                                "q": "OpenCLI",
+                                "format": "json",
+                                "categories": "general",
+                            },
+                        },
+                        {
+                            "name": "resultPath",
+                            "label": "结果路径 / Result path",
+                            "type": "string",
+                            "required": True,
+                            "default": "results",
+                        },
+                        {
+                            "name": "sourceGroup",
+                            "label": "来源分组 / Source group",
+                            "type": "string",
+                            "default": "web-search",
+                        },
+                    ],
+                },
+            },
+        ),
+        _capability(
+            id="intelligence.source.rsshub",
+            label="RSSHub 路由 / Route",
+            surface="catalog",
+            status="runnable",
+            backend_available=True,
+            kind="source",
+            capability="fetch",
+            provider="rss",
+            channel_type="rss",
+            runtime_binding=SOURCE_FETCH_BINDING_ID,
+            reason=(
+                "Runs an RSSHub route through the existing RSS/Atom executor "
+                "with source grouping, retry, lineage, and Provider support."
+            ),
+            tags=["source", "osint", "rsshub", "rss", "live"],
+            source="backend.workflow.rss_source_executor",
+            manifest={
+                **_manifest(
+                    schema="capability.source.rsshub.v1",
+                    input_ports=[_port("in", "trigger")],
+                    output_ports=[_port("out", "items[]")],
+                    resources=[
+                        "rss_channel",
+                        "feed_provider_registry",
+                        "allowed_domains",
+                    ],
+                    permissions=["canFetchNetwork"],
+                    runtime_binding=SOURCE_FETCH_BINDING_ID,
+                    probes=["rsshub_route_available", "source_domain_allowed"],
+                ),
+                "canvas": {"node": True},
+                "nodeCatalog": {
+                    "authority": "backend",
+                    "origin": "source-preset",
+                    "category": "source",
+                    "kind": "source",
+                    "capability": "fetch",
+                    "adapter": {
+                        "id": "source-rsshub-feed",
+                        "type": "source",
+                        "provider": "rss",
+                        "mode": "live",
+                        "config": {"channel": "rss"},
+                    },
+                },
+                "presentation": {
+                    "icon": "Rss",
+                    "description": (
+                        "读取自托管 RSSHub 路由或已登记的 Feed Provider，"
+                        "保留来源分组与运行血缘。"
+                    ),
+                    "parameters": [
+                        {
+                            "name": "feedUrl",
+                            "label": "订阅地址 / Feed URL",
+                            "type": "string",
+                            "required": True,
+                        },
+                        {
+                            "name": "maxEntries",
+                            "label": "最大条目 / Max entries",
+                            "type": "integer",
+                            "default": 20,
+                        },
+                        {
+                            "name": "sourceGroup",
+                            "label": "来源分组 / Source group",
+                            "type": "string",
+                            "default": "rsshub",
+                        },
+                    ],
+                },
+            },
+        ),
+        _capability(
             id="intelligence.source.opencli-slot",
             label="OpenCLI Source Slot",
             surface="catalog",
