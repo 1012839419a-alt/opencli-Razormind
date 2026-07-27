@@ -388,14 +388,14 @@ def _validate_project(project: WorkflowProject) -> list[WorkflowCompileError]:
 def _validate_capability_version_pin(
     node: WorkflowProjectNode,
 ) -> list[WorkflowCompileError]:
-    if _read_string((node.ui or {}).get("catalogId")) != "external.tool.capability":
-        return []
-
     tool_capability = node.params.get("toolCapability")
     if not isinstance(tool_capability, dict):
         return []
     tool_id = _read_string(tool_capability.get("id"))
     if tool_id is None:
+        return []
+    catalog_id = _read_string((node.ui or {}).get("catalogId"))
+    if catalog_id not in {"external.tool.capability", tool_id}:
         return []
 
     issue = validate_workflow_tool_capability_version_pin(
