@@ -77,7 +77,7 @@ export function useDismissNodeMenu(
 
 export function useCompactViewportMedia(setCompactViewport: Dispatch<SetStateAction<boolean>>) {
   useEffect(() => {
-    const media = window.matchMedia("(max-width: 640px)")
+    const media = window.matchMedia("(max-width: 1024px)")
     const update = () => setCompactViewport(media.matches)
     update()
     media.addEventListener("change", update)

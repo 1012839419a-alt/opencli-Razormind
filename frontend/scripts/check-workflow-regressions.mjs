@@ -92,11 +92,12 @@ function sourceSection(source, start, end) {
 }
 
 test('right workflow dock derives its outline from graph structure and opens without a selection', async () => {
-  const [{ buildWorkflowOutlineRows }, shortcuts, inspector, shell] = await Promise.all([
+  const [{ buildWorkflowOutlineRows }, shortcuts, inspector, shell, effects] = await Promise.all([
     importTypeScript('lib/workflow/workflow-outline.ts'),
     readSource('components/flow/workflow-keyboard-shortcuts.ts'),
     readSource('components/flow/inspector.tsx'),
     readSource('components/flow/inspector-shell.tsx'),
+    readSource('components/flow/workflow-editor-effects.ts'),
   ])
   const nodes = [
     { id: 'start', position: { x: 0, y: 0 }, data: {} },
@@ -122,8 +123,10 @@ test('right workflow dock derives its outline from graph structure and opens wit
   assert.match(shell, /aria-label=["']工作流右侧工具架["']/)
   assert.match(shell, />Workflow Dock</)
   assert.match(shell, /data-dock-mode=\{compact \? ["']overlay["'] : ["']shared["']\}/)
+  assert.match(shell, /compact[\s\S]{0,120}z-50/)
   assert.match(shell, /aria-label=["']调整右侧工具架宽度["']/)
   assert.match(inspector, /pinnedNodeId/)
+  assert.match(effects, /matchMedia\(["']\(max-width: 1024px\)["']\)/)
 })
 
 test('node workflow lives inside a project shell while the legacy canvas route redirects', async () => {

@@ -109,10 +109,10 @@ export function PanelShell({
       data-dock-mode={compact ? "overlay" : "shared"}
       style={compact ? undefined : { width }}
       className={cn(
-        "z-40 flex shrink-0 flex-col overflow-hidden border border-ops-line bg-ops-panel text-zinc-100 duration-150 animate-in fade-in slide-in-from-right-4",
+        "flex shrink-0 flex-col overflow-hidden border border-ops-line bg-ops-panel text-zinc-100 duration-150 animate-in fade-in slide-in-from-right-4",
         compact
-          ? "fixed bottom-3 right-3 top-3 w-[min(380px,calc(100vw-1.5rem))] rounded-md"
-          : "relative h-full rounded-md",
+          ? "fixed bottom-3 right-3 top-3 z-50 w-[min(380px,calc(100vw-1.5rem))] rounded-md"
+          : "relative z-40 h-full rounded-md",
       )}
       aria-label="工作流右侧工具架"
       onPointerDown={(event) => event.stopPropagation()}
