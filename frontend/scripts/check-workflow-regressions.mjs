@@ -781,11 +781,49 @@ test('studio templates persist template-specific source, cadence, and delivery i
     ],
   )
   assert.equal(opencliLive.agentPermissions.canSendNotifications, true)
+  const financialSourcePool = financialRss.nodes.find((node) => node.ui?.catalogId === 'intelligence.source.pool')
+  assert.ok(financialSourcePool)
+  assert.equal(financialRss.nodes.filter((node) => node.kind === 'source').length, 0)
+  assert.deepEqual(financialRss.nodes.map((node) => node.id), [
+    'schedule-finance-rss',
+    'source-pool-finance-rss',
+    'normalize-finance-rss',
+    'accept-finance-rss',
+    'records-finance-rss',
+  ])
   assert.deepEqual(
-    financialRss.nodes.filter((node) => node.kind === 'source').map((node) => node.params.sourceGroup),
+    financialSourcePool.internals?.nodes.map((node) => node.params.sourceGroup),
     ['macro-policy', 'market-regulation', 'central-bank-research'],
   )
-  assert.ok(financialRss.nodes.filter((node) => node.kind === 'source').every((node) => node.ui?.catalogId === 'intelligence.source.rss'))
+  assert.ok(financialSourcePool.internals?.nodes.every((node) => node.ui?.catalogId === 'intelligence.source.rss'))
+  assert.deepEqual(
+    financialSourcePool.internals?.nodes.map((node) => node.params.sourceKey),
+    ['rss-federal-reserve', 'rss-sec-regulation', 'rss-ecb-research'],
+  )
+  assert.deepEqual(financialSourcePool.ui?.runtimeContract?.outputShape?.ports, [{ name: 'items', type: 'items[]' }])
+  assert.deepEqual(
+    financialSourcePool.internals?.nodes.map((node) =>
+      Object.fromEntries(
+        node.parameterInterface?.fields
+          .filter((field) => ['feedUrl', 'sourceGroup'].includes(field.binding.fieldId))
+          .map((field) => [field.binding.fieldId, field.value]) ?? [],
+      ),
+    ),
+    [
+      { feedUrl: 'https://www.federalreserve.gov/feeds/press_all.xml', sourceGroup: 'macro-policy' },
+      { feedUrl: 'https://www.sec.gov/news/pressreleases.rss', sourceGroup: 'market-regulation' },
+      { feedUrl: 'https://www.ecb.europa.eu/rss/press.html', sourceGroup: 'central-bank-research' },
+    ],
+  )
+  assert.deepEqual(
+    financialRss.edges.map((edge) => [edge.source, edge.target]),
+    [
+      ['schedule-finance-rss', 'source-pool-finance-rss'],
+      ['source-pool-finance-rss', 'normalize-finance-rss'],
+      ['normalize-finance-rss', 'accept-finance-rss'],
+      ['accept-finance-rss', 'records-finance-rss'],
+    ],
+  )
   assert.deepEqual(financialRss.agentPermissions.allowedDomains, ['federalreserve.gov', 'sec.gov', 'ecb.europa.eu'])
   assert.equal(financialRss.nodes.at(-1)?.ui?.catalogId, 'intelligence.sink.records')
   assert.deepEqual(inferWorkflowRunTrigger(financialRss), {

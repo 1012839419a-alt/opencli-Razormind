@@ -36,6 +36,23 @@ def build_project() -> dict:
             "site": "ecb",
         },
     ]
+    source_nodes = [
+        {
+            "id": source["id"],
+            "kind": "source",
+            "capability": "fetch",
+            "adapter": "rss-feed",
+            "params": {
+                "feedUrl": source["feedUrl"],
+                "maxEntries": 5,
+                "sourceGroup": source["sourceGroup"],
+                "sourceKey": source["id"],
+                "site": source["site"],
+            },
+            "ui": {"catalogId": "intelligence.source.rss"},
+        }
+        for source in source_definitions
+    ]
     nodes = [
         {
             "id": "schedule-finance-rss",
@@ -44,22 +61,31 @@ def build_project() -> dict:
             "params": {"interval": "15m", "timezone": "Asia/Shanghai"},
             "ui": {"catalogId": "intelligence.schedule.cron"},
         },
-        *[
-            {
-                "id": source["id"],
-                "kind": "source",
-                "capability": "fetch",
-                "adapter": "rss-feed",
-                "params": {
-                    "feedUrl": source["feedUrl"],
-                    "maxEntries": 5,
-                    "sourceGroup": source["sourceGroup"],
-                    "site": source["site"],
-                },
-                "ui": {"catalogId": "intelligence.source.rss"},
-            }
-            for source in source_definitions
-        ],
+        {
+            "id": "source-pool-finance-rss",
+            "kind": "agent",
+            "capability": "normalize",
+            "params": {
+                "sourceCount": len(source_nodes),
+                "sourceGroups": [source["sourceGroup"] for source in source_definitions],
+                "fanout": "parallel",
+            },
+            "topicCollapse": {
+                "groupId": "financial-rss-source-pool",
+                "nodeCount": len(source_nodes),
+                "mode": "locked",
+                "packageInternal": True,
+            },
+            "internals": {
+                "locked": True,
+                "nodes": source_nodes,
+                "edges": [],
+            },
+            "ui": {
+                "catalogId": "intelligence.source.pool",
+                "label": "财经情报数据源池",
+            },
+        },
         {
             "id": "normalize-finance-rss",
             "kind": "agent",
@@ -93,26 +119,20 @@ def build_project() -> dict:
         },
     ]
     edges = [
-        *[
-            {
-                "id": f"schedule-{source['id']}",
-                "source": "schedule-finance-rss",
-                "target": source["id"],
-                "sourcePort": "tick",
-                "targetPort": "in",
-            }
-            for source in source_definitions
-        ],
-        *[
-            {
-                "id": f"{source['id']}-normalize",
-                "source": source["id"],
-                "target": "normalize-finance-rss",
-                "sourcePort": "out",
-                "targetPort": "in",
-            }
-            for source in source_definitions
-        ],
+        {
+            "id": "schedule-source-pool",
+            "source": "schedule-finance-rss",
+            "target": "source-pool-finance-rss",
+            "sourcePort": "tick",
+            "targetPort": "in",
+        },
+        {
+            "id": "source-pool-normalize",
+            "source": "source-pool-finance-rss",
+            "target": "normalize-finance-rss",
+            "sourcePort": "items",
+            "targetPort": "in",
+        },
         {
             "id": "normalize-accept",
             "source": "normalize-finance-rss",

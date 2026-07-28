@@ -196,7 +196,6 @@ function financialRssIntelligenceGraph(name: string) {
       feedUrl: 'https://www.federalreserve.gov/feeds/press_all.xml',
       sourceGroup: 'macro-policy',
       site: 'federal-reserve',
-      y: 80,
     },
     {
       id: 'rss-sec-regulation',
@@ -205,7 +204,6 @@ function financialRssIntelligenceGraph(name: string) {
       feedUrl: 'https://www.sec.gov/news/pressreleases.rss',
       sourceGroup: 'market-regulation',
       site: 'sec',
-      y: 240,
     },
     {
       id: 'rss-ecb-research',
@@ -214,20 +212,33 @@ function financialRssIntelligenceGraph(name: string) {
       feedUrl: 'https://www.ecb.europa.eu/rss/press.html',
       sourceGroup: 'central-bank-research',
       site: 'ecb',
-      y: 400,
     },
   ] as const
-  const sources = sourceDefinitions.map((definition) => {
-    const source = createWorkflowNodeFromCatalog(rssItem, definition.id, { x: 360, y: definition.y })
+  const sources = sourceDefinitions.map((definition, index) => {
+    const source = createWorkflowNodeFromCatalog(rssItem, definition.id, { x: 280, y: index * 160 })
+    const params = {
+      ...source.params,
+      feedUrl: definition.feedUrl,
+      maxEntries: 20,
+      sourceGroup: definition.sourceGroup,
+      sourceKey: definition.id,
+      site: definition.site,
+    }
     return {
       ...source,
-      params: {
-        ...source.params,
-        feedUrl: definition.feedUrl,
-        maxEntries: 20,
-        sourceGroup: definition.sourceGroup,
-        site: definition.site,
-      },
+      params,
+      ...(source.parameterInterface
+        ? {
+            parameterInterface: {
+              ...source.parameterInterface,
+              fields: source.parameterInterface.fields.map((field) =>
+                field.binding.source === 'params' && field.binding.fieldId in params
+                  ? { ...field, value: params[field.binding.fieldId as keyof typeof params] }
+                  : field,
+              ),
+            },
+          }
+        : {}),
       ui: {
         ...source.ui,
         label: definition.label,
@@ -235,6 +246,54 @@ function financialRssIntelligenceGraph(name: string) {
       },
     }
   })
+  const sourcePoolItem = catalog('intelligence.source.pool')
+  const sourcePoolBase = createWorkflowNodeFromCatalog(sourcePoolItem, 'source-pool-finance-rss', { x: 297, y: 245 })
+  const sourcePool = {
+    ...sourcePoolBase,
+    parameterInterface: undefined,
+    params: {
+      ...sourcePoolBase.params,
+      sourceCount: sources.length,
+      sourceGroups: sourceDefinitions.map((definition) => definition.sourceGroup),
+      fanout: 'parallel',
+    },
+    topicCollapse: {
+      groupId: 'financial-rss-source-pool',
+      nodeCount: sources.length,
+      mode: 'locked' as const,
+      packageInternal: true,
+    },
+    internals: {
+      locked: true,
+      nodes: sources,
+      edges: [],
+    },
+    ui: {
+      ...sourcePoolBase.ui,
+      label: '财经情报数据源池',
+      description: '集中管理并并行采集财经 RSS 来源',
+      preferCustomLabel: true,
+      runtimeContract: {
+        schemaVersion: 1,
+        bindingId: 'workflow.source-pool.boundary',
+        status: 'projection_only',
+        inputShape: {
+          ports: [{ name: 'in', type: 'trigger' }],
+          params: ['sourceCount', 'sourceGroups', 'fanout'],
+        },
+        outputShape: {
+          ports: [{ name: 'items', type: 'items[]' }],
+          artifacts: [],
+        },
+        permissionGate: { required: [] },
+        configGate: { required: [] },
+        eventShape: { events: [] },
+        fixtureCoverage: { cases: [] },
+        certification: { realNodeIoContract: true, realWebhookDelivery: false },
+        canvas: { exposeResourceInternals: false },
+      },
+    },
+  }
   const normalize = createWorkflowNodeFromCatalog(catalog('intelligence.processing.normalize'), 'normalize-finance-rss', { x: 700, y: 240 })
   const acceptance = createWorkflowNodeFromCatalog(catalog('intelligence.control.record-acceptance'), 'accept-finance-rss', { x: 980, y: 240 })
   const records = createWorkflowNodeFromCatalog(catalog('intelligence.sink.records'), 'records-finance-rss', { x: 1260, y: 240 })
@@ -251,22 +310,22 @@ function financialRssIntelligenceGraph(name: string) {
       canSendNotifications: false,
       allowedDomains: ['federalreserve.gov', 'sec.gov', 'ecb.europa.eu'],
     },
-    nodes: [schedule, ...sources, normalize, acceptance, records],
+    nodes: [schedule, sourcePool, normalize, acceptance, records],
     edges: [
-      ...sources.map((source) => ({
-        id: `${schedule.id}-${source.id}`,
+      {
+        id: `${schedule.id}-${sourcePool.id}`,
         source: schedule.id,
-        target: source.id,
+        target: sourcePool.id,
         sourcePort: 'tick',
         targetPort: 'in',
-      })),
-      ...sources.map((source) => ({
-        id: `${source.id}-${normalize.id}`,
-        source: source.id,
+      },
+      {
+        id: `${sourcePool.id}-${normalize.id}`,
+        source: sourcePool.id,
         target: normalize.id,
-        sourcePort: 'out',
+        sourcePort: 'items',
         targetPort: 'in',
-      })),
+      },
       {
         id: `${normalize.id}-${acceptance.id}`,
         source: normalize.id,

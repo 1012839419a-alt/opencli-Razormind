@@ -43,6 +43,7 @@ from backend.schemas.workflow import (
     WorkflowRunStartRequest,
     WorkflowRunStatus,
 )
+from backend.workflow.async_orchestrator import image_generation_execution_key
 from backend.workflow.bbx_tool_nodes import (
     BBX_EXECUTOR_MODE,
     BBX_TOOL_CAPABILITY_ID,
@@ -50,7 +51,6 @@ from backend.workflow.bbx_tool_nodes import (
     bbx_result_items,
     invoke_bbx_tool,
 )
-from backend.workflow.async_orchestrator import image_generation_execution_key
 from backend.workflow.block_reasons import (
     FETCH_PERMISSION_REQUIRED,
     MISSING_DELIVERY_PROJECTION,
@@ -3879,6 +3879,7 @@ async def _materialize_source_task(
     source = await session.get(DataSource, source_id) if source_id else None
     source_name = _workflow_source_display_name(source_node)
     source_description = _workflow_source_description(source_name)
+    source_key = _workflow_source_key(source_node)
     source_config = _workflow_source_config(
         source_node,
         workflow_id=workflow_id,
@@ -3888,7 +3889,7 @@ async def _materialize_source_task(
         source = await _find_materialized_workflow_source(
             session,
             workflow_id=workflow_id,
-            source_node_id=source_node.id,
+            source_node_id=source_key,
             channel_type=_workflow_source_channel_type(source_node),
         )
     if source is None:
@@ -3963,14 +3964,24 @@ def _workflow_source_config(
     workflow_id: str,
     run_id: str,
 ) -> dict[str, object]:
+    source_key = _workflow_source_key(node)
     return {
         "workflowId": workflow_id,
         "workflowRunId": run_id,
-        "sourceNodeId": node.id,
+        "sourceNodeId": source_key,
+        **({"runtimeNodeId": node.id} if source_key != node.id else {}),
         "displayName": _workflow_source_display_name(node),
         "adapter": _adapter_reference(node),
         "params": _json_safe(node.params),
     }
+
+
+def _workflow_source_key(node: CompiledWorkflowNode) -> str:
+    return (
+        _read_string(node.params.get("sourceKey"))
+        or _read_string(node.params.get("source_key"))
+        or node.id
+    )
 
 
 def _origin_source_node_id(
