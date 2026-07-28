@@ -307,7 +307,7 @@ export function buildAshareMarketWorkflow(name: string) {
     workflowId: "ashare-market-intelligence",
     cadence: "5m",
     sources: ASHARE_OPENCLI_SOURCES,
-    sourceLabel: "国内全网 OODA 数据源",
+    sourceLabel: "A 股数据源",
     sourceDescription: "行情、公告与 PDF、宏观、新闻、社交五类来源并行采集；逐来源显示完成、空结果或失败",
     recordsLabel: "A 股金融数据集",
     maxItemsPerRun: 1_000,

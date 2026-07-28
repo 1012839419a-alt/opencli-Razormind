@@ -159,6 +159,21 @@ test('core catalog nodes and common parameters expose Chinese and English copy',
   assert.equal(i18n.shouldPreserveNodeAuthoredText(customNodeData), true)
 })
 
+test('market scope changes market cards without rewriting filing source arguments', async () => {
+  const sourceConfig = await importTypeScript('lib/workflow/source-business-config.ts')
+  const sources = [
+    { id: 'market', label: '行情', sourceGroup: 'market', site: 'eastmoney', command: 'gridlist', args: { market: 'hs-a' } },
+    { id: 'filings', label: '公告', sourceGroup: 'filings', site: 'eastmoney', command: 'announcement', args: { market: 'SHA,SZA,BJA' } },
+    { id: 'news', label: '新闻', sourceGroup: 'news', site: 'cls', command: 'telegraph', args: { limit: 30 } },
+  ]
+
+  assert.equal(sourceConfig.sourceMarket(sources), 'hs-a')
+  const updated = sourceConfig.updateSourceMarket(sources, 'bj-a')
+  assert.equal(updated[0].args.market, 'bj-a')
+  assert.equal(updated[1].args.market, 'SHA,SZA,BJA')
+  assert.deepStrictEqual(updated[2].args, { limit: 30 })
+})
+
 test('backend node catalog overlays matching nodes without hiding runnable workflow capabilities', async () => {
   const [{ mergeBackendNodeCapabilityCatalog }, nodeCatalog] = await Promise.all([
     importTypeScript('lib/workflow/backend-node-capability-adapter.ts'),
@@ -419,7 +434,17 @@ test('Studio materializes every searchable OpenCLI capability preset as a node',
       .map((group) => group.label),
     ['行情、资金与交易结构', '财报、公告、研报与 PDF', '财经媒体与实时快讯', '社交舆情与全网观察'],
   )
-  assert.match(palette, /国内全网 OODA 数据源/)
+  assert.match(palette, /A 股数据源/)
+  assert.doesNotMatch(palette, /国内全网 OODA 数据源/)
+  assert.match(palette, /行情、公告、新闻、社区与视频/)
+  const inspector = await readFrontendSource('components/flow/inspector.tsx')
+  assert.match(inspector, /addContentSources/)
+  assert.match(inspector, /OPENCLI_SITUATION_SOURCES/)
+  assert.match(inspector, /restoreSource/)
+  assert.match(inspector, /key=\{configurationNodeId\}/)
+  assert.match(inspector, /presets\.filter\(\(source\) => !selectedKeys\.has\(sourceSlotKey\(source\)\)\)/)
+  assert.match(inspector, /sourceCardLabel/)
+  assert.match(inspector, /视频按来源卡片独立配置/)
   assert.match(palette, /loginRequired:\s*"需登录"/)
   assert.doesNotMatch(palette, /featuredOpenCLIAdapterNodes\(matchingOpenCLINodes\)\.filter/)
   assert.equal(adapterCatalog.openCLIAdapterNodeToCatalogItem(sourcePreset).params.opencliAdapterNodeId, sourcePreset.id)

@@ -77,7 +77,7 @@ export function updateSourceBusinessQuery(
 
 export function sourceMarket(sources: OpenCLISourceSlot[]): string | undefined {
   for (const source of sources) {
-    if (typeof source.args.market === "string") return source.args.market
+    if (source.sourceGroup === "market" && typeof source.args.market === "string") return source.args.market
   }
   return undefined
 }
@@ -87,7 +87,7 @@ export function updateSourceMarket(
   value: string,
 ): OpenCLISourceSlot[] {
   return sources.map((source) => (
-    Object.prototype.hasOwnProperty.call(source.args, "market")
+    source.sourceGroup === "market" && Object.prototype.hasOwnProperty.call(source.args, "market")
       ? { ...source, args: { ...source.args, market: value } }
       : source
   ))
