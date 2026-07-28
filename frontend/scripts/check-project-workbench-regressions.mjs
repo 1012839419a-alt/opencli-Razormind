@@ -9,7 +9,9 @@ const source = (file) => readFile(path.join(root, file), 'utf8')
 
 test('project navigation exposes orchestration, data, and evidence as project surfaces', async () => {
   const navigation = await source('components/studio/project-navigation.tsx')
-  assert.match(navigation, /'orchestration' \| 'data' \| 'evidence'/)
+  assert.match(navigation, /\| 'orchestration'/)
+  assert.match(navigation, /\| 'data'/)
+  assert.match(navigation, /\| 'evidence'/)
   assert.match(navigation, /label: '业务编排'/)
   assert.match(navigation, /label: '数据工作台'/)
   assert.match(navigation, /label: '逻辑与证据'/)
@@ -32,6 +34,18 @@ test('project data workbench is project scoped and links data back to workflow e
   assert.match(page, /查看逻辑与证据/)
 })
 
+test('project data workbench keeps file controls and empty states view-specific', async () => {
+  const page = await source('app/(app)/studio/projects/[projectId]/data/page.tsx')
+  const content = page.slice(page.indexOf('{loading ?'), page.indexOf('<footer'))
+  const profileBranch = content.indexOf("view === 'profile'")
+  const filesBranch = content.indexOf("view === 'files'")
+  const datasetEmptyBranch = content.indexOf('records.length === 0')
+
+  assert.equal(page.match(/\{view !== 'files' \? \(/g)?.length, 2)
+  assert.ok(profileBranch >= 0 && profileBranch < datasetEmptyBranch)
+  assert.ok(filesBranch >= 0 && filesBranch < datasetEmptyBranch)
+})
+
 test('logic and evidence defaults to the 3D Galaxy while keeping the 2D relationship view separate', async () => {
   const page = await source('app/(app)/studio/projects/[projectId]/evidence/page.tsx')
   const relationshipsPage = await source('app/(app)/studio/projects/[projectId]/relationships/page.tsx')
@@ -43,7 +57,7 @@ test('logic and evidence defaults to the 3D Galaxy while keeping the 2D relation
   assert.match(explorer, /useProjectRecordGraph/)
   assert.match(explorer, /ProjectGalaxyForceGraph/)
   assert.match(explorer, /ProjectRelationshipForceGraph/)
-  assert.match(explorer, /active="evidence"/)
+  assert.match(explorer, /active=\{mode\}/)
   assert.match(explorer, /证据关系/)
   assert.match(explorer, /Galaxy/)
   assert.match(galaxy, /postProcessingComposer/)

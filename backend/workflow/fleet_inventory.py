@@ -100,6 +100,15 @@ async def build_workflow_fleet_inventory(
         draft.connected = True
         draft.status = "online"
 
+    for draft in drafts.values():
+        if draft.agent_protocol != "ws":
+            continue
+        agent_url = draft.agent_url or draft.endpoint
+        draft.connected = agent_url in connected_ws
+        draft.available = draft.available and draft.connected
+        if not draft.connected:
+            draft.status = "offline"
+
     for binding in bindings:
         draft = _ensure_draft(drafts, binding.browser_endpoint)
         draft.source = _merge_source(draft.source, "site_binding")

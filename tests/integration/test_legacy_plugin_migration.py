@@ -87,7 +87,7 @@ def test_legacy_plugin_database_rejoins_current_migration_head(tmp_path: Path) -
     finally:
         connection.close()
 
-    assert revision == ("h5i6j7k8l9m0",)
+    assert revision == ("i6j7k8l9m0n1",)
     assert "version" in cursor_columns
     assert "identity_key" in record_columns
     assert "ix_collected_records_source_identity" in record_indexes
@@ -135,6 +135,56 @@ def test_current_database_repairs_missing_plugin_installation_table(tmp_path: Pa
     finally:
         connection.close()
 
-    assert revision == ("h5i6j7k8l9m0",)
+    assert revision == ("i6j7k8l9m0n1",)
     assert table == ("plugin_installations",)
     assert "ix_plugin_installations_provider_key" in indexes
+
+
+def test_current_head_repairs_missing_record_identity_schema(tmp_path: Path) -> None:
+    database_path = tmp_path / "drifted-record-identity.db"
+    connection = sqlite3.connect(database_path)
+    connection.executescript(
+        """
+        CREATE TABLE alembic_version (
+            version_num VARCHAR(32) NOT NULL PRIMARY KEY
+        );
+        INSERT INTO alembic_version VALUES ('h5i6j7k8l9m0');
+
+        CREATE TABLE collected_records (
+            id VARCHAR(36) NOT NULL PRIMARY KEY,
+            source_id VARCHAR(36) NOT NULL
+        );
+        INSERT INTO collected_records VALUES ('record-1', 'source-1');
+        """
+    )
+    connection.close()
+
+    result = subprocess.run(
+        [sys.executable, "-m", "alembic", "upgrade", "head"],
+        cwd=Path(__file__).parents[2],
+        env={
+            **os.environ,
+            "DATABASE_URL": f"sqlite+aiosqlite:///{database_path.as_posix()}",
+        },
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    connection = sqlite3.connect(database_path)
+    try:
+        revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(collected_records)")}
+        indexes = {row[1] for row in connection.execute("PRAGMA index_list(collected_records)")}
+        record = connection.execute(
+            "SELECT source_id, identity_key FROM collected_records WHERE id = 'record-1'"
+        ).fetchone()
+    finally:
+        connection.close()
+
+    assert revision == ("i6j7k8l9m0n1",)
+    assert "identity_key" in columns
+    assert "ix_collected_records_source_identity" in indexes
+    assert record == ("source-1", None)

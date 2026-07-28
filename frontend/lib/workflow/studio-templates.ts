@@ -1,7 +1,14 @@
 import type { ProjectAppType } from '@/lib/api/types'
 
 import { PACKAGED_WORKFLOW_PROJECT, buildPackagedWorkflowProject } from './collection-pipeline'
-import { buildAshareMarketWorkflow, buildOpenCLISituationAwarenessWorkflow } from './opencli-business-workflows'
+import {
+  buildAshareDisclosureRiskWorkflow,
+  buildAshareMarketWorkflow,
+  buildAshareSelfMediaWorkflow,
+  buildAshareStockResearchWorkflow,
+  buildAshareThemeRadarWorkflow,
+  buildOpenCLISituationAwarenessWorkflow,
+} from './opencli-business-workflows'
 import {
   DEFAULT_OPENCLI_HDA_SOURCES,
   WORKFLOW_NODE_CATALOG,
@@ -11,7 +18,11 @@ import {
 import { parseWorkflowProject, workflowNodeSchema, type WorkflowProjectNode } from './schema'
 
 export const STUDIO_TEMPLATES = [
-  { id: 'ashare-market-intelligence', variant: 'collection-to-consumption', appType: 'workflow', title: 'A 股真实金融数据采集', description: '用 OpenCLI 并行采集国内行情、公告财报、宏观快讯、财经媒体与社区热度，并写入可追溯 Records。', category: '真实业务测试', steps: ['消息与数据来源', '清洗与准入', '数据工作台'] },
+  { id: 'ashare-market-intelligence', variant: 'collection-to-consumption', appType: 'workflow', title: 'A 股全市场数据采集', description: '并行采集国内行情、公告财报、宏观监管、财经媒体与社区热度，形成全市场基础数据池。', category: '真实业务测试', steps: ['32 个国内来源', '清洗与准入', '数据工作台'] },
+  { id: 'ashare-stock-research', variant: 'collection-to-consumption', appType: 'workflow', title: 'A 股个股全景采集', description: '围绕一只股票采集行情、K 线、资金、财务、公告、研报、持仓和社区讨论；默认 600519，股吧与雪球需登录。', category: '真实业务测试', steps: ['个股参数', '13 类证据', '个股数据集'] },
+  { id: 'ashare-theme-radar', variant: 'collection-to-consumption', appType: 'workflow', title: 'A 股题材与资金雷达', description: '汇集概念板块、行业资金、强势股归因、热度排行和实时快讯；通达信热榜需登录。', category: '真实业务测试', steps: ['板块与资金', '题材信号', '主题数据集'] },
+  { id: 'ashare-disclosure-risk', variant: 'collection-to-consumption', appType: 'workflow', title: 'A 股公告监管风险', description: '聚合公司公告、业绩预告、股权质押、交易所问询、证监会公告和风险快讯。', category: '真实业务测试', steps: ['披露与问询', '风险清洗', '监管数据集'] },
+  { id: 'ashare-self-media-listening', variant: 'collection-to-consumption', appType: 'workflow', title: 'A 股自媒体与社区舆情', description: '采集公众号、股吧、雪球、微博、小红书、B站、抖音与知乎内容，并逐来源暴露登录和健康状态。', category: '真实业务测试', steps: ['跨平台搜索', '舆情清洗', '自媒体数据集'] },
   { id: 'opencli-situation-awareness', variant: 'collection-to-consumption', appType: 'workflow', title: 'OpenCLI 态势感知框架', description: '采集实时事件、新闻和视频字幕，保留证据血缘，并投影到数据工作台与逻辑证据页。', category: '真实业务测试', steps: ['多模态证据采集', '证据准入', '数据与证据工作台'] },
   { id: 'opencli-live-pipeline', variant: 'collection-to-consumption', appType: 'workflow', title: 'OpenCLI 实时采集清洗发送', description: '从 OpenCLI 动态数据源实时提取，完成标准化、去重、Records 入库并发送结果。', category: '完整链路', steps: ['OpenCLI 实时采集', '清洗与 Records', 'Webhook 发送'] },
   { id: 'financial-rss-intelligence', variant: 'collect', appType: 'workflow', title: '财经多源 RSS 情报', description: '并行采集央行政策、监管公告与研究动态，按来源 Group 清洗后写入成果与数据。', category: '采集与监控', steps: ['多源 RSS', 'Group 标准化', 'Records 入库'] },
@@ -43,6 +54,10 @@ type TemplateIntent = {
 
 const TEMPLATE_INTENTS: Record<(typeof STUDIO_TEMPLATES)[number]['id'], TemplateIntent> = {
   'ashare-market-intelligence': { cadence: '5m', source: 'opencli-ashare-live', objective: 'collect-normalize-store-financial-evidence', delivery: 'records' },
+  'ashare-stock-research': { cadence: '15m', source: 'opencli-ashare-stock', objective: 'collect-single-stock-evidence', delivery: 'records' },
+  'ashare-theme-radar': { cadence: '5m', source: 'opencli-ashare-theme', objective: 'collect-theme-and-capital-signals', delivery: 'records' },
+  'ashare-disclosure-risk': { cadence: '15m', source: 'opencli-ashare-disclosure', objective: 'collect-disclosure-and-regulatory-risk', delivery: 'records' },
+  'ashare-self-media-listening': { cadence: '30m', source: 'opencli-ashare-social', objective: 'collect-cross-platform-market-discussion', delivery: 'records' },
   'opencli-situation-awareness': { cadence: '5m', source: 'opencli-news-video-live', objective: 'collect-normalize-project-evidence', delivery: 'records-and-evidence' },
   'opencli-live-pipeline': { cadence: '5m', source: 'opencli-live-catalog', objective: 'collect-clean-store-deliver', delivery: 'webhook' },
   'financial-rss-intelligence': { cadence: '15m', source: 'financial-rss-groups', objective: 'collect-normalize-store', delivery: 'records' },
@@ -94,6 +109,10 @@ export function studioGraphForTemplate(template: StudioTemplateId, name: string)
   if (template === 'opencli-live-pipeline') return opencliLivePipelineGraph(name)
   if (template === 'financial-rss-intelligence') return financialRssIntelligenceGraph(name)
   if (template === 'ashare-market-intelligence') return buildAshareMarketWorkflow(name)
+  if (template === 'ashare-stock-research') return buildAshareStockResearchWorkflow(name)
+  if (template === 'ashare-theme-radar') return buildAshareThemeRadarWorkflow(name)
+  if (template === 'ashare-disclosure-risk') return buildAshareDisclosureRiskWorkflow(name)
+  if (template === 'ashare-self-media-listening') return buildAshareSelfMediaWorkflow(name)
   if (template === 'opencli-situation-awareness') return buildOpenCLISituationAwarenessWorkflow(name)
 
   const variant: StudioTemplateVariant = STUDIO_TEMPLATES.find((item) => item.id === template)?.variant ?? 'collection-to-consumption'

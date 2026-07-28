@@ -199,42 +199,46 @@ export default function ProjectDataWorkbenchPage({ params }: { params: Promise<{
             </div>
             {orchestrationHref ? <Link href={orchestrationHref} className={cn(buttonVariants({ variant: 'outline', size: 'sm' }), 'min-h-10')}><Workflow className="size-4" />打开业务编排</Link> : null}
           </div>
-          <div className="grid gap-3 p-3 lg:grid-cols-[minmax(0,1fr)_13rem_auto] lg:items-center">
-            <div className="relative">
-              <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-              <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索标题、正文、URL 或字段值…" className="pl-9" />
+          {view !== 'files' ? (
+            <div className="grid gap-3 p-3 lg:grid-cols-[minmax(0,1fr)_13rem_auto] lg:items-center">
+              <div className="relative">
+                <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+                <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索标题、正文、URL 或字段值…" className="pl-9" />
+              </div>
+              <Select value={status} onValueChange={(value) => setStatus(value ?? 'all')}>
+                <SelectTrigger><Filter className="size-4" /><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">全部处理状态</SelectItem>
+                  <SelectItem value="raw">原始数据</SelectItem>
+                  <SelectItem value="normalized">已标准化</SelectItem>
+                  <SelectItem value="ai_processed">已富化</SelectItem>
+                  <SelectItem value="notified">已交付</SelectItem>
+                  <SelectItem value="error">处理失败</SelectItem>
+                </SelectContent>
+              </Select>
+              <div className="flex items-center gap-2 text-xs text-muted-foreground"><SlidersHorizontal className="size-3.5" />当前视图使用项目过滤条件</div>
             </div>
-            <Select value={status} onValueChange={(value) => setStatus(value ?? 'all')}>
-              <SelectTrigger><Filter className="size-4" /><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">全部处理状态</SelectItem>
-                <SelectItem value="raw">原始数据</SelectItem>
-                <SelectItem value="normalized">已标准化</SelectItem>
-                <SelectItem value="ai_processed">已富化</SelectItem>
-                <SelectItem value="notified">已交付</SelectItem>
-                <SelectItem value="error">处理失败</SelectItem>
-              </SelectContent>
-            </Select>
-            <div className="flex items-center gap-2 text-xs text-muted-foreground"><SlidersHorizontal className="size-3.5" />当前视图使用项目过滤条件</div>
-          </div>
+          ) : null}
         </header>
 
         {loading ? <div className="p-5"><LoadingState rows={7} /></div> : error ? (
           <div className="p-5"><ErrorState message={error instanceof Error ? error.message : '项目数据读取失败'} hint="确认后端、工作区和项目上下文可用。" /></div>
-        ) : records.length === 0 ? (
-          <EmptyState title="项目还没有可显示的数据" description="运行并完成业务工作流后，记录会按 workflow_id 自动归入当前项目。" />
         ) : view === 'profile' ? (
           <FieldProfileView profiles={fieldProfiles} activeField={activeField} activeProfile={activeProfile} distribution={valueDistribution} total={records.length} onSelect={setSelectedField} />
         ) : view === 'files' ? (
           <ProjectInputsView groups={sourceGroups} />
+        ) : records.length === 0 ? (
+          <EmptyState title="项目还没有可显示的数据" description="运行并完成业务工作流后，记录会按 workflow_id 自动归入当前项目。" />
         ) : (
           <DatasetView records={records} visibleFields={visibleFields} onSelect={setSelectedRecord} />
         )}
 
-        <footer className="flex flex-wrap items-center justify-between gap-3 border-t px-4 py-3 text-xs text-muted-foreground">
-          <span>当前加载第 {page} / {pages} 页 · 共 {total.toLocaleString('zh-CN')} 条</span>
-          <div className="flex gap-2"><Button size="sm" variant="outline" disabled={page <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>上一页</Button><Button size="sm" variant="outline" disabled={page >= pages} onClick={() => setPage((value) => Math.min(pages, value + 1))}>下一页</Button></div>
-        </footer>
+        {view !== 'files' ? (
+          <footer className="flex flex-wrap items-center justify-between gap-3 border-t px-4 py-3 text-xs text-muted-foreground">
+            <span>当前加载第 {page} / {pages} 页 · 共 {total.toLocaleString('zh-CN')} 条</span>
+            <div className="flex gap-2"><Button size="sm" variant="outline" disabled={page <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>上一页</Button><Button size="sm" variant="outline" disabled={page >= pages} onClick={() => setPage((value) => Math.min(pages, value + 1))}>下一页</Button></div>
+          </footer>
+        ) : null}
       </section>
 
       <Sheet open={Boolean(selectedRecord)} onOpenChange={(open) => !open && setSelectedRecord(null)}>

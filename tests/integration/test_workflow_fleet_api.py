@@ -36,6 +36,16 @@ def _fixture_opencli_catalog() -> tuple[dict, ...]:
             ],
             "columns": ["id", "text"],
         },
+        {
+            "site": "eastmoney",
+            "name": "gridlist",
+            "description": "A-share market breadth",
+            "access": "read",
+            "browser": True,
+            "strategy": "public",
+            "args": [],
+            "columns": ["code", "name"],
+        },
     )
 
 
@@ -121,6 +131,41 @@ async def test_workflow_fleet_inventory_projects_existing_agent_state(
             "notes": "Logged into X",
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_workflow_fleet_inventory_does_not_route_to_disconnected_ws_agent(
+    client,
+    db_session,
+    monkeypatch,
+):
+    _install_test_pool(monkeypatch)
+    await _seed_fleet_state(db_session)
+    monkeypatch.setattr(
+        "backend.workflow.fleet_inventory.ws_agent_manager.list_connected",
+        lambda: [],
+    )
+    monkeypatch.setattr(
+        "backend.workflow.opencli_adapter_nodes._load_opencli_catalog",
+        _fixture_opencli_catalog,
+    )
+
+    response = await client.get("/api/v1/workflows/fleet/inventory")
+
+    assert response.status_code == 200
+    agents = {agent["endpoint"]: agent for agent in response.json()["data"]["agents"]}
+    stale_agent = agents["http://agent-x:19823"]
+    assert stale_agent["connected"] is False
+    assert stale_agent["available"] is False
+    assert stale_agent["status"] == "offline"
+
+    match = await client.post(
+        "/api/v1/workflows/fleet/match",
+        json={"adapterNodeId": "opencli.adapter.eastmoney.gridlist"},
+    )
+
+    assert match.status_code == 200
+    assert match.json()["data"]["selected"]["endpoint"] == "http://public-browser:9222"
 
 
 @pytest.mark.asyncio
