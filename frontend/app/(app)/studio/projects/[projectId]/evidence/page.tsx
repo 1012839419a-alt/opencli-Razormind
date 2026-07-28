@@ -1,7 +1,7 @@
 'use client'
 
 import dynamic from 'next/dynamic'
-import { ArrowLeft, ArrowRight, BrainCircuit, Clock3, Database, Focus, GitBranch, Network, Search, Workflow } from 'lucide-react'
+import { ArrowLeft, ArrowRight, BrainCircuit, Clock3, Database, Focus, GitBranch, Network, Orbit, Search, Workflow } from 'lucide-react'
 import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
 import { use, useEffect, useMemo, useRef, useState } from 'react'
@@ -78,6 +78,9 @@ export default function ProjectEvidencePage({ params }: { params: Promise<{ proj
   const overviewHref = workspaceId ? `/studio/projects/${projectId}?workspace=${workspaceId}` : '/studio'
   const dataHref = workspaceId ? `/studio/projects/${projectId}/data?workspace=${workspaceId}${workflowId ? `&workflow=${workflowId}` : ''}` : null
   const workflowHref = workspaceId && workflowId ? `/studio/workflow?workspace=${workspaceId}&project=${projectId}&workflow=${workflowId}` : null
+  const graphContext = workspaceId ? `?workspace=${workspaceId}${workflowId ? `&workflow=${workflowId}` : ''}` : ''
+  const relationshipsHref = `/studio/projects/${projectId}/relationships${graphContext}`
+  const galaxyHref = `/studio/projects/${projectId}/galaxy${graphContext}`
   const loading = projectsQuery.isLoading || workflowsQuery.isLoading || graphQuery.isLoading
   const error = projectsQuery.error || workflowsQuery.error || graphQuery.error
 
@@ -106,7 +109,7 @@ export default function ProjectEvidencePage({ params }: { params: Promise<{ proj
               <ViewButton active={view === 'decision'} icon={GitBranch} onClick={() => setView('decision')}>决策图</ViewButton>
               <ViewButton active={view === 'relationships'} icon={Network} onClick={() => setView('relationships')}>证据关系</ViewButton>
             </div>
-            <div className="flex gap-2">{dataHref ? <Link href={dataHref} className={buttonVariants({ variant: 'outline', size: 'sm' })}><Database className="size-4" />数据工作台</Link> : null}{workflowHref ? <Link href={workflowHref} className={buttonVariants({ variant: 'outline', size: 'sm' })}><Workflow className="size-4" />业务编排</Link> : null}</div>
+            <div className="flex flex-wrap gap-2"><Link href={relationshipsHref} className={buttonVariants({ variant: 'outline', size: 'sm' })}><Network className="size-4" />证据关系</Link><Link href={galaxyHref} className={buttonVariants({ variant: 'outline', size: 'sm' })}><Orbit className="size-4" />Galaxy</Link>{dataHref ? <Link href={dataHref} className={buttonVariants({ variant: 'outline', size: 'sm' })}><Database className="size-4" />数据工作台</Link> : null}{workflowHref ? <Link href={workflowHref} className={buttonVariants({ variant: 'outline', size: 'sm' })}><Workflow className="size-4" />业务编排</Link> : null}</div>
           </div>
           <div className="flex flex-wrap items-center gap-2 p-3">
             <div className="relative min-w-64 flex-1 xl:max-w-md">
