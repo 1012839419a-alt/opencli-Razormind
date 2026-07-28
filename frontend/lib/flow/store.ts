@@ -341,8 +341,9 @@ function workflowNodeStatusFromRun(status: WorkflowRunStatus): WorkflowNodeData[
     case "queued":
       return "idle"
     case "running":
+    case "waiting":
     case "partial":
-      return "running"
+      return status === "waiting" ? "waiting" : "running"
     case "completed":
       return "success"
     case "blocked":
@@ -358,9 +359,10 @@ function workflowNodeStatusFromEvent(eventType: WorkflowNodeRunEvent["eventType"
     case "queued":
       return "idle"
     case "started":
+    case "waiting":
     case "partial":
     case "batch_ready":
-      return "running"
+      return eventType === "waiting" ? "waiting" : "running"
     case "completed":
       return "success"
     case "blocked":
@@ -378,6 +380,8 @@ function runStateForEvent(event: WorkflowNodeRunEvent): WorkflowRunNodeState {
     status:
       event.eventType === "queued"
         ? "queued"
+        : event.eventType === "waiting"
+          ? "waiting"
         : event.eventType === "completed"
           ? "completed"
           : event.eventType === "blocked"

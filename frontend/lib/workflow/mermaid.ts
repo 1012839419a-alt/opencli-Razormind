@@ -27,6 +27,7 @@ const KIND_KEYWORDS: Array<[WorkflowNodeKind, RegExp]> = [
   ["sink", /\b(sink|records|database|write|persist)\b/i],
   ["notify", /\b(notify|notification|webhook|alert|send|slack|email)\b/i],
   ["inbox", /\b(inbox|queue|store|review|archive)\b/i],
+  ["media", /\b(image|media|canvas|generation|asset)\b/i],
   ["action", /\b(action|tool|execute|write|update)\b/i],
 ]
 
@@ -43,6 +44,7 @@ const CAPABILITY_KEYWORDS: Array<[WorkflowCapability, RegExp]> = [
   ["accept", /\b(accept|approval|quality|gate)\b/i],
   ["send", /\b(notify|notification|webhook|alert|send|slack|email)\b/i],
   ["store", /\b(inbox|queue|store|review|archive)\b/i],
+  ["generate", /\b(image|media|canvas|generation)\b/i],
 ]
 
 const CAPABILITY_BY_KIND: Record<WorkflowNodeKind, WorkflowCapability> = {
@@ -56,6 +58,7 @@ const CAPABILITY_BY_KIND: Record<WorkflowNodeKind, WorkflowCapability> = {
   inbox: "store",
   action: "send",
   sink: "store",
+  media: "generate",
 }
 
 type DraftNode = {

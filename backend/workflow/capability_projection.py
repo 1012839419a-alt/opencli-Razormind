@@ -24,6 +24,8 @@ from backend.workflow.runtime_registry import (
     COLLECTION_OUTPUT_BINDING_ID,
     DEMAND_DRAFT_BINDING_ID,
     EXTERNAL_TOOL_BINDING_ID,
+    IMAGE_ASSET_BINDING_ID,
+    IMAGE_GENERATION_BINDING_ID,
     MERGE_BINDING_ID,
     NORMALIZE_BINDING_ID,
     OPENCLI_BINDING_ID,
@@ -94,6 +96,44 @@ def _capability(
 
 def _catalog_capabilities() -> list[WorkflowRuntimeCapability]:
     return [
+        _capability(
+            id="media.image-generation",
+            label="Image Generation",
+            surface="catalog",
+            status="blocked",
+            backend_available=False,
+            kind="media",
+            capability="generate",
+            provider="invokeai",
+            runtime_binding=IMAGE_GENERATION_BINDING_ID,
+            reason=(
+                "Canvas publication and durable job creation are wired, but runtime "
+                "version binding, dispatch reconciliation, and an attested InvokeAI "
+                "image are still required."
+            ),
+            missing=[
+                "published_version_run_binding",
+                "durable_dispatch_reconciliation",
+                "attested_image_runtime",
+            ],
+            tags=["media", "image", "generation", "async"],
+            source="backend.workflow.opencli_hda_tracer",
+        ),
+        _capability(
+            id="media.image-asset",
+            label="Image Asset",
+            surface="catalog",
+            status="runnable",
+            backend_available=True,
+            kind="media",
+            capability="fetch",
+            provider="opencli-admin",
+            runtime_binding=IMAGE_ASSET_BINDING_ID,
+            reason="The node emits fixed OpenCLI media asset references without "
+            "submitting a new generation job.",
+            tags=["media", "image", "asset"],
+            source="backend.workflow.opencli_hda_tracer",
+        ),
         _capability(
             id="intelligence.input.collection-need",
             label="Collection Need",

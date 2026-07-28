@@ -1,6 +1,7 @@
 "use client"
 
 import { memo, useEffect, useState, type MouseEvent as ReactMouseEvent } from "react"
+import { useRouter, useSearchParams } from "next/navigation"
 import { Handle, Position, useStore, type NodeProps } from "@xyflow/react"
 import { Loader2, Wand2 } from "lucide-react"
 import type { WorkflowNode as WorkflowNodeType } from "@/lib/flow/types"
@@ -8,7 +9,11 @@ import { getApiAuthToken } from "@/lib/api/auth-token"
 import { useFlowStore } from "@/lib/flow/store"
 import { useSettingsStore } from "@/lib/flow/settings-store"
 import { draftWorkflowDemand } from "@/lib/workflow/backend-demand-draft"
-import { COLLECTION_NEED_CATALOG_ID } from "@/lib/workflow/node-catalog"
+import {
+  COLLECTION_NEED_CATALOG_ID,
+  IMAGE_ASSET_CATALOG_ID,
+  IMAGE_GENERATION_CATALOG_ID,
+} from "@/lib/workflow/node-catalog"
 import { getNodeDisplayId, localizeNodeText } from "@/lib/workflow/node-i18n"
 import { getNodeVisualSignature } from "@/lib/workflow/node-visuals"
 import { runtimeStatusLabel, runtimeStatusTone } from "@/lib/workflow/capabilities"
@@ -19,6 +24,7 @@ import { cn } from "@/lib/utils"
 const statusLabels: Record<string, string> = {
   idle: "Idle",
   running: "Running",
+  waiting: "Waiting",
   success: "Done",
   error: "Error",
 }
@@ -26,6 +32,7 @@ const statusLabels: Record<string, string> = {
 const statusDotStyles: Record<string, string> = {
   idle: "border-muted-foreground/50 bg-transparent",
   running: "border-[#ff7a17] bg-[#ff7a17]",
+  waiting: "border-[#a78bfa] bg-[#a78bfa]",
   success: "border-[#4ade80] bg-[#4ade80]",
   error: "border-destructive bg-destructive",
 }
@@ -218,6 +225,11 @@ function stringParam(params: Record<string, unknown> | undefined, key: string, f
   return typeof value === "string" ? value : fallback
 }
 
+function stringArrayParam(params: Record<string, unknown> | undefined, key: string): string[] {
+  const value = params?.[key]
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : []
+}
+
 function withDemandNodeUpdate(
   proposal: AgentProposal,
   nodeId: string,
@@ -279,6 +291,8 @@ function MiniNetworkPreview({ data }: { data: WorkflowNodeType["data"] }) {
 }
 
 function WorkflowNodeComponent({ id, data, selected }: NodeProps<WorkflowNodeType>) {
+  const router = useRouter()
+  const currentSearchParams = useSearchParams()
   const proposalFocused = data.proposalFocused === true
   const internalLocked = data.internalLocked === true
   const internalDraft = data.internalDraft === true
@@ -293,6 +307,16 @@ function WorkflowNodeComponent({ id, data, selected }: NodeProps<WorkflowNodeTyp
   const nodeViewContract = buildCanonicalNodeViewContract(projectNode, data, id)
   const displayId = getNodeDisplayId(data)
   const isCollectionNeed = displayId === COLLECTION_NEED_CATALOG_ID || isCollectionNeedData(data)
+  const isImageGeneration = displayId === IMAGE_GENERATION_CATALOG_ID
+  const isImageAsset = displayId === IMAGE_ASSET_CATALOG_ID
+  const imageStudioParams = canonical?.params
+  const canvasDocumentId = stringParam(imageStudioParams, "canvasDocumentId")
+  const snapshotId = data.imageStudioSummary?.snapshotId ?? stringParam(imageStudioParams, "snapshotId")
+  const modelFingerprint = data.imageStudioSummary?.modelFingerprint ?? ""
+  const recentAssetIds = data.imageStudioSummary?.recentAssetIds ?? []
+  const pinnedAssetIds = stringArrayParam(imageStudioParams, "assetIds")
+  const runtimeRunState = data.runtimeRunState as { status?: string } | undefined
+  const imageRuntimeWaiting = runtimeRunState?.status === "waiting"
   const demandParams = canonical?.params
   const demandTextValue = stringParam(demandParams, "text", "抓小红书热帖")
   const demandLocale = stringParam(demandParams, "locale", "zh-CN")
@@ -386,6 +410,22 @@ function WorkflowNodeComponent({ id, data, selected }: NodeProps<WorkflowNodeTyp
     }
   }
 
+  const openImageStudio = (
+    event: ReactMouseEvent<HTMLButtonElement>,
+    mode: "authoring" | "gallery" = "authoring",
+  ) => {
+    event.preventDefault()
+    event.stopPropagation()
+    const searchParams = new URLSearchParams()
+    searchParams.set("workspace", currentSearchParams.get("workspace") ?? "")
+    searchParams.set("project", currentSearchParams.get("project") ?? "")
+    searchParams.set("workflow", currentSearchParams.get("workflow") ?? workflowProject.id)
+    searchParams.set("node", id)
+    searchParams.set("document", canvasDocumentId)
+    if (mode === "gallery") searchParams.set("mode", "gallery")
+    router.push(`/studio/workflow/image?${searchParams.toString()}`)
+  }
+
   if (detail === "low") {
     return (
       <div
@@ -458,7 +498,7 @@ function WorkflowNodeComponent({ id, data, selected }: NodeProps<WorkflowNodeTyp
             </span>
             <span className="flex min-w-0 shrink-0 items-center gap-1">
               {prefersCustomLabel ? null : <RuntimeCapabilityBadge data={data} />}
-              <NodeStatus status={data.status} />
+              <NodeStatus status={imageRuntimeWaiting ? "waiting" : data.status} />
             </span>
           </div>
 
@@ -487,6 +527,42 @@ function WorkflowNodeComponent({ id, data, selected }: NodeProps<WorkflowNodeTyp
               {draftError ? (
                 <p className="line-clamp-2 font-mono text-[9px] leading-snug text-destructive">{draftError}</p>
               ) : null}
+            </div>
+          ) : null}
+
+          {detail === "high" && isImageGeneration && !prefersCustomLabel ? (
+            <div className="nodrag nopan mt-2 space-y-1.5" onPointerDown={(event) => event.stopPropagation()}>
+              <div className="grid grid-cols-2 gap-1 rounded-[3px] border border-border/70 bg-background/45 px-2 py-1.5 font-mono text-[9px] text-muted-foreground">
+                <span>SNAPSHOT</span>
+                <span className="truncate text-right text-foreground">{snapshotId || "DRAFT"}</span>
+                <span>MODEL</span>
+                <span className="truncate text-right text-foreground">{modelFingerprint || "UNSET"}</span>
+                <span>ASSETS</span>
+                <span className="text-right text-foreground">{recentAssetIds.length}</span>
+              </div>
+              <button
+                type="button"
+                onClick={openImageStudio}
+                className="flex h-6 w-full items-center justify-center gap-1.5 rounded-[3px] border border-border bg-background/80 font-mono text-[9px] uppercase tracking-[0.08em] text-foreground transition-colors hover:border-foreground/40 hover:bg-accent"
+              >
+                <Wand2 className="size-3" />
+                {canvasDocumentId ? "Open Image Studio" : "Create Image Canvas"}
+              </button>
+            </div>
+          ) : null}
+
+          {detail === "high" && isImageAsset && !prefersCustomLabel ? (
+            <div className="nodrag nopan mt-2 space-y-1.5" onPointerDown={(event) => event.stopPropagation()}>
+              <div className="rounded-[3px] border border-border/70 bg-background/45 px-2 py-1.5 font-mono text-[9px] text-muted-foreground">
+                PINNED ASSETS <span className="float-right text-foreground">{pinnedAssetIds.length}</span>
+              </div>
+              <button
+                type="button"
+                onClick={(event) => openImageStudio(event, "gallery")}
+                className="flex h-6 w-full items-center justify-center rounded-[3px] border border-border bg-background/80 font-mono text-[9px] uppercase tracking-[0.08em] text-foreground transition-colors hover:border-foreground/40 hover:bg-accent"
+              >
+                Select Workspace Assets
+              </button>
             </div>
           ) : null}
 

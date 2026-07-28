@@ -7,11 +7,12 @@ type ApiResponse<T> = {
   message?: string
 }
 
-export type WorkflowRunStatus = "queued" | "running" | "partial" | "blocked" | "completed" | "failed"
+export type WorkflowRunStatus = "queued" | "running" | "waiting" | "partial" | "blocked" | "completed" | "failed"
 
 export type WorkflowNodeRunEventType =
   | "queued"
   | "started"
+  | "waiting"
   | "blocked"
   | "batch_ready"
   | "tool_call_started"

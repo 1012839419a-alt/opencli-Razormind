@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "upstream_commit": "d315b8967f548732912bd9b390853ed4af97d8cb",
+  "vendored_root": "frontend/features/image-studio/invokeai",
+  "files": [],
+  "reference_files": [
+    {
+      "path": "LICENSE",
+      "git_blob_sha1": "fac28ea6b9eaf841ce1ed073647deca53c5c1290",
+      "purpose": "license provenance"
+    },
+    {
+      "path": "invokeai/app/api_app.py",
+      "git_blob_sha1": "46f340fce73c1c8904d9efb645ce42d46cb92bfd",
+      "purpose": "private sidecar API boundary research"
+    },
+    {
+      "path": "invokeai/frontend/web/openapi.json",
+      "git_blob_sha1": "22c6d43e0e385f08f61ea592e157a95f78e1cf0d",
+      "sha256": "2793f48c5b3b31cb849e7afcfa204c7f47d834bc5a684fdb06481c06f7befac1",
+      "purpose": "allowlisted adapter contract"
+    },
+    {
+      "path": "invokeai/frontend/web/src/features/controlLayers/README.md",
+      "git_blob_sha1": "de2aafee13ad81ea4491567d746a0206e35d4837",
+      "purpose": "Canvas architecture reference"
+    }
+  ]
+}

@@ -3,11 +3,16 @@
 import uuid
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.config import get_settings
 from backend.database import get_db
+from backend.image_studio.worker_runtime import dispatch_block_reason
+from backend.models.image_studio import ImageGenerationJob, ImageGenerationJobStatus
 from backend.schemas import workflow as workflow_schemas
 from backend.schemas.common import ApiResponse
+from backend.services import image_studio_service
 from backend.workflow.capability_projection import build_workflow_capabilities
 from backend.workflow.compiler import compile_workflow_project
 from backend.workflow.demand_assembler import draft_workflow_demand
@@ -185,7 +190,9 @@ async def start_run(
 ) -> ApiResponse[workflow_schemas.WorkflowRunProjection]:
     """Start a WorkflowProject run and emit replayable node-level events."""
 
-    return ApiResponse.ok(await start_workflow_run(body, session=db))
+    projection = await start_workflow_run(body, session=db)
+    await _dispatch_materialized_image_jobs(db, projection.runId)
+    return ApiResponse.ok(projection)
 
 
 @router.post(
@@ -306,6 +313,7 @@ async def start_run_from_webhook(
         ),
         session=db,
     )
+    await _dispatch_materialized_image_jobs(db, projection.runId)
     return ApiResponse.ok(
         _webhook_ingress_response(
             projection,
@@ -315,6 +323,62 @@ async def start_run_from_webhook(
             idempotency_key=idempotency_key,
         )
     )
+
+
+async def _dispatch_materialized_image_jobs(db: AsyncSession, run_id: str) -> None:
+    """Commit durable job intent before handing it to Celery.
+
+    With no attested runtime or durable worker, jobs are persisted as blocked
+    instead. This keeps the public run checkpoint truthful and fail-closed.
+    """
+
+    jobs = list(
+        (
+            await db.execute(
+                select(ImageGenerationJob).where(ImageGenerationJob.run_id == run_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not jobs:
+        return
+
+    block_reason = dispatch_block_reason(get_settings())
+    if block_reason is not None:
+        for job in jobs:
+            if job.status == ImageGenerationJobStatus.QUEUED.value:
+                await image_studio_service.transition_job(
+                    db,
+                    job,
+                    ImageGenerationJobStatus.BLOCKED,
+                    error_code=block_reason,
+                    error_detail=(
+                        "Image generation requires the configured private runtime "
+                        "and durable worker"
+                    ),
+                )
+        return
+
+    dispatch_ids = [
+        job.id
+        for job in jobs
+        if job.status
+        in {
+            ImageGenerationJobStatus.QUEUED.value,
+            ImageGenerationJobStatus.SUBMITTED.value,
+            ImageGenerationJobStatus.RUNNING.value,
+            ImageGenerationJobStatus.INGESTING.value,
+        }
+    ]
+    if not dispatch_ids:
+        return
+
+    await db.commit()
+    from backend.worker.tasks import run_image_generation_job
+
+    for job_id in dispatch_ids:
+        run_image_generation_job.delay(job_id)
 
 
 @router.get(
@@ -425,6 +489,22 @@ async def continue_run_with_source_outputs(
 ) -> ApiResponse[workflow_schemas.WorkflowRunProjection]:
     """Continue a workflow run after external source batches arrive."""
 
+    checkpoint = await get_workflow_run_checkpoint(run_id, session=db)
+    if checkpoint is None:
+        raise HTTPException(status_code=404, detail="Workflow run not found")
+    worker_owned_nodes = {
+        str(pending.get("nodeId"))
+        for pending in checkpoint.pendingJobs
+        if pending.get("bindingId") == "workflow.media.image-generation"
+        and pending.get("nodeId")
+    }
+    if worker_owned_nodes.intersection(body.sourceOutputs):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Image generation outputs are accepted only from the platform job worker"
+            ),
+        )
     projection = await continue_workflow_run_with_source_outputs(run_id, body, session=db)
     if projection is None:
         raise HTTPException(status_code=404, detail="Workflow run not found")

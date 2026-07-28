@@ -54,6 +54,7 @@ WorkflowNodeKind = Literal[
     "flow",
     "control",
     "sink",
+    "media",
 ]
 WorkflowCapability = Literal[
     "trigger",
@@ -68,6 +69,7 @@ WorkflowCapability = Literal[
     "store",
     "merge",
     "accept",
+    "generate",
 ]
 AdapterBindingType = Literal["source", "notification", "storage", "agent", "utility"]
 AdapterBindingMode = Literal["fixture", "mock", "webhook", "live"]
@@ -557,13 +559,22 @@ class WorkflowOpenCLIHDATraceResponse(BaseModel):
     dispatches: list[WorkflowOpenCLIHDATraceDispatch] = Field(default_factory=list)
 
 
-WorkflowRunStatus = Literal["queued", "running", "partial", "blocked", "completed", "failed"]
+WorkflowRunStatus = Literal[
+    "queued",
+    "running",
+    "waiting",
+    "partial",
+    "blocked",
+    "completed",
+    "failed",
+]
 WorkflowRunTriggerKind = Literal["manual", "ai", "schedule", "webhook"]
 WorkflowRunInputSource = Literal["operator", "agent", "external"]
 WorkflowRunResponseMode = Literal["async", "sync-short-wait", "callback"]
 WorkflowNodeRunEventType = Literal[
     "queued",
     "started",
+    "waiting",
     "blocked",
     "batch_ready",
     "tool_call_started",
@@ -843,6 +854,8 @@ class WorkflowRunCheckpoint(BaseModel):
     nodeStates: list[WorkflowRunNodeState] = Field(default_factory=list)
     sourceOutputNodeIds: list[str] = Field(default_factory=list)
     sourceOutputItemCount: int = Field(0, ge=0)
+    waitingNodeIds: list[str] = Field(default_factory=list)
+    pendingJobs: list[dict[str, Any]] = Field(default_factory=list)
     canContinueWithSourceOutputs: bool = True
     continuationPath: str = Field(..., min_length=1)
     tracePath: str = Field(..., min_length=1)

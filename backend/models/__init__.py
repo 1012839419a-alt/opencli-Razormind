@@ -5,6 +5,13 @@ from backend.models.browser import BrowserBinding, BrowserInstance
 from backend.models.control_action import ControlActionRecord
 from backend.models.cookie_jar import CookieJarEntry
 from backend.models.edge_node import EdgeNode, EdgeNodeEvent
+from backend.models.image_studio import (
+    CanvasDocument,
+    CanvasSnapshot,
+    ImageGenerationJob,
+    ImageGenerationJobStatus,
+    MediaAsset,
+)
 from backend.models.model_default import ModelDefault
 from backend.models.notification import NotificationLog, NotificationRule
 from backend.models.odp_system_measurement import OdpSystemMeasurement
@@ -42,6 +49,11 @@ __all__ = [
     "CookieJarEntry",
     "EdgeNode",
     "EdgeNodeEvent",
+    "CanvasDocument",
+    "CanvasSnapshot",
+    "MediaAsset",
+    "ImageGenerationJob",
+    "ImageGenerationJobStatus",
     "ModelProvider",
     "ProviderModel",
     "ModelDefault",

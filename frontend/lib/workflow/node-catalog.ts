@@ -27,6 +27,7 @@ export type WorkflowNodeCatalogCategory =
   | "control"
   | "sink"
   | "output"
+  | "media"
   | "package"
 
 export type WorkflowNodeCatalogItem = {
@@ -52,6 +53,8 @@ export type WorkflowNodeCatalogItem = {
 
 export const COLLECTION_NEED_CATALOG_ID = "intelligence.input.collection-need"
 export const TURBOPUSH_PUBLISH_CATALOG_ID = "intelligence.output.turbopush-publish"
+export const IMAGE_GENERATION_CATALOG_ID = "media.image-generation"
+export const IMAGE_ASSET_CATALOG_ID = "media.image-asset"
 
 const JIN10_ADAPTER: AdapterBinding = {
   id: "jin10-kuaixun",
@@ -242,6 +245,34 @@ function safeIdPart(value: string): string {
 }
 
 export const WORKFLOW_NODE_CATALOG: WorkflowNodeCatalogItem[] = [
+  {
+    id: IMAGE_GENERATION_CATALOG_ID,
+    idPrefix: "image-generation",
+    label: "Image Generation",
+    description: "在第一方全屏图像工作台中编辑配方；运行时生成并输出 OpenCLI 资产引用",
+    category: "media",
+    profile: "intelligence",
+    kind: "media",
+    capability: "generate",
+    icon: "ImagePlus",
+    color: "var(--chart-5)",
+    params: { canvasDocumentId: "" },
+    keywords: ["image", "canvas", "generation", "invoke", "图像", "画布", "生成"],
+  },
+  {
+    id: IMAGE_ASSET_CATALOG_ID,
+    idPrefix: "image-asset",
+    label: "Image Asset",
+    description: "选择工作区已有资产，运行时直接输出固定的 OpenCLI mediaAsset[]",
+    category: "media",
+    profile: "intelligence",
+    kind: "media",
+    capability: "fetch",
+    icon: "Images",
+    color: "var(--chart-4)",
+    params: { assetIds: [] },
+    keywords: ["image", "asset", "gallery", "图像", "资产", "图库"],
+  },
   {
     id: COLLECTION_NEED_CATALOG_ID,
     idPrefix: "collection-need",

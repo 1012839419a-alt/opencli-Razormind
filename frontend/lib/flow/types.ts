@@ -100,7 +100,7 @@ export interface WorkflowNodeData extends Record<string, unknown> {
   nodeType: WorkflowNodeType
   category: NodeCategory
   icon: string
-  status?: "idle" | "running" | "success" | "error"
+  status?: "idle" | "running" | "waiting" | "success" | "error"
   fields?: FieldConfig[]
   /** for condition nodes */
   condition?: string
@@ -141,6 +141,11 @@ export interface WorkflowNodeData extends Record<string, unknown> {
   runtimeRunState?: WorkflowRunNodeState
   runtimeLatestEvent?: WorkflowNodeRunEvent
   runtimeEvidenceBatches?: WorkflowEvidenceBatchSummary[]
+  imageStudioSummary?: {
+    snapshotId?: string
+    modelFingerprint?: string
+    recentAssetIds: string[]
+  }
   /** node-internal mini network preview */
   miniNetwork?: MiniNetworkPreview
   /** topic collapse as package internals */
@@ -169,7 +174,7 @@ export interface WorkflowEdgeData extends Record<string, unknown> {
   routed?: boolean
   runtimeEvidenceBatch?: {
     runId: string
-    status: "queued" | "running" | "partial" | "blocked" | "completed" | "failed"
+    status: "queued" | "running" | "waiting" | "partial" | "blocked" | "completed" | "failed"
     batchIds: string[]
     itemCount: number
     recordCount: number

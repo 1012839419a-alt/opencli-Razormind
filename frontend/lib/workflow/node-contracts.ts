@@ -3,7 +3,10 @@ import type { AdapterBinding, WorkflowProject, WorkflowProjectEdge, WorkflowProj
 export type PortDirection = "input" | "output"
 export type PortDataType =
   | "trigger"
+  | "text"
   | "items[]"
+  | "mediaAsset[]"
+  | "mediaGenerationResult"
   | "recordCandidate[]"
   | "record[]"
   | "runtimeArtifact[]"
@@ -86,6 +89,45 @@ export type EdgeContractResolution = {
 }
 
 const CONTRACTS: Record<string, NodeContract> = {
+  "media.image-generation": contract(
+    "media.image-generation",
+    "Image Generation",
+    "prompt + mediaAsset[] -> mediaAsset[] + mediaGenerationResult",
+    [
+      port("prompt", "input", "text", false, "Optional prompt supplied by an upstream text-producing node."),
+      port("assets", "input", "mediaAsset[]", false, "Optional OpenCLI assets used as initial, mask, control, or reference images."),
+    ],
+    [
+      port("assets", "output", "mediaAsset[]", true, "Emits durable OpenCLI asset references after ingest succeeds."),
+      port("generation", "output", "mediaGenerationResult", true, "Emits the durable generation job result and lineage."),
+    ],
+    [
+      param("canvasDocumentId", "params", "string", true, "", {
+        description: "Editable Canvas document id. Publication resolves it to an immutable snapshot outside node params.",
+      }),
+    ],
+    [
+      "published workflow versions must resolve canvasDocumentId to an immutable snapshotId",
+      "runtime completion requires asset ingest and atomic OpenCLI asset commit",
+      "outputs must never contain an Invoke temporary URL",
+    ],
+  ),
+  "media.image-asset": contract(
+    "media.image-asset",
+    "Image Asset",
+    "pinned asset ids -> mediaAsset[]",
+    [],
+    [port("assets", "output", "mediaAsset[]", true, "Emits pinned OpenCLI asset references without generating new media.")],
+    [
+      param("assetIds", "params", "string[]", true, [], {
+        description: "Workspace-owned OpenCLI asset ids selected from the first-party gallery.",
+      }),
+    ],
+    [
+      "asset ids must be resolved within the workflow workspace and project scope",
+      "outputs must never contain an Invoke temporary URL",
+    ],
+  ),
   "intelligence.input.collection-need": contract(
     "intelligence.input.collection-need",
     "Collection Need",

@@ -74,6 +74,10 @@ services:
       COLLECTION_ORCHESTRATOR: ${COLLECTION_ORCHESTRATOR:-admin}
       ODP_INGEST_URL: ${ODP_INGEST_URL:-}
       III_URL: ${III_URL:-}
+      INVOKEAI_ENABLED: ${INVOKEAI_ENABLED:-false}
+      INVOKEAI_BASE_URL: http://invokeai:9090
+      INVOKEAI_API_TOKEN: ${INVOKEAI_API_TOKEN:-}
+      IMAGE_ASSET_STORAGE_PATH: /data/image-studio/assets
     volumes:
       - db_data:/data
       - ./backend:/app/backend
@@ -83,6 +87,9 @@ services:
       - ./.env:/app/.env:rw
     ports:
       - "${API_PORT:-8031}:8000"
+    networks:
+      - default
+      - invokeai-private
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 10s
@@ -107,11 +114,45 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENCLI_CDP_ENDPOINT: ${OPENCLI_CDP_ENDPOINT:-http://agent-1:19823}
       AGENT_POOL_ENDPOINTS: ${AGENT_POOL_ENDPOINTS:-}
+      INVOKEAI_ENABLED: ${INVOKEAI_ENABLED:-false}
+      INVOKEAI_BASE_URL: http://invokeai:9090
+      INVOKEAI_API_TOKEN: ${INVOKEAI_API_TOKEN:-}
+      IMAGE_ASSET_STORAGE_PATH: /data/image-studio/assets
     depends_on:
       redis:
         condition: service_healthy
       api:
         condition: service_healthy
+    networks:
+      - default
+      - invokeai-private
+
+  # ── Private image-generation data plane ─────────────────────────────────
+  # No host port is published. Only the API/worker adapter can reach this
+  # service over the internal network. The digest is intentionally immutable;
+  # upgrades require the upstream/API/schema/GPU gates in ADR-0026.
+  invokeai:
+    profiles: ["image-studio"]
+    image: ${INVOKEAI_ATTESTED_IMAGE:?Set an image built from the approved InvokeAI commit as repository@sha256:digest}
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      INVOKEAI_ROOT: /invokeai
+    volumes:
+      - invokeai_data:/invokeai
+    tmpfs:
+      - /tmp
+    networks:
+      - invokeai-private
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
 
   # ── Celery Beat (only needed for TASK_EXECUTOR=celery) ───────────────────
   beat:
@@ -347,3 +388,8 @@ volumes:
   db_data:
   agent_profile_1:
   agent_profile:
+  invokeai_data:
+
+networks:
+  invokeai-private:
+    internal: true
