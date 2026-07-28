@@ -23,7 +23,7 @@ export type NodeMenuState = {
   y: number
 }
 
-type FitView = (options?: { padding?: number; duration?: number; nodes?: { id: string }[] }) => unknown
+type FitView = (options?: { padding?: number; duration?: number; minZoom?: number; nodes?: { id: string }[] }) => unknown
 
 export function useWorkflowNodeMenuActions(options: {
   addPrimitiveToNodeNetwork: (
@@ -83,7 +83,14 @@ export function useWorkflowNodeMenuActions(options: {
             : "这个节点没有下层网络",
       )
       setNodeMenu(null)
-      if (count > 0) window.setTimeout(() => void fitView({ padding: 0.24, duration: 180 }), 20)
+      if (count > 0) {
+        const focusNodes =
+          count > 20 ? useFlowStore.getState().nodes.slice(0, 12).map(({ id }) => ({ id })) : undefined
+        window.setTimeout(
+          () => void fitView({ padding: 0.24, duration: 180, nodes: focusNodes, minZoom: focusNodes ? 0.55 : undefined }),
+          20,
+        )
+      }
     },
     [enterNodeNetwork, fitView, setNodeMenu, showToast],
   )

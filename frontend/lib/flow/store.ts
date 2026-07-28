@@ -611,6 +611,34 @@ type InternalWorkflowEdge = {
   ui?: Record<string, unknown>
 }
 
+function layoutOpenCLISourcePool(rawNodes: WorkflowProjectNode[]): Map<string, XYPosition> {
+  const sourcePool = rawNodes.find((node) => node.id === "source-pool")
+  const sources = rawNodes.filter((node) => typeof node.params?.sourceGroup === "string")
+  if (!sourcePool || sources.length < 2) return new Map()
+
+  const columns = Math.min(4, Math.max(2, Math.ceil(Math.sqrt(sources.length))))
+  const positions = new Map<string, XYPosition>()
+  let slot = 0
+  let previousGroup: string | undefined
+
+  for (const source of sources) {
+    const group = source.params.sourceGroup as string
+    if (previousGroup && group !== previousGroup) slot = Math.ceil(slot / columns) * columns
+    positions.set(source.id, {
+      x: 320 + (slot % columns) * 300,
+      y: Math.floor(slot / columns) * 150,
+    })
+    previousGroup = group
+    slot += 1
+  }
+
+  const sourcePositions = [...positions.values()]
+  const minY = Math.min(...sourcePositions.map((position) => position.y))
+  const maxY = Math.max(...sourcePositions.map((position) => position.y))
+  positions.set(sourcePool.id, { x: 0, y: (minY + maxY) / 2 })
+  return positions
+}
+
 function materializeProjectInternals(
   projectNode: WorkflowProjectNode | undefined,
   parentNode: WorkflowNode,
@@ -630,11 +658,12 @@ function materializeProjectInternals(
       ? { x: 520, y: 80 }
       : { x: parentRect.x, y: parentRect.y + parentRect.height + 110 }
   const title = typeof projectNode.ui?.label === "string" ? projectNode.ui.label : parentId
+  const sourcePoolPositions = layoutOpenCLISourcePool(rawNodes)
 
   const internalNodes = rawNodes.map((internalNode, index) => {
     const normalizedNode: WorkflowProjectNode = { ...internalNode, params: internalNode.params ?? {} }
     const reactNode = workflowNodeToReactFlow(normalizedNode, index)
-    const relativePosition = readInternalPosition(normalizedNode, index)
+    const relativePosition = sourcePoolPositions.get(normalizedNode.id) ?? readInternalPosition(normalizedNode, index)
     const catalogId = typeof normalizedNode.ui?.catalogId === "string" ? normalizedNode.ui.catalogId : undefined
     const primitivePorts = Array.isArray(normalizedNode.ui?.primitivePorts)
       ? normalizedNode.ui.primitivePorts
