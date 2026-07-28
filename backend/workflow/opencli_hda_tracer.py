@@ -1527,6 +1527,59 @@ def _bound_source_id_from_items(items: list[dict[str, Any]]) -> str | None:
     return None
 
 
+def _bind_research_evidence_refs(
+    items: list[dict[str, Any]],
+    *,
+    workflow_id: str,
+    run_id: str,
+    runtime_nodes_by_id: dict[str, CompiledWorkflowNode] | None,
+) -> list[dict[str, Any]]:
+    if not runtime_nodes_by_id:
+        return items
+    bound: list[dict[str, Any]] = []
+    for item in items:
+        lineage = _read_dict_list(item.get("lineage"))
+        upstream_node = next(
+            (
+                candidate
+                for entry in reversed(lineage)
+                if (node_id := _read_string(entry.get("nodeId")))
+                if (candidate := runtime_nodes_by_id.get(node_id)) is not None
+                if _binding_id(candidate) == NORMALIZE_BINDING_ID
+            ),
+            None,
+        )
+        item_key = _read_string(item.get("candidateId")) or _read_string(item.get("contentHash"))
+        if upstream_node is None or item_key is None:
+            bound.append(item)
+            continue
+        batch = _node_batch_reference(
+            workflow_id,
+            run_id,
+            upstream_node,
+            item_count=len(items),
+        )
+        normalized = dict(_read_dict(item.get("normalizedData")))
+        evidence_id = _read_string(normalized.get("evidenceId")) or item_key
+        reference: dict[str, Any] = {
+            "evidenceId": evidence_id,
+            "itemKey": item_key,
+            "batchId": batch.batchId,
+            "runId": run_id,
+            "nodeId": upstream_node.id,
+            "manifestUri": batch.manifestUri,
+            "odpRef": batch.odpRef,
+        }
+        source_id = _bound_source_id_from_items([item])
+        if source_id:
+            reference["sourceId"] = source_id
+        normalized["evidenceRef"] = reference
+        updated = dict(item)
+        updated["normalizedData"] = normalized
+        bound.append(updated)
+    return bound
+
+
 async def _execute_native_node(
     node: CompiledWorkflowNode,
     outputs_by_node: dict[str, list[dict[str, Any]]],
@@ -1565,6 +1618,13 @@ async def _execute_native_node(
         config = binding_input.get("config")
         if not isinstance(config, dict):
             raise ValueError("Data operator config must be an object")
+        if operator_id == "research.claim-project":
+            input_items = _bind_research_evidence_refs(
+                input_items,
+                workflow_id=workflow_id,
+                run_id=run_id,
+                runtime_nodes_by_id=runtime_nodes_by_id,
+            )
         result = execute_data_operator(
             operator_id,
             input_items,

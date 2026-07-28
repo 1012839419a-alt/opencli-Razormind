@@ -10,12 +10,15 @@ import {
   fetchWorkflowEvidenceBatchDetail,
   fetchWorkflowEvidenceBatchProjection,
   fetchWorkflowEvidenceBatches,
+  fetchWorkflowResearchLedger,
+  continueWorkflowResearch,
   replayWorkflowRunEventStream,
   startWorkflowRun,
   type WorkflowEvidenceBatchDetail,
   type WorkflowEvidenceBatchProjection,
   type WorkflowEvidenceBatchSummary,
   type WorkflowNodeRunEvent,
+  type WorkflowResearchLedgerResponse,
   type WorkflowRunProjection,
 } from "@/lib/workflow/backend-runs"
 import { applyRuntimeNodePatches, buildRuntimeNodePatches } from "@/lib/workflow/runtime-bridge"
@@ -23,6 +26,7 @@ import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
+import { Textarea } from "@/components/ui/textarea"
 import { cn } from "@/lib/utils"
 
 type RealRunState =
@@ -69,6 +73,11 @@ export function RunTracePanel() {
     selectedBatchId: null,
     error: null,
   })
+  const [researchLedger, setResearchLedger] = useState<WorkflowResearchLedgerResponse | null>(null)
+  const [continuationInput, setContinuationInput] = useState("{}")
+  const [continuationKey, setContinuationKey] = useState("")
+  const [continuationError, setContinuationError] = useState<string | null>(null)
+  const [isContinuing, setIsContinuing] = useState(false)
 
   const projection = runState.projection
   const errors = projection?.errors ?? []
@@ -98,7 +107,10 @@ export function RunTracePanel() {
       const finalProjection = replay.projection ?? started
       applyWorkflowRunProjection(finalProjection)
       setRunState({ status: "ready", projection: finalProjection, events: replay.events, error: null })
-      await loadEvidenceBatchResults(finalProjection.runId, authorization)
+      await Promise.all([
+        loadEvidenceBatchResults(finalProjection.runId, authorization),
+        loadResearchLedger(finalProjection.runId, authorization),
+      ])
     } catch (error) {
       setRunState((current) => ({
         status: "error",
@@ -134,6 +146,17 @@ export function RunTracePanel() {
     }
   }
 
+  const loadResearchLedger = async (runId: string, authorization: string | null) => {
+    try {
+      const ledger = await fetchWorkflowResearchLedger(runId, { authorization })
+      setResearchLedger(
+        ledger.entries.some((entry) => entry.revisionId || entry.decision) ? ledger : null,
+      )
+    } catch {
+      setResearchLedger(null)
+    }
+  }
+
   const selectEvidenceBatch = async (batchId: string) => {
     if (!projection) return
     setEvidenceState((current) => ({ ...current, status: "loading", selectedBatchId: batchId, detail: null, error: null }))
@@ -149,6 +172,69 @@ export function RunTracePanel() {
         status: "error",
         error: error instanceof Error ? error.message : "EvidenceBatch detail failed",
       }))
+    }
+  }
+
+  const continueResearchRun = async () => {
+    const latest = researchLedger?.entries.at(-1)
+    if (!projection || !latest?.revisionId || !latest.proposal?.proposalId) return
+    setIsContinuing(true)
+    setContinuationError(null)
+    try {
+      const parsed = JSON.parse(continuationInput) as Record<string, unknown>
+      if (
+        !parsed
+        || Array.isArray(parsed)
+        || typeof parsed !== "object"
+        || Object.keys(parsed).length === 0
+        || Object.values(parsed).some(
+          (items) => !Array.isArray(items) || items.some((item) => !item || typeof item !== "object" || Array.isArray(item)),
+        )
+      ) {
+        throw new Error("sourceOutputs 必须是非空的 { nodeId: object[] } JSON")
+      }
+      const sourceOutputs = parsed as Record<string, Array<Record<string, unknown>>>
+      const token = getApiAuthToken()
+      const authorization = token ? `Bearer ${token}` : null
+      const idempotencyKey = continuationKey || crypto.randomUUID()
+      setContinuationKey(idempotencyKey)
+      const continued = await continueWorkflowResearch(
+        projection.runId,
+        {
+          expectedRevisionId: latest.revisionId,
+          proposalId: latest.proposal.proposalId,
+          idempotencyKey,
+          sourceOutputs,
+        },
+        { authorization },
+      )
+      applyWorkflowRunProjection(continued.projection)
+      setRunState((current) => ({
+        status: "running",
+        projection: continued.projection,
+        events: current.events,
+        error: null,
+      }))
+      const replay = await replayWorkflowRunEventStream(continued.childRunId, { authorization })
+      for (const event of replay.events) applyWorkflowNodeRunEvent(event)
+      const finalProjection = replay.projection ?? continued.projection
+      applyWorkflowRunProjection(finalProjection)
+      setRunState({
+        status: "ready",
+        projection: finalProjection,
+        events: replay.events,
+        error: null,
+      })
+      await Promise.all([
+        loadEvidenceBatchResults(finalProjection.runId, authorization),
+        loadResearchLedger(finalProjection.runId, authorization),
+      ])
+      setContinuationInput("{}")
+      setContinuationKey("")
+    } catch (error) {
+      setContinuationError(error instanceof Error ? error.message : "Research continuation failed")
+    } finally {
+      setIsContinuing(false)
     }
   }
 
@@ -188,6 +274,10 @@ export function RunTracePanel() {
       selectedBatchId: null,
       error: null,
     })
+    setResearchLedger(null)
+    setContinuationInput("{}")
+    setContinuationKey("")
+    setContinuationError(null)
   }
 
   return (
@@ -272,6 +362,20 @@ export function RunTracePanel() {
             </>
           ) : null}
 
+          {researchLedger ? (
+            <>
+              <Separator />
+              <ResearchLedgerWorkbench
+                ledger={researchLedger}
+                sourceOutputs={continuationInput}
+                onSourceOutputsChange={setContinuationInput}
+                onContinue={continueResearchRun}
+                continuing={isContinuing}
+                error={continuationError}
+              />
+            </>
+          ) : null}
+
           {evidenceState.status !== "idle" ? (
             <>
               <Separator />
@@ -299,6 +403,100 @@ export function RunTracePanel() {
         </div>
       </ScrollArea>
     </aside>
+  )
+}
+
+function ResearchLedgerWorkbench({
+  ledger,
+  sourceOutputs,
+  onSourceOutputsChange,
+  onContinue,
+  continuing,
+  error,
+}: {
+  ledger: WorkflowResearchLedgerResponse
+  sourceOutputs: string
+  onSourceOutputsChange: (value: string) => void
+  onContinue: () => void
+  continuing: boolean
+  error: string | null
+}) {
+  const latest = ledger.entries.at(-1)
+  const canContinue = latest?.researchStatus === "needs_evidence"
+    && Boolean(latest.revisionId && latest.proposal?.proposalId)
+  return (
+    <div className="space-y-3" aria-label="Research revision ledger">
+      <div className="flex items-center justify-between gap-2">
+        <SectionCaption>Research Ledger</SectionCaption>
+        <Badge variant="outline" className="font-mono text-[9px] uppercase">
+          {latest?.researchStatus ?? "running"}
+        </Badge>
+      </div>
+      <div className="space-y-1.5">
+        {ledger.entries.map((entry) => (
+          <div key={entry.runId} className="rounded-md border bg-card p-2.5">
+            <div className="flex items-center justify-between gap-2 font-mono text-[10px]">
+              <span>iteration {entry.iteration}</span>
+              <span className="uppercase text-muted-foreground">{entry.decision ?? "pending"}</span>
+            </div>
+            <p className="mt-1 truncate font-mono text-[9px] text-muted-foreground">
+              {entry.revisionId ?? entry.runId}
+            </p>
+            {entry.gaps.length ? (
+              <p className="mt-1 text-[10px] text-[#d97706]">gaps: {entry.gaps.join(", ")}</p>
+            ) : null}
+            {entry.gateReasons.length ? (
+              <p className="mt-1 text-[10px] text-destructive">
+                gate: {entry.gateReasons.join(", ")}
+              </p>
+            ) : null}
+          </div>
+        ))}
+      </div>
+      {latest?.evidenceRefs.length ? (
+        <div className="space-y-1.5">
+          <SectionCaption>Evidence refs</SectionCaption>
+          {latest.evidenceRefs.slice(0, 4).map((reference, index) => {
+            const evidenceId = typeof reference.evidenceId === "string" ? reference.evidenceId : `evidence-${index + 1}`
+            const url = typeof reference.url === "string" ? reference.url : null
+            const manifest = typeof reference.manifestUri === "string" ? reference.manifestUri : null
+            return (
+              <div key={`${evidenceId}-${index}`} className="rounded-md border bg-card px-2.5 py-2">
+                {url ? (
+                  <a className="block truncate font-mono text-[10px] underline-offset-2 hover:underline" href={url} target="_blank" rel="noreferrer">
+                    {evidenceId}
+                  </a>
+                ) : (
+                  <p className="truncate font-mono text-[10px]">{evidenceId}</p>
+                )}
+                {manifest ? (
+                  <p className="mt-1 truncate font-mono text-[9px] text-muted-foreground">{manifest}</p>
+                ) : null}
+              </div>
+            )
+          })}
+        </div>
+      ) : null}
+      {canContinue ? (
+        <div className="space-y-2 rounded-md border border-[#d97706]/30 bg-[#d97706]/5 p-2.5">
+          <p className="text-[10px] leading-relaxed text-muted-foreground">
+            Paste approved source outputs for the existing source node IDs. The server starts one
+            immutable child Run and advances the bounded budget.
+          </p>
+          <Textarea
+            value={sourceOutputs}
+            onChange={(event) => onSourceOutputsChange(event.target.value)}
+            className="min-h-24 font-mono text-[10px]"
+            aria-label="Research continuation source outputs JSON"
+          />
+          <Button size="sm" className="w-full" onClick={onContinue} disabled={continuing}>
+            {continuing ? <Loader2 className="size-3.5 animate-spin" /> : <Play className="size-3.5" />}
+            Continue research
+          </Button>
+          {error ? <p className="text-[10px] text-destructive">{error}</p> : null}
+        </div>
+      ) : null}
+    </div>
   )
 }
 

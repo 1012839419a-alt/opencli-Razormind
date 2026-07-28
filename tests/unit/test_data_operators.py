@@ -38,12 +38,33 @@ def _candidate(
 def test_pack_manifest_registers_all_deterministic_operators() -> None:
     operator_ids = {spec.operator_id for spec in list_data_operator_specs()}
 
-    assert len(operator_ids) == 12
+    assert operator_ids == {
+        "core.evaluate.quality",
+        "core.filter.quality",
+        "core.generate.instruction-pairs",
+        "core.refine.text",
+        "data.chunk",
+        "data.project",
+        "data.qa-extract",
+        "data.training-format",
+        "research.claim-project",
+        "research.coverage-audit",
+        "research.counter-thesis",
+        "research.scenario-simulate",
+        "research.revision-diff",
+        "research.publish-gate",
+        "text.clean",
+        "text.deduplicate",
+        "text.rule-filter",
+        "text.statistics",
+    }
     assert resolve_data_operator("data.chunk").kind == "generate"
+    assert resolve_data_operator("research.coverage-audit", "1.0.0").pack_id == "builtin.research"
     assert {pack.pack_id for pack in list_data_operator_packs()} == {
         "builtin.core-data",
         "builtin.text-cleaning",
         "builtin.dataset-preparation",
+        "builtin.research",
     }
 
 

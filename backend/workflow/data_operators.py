@@ -18,6 +18,10 @@ from backend.workflow.dataflow_compat import (
     COMPAT_EXECUTORS,
     COMPAT_OPERATOR_DEFINITIONS,
 )
+from backend.workflow.research_operators import (
+    RESEARCH_EXECUTORS,
+    RESEARCH_OPERATOR_DEFINITIONS,
+)
 
 DataOperatorKind = Literal["generate", "filter", "evaluate", "refine"]
 _Executor = Callable[
@@ -264,7 +268,11 @@ def _compat_spec(definition: dict[str, Any]) -> DataOperatorSpec:
     )
 
 
-_SPECS = (*_LEGACY_SPECS, *tuple(_compat_spec(item) for item in COMPAT_OPERATOR_DEFINITIONS))
+_SPECS = (
+    *_LEGACY_SPECS,
+    *tuple(_compat_spec(item) for item in COMPAT_OPERATOR_DEFINITIONS),
+    *tuple(_compat_spec(item) for item in RESEARCH_OPERATOR_DEFINITIONS),
+)
 _SPEC_BY_KEY = {(spec.operator_id, spec.pack_version): spec for spec in _SPECS}
 if len(_SPEC_BY_KEY) != len(_SPECS):
     raise ValueError("Duplicate data operator id and packVersion")
@@ -1041,6 +1049,7 @@ _EXECUTORS: dict[tuple[str, str], _Executor] = {
         for operator_id, executor in _LEGACY_EXECUTORS.items()
     },
     **COMPAT_EXECUTORS,
+    **RESEARCH_EXECUTORS,
 }
 
 __all__ = [
