@@ -24,16 +24,16 @@ export type OpenCLIAdapterPlugin = {
 }
 
 export const OPENCLI_SITE_CATEGORIES = [
-  { key: "ai", label: "AI 工具" },
-  { key: "social", label: "社交与内容" },
-  { key: "news", label: "新闻资讯" },
-  { key: "finance", label: "金融数据" },
-  { key: "academic", label: "学术研究" },
-  { key: "developer", label: "开发者工具" },
-  { key: "commerce", label: "电商与生活" },
-  { key: "government", label: "政务与行业" },
-  { key: "local-app", label: "本地应用" },
-  { key: "general", label: "工具与数据" },
+  { key: "ai", label: "AI 工具", labelEn: "AI tools" },
+  { key: "social", label: "社交与内容", labelEn: "Social & content" },
+  { key: "news", label: "新闻资讯", labelEn: "News" },
+  { key: "finance", label: "金融数据", labelEn: "Finance" },
+  { key: "academic", label: "学术研究", labelEn: "Research" },
+  { key: "developer", label: "开发者工具", labelEn: "Developer tools" },
+  { key: "commerce", label: "电商与生活", labelEn: "Commerce & life" },
+  { key: "government", label: "政务与行业", labelEn: "Government & industry" },
+  { key: "local-app", label: "本地应用", labelEn: "Local apps" },
+  { key: "general", label: "工具与数据", labelEn: "Tools & data" },
 ] as const
 
 export type OpenCLISiteCategory = (typeof OPENCLI_SITE_CATEGORIES)[number]["key"]
@@ -77,6 +77,10 @@ const SITE_PRESENTATION_OVERRIDES: Record<
   chatgpt: { label: "ChatGPT 网页版" },
   "chatgpt-app": { label: "ChatGPT 桌面应用" },
   cnki: { label: "中国知网" },
+  "cninfo-reports": {
+    label: "巨潮财报 CLI",
+    introduction: "自研 CLI 提供巨潮公告查询、全市场财报分片采集、PDF 下载与完整性审计。",
+  },
   coingecko: { label: "CoinGecko" },
   coinglass: { label: "CoinGlass" },
   ctrip: { label: "携程" },
@@ -239,6 +243,7 @@ const SITE_CATEGORY_MEMBERS: Record<
     "chinamoney",
     "cls",
     "cninfo",
+    "cninfo-reports",
     "cnstock",
     "coingecko",
     "coinglass",
@@ -465,6 +470,15 @@ export function groupOpenCLIAdapterPlugins(
       commands,
     }
   }).sort((left, right) => left.label.localeCompare(right.label))
+}
+
+export function openCLIKeyboardCandidates(
+  queryText: string,
+  selectedSite: OpenCLIAdapterPlugin | null,
+  matchingNodes: WorkflowOpenCLIAdapterNode[],
+): WorkflowOpenCLIAdapterNode[] {
+  if (!queryText && !selectedSite) return []
+  return selectedSite?.commands ?? matchingNodes
 }
 
 export function summarizeOpenCLIAdapterPlugins(

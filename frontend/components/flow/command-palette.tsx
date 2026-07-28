@@ -51,6 +51,11 @@ import {
   getWorkflowPrimitives,
   type WorkflowPrimitive,
 } from "@/lib/workflow/node-primitives"
+import {
+  groupOpenCLIAdapterPlugins,
+  openCLIKeyboardCandidates,
+  OPENCLI_SITE_CATEGORIES,
+} from "@/lib/plugins/opencli-adapter-catalog"
 import { openCLIAdapterNodeToCatalogItem } from "@/lib/workflow/opencli-adapter-catalog"
 import { useWorkflowCapabilities } from "@/lib/workflow/use-workflow-capabilities"
 import { cn } from "@/lib/utils"
@@ -124,7 +129,6 @@ type ToolFilter = "all" | "opencli" | "plugin"
 type OpenCLIAccessFilter = "all" | "read" | "write"
 type OpenCLIReadinessFilter = "all" | "runnable" | "blocked"
 
-const OPENCLI_RESULT_LIMIT = 60
 const OPENCLI_SEARCH_RESULT_LIMIT = 120
 
 const TAB_META: { id: PickerTab; label: string }[] = [
@@ -161,6 +165,10 @@ const PALETTE_COPY = {
     catalogIndex: "能力导航",
     featuredDescription: "按行情、官方披露、财经媒体、社交与视频浏览可用来源",
     moreOpencliPresets: "更多站点能力",
+    allOpencliSites: "全部 OpenCLI 站点",
+    siteDirectoryDescription: "按站点浏览完整能力目录，选择后查看该站全部命令",
+    backToSiteDirectory: "返回站点目录",
+    siteCommands: "站点命令",
     pluginTools: "插件与后端工具",
     noTools: "没有匹配的工具",
     createImport: "创建与导入",
@@ -225,6 +233,10 @@ const PALETTE_COPY = {
     catalogIndex: "Capability navigation",
     featuredDescription: "Browse market, official disclosure, media, social, and video sources",
     moreOpencliPresets: "More site capabilities",
+    allOpencliSites: "All OpenCLI sites",
+    siteDirectoryDescription: "Browse the complete catalog by site, then inspect all commands for one site",
+    backToSiteDirectory: "Back to site directory",
+    siteCommands: "Site commands",
     pluginTools: "Plugin & backend tools",
     noTools: "No matching tools",
     createImport: "Create & import",
@@ -457,6 +469,7 @@ export function CommandPalette({
   const [opencliLoading, setOpencliLoading] = useState(false)
   const [fallbackOpenCLINodes, setFallbackOpenCLINodes] = useState<WorkflowOpenCLIAdapterNode[]>([])
   const [fallbackOpenCLIError, setFallbackOpenCLIError] = useState<string | null>(null)
+  const [selectedOpenCLISiteId, setSelectedOpenCLISiteId] = useState<string | null>(null)
   const [selectedOpenCLI, setSelectedOpenCLI] = useState<WorkflowOpenCLIAdapterNode | null>(null)
   const [requiredValues, setRequiredValues] = useState<Record<string, string>>({})
   const inputRef = useRef<HTMLInputElement>(null)
@@ -489,6 +502,7 @@ export function CommandPalette({
     setQuery("")
     setAiMode(false)
     setAiPrompt("")
+    setSelectedOpenCLISiteId(null)
     setSelectedOpenCLI(null)
     setRequiredValues({})
     requestAnimationFrame(() => inputRef.current?.focus())
@@ -715,10 +729,19 @@ export function CommandPalette({
   const commonOpenCLIGroups = featuredOpenCLIAdapterGroups(matchingOpenCLINodes, language)
   const commonOpenCLINodes = commonOpenCLIGroups.flatMap((group) => group.nodes)
   const commonOpenCLIIds = new Set(commonOpenCLINodes.map((item) => item.id))
-  const opencliResultLimit = queryText ? OPENCLI_SEARCH_RESULT_LIMIT : OPENCLI_RESULT_LIMIT
-  const visibleOpenCLINodes = matchingOpenCLINodes
-    .filter((item) => !commonOpenCLIIds.has(item.id))
-    .slice(0, opencliResultLimit)
+  const opencliSitePlugins = groupOpenCLIAdapterPlugins(matchingOpenCLINodes)
+  const opencliSiteCategoryGroups = OPENCLI_SITE_CATEGORIES
+    .map((category) => ({
+      ...category,
+      sites: opencliSitePlugins.filter((plugin) => plugin.siteCategory === category.key),
+    }))
+    .filter((category) => category.sites.length > 0)
+  const selectedOpenCLISite = opencliSitePlugins.find((plugin) => plugin.id === selectedOpenCLISiteId) ?? null
+  const visibleOpenCLINodes = queryText
+    ? matchingOpenCLINodes
+      .filter((item) => !commonOpenCLIIds.has(item.id))
+      .slice(0, OPENCLI_SEARCH_RESULT_LIMIT)
+    : selectedOpenCLISite?.commands ?? []
   const opencliPresetGroups = (() => {
     const groups = new Map<string, WorkflowOpenCLIAdapterNode[]>()
     for (const item of visibleOpenCLINodes) {
@@ -736,7 +759,11 @@ export function CommandPalette({
     .find((item) => !catalogItemUnavailable(item))
   const firstPrimitive = primitiveGroups[0]?.items[0]
   const firstAuxiliary = auxiliaryOperators[0]
-  const firstOpenCLI = matchingOpenCLINodes.find(
+  const firstOpenCLI = openCLIKeyboardCandidates(
+    queryText,
+    selectedOpenCLISite,
+    matchingOpenCLINodes,
+  ).find(
     (item) => !openCLIPresetUnavailable(item),
   )
   const firstPluginTool = filteredPluginTools.find((item) => !catalogItemUnavailable(item))
@@ -800,7 +827,7 @@ export function CommandPalette({
             <div className="flex items-center gap-2 border-b px-4 pt-2">
               <div className="flex items-center gap-1" role="tablist" aria-label={copy.pickerType}>
                 {TAB_META.map((tab) => (
-                  <button key={tab.id} type="button" role="tab" aria-selected={activeTab === tab.id} onClick={() => { setActiveTab(tab.id); setQuery(""); requestAnimationFrame(() => inputRef.current?.focus()) }} className={cn("min-h-12 border-b-2 px-4 text-sm font-medium transition-colors", activeTab === tab.id ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground")}>{copy.tabs[tab.id]}</button>
+                  <button key={tab.id} type="button" role="tab" aria-selected={activeTab === tab.id} onClick={() => { setActiveTab(tab.id); setQuery(""); setSelectedOpenCLISiteId(null); requestAnimationFrame(() => inputRef.current?.focus()) }} className={cn("min-h-12 border-b-2 px-4 text-sm font-medium transition-colors", activeTab === tab.id ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground")}>{copy.tabs[tab.id]}</button>
                 ))}
               </div>
               <div className="ml-auto flex items-center rounded-xs border bg-background p-0.5" role="group" aria-label={copy.switchLanguage}>
@@ -830,7 +857,10 @@ export function CommandPalette({
                 <input
                   ref={inputRef}
                   value={query}
-                  onChange={(event) => setQuery(event.target.value)}
+                  onChange={(event) => {
+                    setQuery(event.target.value)
+                    if (event.target.value) setSelectedOpenCLISiteId(null)
+                  }}
                   onKeyDown={(event) => {
                     if (event.key !== "Enter" || event.nativeEvent.isComposing) return
                     if (activeTab === "nodes") {
@@ -851,20 +881,20 @@ export function CommandPalette({
               {activeTab === "tools" ? (
                 <div className="mt-3 grid gap-2">
                   <div className="flex items-center gap-2" aria-label={language === "zh-CN" ? "工具来源筛选" : "Tool source filter"}>
-                    {([['all', copy.all], ['opencli', copy.opencliPresets], ['plugin', copy.pluginCapabilities]] as const).map(([id, label]) => <button key={id} type="button" aria-pressed={toolFilter === id} onClick={() => setToolFilter(id)} className={cn("rounded-md px-3 py-1.5 text-xs", toolFilter === id ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground")}>{label}</button>)}
+                    {([['all', copy.all], ['opencli', copy.opencliPresets], ['plugin', copy.pluginCapabilities]] as const).map(([id, label]) => <button key={id} type="button" aria-pressed={toolFilter === id} onClick={() => { setToolFilter(id); setSelectedOpenCLISiteId(null) }} className={cn("rounded-md px-3 py-1.5 text-xs", toolFilter === id ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground")}>{label}</button>)}
                   </div>
                   {toolFilter !== "plugin" ? (
                     <div className="grid gap-2 sm:grid-cols-2">
                       <div className="grid gap-1.5" role="group" aria-label={copy.accessFilter}>
                         <span className="text-3xs text-muted-foreground">{copy.accessFilter}</span>
                         <div className="flex flex-wrap gap-1.5">
-                          {([['all', copy.allRoles], ['read', copy.dataRead], ['write', copy.operationTool]] as const).map(([id, label]) => <button key={id} type="button" aria-pressed={opencliAccessFilter === id} onClick={() => setOpencliAccessFilter(id)} className={cn("rounded-md border px-2.5 py-1 text-2xs", opencliAccessFilter === id ? "border-primary/40 bg-primary/10 text-primary" : "border-border text-muted-foreground hover:text-foreground")}>{label}</button>)}
+                          {([['all', copy.allRoles], ['read', copy.dataRead], ['write', copy.operationTool]] as const).map(([id, label]) => <button key={id} type="button" aria-pressed={opencliAccessFilter === id} onClick={() => { setOpencliAccessFilter(id); setSelectedOpenCLISiteId(null) }} className={cn("rounded-md border px-2.5 py-1 text-2xs", opencliAccessFilter === id ? "border-primary/40 bg-primary/10 text-primary" : "border-border text-muted-foreground hover:text-foreground")}>{label}</button>)}
                         </div>
                       </div>
                       <div className="grid gap-1.5" role="group" aria-label={copy.readinessFilter}>
                         <span className="text-3xs text-muted-foreground">{copy.readinessFilter}</span>
                         <div className="flex flex-wrap gap-1.5">
-                          {([['all', copy.allStates], ['runnable', copy.runnable], ['blocked', copy.needsSetup]] as const).map(([id, label]) => <button key={id} type="button" aria-pressed={opencliReadinessFilter === id} onClick={() => setOpencliReadinessFilter(id)} className={cn("rounded-md border px-2.5 py-1 text-2xs", opencliReadinessFilter === id ? "border-primary/40 bg-primary/10 text-primary" : "border-border text-muted-foreground hover:text-foreground")}>{label}</button>)}
+                          {([['all', copy.allStates], ['runnable', copy.runnable], ['blocked', copy.needsSetup]] as const).map(([id, label]) => <button key={id} type="button" aria-pressed={opencliReadinessFilter === id} onClick={() => { setOpencliReadinessFilter(id); setSelectedOpenCLISiteId(null) }} className={cn("rounded-md border px-2.5 py-1 text-2xs", opencliReadinessFilter === id ? "border-primary/40 bg-primary/10 text-primary" : "border-border text-muted-foreground hover:text-foreground")}>{label}</button>)}
                         </div>
                       </div>
                     </div>
@@ -927,30 +957,54 @@ export function CommandPalette({
                               </span>
                             </div>
                             <nav className="mt-2 grid gap-1" aria-label={copy.catalogIndex}>
-                              {commonOpenCLIGroups.map((group) => (
-                                <a
-                                  key={group.id}
-                                  href={`#opencli-group-${group.id}`}
+                              {selectedOpenCLISite ? (
+                                <button
+                                  type="button"
+                                  onClick={() => setSelectedOpenCLISiteId(null)}
                                   className="flex min-h-9 items-center justify-between gap-2 rounded-xs border-l-2 border-transparent px-2 text-2xs text-zinc-400 transition-colors hover:border-primary-400 hover:bg-ops-raised hover:text-zinc-100 focus-visible:border-primary-400 focus-visible:text-zinc-100"
                                 >
-                                  <span className="min-w-0 truncate">{group.label}</span>
-                                  <span className="font-mono text-3xs text-zinc-500">{group.nodes.length}</span>
-                                </a>
-                              ))}
-                              {opencliPresetGroups.length ? (
-                                <a
-                                  href="#opencli-more-presets"
-                                  className="flex min-h-9 items-center justify-between gap-2 rounded-xs border-l-2 border-transparent px-2 text-2xs text-zinc-400 transition-colors hover:border-primary-400 hover:bg-ops-raised hover:text-zinc-100 focus-visible:border-primary-400 focus-visible:text-zinc-100"
-                                >
-                                  <span>{copy.moreOpencliPresets}</span>
-                                  <span className="font-mono text-3xs text-zinc-500">{visibleOpenCLINodes.length}</span>
-                                </a>
-                              ) : null}
+                                  <span className="flex min-w-0 items-center gap-2">
+                                    <ArrowLeft className="size-3.5 shrink-0" />
+                                    <span className="truncate">{copy.backToSiteDirectory}</span>
+                                  </span>
+                                </button>
+                              ) : (
+                                <>
+                                  {commonOpenCLIGroups.map((group) => (
+                                    <a
+                                      key={group.id}
+                                      href={`#opencli-group-${group.id}`}
+                                      className="flex min-h-9 items-center justify-between gap-2 rounded-xs border-l-2 border-transparent px-2 text-2xs text-zinc-400 transition-colors hover:border-primary-400 hover:bg-ops-raised hover:text-zinc-100 focus-visible:border-primary-400 focus-visible:text-zinc-100"
+                                    >
+                                      <span className="min-w-0 truncate">{group.label}</span>
+                                      <span className="font-mono text-3xs text-zinc-500">{group.nodes.length}</span>
+                                    </a>
+                                  ))}
+                                  {!queryText ? (
+                                    <a
+                                      href="#opencli-site-directory"
+                                      className="flex min-h-9 items-center justify-between gap-2 rounded-xs border-l-2 border-transparent px-2 text-2xs text-zinc-400 transition-colors hover:border-primary-400 hover:bg-ops-raised hover:text-zinc-100 focus-visible:border-primary-400 focus-visible:text-zinc-100"
+                                    >
+                                      <span>{copy.allOpencliSites}</span>
+                                      <span className="font-mono text-3xs text-zinc-500">{opencliSitePlugins.length}</span>
+                                    </a>
+                                  ) : null}
+                                  {queryText && opencliPresetGroups.length ? (
+                                    <a
+                                      href="#opencli-more-presets"
+                                      className="flex min-h-9 items-center justify-between gap-2 rounded-xs border-l-2 border-transparent px-2 text-2xs text-zinc-400 transition-colors hover:border-primary-400 hover:bg-ops-raised hover:text-zinc-100 focus-visible:border-primary-400 focus-visible:text-zinc-100"
+                                    >
+                                      <span>{copy.moreOpencliPresets}</span>
+                                      <span className="font-mono text-3xs text-zinc-500">{visibleOpenCLINodes.length}</span>
+                                    </a>
+                                  ) : null}
+                                </>
+                              )}
                             </nav>
                           </aside>
 
                           <div className="min-w-0">
-                            {commonOpenCLINodes.length > 0 ? (
+                            {!selectedOpenCLISite && commonOpenCLINodes.length > 0 ? (
                               <section className="rounded-md border border-ops-line bg-ops-black p-3">
                                 <div className="flex items-end justify-between gap-4 border-b border-ops-line px-1 pb-3">
                                   <span>
@@ -983,7 +1037,101 @@ export function CommandPalette({
                               </section>
                             ) : null}
 
-                            {opencliPresetGroups.length ? (
+                            {selectedOpenCLISite ? (
+                              <section className="rounded-md border border-ops-line bg-ops-black p-3">
+                                <div className="flex items-start justify-between gap-4 border-b border-ops-line px-1 pb-3">
+                                  <span className="min-w-0">
+                                    <button
+                                      type="button"
+                                      onClick={() => setSelectedOpenCLISiteId(null)}
+                                      className="mb-2 inline-flex min-h-8 items-center gap-2 rounded-xs px-2 text-2xs text-zinc-400 hover:bg-ops-raised hover:text-zinc-100"
+                                    >
+                                      <ArrowLeft className="size-3.5" />
+                                      {copy.backToSiteDirectory}
+                                    </button>
+                                    <span className="block truncate text-sm font-medium text-zinc-100">
+                                      {selectedOpenCLISite.label}
+                                    </span>
+                                    <span className="mt-0.5 block font-mono text-3xs text-zinc-500">
+                                      {selectedOpenCLISite.site} · {copy.siteCommands}
+                                    </span>
+                                  </span>
+                                  <span className="font-mono text-2xs text-primary-400">
+                                    {selectedOpenCLISite.commands.length}
+                                  </span>
+                                </div>
+                                <div className="mt-2 grid gap-4">
+                                  {opencliPresetGroups.map(([groupKey, items]) => {
+                                    const [, presetKind] = groupKey.split(":")
+                                    return (
+                                      <section key={groupKey}>
+                                        <SectionLabel count={items.length}>
+                                          {presetKind === "source_slot" ? copy.dataRead : copy.operationTool}
+                                        </SectionLabel>
+                                        <div className="grid gap-2 lg:grid-cols-2">
+                                          {items.map((item) => (
+                                            <OpenCLIPickerRow
+                                              key={item.id}
+                                              item={item}
+                                              language={language}
+                                              onClick={() => addOpenCLIAdapter(item)}
+                                            />
+                                          ))}
+                                        </div>
+                                      </section>
+                                    )
+                                  })}
+                                </div>
+                              </section>
+                            ) : null}
+
+                            {!selectedOpenCLISite && !queryText ? (
+                              <section
+                                id="opencli-site-directory"
+                                className={cn(
+                                  "rounded-md border border-ops-line bg-ops-black p-3 scroll-mt-3",
+                                  commonOpenCLINodes.length > 0 && "mt-3",
+                                )}
+                              >
+                                <div className="flex items-end justify-between gap-4 border-b border-ops-line px-1 pb-3">
+                                  <span>
+                                    <span className="block text-sm font-medium text-zinc-100">{copy.allOpencliSites}</span>
+                                    <span className="mt-0.5 block text-2xs text-zinc-500">{copy.siteDirectoryDescription}</span>
+                                  </span>
+                                  <span className="font-mono text-2xs text-primary-400">{opencliSitePlugins.length}</span>
+                                </div>
+                                <div className="mt-2 grid gap-4">
+                                  {opencliSiteCategoryGroups.map((category) => (
+                                    <section key={category.key}>
+                                      <SectionLabel count={category.sites.length}>
+                                        {language === "zh-CN" ? category.label : category.labelEn}
+                                      </SectionLabel>
+                                      <div className="grid gap-2 sm:grid-cols-2">
+                                        {category.sites.map((site) => (
+                                          <button
+                                            key={site.id}
+                                            type="button"
+                                            onClick={() => setSelectedOpenCLISiteId(site.id)}
+                                            className="group flex min-h-12 items-center gap-3 rounded-xs border border-ops-line bg-ops-panel px-3 text-left outline-none transition-colors hover:border-ops-line-strong hover:bg-ops-raised focus-visible:ring-2 focus-visible:ring-primary-400/50"
+                                            aria-label={`${site.label}, ${site.commandCount} ${copy.siteCommands}`}
+                                          >
+                                            <Globe className="size-4 shrink-0 text-primary-400" />
+                                            <span className="min-w-0 flex-1">
+                                              <span className="block truncate text-xs font-medium text-zinc-100">{site.label}</span>
+                                              <span className="block truncate font-mono text-3xs text-zinc-500">{site.site}</span>
+                                            </span>
+                                            <span className="font-mono text-3xs text-zinc-500">{site.commandCount}</span>
+                                            <ChevronRight className="size-3.5 text-zinc-500 transition-transform group-hover:translate-x-0.5" />
+                                          </button>
+                                        ))}
+                                      </div>
+                                    </section>
+                                  ))}
+                                </div>
+                              </section>
+                            ) : null}
+
+                            {!selectedOpenCLISite && queryText && opencliPresetGroups.length ? (
                               <section
                                 id="opencli-more-presets"
                                 className="mt-3 rounded-md border border-ops-line bg-ops-black p-3 scroll-mt-3"
@@ -1018,7 +1166,7 @@ export function CommandPalette({
                           </div>
                         </div>
                       ) : null}
-                      {!catalogBusy && matchingOpenCLINodes.length > commonOpenCLINodes.length + visibleOpenCLINodes.length ? (
+                      {!catalogBusy && queryText && matchingOpenCLINodes.length > commonOpenCLINodes.length + visibleOpenCLINodes.length ? (
                         <p className="px-3 py-3 text-2xs text-muted-foreground">
                           {copy.shown} {commonOpenCLINodes.length + visibleOpenCLINodes.length} / {matchingOpenCLINodes.length}. {copy.refineSearch}
                         </p>

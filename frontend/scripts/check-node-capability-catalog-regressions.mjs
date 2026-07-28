@@ -408,9 +408,10 @@ test('OpenCLI preset results use a navigable two-pane catalog without changing n
 })
 
 test('Studio materializes every searchable OpenCLI capability preset as a node', async () => {
-  const [adapterNodes, adapterCatalog, palette, editor] = await Promise.all([
+  const [adapterNodes, adapterCatalog, pluginCatalog, palette, editor] = await Promise.all([
     importTypeScript('lib/workflow/backend-opencli-adapter-nodes.ts'),
     importTypeScript('lib/workflow/opencli-adapter-catalog.ts'),
+    importTypeScript('lib/plugins/opencli-adapter-catalog.ts'),
     readFrontendSource('components/flow/command-palette.tsx'),
     readFrontendSource('components/flow/workflow-editor.tsx'),
   ])
@@ -531,11 +532,63 @@ test('Studio materializes every searchable OpenCLI capability preset as a node',
     }),
     true,
   )
+  const directoryFixture = [
+    ...Array.from({ length: 75 }, (_, index) => ({
+      ...sourcePreset,
+      id: `opencli.adapter.a-site-${String(index).padStart(2, '0')}.list`,
+      site: `a-site-${String(index).padStart(2, '0')}`,
+      command: 'list',
+      adapter: { id: `opencli-a-site-${String(index).padStart(2, '0')}` },
+    })),
+    {
+      ...sourcePreset,
+      id: 'opencli.adapter.discord-app.messages',
+      site: 'discord-app',
+      command: 'messages',
+      adapter: { id: 'opencli-discord-app' },
+    },
+    {
+      ...sourcePreset,
+      id: 'opencli.adapter.weixin.search-articles',
+      site: 'weixin',
+      command: 'search-articles',
+      adapter: { id: 'opencli-weixin' },
+    },
+    {
+      ...sourcePreset,
+      id: 'opencli.adapter.cninfo-reports.market-reports',
+      site: 'cninfo-reports',
+      command: 'market-reports',
+      adapter: { id: 'opencli-cninfo-reports' },
+    },
+  ]
+  const directory = pluginCatalog.groupOpenCLIAdapterPlugins(directoryFixture)
+  assert.equal(directory.length, 78)
+  assert.equal(directory.find((site) => site.site === 'discord-app').siteCategory, 'local-app')
+  assert.equal(directory.find((site) => site.site === 'weixin').commands[0].id, 'opencli.adapter.weixin.search-articles')
+  assert.equal(directory.find((site) => site.site === 'cninfo-reports').siteCategory, 'finance')
+  assert.deepStrictEqual(pluginCatalog.openCLIKeyboardCandidates('', null, directoryFixture), [])
+  assert.equal(
+    pluginCatalog.openCLIKeyboardCandidates(
+      '',
+      directory.find((site) => site.site === 'weixin'),
+      directoryFixture,
+    )[0].id,
+    'opencli.adapter.weixin.search-articles',
+  )
+  assert.equal(
+    adapterNodes.workflowCatalogItemForOpenCLIAdapterNode(
+      directory.find((site) => site.site === 'cninfo-reports').commands[0],
+    ).params.opencliAdapterNodeId,
+    'opencli.adapter.cninfo-reports.market-reports',
+  )
   assert.match(palette, /adapterCatalogResponse\?\.nodes \?\? fallbackOpenCLINodes/)
   assert.match(palette, /includeWrite: true, limit: 5000/)
   assert.match(palette, /!workflowCatalogItemIsOpenCLIAdapterPreset\(item\)/)
-  assert.match(palette, /OPENCLI_RESULT_LIMIT = 60/)
   assert.match(palette, /OPENCLI_SEARCH_RESULT_LIMIT = 120/)
+  assert.match(palette, /groupOpenCLIAdapterPlugins\(matchingOpenCLINodes\)/)
+  assert.match(palette, /openCLIKeyboardCandidates/)
+  assert.doesNotMatch(palette, /OPENCLI_RESULT_LIMIT = 60/)
   assert.match(palette, /opencliPresetGroups/)
   assert.match(palette, /item\.site.*openCLIPresetKind\(item\)/s)
   assert.match(palette, /运行前设置/)

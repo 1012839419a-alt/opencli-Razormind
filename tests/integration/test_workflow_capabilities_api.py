@@ -644,6 +644,23 @@ def test_opencli_adapter_nodes_refresh_after_opencli_catalog_changes(monkeypatch
     opencli_adapter_nodes.refresh_opencli_adapter_catalog()
 
 
+def test_opencli_adapter_nodes_reject_invalid_utf8_catalog(monkeypatch):
+    def fake_run(*args, **kwargs):
+        assert kwargs["encoding"] == "utf-8"
+        assert "errors" not in kwargs
+        raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+
+    monkeypatch.setattr(opencli_adapter_nodes, "resolve_opencli_bin", lambda: "opencli-test")
+    monkeypatch.setattr(opencli_adapter_nodes.subprocess, "run", fake_run)
+    opencli_adapter_nodes.refresh_opencli_adapter_catalog()
+
+    response = list_opencli_adapter_nodes(refresh=True)
+
+    assert response.total == 0
+    assert response.nodes == []
+    opencli_adapter_nodes.refresh_opencli_adapter_catalog()
+
+
 @pytest.mark.asyncio
 async def test_opencli_adapter_nodes_endpoint_filters_and_limits(client, monkeypatch):
     monkeypatch.setattr(

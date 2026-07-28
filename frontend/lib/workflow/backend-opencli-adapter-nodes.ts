@@ -238,7 +238,7 @@ const DOMESTIC_OODA_SOURCE_GROUPS: FeaturedOpenCLISourceGroup[] = [
       "opencli.adapter.eastmoney.guba",
       "opencli.adapter.weibo.hot",
       "opencli.adapter.weibo.search",
-      "opencli.adapter.weixin.search",
+      "opencli.adapter.weixin.search-articles",
       "opencli.adapter.xiaohongshu.search",
       "opencli.adapter.xiaohongshu.feed",
     ],
