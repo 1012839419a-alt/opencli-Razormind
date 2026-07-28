@@ -1,6 +1,7 @@
 'use client'
 
 import { useNotificationRules } from '@/lib/api/hooks'
+import { notificationChannelLabel } from '@/lib/notification-channels'
 import { BACKEND_HINT, EmptyState, ErrorState, LoadingState } from '@/components/shell/data-states'
 import { PageContainer } from '@/components/shell/page-container'
 import { ACTION_CENTER_TABS, RouteTabs } from '@/components/shell/route-tabs'
@@ -15,14 +16,6 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-
-const NOTIFIER_LABEL: Record<string, string> = {
-  webhook: 'Webhook',
-  email: '邮件',
-  slack: 'Slack',
-  feishu: '飞书',
-  dingtalk: '钉钉',
-}
 
 export default function NotificationsPage() {
   const { data, isLoading, isError, error } = useNotificationRules()
@@ -63,7 +56,7 @@ export default function NotificationsPage() {
                   </TableCell>
                   <TableCell>
                     <Badge variant="secondary">
-                      {NOTIFIER_LABEL[r.notifier_type] ?? r.notifier_type}
+                      {notificationChannelLabel(r.notifier_type)}
                     </Badge>
                   </TableCell>
                   <TableCell>

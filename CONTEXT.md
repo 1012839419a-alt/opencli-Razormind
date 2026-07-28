@@ -48,6 +48,14 @@ _Avoid_: arbitrary frontend module, copied product shell, hardcoded node card, u
 The workspace-owned record of an OpenCLI Plugin version, its enabled state, configuration, granted permissions, runtime availability, health probes, and upgrade status. Projects reference the capabilities it exposes rather than owning separate plugin copies.
 _Avoid_: Project-owned plugin binary, global implicit enablement, installing by placing files in a Workflow
 
+**Plugin Hub**:
+The Provider-package management surface with separate Installed and Marketplace views. It installs, upgrades, configures, and reports the readiness of Plugin packages. A Provider may own a drill-down management surface for its complete registered capability directory, such as OpenCLI websites and commands or optional RSS OPML onboarding, while the Hub still presents only one top-level card per Provider.
+_Avoid_: flattening every command into a plugin card, hiding Provider capabilities, source workspace, one plugin card per command
+
+**Workflow Node Selector**:
+The Studio add-node surface that exposes capabilities registered by installed Providers, grouped as Blocks, Data Sources, Tools, Start, and Snippets. Blocks include the platform's Dify-compatible workflow components, Start owns triggers, and Snippets owns reusable HDA/packages. Selecting a node configures a Workflow; installing or governing its Provider remains a Plugin Hub or Governance responsibility.
+_Avoid_: plugin installer inside the Canvas, mixing commands with nodes, hardcoded source-pack picker
+
 **Declarative Plugin UI**:
 The platform-rendered configuration, node inspector, tool description, status, and validation UI generated from a Plugin's manifest, schemas, icons, and localized metadata. Plugins do not inject arbitrary frontend code, top-level navigation, or competing application shells in the initial plugin contract.
 _Avoid_: plugin iframe, arbitrary React bundle, plugin-owned global route
@@ -161,8 +169,8 @@ The auditable identity path that explains who or what authorized an execution, s
 _Avoid_: system user as universal actor, audit entry containing only the Run ID, Agent action without originating authority
 
 **Source**:
-A Project-owned data collection target and scope, such as an account, search, site, feed, repository, or stream. It may reference a workspace-owned Connection and is consumed by Workflow nodes.
-_Avoid_: Connection, credential, global source configuration
+A data origin and collection scope configured by one Source Node Instance, such as an account, search, site, feed, repository, or stream. Operators and Agents inspect and change it in the Workflow; persisted runtime state may support the node without creating a separate source-management product area.
+_Avoid_: Connection, credential, global source catalog, standalone Source workspace
 
 **Destination**:
 A Project-owned external write or delivery target and permitted scope, such as mailbox recipients, a site account or community, repository, webhook, storage location, or publishing channel. It references a workspace-owned Connection without copying credentials and grants only the write capabilities the Project is allowed to use.
@@ -323,7 +331,13 @@ _Avoid_: object-by-object navigation, top-level Workflow/Source tabs, Project In
 The legacy code and document name for a Workflow. It may remain at compatibility boundaries during migration, but must not appear as a competing product concept.
 _Avoid_: user-facing Plan, treating Plan and Workflow as different execution designs
 
-**Canvas Source Node**: A Workflow node that represents a real executable collection source. It may wrap an existing Data Source or an inline source definition, but it must be resolvable into a real collection source before running.
+**Data Source**: The legacy API and storage name for persisted Source Node configuration and Source State. It remains an implementation boundary where required by existing collectors, but it is not a top-level operator object, catalog entry, or enablement workspace.
+_Avoid_: standalone source manager, built-in source pack, public source directory, user-facing object separate from its Source Node
+
+**Website Collection Capability**: An executable browser, Skill, or site-adapter capability that reads a website and emits Record Candidates or Runtime Artifacts. It is registered in the Capability Catalog and exposed through a Source Node only when its runtime binding and probes support execution.
+_Avoid_: source directory, website card as a durable Source, claiming a capability is runnable before its runtime binding and probes pass
+
+**Canvas Source Node**: A Workflow node that owns one collection origin, scope, parameters, bindings, and external ports. It may persist runtime configuration and Source State behind the node, but it must resolve to a real collection capability before running.
 _Avoid_: decorative source node, abstract placeholder, UI-only source
 
 **Executable Canvas Node**: Any node on the Collection Canvas that participates in a Workflow. It must either execute, route, transform, store, notify, gate, or expose package-owned executable internals; if it lacks a runtime binding, the node is explicitly blocked rather than treated as decorative.
@@ -403,6 +417,9 @@ _Avoid_: treating every scraped item as an accepted Record, mixing raw artifacts
 
 **Record**: A normalized collection result accepted into OpenCLI Admin's records system and eligible for search, export, notification, downstream egress, and review workflows.
 _Avoid_: runtime artifact, transient node output, unnormalized scrape result
+
+**Data View**: The operator-facing surface for inspecting Records as fields and rows together with their Workflow, Run, Source Node, and task lineage. It presents what the collected data looks like and does not configure, enable, or catalog Sources.
+_Avoid_: Source workspace, collection configuration page, per-source enablement list
 
 **Record Acceptance Gate**: A Gate Node that decides whether a Record Candidate becomes a Record based on schema completeness, dedupe result, lineage preservation, quality threshold, review policy, and automatic-acceptance rules.
 _Avoid_: normalize-implies-accepted, silently storing raw candidates as records, accepting records without lineage

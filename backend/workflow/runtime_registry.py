@@ -58,7 +58,13 @@ INBOX_STORE_BINDING_ID = "workflow.inbox.store"
 WEBHOOK_NOTIFY_BINDING_ID = "workflow.notifier.webhook.send"
 NOTIFY_SEND_BINDING_ID = "workflow.notify.send"
 EXTERNAL_TOOL_BINDING_ID = "workflow.external-tool.capability"
-SUPPORTED_TOOL_EXECUTOR_MODES = {"fixture", "okx_market_ticker_snapshot", "joyai_vl_interaction"}
+SUPPORTED_TOOL_EXECUTOR_MODES = {
+    "fixture",
+    "okx_market_ticker_snapshot",
+    "joyai_vl_interaction",
+    "opentabs",
+    "bbx",
+}
 
 
 class WorkflowRuntimeBinding(BaseModel):
@@ -116,14 +122,14 @@ def resolve_runtime_metadata(
         metadata = _resolve_record_sink(node, node_id=resolved_node_id)
     elif _is_inbox_store_node(node):
         metadata = _resolve_inbox_store_node(node, node_id=resolved_node_id)
+    elif _is_opencli_node(node, adapter):
+        metadata = _resolve_opencli_node(node, adapter, node_id=resolved_node_id)
     elif _is_external_tool_capability(node):
         metadata = _resolve_external_tool_capability(node, node_id=resolved_node_id)
     elif _is_turbopush_publish(node, adapter):
         metadata = _resolve_turbopush_publish(node, adapter, node_id=resolved_node_id)
     elif _is_webhook_notifier(node, adapter):
         metadata = _resolve_webhook_notifier(node, adapter, node_id=resolved_node_id)
-    elif _is_opencli_source(node, adapter):
-        metadata = _resolve_opencli_source(node, adapter, node_id=resolved_node_id)
     elif _is_source_fetch_node(node, adapter):
         metadata = _resolve_source_fetch_node(node, adapter, node_id=resolved_node_id)
     elif _is_notify_send_node(node, adapter):
@@ -153,7 +159,7 @@ def resolve_runtime_metadata(
     )
 
 
-def _resolve_opencli_source(
+def _resolve_opencli_node(
     node: WorkflowProjectNode,
     adapter: WorkflowAdapterBinding | None,
     *,
@@ -184,6 +190,10 @@ def _resolve_opencli_source(
             )
         }
 
+    access = _read_string(node.params.get("opencliAccess")) or (
+        "write" if node.kind == "action" else "read"
+    )
+    mutation_mode = "write" if access == "write" else "read"
     return {
         "binding": WorkflowRuntimeBinding(
             binding_id=OPENCLI_BINDING_ID,
@@ -191,7 +201,11 @@ def _resolve_opencli_source(
             worker=OPENCLI_WORKER,
             function_id=OPENCLI_FUNCTION_ID,
             channel="opencli",
-            input={"site": site, "command": command},
+            input={
+                "site": site,
+                "command": command,
+                **({"access": "write"} if mutation_mode == "write" else {}),
+            },
         ).model_dump(),
         "resource_requirement": WorkflowRuntimeResourceRequirement(
             nodeId=node_id,
@@ -201,7 +215,7 @@ def _resolve_opencli_source(
                 or node_id
             ),
             site=site,
-            mutationMode="read",
+            mutationMode=mutation_mode,
             requestedCapability=f"opencli.{site}.{command}",
             adapterNodeId=_read_string(node.params.get("opencliAdapterNodeId")),
         ).model_dump(mode="json", exclude_none=True),
@@ -858,11 +872,16 @@ def _is_webhook_trigger(node: WorkflowProjectNode) -> bool:
     }
 
 
-def _is_opencli_source(
+def _is_opencli_node(
     node: WorkflowProjectNode,
     adapter: WorkflowAdapterBinding | None,
 ) -> bool:
-    if node.kind != "source" or node.capability != "fetch" or adapter is None:
+    if adapter is None:
+        return False
+    if (node.kind, node.capability) not in {
+        ("source", "fetch"),
+        ("action", "store"),
+    }:
         return False
 
     config = adapter.config

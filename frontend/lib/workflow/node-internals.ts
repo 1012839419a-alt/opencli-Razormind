@@ -111,22 +111,87 @@ const NODE_INTERNALS: Record<string, NodeInternals> = {
     ],
   },
   "intelligence.source.rss": {
-    title: "RSS / Atom Source Internals",
-    summary: "Fetches an official or provider-generated feed through the backend RSS channel and preserves its business source group in lineage.",
+    title: "RSS / Atom Reader Internals",
+    summary: "Reads an existing feed through the backend RSS channel and preserves its business source group in lineage.",
     steps: [
       step("feed", "Feed binding", "fetch", "Reads the configured RSS or Atom URL through the guarded network client.", "params.feedUrl", "ready", [
         exposedParam("feedUrl", "Feed URL", "source", "Source", "text", "https://www.federalreserve.gov/feeds/press_all.xml", { order: 1 }),
         exposedParam("sourceGroup", "Source Group", "source", "Source", "text", "macro-policy", { order: 2 }),
       ]),
       step("parse", "Parse RSS / Atom", "parse", "Maps feed entries to stable source items.", "RSSChannel", "ready"),
-      step("provider", "Generator Provider", "guard", "Resolves RSSHub/RSS-Bridge route metadata and backend-only credentials when providerId is present.", "params.providerId", "ready", [
-        exposedParam("providerId", "Provider ID", "source", "Source", "text", "", { order: 3 }),
-        exposedParam("generatorType", "Generator Type", "source", "Source", "text", "rsshub", { order: 4 }),
-      ]),
       step("limit", "Entry limit", "filter", "Caps entries by node and project run limits.", "params.maxEntries", "ready", [
         exposedParam("maxEntries", "Max Entries", "transform", "Transform", "number", 20, { min: 1, max: 500, step: 1, groupOrder: 2, order: 1 }),
       ]),
       step("output", "Output with lineage", "validate", "Returns items[] with sourceGroup and live RSS lineage.", "items[] contract", "ready"),
+    ],
+  },
+  "intelligence.source.rsshub": {
+    title: "RSSHub Reader Internals",
+    summary: "Resolves a managed RSSHub Provider and route, then reads its generated feed through the same RSS runtime.",
+    steps: [
+      step("provider", "RSSHub Provider", "guard", "Resolves the selected RSSHub connection without exposing its credential.", "params.providerId", "ready", [
+        exposedParam("providerId", "Provider ID", "source", "Source", "text", "", { order: 1 }),
+        exposedParam("route", "RSSHub Route", "source", "Source", "text", "", {
+          order: 2,
+          placeholder: "/route/path",
+        }),
+        exposedParam("sourceGroup", "Source Group", "source", "Source", "text", "rsshub", { order: 3 }),
+      ]),
+      step("generate", "Generate feed URL", "resolve", "Builds the route URL with backend-only Provider credentials and non-secret parameters.", "RSSHub Provider", "ready"),
+      step("read", "Read generated feed", "fetch", "Fetches and parses the generated RSS response.", "RSSChannel", "ready"),
+      step("limit", "Entry limit", "filter", "Caps entries by node and project run limits.", "params.maxEntries", "ready", [
+        exposedParam("maxEntries", "Max Entries", "transform", "Transform", "number", 20, { min: 1, max: 500, step: 1, groupOrder: 2, order: 1 }),
+      ]),
+      step("output", "Output with lineage", "validate", "Returns items[] with RSSHub route lineage.", "items[] contract", "ready"),
+    ],
+  },
+  "intelligence.source.rss-bridge": {
+    title: "RSS-Bridge Reader Internals",
+    summary: "Resolves a managed RSS-Bridge Provider and bridge, then reads the generated feed through the RSS runtime.",
+    steps: [
+      step("provider", "RSS-Bridge Provider", "guard", "Resolves the selected RSS-Bridge connection without exposing its credential.", "params.providerId", "ready", [
+        exposedParam("providerId", "Provider ID", "source", "Source", "text", "", { order: 1 }),
+        exposedParam("bridge", "Bridge", "source", "Source", "text", "", {
+          order: 2,
+          placeholder: "Bridge name",
+        }),
+        exposedParam("sourceGroup", "Source Group", "source", "Source", "text", "rss-bridge", { order: 3 }),
+      ]),
+      step("generate", "Generate feed URL", "resolve", "Builds the bridge URL with backend-only Provider credentials and non-secret parameters.", "RSS-Bridge Provider", "ready"),
+      step("read", "Read generated feed", "fetch", "Fetches and parses the generated RSS response.", "RSSChannel", "ready"),
+      step("limit", "Entry limit", "filter", "Caps entries by node and project run limits.", "params.maxEntries", "ready", [
+        exposedParam("maxEntries", "Max Entries", "transform", "Transform", "number", 20, { min: 1, max: 500, step: 1, groupOrder: 2, order: 1 }),
+      ]),
+      step("output", "Output with lineage", "validate", "Returns items[] with RSS-Bridge lineage.", "items[] contract", "ready"),
+    ],
+  },
+  "intelligence.source.http": {
+    title: "HTTP / API Reader Internals",
+    summary: "Runs a guarded JSON request and exposes the selected response items to the same multi-source workflow.",
+    steps: [
+      step("request", "HTTP request", "fetch", "Executes an allowed GET or POST request through the guarded HTTP client.", "params.url", "ready", [
+        exposedParam("url", "Endpoint URL", "source", "Source", "text", "", {
+          order: 1,
+          placeholder: "https://api.example.cn/items",
+        }),
+        exposedParam("method", "Method", "source", "Source", "select", "GET", {
+          order: 2,
+          options: [
+            { value: "GET", label: "GET" },
+            { value: "POST", label: "POST" },
+          ],
+        }),
+        exposedParam("sourceGroup", "Source Group", "source", "Source", "text", "http-api", { order: 3 }),
+      ]),
+      step("select", "Result selector", "parse", "Selects an optional dot-separated result path from the JSON payload.", "params.resultPath", "ready", [
+        exposedParam("resultPath", "Result Path", "transform", "Transform", "text", "", {
+          groupOrder: 2,
+          order: 1,
+          placeholder: "data.items",
+        }),
+      ]),
+      step("guard", "Network guard", "guard", "Checks the domain allow-list, response status, JSON shape, and size limit.", "agentPermissions.allowedDomains", "ready"),
+      step("output", "Output with lineage", "validate", "Returns items[] with endpoint and source-group lineage.", "items[] contract", "ready"),
     ],
   },
   "intelligence.source.opencli-slot": {

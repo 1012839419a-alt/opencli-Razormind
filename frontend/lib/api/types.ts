@@ -475,6 +475,7 @@ export interface OpinionMonitorRecord {
   sentiment: string
   status: string
   notification_status: 'sent' | 'failed' | 'pending'
+  notification_channels?: string[]
   created_at: string
 }
 
@@ -483,10 +484,11 @@ export interface OpinionMonitor {
   summary: {
     records: number
     ai_processed: number
-    feishu_sent: number
-    feishu_failed: number
+    notification_sent: number
+    notification_failed: number
     active_sources: number
-    active_feishu_rules: number
+    active_notification_rules: number
+    active_notification_channels: string[]
   }
   tags: Array<{ label: string; count: number }>
   sentiment: Array<{ label: string; count: number }>
@@ -496,8 +498,8 @@ export interface OpinionMonitor {
     channel_type: string
     records: number
     ai_processed: number
-    feishu_sent: number
-    feishu_failed: number
+    notification_sent: number
+    notification_failed: number
   }>
   recent: OpinionMonitorRecord[]
 }

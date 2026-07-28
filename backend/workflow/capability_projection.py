@@ -187,7 +187,7 @@ def _catalog_capabilities(*, dify_runtime_ready: bool) -> list[WorkflowRuntimeCa
         ),
         _capability(
             id="intelligence.source.rss",
-            label="RSS / Atom Source",
+            label="RSS / Atom Reader",
             surface="catalog",
             status="runnable",
             backend_available=True,
@@ -207,6 +207,84 @@ def _catalog_capabilities(*, dify_runtime_ready: bool) -> list[WorkflowRuntimeCa
                 input_ports=[_port("in", "trigger")],
                 output_ports=[_port("out", "items[]")],
                 resources=["rss_channel", "feed_provider_registry", "allowed_domains"],
+                permissions=["network.fetch"],
+                runtime_binding=SOURCE_FETCH_BINDING_ID,
+            ),
+        ),
+        _capability(
+            id="intelligence.source.rsshub",
+            label="RSSHub Reader",
+            surface="catalog",
+            status="runnable",
+            backend_available=True,
+            kind="source",
+            capability="fetch",
+            provider="rss",
+            channel_type="rss",
+            runtime_binding=SOURCE_FETCH_BINDING_ID,
+            reason=(
+                "Canvas Run resolves the selected RSSHub Provider and route, "
+                "then reads the generated feed through the backend RSS channel."
+            ),
+            tags=["source", "rsshub", "reader", "live"],
+            source="backend.workflow.rss_source_executor",
+            manifest=_manifest(
+                schema="capability.source.rsshub.v1",
+                input_ports=[_port("in", "trigger")],
+                output_ports=[_port("out", "items[]")],
+                resources=["rss_channel", "feed_provider_registry", "allowed_domains"],
+                permissions=["network.fetch"],
+                runtime_binding=SOURCE_FETCH_BINDING_ID,
+            ),
+        ),
+        _capability(
+            id="intelligence.source.rss-bridge",
+            label="RSS-Bridge Reader",
+            surface="catalog",
+            status="runnable",
+            backend_available=True,
+            kind="source",
+            capability="fetch",
+            provider="rss",
+            channel_type="rss",
+            runtime_binding=SOURCE_FETCH_BINDING_ID,
+            reason=(
+                "Canvas Run resolves the selected RSS-Bridge Provider and bridge, "
+                "then reads the generated feed through the backend RSS channel."
+            ),
+            tags=["source", "rss-bridge", "reader", "live"],
+            source="backend.workflow.rss_source_executor",
+            manifest=_manifest(
+                schema="capability.source.rss-bridge.v1",
+                input_ports=[_port("in", "trigger")],
+                output_ports=[_port("out", "items[]")],
+                resources=["rss_channel", "feed_provider_registry", "allowed_domains"],
+                permissions=["network.fetch"],
+                runtime_binding=SOURCE_FETCH_BINDING_ID,
+            ),
+        ),
+        _capability(
+            id="intelligence.source.http",
+            label="HTTP / API Reader",
+            surface="catalog",
+            status="runnable",
+            backend_available=True,
+            kind="source",
+            capability="fetch",
+            provider="http",
+            channel_type="http",
+            runtime_binding=SOURCE_FETCH_BINDING_ID,
+            reason=(
+                "Canvas Run executes guarded GET or POST JSON requests through "
+                "the workflow HTTP source executor."
+            ),
+            tags=["source", "http", "api", "reader", "live"],
+            source="backend.workflow.http_source_executor",
+            manifest=_manifest(
+                schema="capability.source.http.v1",
+                input_ports=[_port("in", "trigger")],
+                output_ports=[_port("out", "items[]")],
+                resources=["guarded_http_client", "allowed_domains"],
                 permissions=["network.fetch"],
                 runtime_binding=SOURCE_FETCH_BINDING_ID,
             ),

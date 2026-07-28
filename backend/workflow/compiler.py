@@ -1267,6 +1267,11 @@ def _compile_node(
         "capability": node.capability,
         "dispatch": "preview",
         "origin": resolve_node_origin(node).model_dump(exclude_none=True),
+        **(
+            {"proposal_state": node.proposalState}
+            if node.proposalState is not None
+            else {}
+        ),
     }
     if runtime:
         runtime_metadata.update(runtime)

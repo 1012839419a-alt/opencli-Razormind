@@ -87,6 +87,269 @@ function sourceSection(source, start, end) {
   return source.slice(startIndex, endIndex)
 }
 
+test('atomic source capabilities live in the workflow node catalog without a duplicate plugin source list', async () => {
+  const { WORKFLOW_NODE_CATALOG } = await importTypeScript('lib/workflow/node-catalog.ts')
+  const byId = new Map(WORKFLOW_NODE_CATALOG.map((item) => [item.id, item]))
+
+  const atomicSourceIds = [
+    'intelligence.source.rss',
+    'intelligence.source.rsshub',
+    'intelligence.source.rss-bridge',
+    'intelligence.source.http',
+  ]
+  for (const nodeId of atomicSourceIds) {
+    const node = byId.get(nodeId)
+    assert.ok(node, `${nodeId} must have a workflow catalog node`)
+    assert.equal(node.kind, 'source')
+    assert.equal(node.capability, 'fetch')
+    assert.ok(node.requiredAdapters?.length, `${nodeId} must have a runtime adapter`)
+  }
+  assert.equal(byId.get('intelligence.source.rsshub').params.generatorType, 'rsshub')
+  assert.equal(byId.get('intelligence.source.rss-bridge').params.generatorType, 'rss_bridge')
+  assert.equal(byId.get('intelligence.source.http').requiredAdapters[0].provider, 'http')
+})
+
+test('OpenCLI write commands become accepted action nodes with explicit mutation permission', async () => {
+  const [{ workflowCatalogItemForOpenCLIAdapterNode }, { addCatalogNodeToWorkflowProject }, { parseWorkflowProject }] = await Promise.all([
+    importTypeScript('lib/workflow/backend-opencli-adapter-nodes.ts'),
+    importTypeScript('lib/workflow/node-catalog.ts'),
+    importTypeScript('lib/workflow/schema.ts'),
+  ])
+  const catalogItem = workflowCatalogItemForOpenCLIAdapterNode({
+    id: 'opencli.adapter.twitter.post',
+    label: 'twitter · post',
+    description: 'Publish a post',
+    status: 'blocked',
+    site: 'twitter',
+    command: 'post',
+    access: 'write',
+    browser: true,
+    catalogId: 'external.tool.capability',
+    kind: 'action',
+    capability: 'store',
+    requiredArgs: ['text'],
+    args: [{
+      name: 'text',
+      type: 'string',
+      required: true,
+      valueRequired: true,
+      positional: true,
+      choices: [],
+    }],
+    adapter: {
+      id: 'opencli-twitter',
+      type: 'utility',
+      provider: 'opencli',
+      mode: 'live',
+      config: { channel: 'opencli' },
+    },
+    params: {
+      site: 'twitter',
+      command: 'post',
+      format: 'json',
+      args: {},
+      positional_args: [],
+    },
+    manifest: {},
+  }, { text: 'hello from workflow' })
+  const project = parseWorkflowProject({
+    id: 'opencli-write-project',
+    name: 'OpenCLI write project',
+    profile: 'intelligence',
+    nodes: [{
+      id: 'manual-trigger',
+      kind: 'action',
+      capability: 'trigger',
+      params: {},
+    }],
+    edges: [],
+  })
+  const updated = addCatalogNodeToWorkflowProject(
+    project,
+    catalogItem,
+    'action-opencli-twitter-post',
+    { x: 320, y: 180 },
+  )
+  const writeNode = updated.nodes.find((node) => node.id === 'action-opencli-twitter-post')
+
+  assert.equal(catalogItem.kind, 'action')
+  assert.equal(catalogItem.capability, 'store')
+  assert.equal(catalogItem.proposalState, 'accepted')
+  assert.equal(updated.agentPermissions.canMutateExternalSites, true)
+  assert.equal(writeNode?.proposalState, 'accepted')
+  assert.equal(writeNode?.params.opencliAccess, 'write')
+  assert.deepEqual(writeNode?.params.positional_args, ['hello from workflow'])
+  assert.ok(updated.adapters.some((adapter) => adapter.id === 'opencli-twitter'))
+})
+
+test('OpenTabs tools become typed callable nodes and compile to the OpenTabs executor', async () => {
+  const [{ workflowCatalogItemForOpenTabsToolNode }, { addCatalogNodeToWorkflowProject }, { parseWorkflowProject }] = await Promise.all([
+    importTypeScript('lib/workflow/backend-opentabs-tool-nodes.ts'),
+    importTypeScript('lib/workflow/node-catalog.ts'),
+    importTypeScript('lib/workflow/schema.ts'),
+  ])
+  const catalogItem = workflowCatalogItemForOpenTabsToolNode({
+    id: 'opentabs.tool.browser.browser-list-tabs',
+    label: 'browser · List tabs',
+    description: 'List open browser tabs',
+    status: 'blocked',
+    plugin: 'browser',
+    tool: 'browser_list_tabs',
+    access: 'read',
+    requiredArgs: ['windowId'],
+    args: [{
+      name: 'windowId',
+      type: 'integer',
+      required: true,
+      valueRequired: true,
+      choices: [],
+    }],
+    inputSchema: {},
+    params: {
+      toolCapability: {
+        id: 'tool.opentabs.call',
+        executor: {
+          mode: 'opentabs',
+          params: {
+            tool: 'browser_list_tabs',
+            plugin: 'browser',
+            readOnly: true,
+          },
+        },
+      },
+      toolParams: {},
+      opentabsTool: {
+        name: 'browser_list_tabs',
+        plugin: 'browser',
+        access: 'read',
+      },
+    },
+    manifest: {},
+  }, { windowId: '7' })
+  const project = parseWorkflowProject({
+    id: 'opentabs-browser-project',
+    name: 'OpenTabs browser project',
+    profile: 'intelligence',
+    nodes: [{
+      id: 'manual-trigger',
+      kind: 'action',
+      capability: 'trigger',
+      params: {},
+    }],
+    edges: [],
+  })
+  const updated = addCatalogNodeToWorkflowProject(
+    project,
+    catalogItem,
+    'action-opentabs-browser-list-tabs',
+    { x: 320, y: 180 },
+  )
+  const toolNode = updated.nodes.find((node) => node.id === 'action-opentabs-browser-list-tabs')
+
+  assert.equal(updated.agentPermissions.canFetchNetwork, true)
+  assert.equal(toolNode?.params.toolParams.windowId, 7)
+  assert.equal(toolNode?.params.toolCapability.executor.mode, 'opentabs')
+  assert.equal(toolNode?.params.toolCapability.executor.params.tool, 'browser_list_tabs')
+
+  const compiled = compileWithBackend(updated)
+  assert.equal(compiled.status, 0, `${compiled.stdout}\n${compiled.stderr}`)
+  assert.equal(compiled.report.valid, true)
+  const runtimeNode = compiled.report.plan.runtime.nodes.find((node) => node.id === toolNode.id)
+  assert.equal(runtimeNode.runtime.binding.binding_id, 'workflow.external-tool.capability')
+  assert.equal(runtimeNode.runtime.binding.input.executorMode, 'opentabs')
+  assert.equal(runtimeNode.runtime.binding.input.executorParams.tool, 'browser_list_tabs')
+})
+
+test('BBX methods become typed callable nodes and compile to the Browser Bridge executor', async () => {
+  const [{ workflowCatalogItemForBbxToolNode }, { addCatalogNodeToWorkflowProject }, { parseWorkflowProject }] = await Promise.all([
+    importTypeScript('lib/workflow/backend-bbx-tool-nodes.ts'),
+    importTypeScript('lib/workflow/node-catalog.ts'),
+    importTypeScript('lib/workflow/schema.ts'),
+  ])
+  const catalogItem = workflowCatalogItemForBbxToolNode({
+    id: 'bbx.tool.page.page-get-text',
+    label: 'BBX · page.get_text',
+    description: '读取当前页面中有界的可见文本',
+    status: 'blocked',
+    group: 'page',
+    tool: 'page.get_text',
+    access: 'read',
+    requiredArgs: [],
+    args: [
+      {
+        name: 'tabId',
+        type: 'integer',
+        required: false,
+        valueRequired: false,
+        choices: [],
+      },
+      {
+        name: 'params',
+        type: 'object',
+        required: false,
+        valueRequired: false,
+        choices: [],
+      },
+    ],
+    params: {
+      toolCapability: {
+        id: 'tool.bbx.call',
+        executor: {
+          mode: 'bbx',
+          params: {
+            tool: 'page.get_text',
+            group: 'page',
+            readOnly: true,
+          },
+        },
+      },
+      toolParams: {},
+      bbxTool: {
+        name: 'page.get_text',
+        group: 'page',
+        access: 'read',
+      },
+    },
+    manifest: {},
+  }, {
+    tabId: '27',
+    params: '{"textBudget":600}',
+  })
+  const project = parseWorkflowProject({
+    id: 'bbx-browser-project',
+    name: 'BBX browser project',
+    profile: 'intelligence',
+    nodes: [{
+      id: 'manual-trigger',
+      kind: 'action',
+      capability: 'trigger',
+      params: {},
+    }],
+    edges: [],
+  })
+  const updated = addCatalogNodeToWorkflowProject(
+    project,
+    catalogItem,
+    'action-bbx-page-get-text',
+    { x: 320, y: 180 },
+  )
+  const toolNode = updated.nodes.find((node) => node.id === 'action-bbx-page-get-text')
+
+  assert.equal(updated.agentPermissions.canFetchNetwork, true)
+  assert.equal(toolNode?.params.toolParams.tabId, 27)
+  assert.deepEqual(toolNode?.params.toolParams.params, { textBudget: 600 })
+  assert.equal(toolNode?.params.toolCapability.executor.mode, 'bbx')
+  assert.equal(toolNode?.params.toolCapability.executor.params.tool, 'page.get_text')
+
+  const compiled = compileWithBackend(updated)
+  assert.equal(compiled.status, 0, `${compiled.stdout}\n${compiled.stderr}`)
+  assert.equal(compiled.report.valid, true)
+  const runtimeNode = compiled.report.plan.runtime.nodes.find((node) => node.id === toolNode.id)
+  assert.equal(runtimeNode.runtime.binding.binding_id, 'workflow.external-tool.capability')
+  assert.equal(runtimeNode.runtime.binding.input.executorMode, 'bbx')
+  assert.equal(runtimeNode.runtime.binding.input.executorParams.tool, 'page.get_text')
+})
+
 test('node workflow lives inside a project shell while the legacy canvas route redirects', async () => {
   const [navigation, canvasPage, workspaceWorkflowPage, projectOverviewPage, studioPage, rootPage] = await Promise.all([
     readSource('lib/navigation.ts'),
@@ -624,11 +887,12 @@ test('workflow validation waits for the runtime capability catalog', async () =>
   assert.match(session, /capabilityLoading \? '正在加载运行能力目录'/)
 })
 
-test('workflow adopts the Dify-style add-node path while preserving the four-layer hierarchy', async () => {
-  const [editor, surface, palette] = await Promise.all([
+test('workflow adopts the provider-backed add-node path while preserving the four-layer hierarchy', async () => {
+  const [editor, surface, palette, hierarchy] = await Promise.all([
     readSource('components/flow/workflow-editor.tsx'),
     readSource('components/flow/workflow-canvas-surface.tsx'),
     readSource('components/flow/command-palette.tsx'),
+    readSource('lib/workflow/node-hierarchy.ts'),
   ])
 
   assert.match(editor, /const onPaneContextMenu/)
@@ -637,10 +901,17 @@ test('workflow adopts the Dify-style add-node path while preserving the four-lay
   assert.match(palette, /item\.category === ["']package["']/)
   assert.match(palette, /inNodeNetwork \? getWorkflowPrimitives\(\) : \[\]/)
   assert.match(palette, /item\.category === ["']annotation["'] \|\| item\.category === ["']shape["']/)
-  assert.match(palette, /一级业务节点 · Dify 风格/)
+  assert.match(palette, /type SelectorTab = "blocks" \| "sources" \| "tools" \| "start" \| "snippets"/)
+  assert.match(palette, /\["blocks", "节点"\]/)
+  assert.match(palette, /\["sources", "数据源"\]/)
+  assert.match(palette, /\["tools", "工具"\]/)
+  assert.match(palette, /\["start", "开始"\]/)
+  assert.match(palette, /\["snippets", "片段"\]/)
+  assert.doesNotMatch(palette, /一级业务节点 · Dify 风格/)
   assert.match(palette, /L\{nodeDepth\} · \{nodeLayer\.label\}/)
   assert.match(palette, /groupPrimitivesForNodeMenu\(primitiveOperators\)/)
   assert.match(palette, /group\.label/)
+  assert.doesNotMatch(hierarchy, /Dify 风格/)
 })
 
 test('the default canvas is an operator network with recursive four-layer lookup', async () => {

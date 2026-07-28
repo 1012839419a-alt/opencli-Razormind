@@ -1,3 +1,6 @@
+import type { AdapterBinding } from "./schema"
+import type { WorkflowNodeCatalogItem } from "./node-catalog"
+
 type ApiResponse<T> = {
   success?: boolean
   data?: T
@@ -81,6 +84,7 @@ export function workflowCatalogItemForOpenCLIAdapterNode(
   node: WorkflowOpenCLIAdapterNode,
   requiredValues: Record<string, string> = {},
 ): WorkflowNodeCatalogItem {
+  const isWrite = node.access !== "read"
   const args = { ...((node.params.args as Record<string, unknown> | undefined) ?? {}) }
   const positionalArgs = Array.isArray(node.params.positional_args)
     ? [...node.params.positional_args]
@@ -94,15 +98,15 @@ export function workflowCatalogItemForOpenCLIAdapterNode(
   const adapter = node.adapter as AdapterBinding
   return {
     id: node.catalogId,
-    idPrefix: `source-opencli-${safeIdPart(node.site)}-${safeIdPart(node.command)}`,
+    idPrefix: `${isWrite ? "action" : "source"}-opencli-${safeIdPart(node.site)}-${safeIdPart(node.command)}`,
     label: node.label,
-    description: node.description || `实时执行 opencli ${node.site} ${node.command}`,
-    category: "source",
+    description: node.description || `执行 opencli ${node.site} ${node.command}`,
+    category: isWrite ? "output" : "source",
     profile: "intelligence",
-    kind: "source",
-    capability: "fetch",
-    icon: "Globe",
-    color: "var(--chart-4)",
+    kind: isWrite ? "action" : "source",
+    capability: isWrite ? "store" : "fetch",
+    icon: isWrite ? "Wrench" : "Globe",
+    color: isWrite ? "var(--chart-3)" : "var(--chart-4)",
     adapter: adapter.id,
     requiredAdapters: [adapter],
     params: {
@@ -110,8 +114,13 @@ export function workflowCatalogItemForOpenCLIAdapterNode(
       args,
       ...(positionalArgs.length ? { positional_args: positionalArgs } : {}),
       opencliAdapterNodeId: node.id,
+      opencliAccess: node.access,
       sourceGroup: node.site,
     },
+    proposalState: isWrite ? "accepted" : undefined,
+    agentPermissionPatch: isWrite
+      ? { canMutateExternalSites: true }
+      : undefined,
     keywords: [
       "opencli",
       "realtime",
@@ -119,6 +128,7 @@ export function workflowCatalogItemForOpenCLIAdapterNode(
       "采集",
       node.site,
       node.command,
+      node.access,
       node.label,
       node.description,
     ].filter(Boolean),
@@ -128,5 +138,3 @@ export function workflowCatalogItemForOpenCLIAdapterNode(
 function safeIdPart(value: string) {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "source"
 }
-import type { AdapterBinding } from "./schema"
-import type { WorkflowNodeCatalogItem } from "./node-catalog"

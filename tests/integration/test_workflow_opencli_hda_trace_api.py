@@ -159,6 +159,67 @@ def _multi_source_opencli_hda_project() -> dict:
     }
 
 
+def _opencli_write_action_project(
+    *,
+    proposal_state: str,
+    can_mutate_external_sites: bool,
+) -> dict:
+    return {
+        "id": f"wf-opencli-write-{proposal_state}",
+        "name": "OpenCLI guarded write",
+        "profile": "intelligence",
+        "version": 1,
+        "nodes": [
+            {
+                "id": "manual-entry",
+                "kind": "schedule",
+                "capability": "trigger",
+                "params": {
+                    "mode": "manual",
+                    "builder": {"nodeType": "manual-trigger"},
+                },
+            },
+            {
+                "id": "tool-twitter-post",
+                "kind": "action",
+                "capability": "store",
+                "adapter": "opencli-twitter",
+                "proposalState": proposal_state,
+                "params": {
+                    "site": "twitter",
+                    "command": "post",
+                    "args": {"text": "hello"},
+                    "opencliAccess": "write",
+                    "opencliAdapterNodeId": "opencli.adapter.twitter.post",
+                },
+            },
+        ],
+        "edges": [
+            {
+                "id": "manual-post",
+                "source": "manual-entry",
+                "target": "tool-twitter-post",
+            }
+        ],
+        "adapters": [
+            {
+                "id": "opencli-twitter",
+                "type": "utility",
+                "provider": "opencli",
+                "mode": "live",
+                "config": {"channel": "opencli"},
+            }
+        ],
+        "agentPermissions": {
+            "canFetchNetwork": True,
+            "canSendNotifications": False,
+            "canWriteInbox": True,
+            "canMutateExternalSites": can_mutate_external_sites,
+            "allowedDomains": [],
+        },
+    }
+
+
 def _standalone_opencli_pipeline_project() -> dict:
     return {
         "id": "wf-opencli-standalone",
@@ -939,6 +1000,166 @@ async def test_workflow_run_blocks_missing_opencli_profile_resource(
     assert blocked["details"]["resourceResolution"]["status"] == "blocked"
     assert blocked["details"]["resourceRequirement"]["site"] == "twitter"
     assert "multi-source-opencli::source-bilibili" not in dispatched
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("proposal_state", "can_mutate", "expected_code"),
+    [
+        ("proposed", True, "opencli_write_approval_required"),
+        ("accepted", False, "opencli_write_permission_required"),
+    ],
+)
+async def test_workflow_run_blocks_unapproved_or_unauthorized_opencli_write(
+    client,
+    monkeypatch,
+    proposal_state,
+    can_mutate,
+    expected_code,
+):
+    dispatched = []
+
+    async def fake_dispatch(dispatch, fleet_match):
+        dispatched.append(dispatch)
+        return [], {"attempted": True, "success": True}
+
+    monkeypatch.setattr(
+        "backend.workflow.opencli_hda_tracer._dispatch_opencli_source_to_fleet",
+        fake_dispatch,
+    )
+
+    response = await client.post(
+        "/api/v1/workflows/runs",
+        json={
+            "project": _opencli_write_action_project(
+                proposal_state=proposal_state,
+                can_mutate_external_sites=can_mutate,
+            ),
+            "runId": f"run-opencli-write-{expected_code}",
+            "trigger": {"kind": "manual", "triggerNodeId": "manual-entry"},
+        },
+    )
+
+    assert response.status_code == 202
+    events = (
+        await client.get(
+            f"/api/v1/workflows/runs/run-opencli-write-{expected_code}/events"
+        )
+    ).json()["data"]
+    blocked = next(
+        event
+        for event in events
+        if event["nodeId"] == "tool-twitter-post"
+        and event["eventType"] == "blocked"
+    )
+    assert blocked["blockReason"]["code"] == expected_code
+    assert dispatched == []
+
+
+@pytest.mark.asyncio
+async def test_workflow_run_dispatches_accepted_authorized_opencli_write(
+    client,
+    db_session,
+    monkeypatch,
+):
+    dispatched = []
+    fleet_matches = []
+
+    _install_fleet_trace_pool(monkeypatch)
+    await _seed_fleet_trace_agent(db_session)
+    monkeypatch.setattr(
+        "backend.workflow.fleet_inventory.ws_agent_manager.list_connected",
+        lambda: ["http://agent-x:19823"],
+    )
+
+    async def fake_dispatch(dispatch, fleet_match):
+        dispatched.append(dispatch)
+        fleet_matches.append(fleet_match)
+        return (
+            [{"raw": {"ok": True, "id": "post-1"}}],
+            {
+                "attempted": True,
+                "success": True,
+                "protocol": "local",
+                "site": dispatch.site,
+                "command": dispatch.command,
+                "itemCount": 1,
+            },
+        )
+
+    monkeypatch.setattr(
+        "backend.workflow.opencli_adapter_nodes._load_opencli_catalog",
+        lambda: (
+            {
+                "site": "twitter",
+                "name": "post",
+                "access": "write",
+                "browser": True,
+                "strategy": "cookie",
+                "args": [
+                    {
+                        "name": "text",
+                        "type": "str",
+                        "required": True,
+                    }
+                ],
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        "backend.workflow.opencli_hda_tracer._dispatch_opencli_source_to_fleet",
+        fake_dispatch,
+    )
+
+    response = await client.post(
+        "/api/v1/workflows/runs",
+        json={
+            "project": _opencli_write_action_project(
+                proposal_state="accepted",
+                can_mutate_external_sites=True,
+            ),
+            "runId": "run-opencli-write-authorized",
+            "trigger": {"kind": "manual", "triggerNodeId": "manual-entry"},
+        },
+    )
+
+    assert response.status_code == 202
+    data = response.json()["data"]
+    assert data["status"] == "completed"
+    assert len(dispatched) == 1
+    assert dispatched[0].site == "twitter"
+    assert dispatched[0].command == "post"
+    assert dispatched[0].args == {"text": "hello"}
+    assert fleet_matches[0] is not None
+    assert fleet_matches[0].matched is True
+    assert fleet_matches[0].selected.endpoint == "http://agent-x:19823"
+
+    events = (
+        await client.get(
+            "/api/v1/workflows/runs/run-opencli-write-authorized/events"
+        )
+    ).json()["data"]
+    action_events = [
+        event for event in events if event["nodeId"] == "tool-twitter-post"
+    ]
+    assert [event["eventType"] for event in action_events] == [
+        "queued",
+        "started",
+        "tool_call_started",
+        "partial",
+        "tool_call_completed",
+        "completed",
+    ]
+    tool_call = next(
+        event for event in action_events if event["eventType"] == "tool_call_started"
+    )
+    assert tool_call["details"]["resourceRequirement"]["mutationMode"] == "write"
+    resource_resolution = tool_call["details"]["resourceResolution"]
+    assert resource_resolution["status"] == "resolved"
+    assert resource_resolution["profileBindingId"]
+    assert resource_resolution["lockId"]
+    assert "sessionSnapshotId" not in resource_resolution
+    assert "cookie" not in str(resource_resolution).lower()
 
 
 @pytest.mark.asyncio

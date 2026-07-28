@@ -302,10 +302,10 @@ async def get_opinion_monitor(
     limit: int = Query(20, ge=1, le=100, description="Recent records to return"),
     db: AsyncSession = Depends(get_db),
 ) -> ApiResponse:
-    """Opinion-monitor projection over real collection, AI, and push evidence.
+    """Opinion-monitor projection over real collection, AI, and delivery evidence.
 
     This is deliberately read-only: it summarizes records, AI enrichment, and
-    Feishu notification logs already produced by the pipeline instead of
+    notification logs already produced by the pipeline instead of
     pretending to send or enrich anything at dashboard read time.
     """
     since, until = _parse_time_range(range, start, end)
@@ -335,18 +335,17 @@ async def get_opinion_monitor(
         )
     ).scalar_one()
 
-    feishu_status_rows = await db.execute(
+    notification_status_rows = await db.execute(
         apply_window(
             select(NotificationLog.status, func.count())
             .select_from(NotificationLog)
             .join(CollectedRecord, NotificationLog.record_id == CollectedRecord.id)
             .join(NotificationRule, NotificationLog.rule_id == NotificationRule.id)
-            .where(NotificationRule.notifier_type == "feishu")
             .group_by(NotificationLog.status)
         )
     )
-    feishu_status_counts = {
-        status: int(count) for status, count in feishu_status_rows.all()
+    notification_status_counts = {
+        status: int(count) for status, count in notification_status_rows.all()
     }
 
     records_query = (
@@ -361,7 +360,9 @@ async def get_opinion_monitor(
     records = [record for record, _source in rows]
     record_ids = [record.id for record in records]
 
-    notification_by_record: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    notification_by_record: dict[str, dict[str, Any]] = defaultdict(
+        lambda: {"statuses": defaultdict(int), "channels": set()}
+    )
     if record_ids:
         notification_rows = await db.execute(
             select(
@@ -373,8 +374,9 @@ async def get_opinion_monitor(
             .where(NotificationLog.record_id.in_(record_ids))
         )
         for record_id, status, notifier_type in notification_rows.all():
-            if record_id and notifier_type == "feishu":
-                notification_by_record[record_id][status] += 1
+            if record_id:
+                notification_by_record[record_id]["statuses"][status] += 1
+                notification_by_record[record_id]["channels"].add(notifier_type)
 
     tag_counts: Counter[str] = Counter()
     sentiment_counts: Counter[str] = Counter()
@@ -395,19 +397,21 @@ async def get_opinion_monitor(
                 "channel_type": source.channel_type,
                 "records": 0,
                 "ai_processed": 0,
-                "feishu_sent": 0,
-                "feishu_failed": 0,
+                "notification_sent": 0,
+                "notification_failed": 0,
             },
         )
         source_bucket["records"] += 1
         if record.ai_enrichment:
             source_bucket["ai_processed"] += 1
 
-        notify_counts = notification_by_record.get(record.id, {})
+        notify_evidence = notification_by_record.get(record.id)
+        notify_counts = notify_evidence["statuses"] if notify_evidence else {}
+        notify_channels = sorted(notify_evidence["channels"]) if notify_evidence else []
         sent_count = int(notify_counts.get("sent", 0))
         failed_count = int(notify_counts.get("failed", 0))
-        source_bucket["feishu_sent"] += sent_count
-        source_bucket["feishu_failed"] += failed_count
+        source_bucket["notification_sent"] += sent_count
+        source_bucket["notification_failed"] += failed_count
 
         if len(recent) < limit:
             notification_status = (
@@ -425,15 +429,21 @@ async def get_opinion_monitor(
                     "sentiment": sentiment,
                     "status": record.status,
                     "notification_status": notification_status,
+                    "notification_channels": notify_channels,
                     "created_at": record.created_at.isoformat(),
                 }
             )
 
-    feishu_rules_query = select(func.count()).select_from(NotificationRule).where(
-        NotificationRule.enabled.is_(True),
-        NotificationRule.notifier_type == "feishu",
+    active_rules_query = select(func.count()).select_from(NotificationRule).where(
+        NotificationRule.enabled.is_(True)
     )
-    active_feishu_rules = (await db.execute(feishu_rules_query)).scalar_one()
+    active_notification_rules = (await db.execute(active_rules_query)).scalar_one()
+    active_channel_rows = await db.execute(
+        select(NotificationRule.notifier_type)
+        .where(NotificationRule.enabled.is_(True))
+        .distinct()
+    )
+    active_notification_channels = sorted(active_channel_rows.scalars().all())
 
     return ApiResponse.ok(
         {
@@ -445,10 +455,11 @@ async def get_opinion_monitor(
             "summary": {
                 "records": total_records,
                 "ai_processed": ai_processed_records,
-                "feishu_sent": feishu_status_counts.get("sent", 0),
-                "feishu_failed": feishu_status_counts.get("failed", 0),
+                "notification_sent": notification_status_counts.get("sent", 0),
+                "notification_failed": notification_status_counts.get("failed", 0),
                 "active_sources": active_sources,
-                "active_feishu_rules": active_feishu_rules,
+                "active_notification_rules": active_notification_rules,
+                "active_notification_channels": active_notification_channels,
             },
             "tags": [
                 {"label": label, "count": count}

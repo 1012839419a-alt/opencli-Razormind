@@ -212,6 +212,7 @@ class WorkflowAgentPermissions(BaseModel):
     canFetchNetwork: bool = False
     canSendNotifications: bool = False
     canWriteInbox: bool = True
+    canMutateExternalSites: bool = False
     allowedDomains: list[str] = Field(default_factory=list)
 
 
@@ -390,7 +391,13 @@ class WorkflowToolCapabilityPort(BaseModel):
 
 
 class WorkflowToolCapabilityExecutor(BaseModel):
-    mode: Literal["fixture", "okx_market_ticker_snapshot", "joyai_vl_interaction"]
+    mode: Literal[
+        "fixture",
+        "okx_market_ticker_snapshot",
+        "joyai_vl_interaction",
+        "opentabs",
+        "bbx",
+    ]
     description: Optional[str] = None
     params: dict[str, Any] = Field(default_factory=dict)
 
@@ -449,6 +456,57 @@ class WorkflowOpenCLIAdapterNodesResponse(BaseModel):
     total: int = Field(..., ge=0)
     summary: dict[str, Any] = Field(default_factory=dict)
     nodes: list[WorkflowOpenCLIAdapterNode] = Field(default_factory=list)
+
+
+class WorkflowOpenTabsToolNode(BaseModel):
+    id: str = Field(..., min_length=1)
+    label: str = Field(..., min_length=1)
+    description: str = ""
+    status: WorkflowCapabilityStatus
+    plugin: str = Field(..., min_length=1)
+    tool: str = Field(..., min_length=1)
+    access: Literal["read", "write"]
+    catalogId: str = "external.tool.capability"
+    kind: WorkflowNodeKind = "action"
+    capability: WorkflowCapability = "store"
+    requiredArgs: list[str] = Field(default_factory=list)
+    args: list[WorkflowOpenCLIAdapterNodeArg] = Field(default_factory=list)
+    inputSchema: dict[str, Any] = Field(default_factory=dict)
+    params: dict[str, Any] = Field(default_factory=dict)
+    manifest: dict[str, Any] = Field(default_factory=dict)
+
+
+class WorkflowOpenTabsToolNodesResponse(BaseModel):
+    available: bool = False
+    total: int = Field(..., ge=0)
+    summary: dict[str, Any] = Field(default_factory=dict)
+    reason: Optional[str] = None
+    nodes: list[WorkflowOpenTabsToolNode] = Field(default_factory=list)
+
+
+class WorkflowBbxToolNode(BaseModel):
+    id: str = Field(..., min_length=1)
+    label: str = Field(..., min_length=1)
+    description: str = ""
+    status: WorkflowCapabilityStatus
+    group: str = Field(..., min_length=1)
+    tool: str = Field(..., min_length=1)
+    access: Literal["read", "write"]
+    catalogId: str = "external.tool.capability"
+    kind: WorkflowNodeKind = "action"
+    capability: WorkflowCapability = "store"
+    requiredArgs: list[str] = Field(default_factory=list)
+    args: list[WorkflowOpenCLIAdapterNodeArg] = Field(default_factory=list)
+    params: dict[str, Any] = Field(default_factory=dict)
+    manifest: dict[str, Any] = Field(default_factory=dict)
+
+
+class WorkflowBbxToolNodesResponse(BaseModel):
+    available: bool = False
+    total: int = Field(..., ge=0)
+    summary: dict[str, Any] = Field(default_factory=dict)
+    reason: Optional[str] = None
+    nodes: list[WorkflowBbxToolNode] = Field(default_factory=list)
 
 
 class WorkflowFleetSiteBinding(BaseModel):

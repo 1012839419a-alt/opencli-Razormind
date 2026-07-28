@@ -30,7 +30,7 @@ async def test_dashboard_stats_with_source(client, sample_source_data):
 
 
 @pytest.mark.asyncio
-async def test_opinion_monitor_projects_ai_and_feishu_evidence(
+async def test_opinion_monitor_projects_ai_and_configured_delivery_evidence(
     client, db_session, sample_source_data
 ):
     source_response = await client.post(
@@ -77,6 +77,17 @@ async def test_opinion_monitor_projects_ai_and_feishu_evidence(
     await db_session.flush()
 
     db_session.add(NotificationLog(rule_id=rule.id, record_id=record.id, status="sent"))
+    email_rule = NotificationRule(
+        name="邮件值班组",
+        source_id=source_id,
+        trigger_event="on_new_record",
+        notifier_type="email",
+        notifier_config={"recipients": ["ops@example.com"]},
+        enabled=True,
+    )
+    db_session.add(email_rule)
+    await db_session.flush()
+    db_session.add(NotificationLog(rule_id=email_rule.id, record_id=record.id, status="failed"))
     await db_session.commit()
 
     response = await client.get("/api/v1/dashboard/opinion-monitor?range=all")
@@ -85,9 +96,14 @@ async def test_opinion_monitor_projects_ai_and_feishu_evidence(
 
     assert data["summary"]["records"] == 1
     assert data["summary"]["ai_processed"] == 1
-    assert data["summary"]["feishu_sent"] == 1
-    assert data["summary"]["active_feishu_rules"] == 1
+    assert data["summary"]["notification_sent"] == 1
+    assert data["summary"]["notification_failed"] == 1
+    assert data["summary"]["active_notification_rules"] == 2
+    assert data["summary"]["active_notification_channels"] == ["email", "feishu"]
     assert data["tags"] == [{"label": "AI", "count": 1}, {"label": "融资", "count": 1}]
     assert data["sentiment"] == [{"label": "positive", "count": 1}]
     assert data["recent"][0]["summary"] == "国产模型热度上升"
     assert data["recent"][0]["notification_status"] == "sent"
+    assert data["recent"][0]["notification_channels"] == ["email", "feishu"]
+    assert data["sources"][0]["notification_sent"] == 1
+    assert data["sources"][0]["notification_failed"] == 1

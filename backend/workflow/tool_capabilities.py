@@ -8,9 +8,14 @@ from backend.schemas.workflow import (
     WorkflowToolCapabilityExecutor,
     WorkflowToolCapabilityPort,
 )
+from backend.workflow.bbx_tool_nodes import BBX_EXECUTOR_MODE, BBX_TOOL_CAPABILITY_ID
 from backend.workflow.joyai_vl_executor import (
     JOYAI_VL_INTERACTION_EXECUTOR,
     JOYAI_VL_TOOL_CAPABILITY_ID,
+)
+from backend.workflow.opentabs_tool_nodes import (
+    OPENTABS_EXECUTOR_MODE,
+    OPENTABS_TOOL_CAPABILITY_ID,
 )
 from backend.workflow.realtime_market_executor import OKX_MARKET_TICKER_SNAPSHOT_EXECUTOR
 
@@ -29,6 +34,76 @@ def resolve_workflow_tool_capability(tool_id: str) -> WorkflowToolCapability | N
 
 def _tool_capabilities() -> list[WorkflowToolCapability]:
     return [
+        WorkflowToolCapability(
+            id=BBX_TOOL_CAPABILITY_ID,
+            label="BBX Browser Bridge Tool",
+            description=(
+                "Invokes a Browser Bridge method through the local bbx CLI "
+                "against the user's current authenticated browser."
+            ),
+            status="runnable",
+            provider="bbx",
+            inputPorts=[WorkflowToolCapabilityPort(name="in", type="unknown")],
+            outputPorts=[WorkflowToolCapabilityPort(name="out", type="unknown")],
+            executor=WorkflowToolCapabilityExecutor(
+                mode=BBX_EXECUTOR_MODE,
+                description="Calls bbx call [--tab <tabId>] <method> <paramsJson>.",
+            ),
+            tags=["tool", "browser", "bbx", "browser-bridge", "authenticated-session"],
+            manifest={
+                "schema": "tool-capability.bbx-call.v1",
+                "runtime": {"binding": "workflow.external-tool.capability"},
+                "resources": ["bbx_daemon", "browser_bridge_extension"],
+                "permissions": [
+                    "canFetchNetwork",
+                    "write:canMutateExternalSites",
+                    "bbx_browser_access",
+                ],
+                "trace": {
+                    "events": [
+                        "tool_call_started",
+                        "partial:outputItemCount",
+                        "tool_call_completed",
+                        "completed",
+                    ]
+                },
+            },
+        ),
+        WorkflowToolCapability(
+            id=OPENTABS_TOOL_CAPABILITY_ID,
+            label="OpenTabs Browser Tool",
+            description=(
+                "Invokes a tool discovered from the local OpenTabs server "
+                "against the user's authenticated browser tabs."
+            ),
+            status="runnable",
+            provider="opentabs",
+            inputPorts=[WorkflowToolCapabilityPort(name="in", type="unknown")],
+            outputPorts=[WorkflowToolCapabilityPort(name="out", type="unknown")],
+            executor=WorkflowToolCapabilityExecutor(
+                mode=OPENTABS_EXECUTOR_MODE,
+                description="Calls OpenTabs POST /tools/{name}/call.",
+            ),
+            tags=["tool", "browser", "opentabs", "authenticated-session"],
+            manifest={
+                "schema": "tool-capability.opentabs-call.v1",
+                "runtime": {"binding": "workflow.external-tool.capability"},
+                "resources": ["opentabs_local_server", "browser_extension"],
+                "permissions": [
+                    "canFetchNetwork",
+                    "write:canMutateExternalSites",
+                    "opentabs_tool_permission",
+                ],
+                "trace": {
+                    "events": [
+                        "tool_call_started",
+                        "partial:outputItemCount",
+                        "tool_call_completed",
+                        "completed",
+                    ]
+                },
+            },
+        ),
         WorkflowToolCapability(
             id="tool.search.fixture",
             label="Fixture Search Tool",

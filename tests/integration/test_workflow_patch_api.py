@@ -419,7 +419,7 @@ async def test_patch_materialize_opencli_required_arg_reports_missing_params(
 
 
 @pytest.mark.asyncio
-async def test_patch_materializes_opencli_write_adapter_as_review_tool_placeholder(
+async def test_patch_materializes_opencli_write_adapter_as_guarded_opencli_action(
     client,
     monkeypatch,
 ):
@@ -452,24 +452,72 @@ async def test_patch_materializes_opencli_write_adapter_as_review_tool_placehold
     node = nodes["tool-twitter-post"]
     assert node["kind"] == "action"
     assert node["capability"] == "store"
+    assert node["adapter"] == "opencli-twitter"
     assert node["proposalState"] == "proposed"
     assert node["ui"]["catalogId"] == "external.tool.capability"
-    assert node["params"]["opencliAdapterNode"] == {
-        "id": "opencli.adapter.twitter.post",
-        "site": "twitter",
-        "command": "post",
-        "access": "write",
-    }
-    assert node["params"]["toolParams"]["args"] == {"text": "hello"}
+    assert node["params"]["site"] == "twitter"
+    assert node["params"]["command"] == "post"
+    assert node["params"]["opencliAccess"] == "write"
+    assert node["params"]["opencliAdapterNodeId"] == "opencli.adapter.twitter.post"
+    assert node["params"]["args"] == {"text": "hello"}
 
     runtime_nodes = {
         node["id"]: node for node in data["compile"]["plan"]["runtime"]["nodes"]
     }
     tool_runtime = runtime_nodes["tool-twitter-post"]["runtime"]
-    assert tool_runtime["external_tool"]["dispatch"] == (
-        "blocked_until_tool_capability_binding"
+    assert tool_runtime["binding"]["binding_id"] == "iii.collector-opencli.snapshot"
+    assert tool_runtime["binding"]["channel"] == "opencli"
+    assert tool_runtime["binding"]["input"] == {
+        "site": "twitter",
+        "command": "post",
+        "access": "write",
+    }
+    assert tool_runtime["binding"]["contract"]["permissionGate"]["required"] == [
+        "canFetchNetwork",
+        "write:proposalState=accepted",
+        "write:canMutateExternalSites",
+    ]
+    assert "write:tool_call_started" in tool_runtime["binding"]["contract"][
+        "eventShape"
+    ]["events"]
+    assert tool_runtime["resource_requirement"]["mutationMode"] == "write"
+    assert "missing_runtime" not in tool_runtime
+
+
+@pytest.mark.asyncio
+async def test_patch_rejects_opencli_write_adapter_with_missing_required_args(
+    client,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        "backend.workflow.opencli_adapter_nodes._load_opencli_catalog",
+        _fixture_opencli_adapter_catalog,
     )
-    assert tool_runtime["missing_runtime"]["code"] == "missing_tool_capability_binding"
+
+    response = await client.post(
+        "/api/v1/workflows/patch",
+        json={
+            "project": _valid_workflow_project(),
+            "operations": [
+                {
+                    "op": "materialize_opencli_adapter",
+                    "adapterNodeId": "opencli.adapter.twitter.post",
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["valid"] is False
+    assert data["project"] is None
+    assert data["compile"] is None
+    assert len(data["errors"]) == 1
+    assert data["errors"][0]["code"] == "missing_opencli_adapter_params"
+    assert data["errors"][0]["message"] == (
+        'OpenCLI adapter node "opencli.adapter.twitter.post" requires params: text'
+    )
+    assert data["errors"][0]["path"] == ["operations", "0", "adapterNodeId"]
 
 
 @pytest.mark.asyncio

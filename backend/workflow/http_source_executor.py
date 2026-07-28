@@ -92,9 +92,17 @@ async def execute_workflow_http_source(
             details={"method": method},
         )
 
-    headers = _string_dict(config.get("headers"))
-    query = _read_dict(config.get("query") or config.get("params"))
-    body = config.get("body", config.get("json"))
+    headers = _string_dict(config.get("headers") or params.get("headers"))
+    query = _read_dict(
+        config.get("query")
+        or config.get("params")
+        or params.get("query")
+        or params.get("queryParams")
+    )
+    body = config.get(
+        "body",
+        config.get("json", params.get("body", params.get("json"))),
+    )
     result_path = _first_string(
         config.get("resultPath"),
         config.get("result_path"),

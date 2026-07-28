@@ -62,7 +62,6 @@ export const ACTION_CENTER_TABS: RouteTab[] = [
 ]
 
 export const AUTOMATION_TABS: RouteTab[] = [
-  { href: '/sources', label: '数据源' },
   { href: '/schedules', label: '调度' },
   { href: '/agents', label: 'Agent' },
   { href: '/skills', label: '技能' },

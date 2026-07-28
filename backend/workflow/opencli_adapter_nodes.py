@@ -9,14 +9,14 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
-import shutil
 import subprocess
+import threading
 from collections import Counter
 from functools import lru_cache
 from typing import Any
 
+from backend.opencli_runtime import resolve_opencli_bin
 from backend.schemas.workflow import (
     WorkflowAdapterBinding,
     WorkflowOpenCLIAdapterNode,
@@ -28,8 +28,9 @@ from backend.workflow.runtime_registry import EXTERNAL_TOOL_BINDING_ID, OPENCLI_
 
 logger = logging.getLogger(__name__)
 
-_OPENCLI_BIN = os.environ.get("OPENCLI_BIN", "opencli")
 _OPENCLI_LIST_TIMEOUT_SECONDS = 15
+_OPENCLI_CATALOG_LOCK = threading.Lock()
+_OPENCLI_CATALOG_GENERATION = 0
 _OPENCLI_SOURCE_CATALOG_ID = "intelligence.source.opencli-slot"
 _EXTERNAL_TOOL_CATALOG_ID = "external.tool.capability"
 _TOP_LEVEL_PARAM_KEYS = {
@@ -59,8 +60,9 @@ def list_opencli_adapter_nodes(
     q: str | None = None,
     include_write: bool = True,
     limit: int | None = None,
+    refresh: bool = False,
 ) -> WorkflowOpenCLIAdapterNodesResponse:
-    catalog = _load_opencli_catalog()
+    catalog = get_opencli_adapter_catalog(refresh=refresh)
     nodes = [_build_adapter_node(entry) for entry in catalog]
     if not include_write:
         nodes = [node for node in nodes if node.access != "write"]
@@ -90,8 +92,31 @@ def list_opencli_adapter_nodes(
     )
 
 
+def refresh_opencli_adapter_catalog() -> None:
+    """Invalidate discovery so the next read reflects the selected OpenCLI binary."""
+
+    global _OPENCLI_CATALOG_GENERATION
+    with _OPENCLI_CATALOG_LOCK:
+        _load_opencli_catalog.cache_clear()
+        _OPENCLI_CATALOG_GENERATION += 1
+
+
+def get_opencli_adapter_catalog(*, refresh: bool = False) -> tuple[dict[str, Any], ...]:
+    """Return the shared adapter catalog used by nodes, presets, and runtime lookup."""
+
+    global _OPENCLI_CATALOG_GENERATION
+    requested_generation = _OPENCLI_CATALOG_GENERATION
+    with _OPENCLI_CATALOG_LOCK:
+        if refresh and requested_generation == _OPENCLI_CATALOG_GENERATION:
+            _load_opencli_catalog.cache_clear()
+            catalog = _load_opencli_catalog()
+            _OPENCLI_CATALOG_GENERATION += 1
+            return catalog
+        return _load_opencli_catalog()
+
+
 def get_opencli_adapter_node_summary() -> dict[str, Any]:
-    catalog = _load_opencli_catalog()
+    catalog = get_opencli_adapter_catalog()
     return _summarize_nodes([_build_adapter_node(entry) for entry in catalog])
 
 
@@ -99,7 +124,10 @@ def resolve_opencli_adapter_node(adapter_node_id: str) -> WorkflowOpenCLIAdapter
     return next(
         (
             node
-            for node in (_build_adapter_node(entry) for entry in _load_opencli_catalog())
+            for node in (
+                _build_adapter_node(entry)
+                for entry in get_opencli_adapter_catalog()
+            )
             if node.id == adapter_node_id
         ),
         None,
@@ -120,7 +148,7 @@ def materialize_opencli_adapter_node(
         )
     materialized_params = _materialized_params(adapter_node, params or {})
     missing = _missing_required_args(adapter_node, materialized_params)
-    if adapter_node.access == "read" and missing:
+    if missing:
         raise OpenCLIAdapterNodeMaterializationError(
             "missing_opencli_adapter_params",
             (
@@ -129,8 +157,8 @@ def materialize_opencli_adapter_node(
             ),
             missing_params=missing,
         )
+    adapter = WorkflowAdapterBinding.model_validate(adapter_node.adapter)
     if adapter_node.access == "read":
-        adapter = WorkflowAdapterBinding.model_validate(adapter_node.adapter)
         return (
             WorkflowProjectNode(
                 id=node_id or _materialized_node_id("source", adapter_node),
@@ -157,14 +185,11 @@ def materialize_opencli_adapter_node(
             id=node_id or _materialized_node_id("tool", adapter_node),
             kind="action",
             capability="store",
+            adapter=adapter.id,
             params={
-                "opencliAdapterNode": {
-                    "id": adapter_node.id,
-                    "site": adapter_node.site,
-                    "command": adapter_node.command,
-                    "access": adapter_node.access,
-                },
-                "toolParams": materialized_params,
+                **materialized_params,
+                "opencliAdapterNodeId": adapter_node.id,
+                "opencliAccess": adapter_node.access,
             },
             proposalState="proposed",
             ui={
@@ -176,16 +201,13 @@ def materialize_opencli_adapter_node(
                 "adapterNodeId": adapter_node.id,
             },
         ),
-        None,
+        adapter,
     )
 
 
 @lru_cache(maxsize=1)
 def _load_opencli_catalog() -> tuple[dict[str, Any], ...]:
-    bin_path = _resolve_opencli_bin()
-    if not bin_path:
-        logger.info("opencli binary not found; adapter-node registry is empty")
-        return ()
+    bin_path = resolve_opencli_bin()
     try:
         result = subprocess.run(
             [bin_path, "list", "-f", "json"],
@@ -224,17 +246,6 @@ def _load_opencli_catalog() -> tuple[dict[str, Any], ...]:
             continue
         catalog.append(dict(entry))
     return tuple(catalog)
-
-
-def _resolve_opencli_bin() -> str | None:
-    if os.path.exists(_OPENCLI_BIN):
-        return _OPENCLI_BIN
-    return (
-        shutil.which(_OPENCLI_BIN)
-        or shutil.which("opencli.cmd")
-        or shutil.which("opencli")
-        or shutil.which("opencli.ps1")
-    )
 
 
 def _build_adapter_node(entry: dict[str, Any]) -> WorkflowOpenCLIAdapterNode:

@@ -161,6 +161,7 @@ export const agentPermissionsSchema = z.object({
   canFetchNetwork: z.boolean().default(false),
   canSendNotifications: z.boolean().default(false),
   canWriteInbox: z.boolean().default(true),
+  canMutateExternalSites: z.boolean().default(false),
   allowedDomains: z.array(z.string()).default([]),
 })
 
@@ -181,6 +182,7 @@ export const workflowProjectSchema = z.object({
     canFetchNetwork: false,
     canSendNotifications: false,
     canWriteInbox: true,
+    canMutateExternalSites: false,
     allowedDomains: [],
   }),
 })
