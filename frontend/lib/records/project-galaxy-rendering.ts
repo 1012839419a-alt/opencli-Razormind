@@ -1,11 +1,24 @@
 import {
+  AdditiveBlending,
   BufferAttribute,
   BufferGeometry,
   Color,
   Group,
+  InstancedMesh,
+  LineBasicMaterial,
+  LineSegments,
+  MeshBasicMaterial,
+  Object3D,
   Points,
   PointsMaterial,
+  ShaderMaterial,
+  SphereGeometry,
 } from 'three'
+
+import type {
+  ProjectForceLink,
+  ProjectForceNode,
+} from '@/lib/records/project-force-graph'
 
 /*
  * Direct downstream adaptation of galaxy-view rendering modules:
@@ -40,7 +53,6 @@ export type GalaxyQualityTier = {
   pixelRatioCap: number
   bloomAllowed: boolean
   starScale: number
-  linkSegments: number
   clusterCloudsAllowed: boolean
   nodeCap: number | null
   linkCap: number | null
@@ -88,7 +100,6 @@ export const GALAXY_QUALITY_TIERS: Record<GalaxyQualityTierId, GalaxyQualityTier
     pixelRatioCap: 2,
     bloomAllowed: true,
     starScale: 1,
-    linkSegments: 8,
     clusterCloudsAllowed: true,
     nodeCap: null,
     linkCap: null,
@@ -103,7 +114,6 @@ export const GALAXY_QUALITY_TIERS: Record<GalaxyQualityTierId, GalaxyQualityTier
     pixelRatioCap: 1,
     bloomAllowed: true,
     starScale: 0.4,
-    linkSegments: 6,
     clusterCloudsAllowed: true,
     nodeCap: null,
     linkCap: null,
@@ -118,7 +128,6 @@ export const GALAXY_QUALITY_TIERS: Record<GalaxyQualityTierId, GalaxyQualityTier
     pixelRatioCap: 1.5,
     bloomAllowed: false,
     starScale: 0.32,
-    linkSegments: 4,
     clusterCloudsAllowed: false,
     nodeCap: 1_500,
     linkCap: 12_000,
@@ -139,6 +148,193 @@ const COOL_A = new Color('#9da8c4')
 const COOL_B = new Color('#ffffff')
 const WARM = new Color('#ffe9c9')
 const BLUE = new Color('#bfd3ff')
+
+export type GalaxyStaticLayer = {
+  group: Group
+  nodeMesh: InstancedMesh<SphereGeometry, MeshBasicMaterial>
+  nodeIds: string[]
+  update: (timeSeconds: number) => void
+  dispose: () => void
+}
+
+export function buildStaticGalaxyLayer({
+  nodes,
+  links,
+  nodeResolution,
+  nodeOpacity,
+  nodeValue,
+  nodeColor,
+  linkColor,
+  linkOpacity,
+}: {
+  nodes: ProjectForceNode[]
+  links: ProjectForceLink[]
+  nodeResolution: number
+  nodeOpacity: number
+  nodeValue: (node: ProjectForceNode) => number
+  nodeColor: (node: ProjectForceNode) => string
+  linkColor: (link: ProjectForceLink) => string
+  linkOpacity: number
+}): GalaxyStaticLayer {
+  const group = new Group()
+  group.name = 'opencli-project-galaxy-static-layer'
+
+  const sphere = new SphereGeometry(
+    1,
+    Math.max(6, nodeResolution),
+    Math.max(4, Math.round(nodeResolution * 0.65)),
+  )
+  const nodeMaterial = new MeshBasicMaterial({
+    transparent: nodeOpacity < 1,
+    opacity: nodeOpacity,
+  })
+  const nodeMesh = new InstancedMesh(sphere, nodeMaterial, nodes.length)
+  const dummy = new Object3D()
+  const color = new Color()
+  nodes.forEach((node, index) => {
+    dummy.position.set(node.x ?? 0, node.y ?? 0, node.z ?? 0)
+    dummy.scale.setScalar(Math.max(1, Math.cbrt(nodeValue(node)) * 4))
+    dummy.updateMatrix()
+    nodeMesh.setMatrixAt(index, dummy.matrix)
+    nodeMesh.setColorAt(index, color.set(nodeColor(node)))
+  })
+  nodeMesh.instanceMatrix.needsUpdate = true
+  if (nodeMesh.instanceColor) nodeMesh.instanceColor.needsUpdate = true
+  nodeMesh.computeBoundingSphere()
+  nodeMesh.name = 'opencli-project-galaxy-nodes'
+
+  const positions = new Float32Array(links.length * 6)
+  const colors = new Float32Array(links.length * 6)
+  const particlePositions = new Float32Array(links.length * 2 * 3)
+  const particleTargets = new Float32Array(links.length * 2 * 3)
+  const particlePhases = new Float32Array(links.length * 2)
+  const particleColors = new Float32Array(links.length * 2 * 3)
+  const nodesById = new Map(nodes.map((node) => [node.id, node]))
+  let visibleLinks = 0
+  links.forEach((link) => {
+    const sourceId = typeof link.source === 'string' ? link.source : link.source.id
+    const targetId = typeof link.target === 'string' ? link.target : link.target.id
+    const source = nodesById.get(sourceId)
+    const target = nodesById.get(targetId)
+    if (!source || !target) return
+    const offset = visibleLinks * 6
+    positions.set([
+      source.x ?? 0,
+      source.y ?? 0,
+      source.z ?? 0,
+      target.x ?? 0,
+      target.y ?? 0,
+      target.z ?? 0,
+    ], offset)
+    color.set(linkColor(link))
+    colors.set([color.r, color.g, color.b, color.r, color.g, color.b], offset)
+    for (let particleIndex = 0; particleIndex < 2; particleIndex += 1) {
+      const particleOffset = (visibleLinks * 2 + particleIndex) * 3
+      particlePositions.set([
+        source.x ?? 0,
+        source.y ?? 0,
+        source.z ?? 0,
+      ], particleOffset)
+      particleTargets.set([
+        target.x ?? 0,
+        target.y ?? 0,
+        target.z ?? 0,
+      ], particleOffset)
+      particleColors.set([color.r, color.g, color.b], particleOffset)
+      particlePhases[visibleLinks * 2 + particleIndex] = (
+        projectGalaxyHash(link.id) / 4294967296 + particleIndex * 0.5
+      ) % 1
+    }
+    visibleLinks += 1
+  })
+  const linkGeometry = new BufferGeometry()
+  linkGeometry.setAttribute('position', new BufferAttribute(positions, 3))
+  linkGeometry.setAttribute('color', new BufferAttribute(colors, 3))
+  linkGeometry.setDrawRange(0, visibleLinks * 2)
+  linkGeometry.computeBoundingSphere()
+  const linkMaterial = new LineBasicMaterial({
+    transparent: true,
+    opacity: linkOpacity,
+    vertexColors: true,
+    depthWrite: false,
+  })
+  const linkLines = new LineSegments(linkGeometry, linkMaterial)
+  linkLines.name = 'opencli-project-galaxy-links'
+  linkLines.renderOrder = -0.5
+
+  const particleGeometry = new BufferGeometry()
+  particleGeometry.setAttribute('position', new BufferAttribute(particlePositions, 3))
+  particleGeometry.setAttribute('target', new BufferAttribute(particleTargets, 3))
+  particleGeometry.setAttribute('phase', new BufferAttribute(particlePhases, 1))
+  particleGeometry.setAttribute('color', new BufferAttribute(particleColors, 3))
+  particleGeometry.setDrawRange(0, visibleLinks * 2)
+  const particleMaterial = new ShaderMaterial({
+    transparent: true,
+    depthWrite: false,
+    blending: AdditiveBlending,
+    uniforms: {
+      uTime: { value: 0 },
+      uOpacity: { value: Math.min(0.92, 0.48 + linkOpacity) },
+    },
+    vertexShader: `
+      attribute vec3 target;
+      attribute float phase;
+      attribute vec3 color;
+      varying vec3 vColor;
+      uniform float uTime;
+
+      void main() {
+        float progress = fract(uTime * 0.085 + phase);
+        vec3 point = mix(position, target, smoothstep(0.0, 1.0, progress));
+        vec4 viewPoint = modelViewMatrix * vec4(point, 1.0);
+        gl_Position = projectionMatrix * viewPoint;
+        gl_PointSize = clamp(560.0 / max(1.0, -viewPoint.z), 1.6, 5.5);
+        vColor = color;
+      }
+    `,
+    fragmentShader: `
+      varying vec3 vColor;
+      uniform float uOpacity;
+
+      void main() {
+        float distanceToCenter = length(gl_PointCoord - vec2(0.5));
+        float alpha = smoothstep(0.5, 0.08, distanceToCenter) * uOpacity;
+        gl_FragColor = vec4(vColor, alpha);
+      }
+    `,
+  })
+  const linkParticles = new Points(particleGeometry, particleMaterial)
+  linkParticles.name = 'opencli-project-galaxy-link-particles'
+  linkParticles.renderOrder = 0.5
+  linkParticles.frustumCulled = false
+
+  group.add(linkLines, linkParticles, nodeMesh)
+  return {
+    group,
+    nodeMesh,
+    nodeIds: nodes.map((node) => node.id),
+    update: (timeSeconds) => {
+      particleMaterial.uniforms.uTime!.value = timeSeconds
+    },
+    dispose: () => {
+      sphere.dispose()
+      nodeMaterial.dispose()
+      linkGeometry.dispose()
+      linkMaterial.dispose()
+      particleGeometry.dispose()
+      particleMaterial.dispose()
+    },
+  }
+}
+
+function projectGalaxyHash(value: string) {
+  let hash = 2166136261
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index)
+    hash = Math.imul(hash, 16777619)
+  }
+  return hash >>> 0
+}
 
 export class GalaxyTwinkler {
   private readonly baseColors: Float32Array

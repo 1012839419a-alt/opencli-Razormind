@@ -173,6 +173,7 @@ test('project evidence opens the recovered 3D Galaxy and keeps a 2D relationship
     relationshipPage,
     explorer,
     galaxy,
+    galaxyRendering,
     galaxyControls,
     navigation,
   ] = await Promise.all([
@@ -181,6 +182,7 @@ test('project evidence opens the recovered 3D Galaxy and keeps a 2D relationship
     read('app/(app)/studio/projects/[projectId]/relationships/page.tsx'),
     read('components/records/project-graph-explorer.tsx'),
     read('components/records/project-galaxy-force-graph.tsx'),
+    read('lib/records/project-galaxy-rendering.ts'),
     read('components/records/project-galaxy-control-panel.tsx'),
     read('components/studio/project-navigation.tsx'),
   ])
@@ -192,10 +194,137 @@ test('project evidence opens the recovered 3D Galaxy and keeps a 2D relationship
   assert.match(explorer, /ProjectRelationshipForceGraph/)
   assert.match(galaxy, /ForceGraph3D/)
   assert.match(galaxy, /cameraPosition/)
+  assert.match(galaxy, /rendererConfig=\{GALAXY_RENDERER_CONFIG\}/)
+  assert.match(galaxy, /powerPreference: 'high-performance'/)
+  assert.match(galaxy, /antialias: false/)
+  assert.match(galaxy, /window\.devicePixelRatio > 1/)
+  assert.match(galaxy, /graphData=\{EMPTY_FORCE_GRAPH_DATA\}/)
+  assert.match(galaxy, /cooldownTicks=\{0\}/)
+  assert.match(galaxy, /warmupTicks=\{0\}/)
+  assert.match(galaxy, /enableNodeDrag=\{false\}/)
+  assert.match(galaxy, /enablePointerInteraction=\{false\}/)
+  assert.doesNotMatch(galaxy, /d3Force|d3ReheatSimulation/)
+  assert.match(galaxy, /selection\.nodeIds\.has\(node\.id\) \? 1\.16 : 0\.68/)
+  assert.match(galaxy, /selectedScope\.has\(node\.id\)/)
+  assert.match(galaxyRendering, /new InstancedMesh/)
+  assert.match(galaxyRendering, /new LineSegments/)
+  assert.match(galaxyRendering, /opencli-project-galaxy-link-particles/)
+  assert.match(galaxyRendering, /uTime/)
+  assert.match(galaxy, /staticLayerRef\.current\?\.update/)
+  assert.match(galaxy, /handlePointerMove/)
+  assert.match(galaxy, /quality\.hoverThrottleMs/)
+  assert.match(galaxy, /GalaxyNodeHoverCard/)
+  assert.match(galaxy, /源发布时间/)
+  assert.match(galaxy, /node\.preview \?\? node\.subtitle/)
   assert.match(galaxy, /UnrealBloomPass/)
   assert.match(galaxy, /postProcessingComposer/)
+  assert.match(galaxy, /qualityId !== 'high'/)
+  assert.match(galaxyControls, /qualityOverride/)
+  assert.match(galaxyControls, /value: 'auto', label: '自动'/)
   assert.match(galaxyControls, /光晕强度/)
-  assert.match(galaxyControls, /移动画质自动关闭/)
+  assert.match(galaxyControls, /深空高画质启用/)
+  assert.doesNotMatch(galaxyControls, /布局与物理|排斥力|链接强度|中心引力/)
+  assert.match(galaxyControls, /恢复全部默认值/)
   assert.match(navigation, /label: '逻辑与证据'/)
-  assert.doesNotMatch(navigation, /label: '3D 星图'|label: '证据关系'/)
+  assert.match(navigation, /label: '证据关系'/)
+  assert.match(navigation, /label: 'Galaxy'/)
+})
+
+test('Galaxy freezes a deterministic relationship-driven 3D layout', async () => {
+  const { buildProjectForceGraph, layoutStaticGalaxyNodes } = await import(
+    pathToFileURL(path.join(frontendRoot, 'lib/records/project-force-graph.ts')).href
+  )
+
+  const topology = {
+    ...preview(),
+    nodes: [
+      { id: 'project:p', kind: 'project', label: 'P', count: 10 },
+      { id: 'workflow:a', kind: 'workflow', label: 'A', count: 5 },
+      { id: 'workflow:b', kind: 'workflow', label: 'B', count: 5 },
+      { id: 'source:a', kind: 'source', label: 'SA', count: 2 },
+      { id: 'source:b', kind: 'source', label: 'SB', count: 2 },
+      { id: 'record:a1', kind: 'record', label: 'A1', count: 1 },
+      { id: 'record:a2', kind: 'record', label: 'A2', count: 1 },
+      { id: 'record:b1', kind: 'record', label: 'B1', count: 1 },
+      { id: 'record:b2', kind: 'record', label: 'B2', count: 1 },
+      { id: 'entity:bridge', kind: 'entity', label: 'Bridge', count: 2 },
+      { id: 'record:orphan', kind: 'record', label: 'Orphan', count: 1 },
+    ],
+    edges: [
+      { id: 'p-a', source: 'project:p', target: 'workflow:a', kind: 'contains', weight: 5 },
+      { id: 'p-b', source: 'project:p', target: 'workflow:b', kind: 'contains', weight: 5 },
+      { id: 'a-sa', source: 'workflow:a', target: 'source:a', kind: 'produced', weight: 2 },
+      { id: 'b-sb', source: 'workflow:b', target: 'source:b', kind: 'produced', weight: 2 },
+      { id: 'sa-a1', source: 'source:a', target: 'record:a1', kind: 'origin', weight: 1 },
+      { id: 'sa-a2', source: 'source:a', target: 'record:a2', kind: 'origin', weight: 1 },
+      { id: 'sb-b1', source: 'source:b', target: 'record:b1', kind: 'origin', weight: 1 },
+      { id: 'sb-b2', source: 'source:b', target: 'record:b2', kind: 'origin', weight: 1 },
+      { id: 'a1-e', source: 'record:a1', target: 'entity:bridge', kind: 'semantic', weight: 1 },
+      { id: 'b1-e', source: 'record:b1', target: 'entity:bridge', kind: 'semantic', weight: 1 },
+    ].map((edge) => ({ ...edge, label: edge.kind, bidirectional: true })),
+  }
+  const first = buildProjectForceGraph(topology)
+  const second = buildProjectForceGraph(topology)
+  layoutStaticGalaxyNodes(first.nodes, first.links)
+  layoutStaticGalaxyNodes(second.nodes, second.links)
+
+  assert.deepEqual(
+    first.nodes.map(({ id, x, y, z, fx, fy, fz }) => ({ id, x, y, z, fx, fy, fz })),
+    second.nodes.map(({ id, x, y, z, fx, fy, fz }) => ({ id, x, y, z, fx, fy, fz })),
+  )
+  assert.ok(first.nodes.every((node) => (
+    Number.isFinite(node.x)
+    && node.x === node.fx
+    && node.y === node.fy
+    && node.z === node.fz
+  )))
+
+  const byId = new Map(first.nodes.map((node) => [node.id, node]))
+  const distance = (left, right) => Math.hypot(
+    left.x - right.x,
+    left.y - right.y,
+    left.z - right.z,
+  )
+  assert.ok(
+    distance(byId.get('record:a1'), byId.get('source:a'))
+      < distance(byId.get('record:a1'), byId.get('source:b')),
+  )
+  assert.ok(
+    distance(byId.get('record:a1'), byId.get('record:a2'))
+      < distance(byId.get('record:a1'), byId.get('record:b2')),
+  )
+  assert.ok(
+    distance(byId.get('source:a'), byId.get('source:b'))
+      > distance(byId.get('record:a1'), byId.get('source:a')) * 2,
+  )
+  const bridge = byId.get('entity:bridge')
+  const bridgeMidpoint = {
+    x: (byId.get('record:a1').x + byId.get('record:b1').x) / 2,
+    y: (byId.get('record:a1').y + byId.get('record:b1').y) / 2,
+    z: (byId.get('record:a1').z + byId.get('record:b1').z) / 2,
+  }
+  assert.ok(
+    distance(bridge, bridgeMidpoint)
+      < distance(byId.get('record:a1'), byId.get('record:b1')) * 0.25,
+  )
+  assert.ok(
+    Math.hypot(
+      byId.get('record:orphan').x,
+      byId.get('record:orphan').y,
+      byId.get('record:orphan').z,
+    ) > 350,
+  )
+
+  const volume = Array.from({ length: 96 }, (_, index) => ({
+    ...first.nodes[index % first.nodes.length],
+    id: `volume:${index}`,
+    kind: index % 3 === 0 ? 'entity' : 'record',
+  }))
+  layoutStaticGalaxyNodes(volume, [])
+  const span = (axis) => {
+    const values = volume.map((node) => node[axis])
+    return Math.max(...values) - Math.min(...values)
+  }
+  const spans = [span('x'), span('y'), span('z')]
+  assert.ok(Math.min(...spans) > Math.max(...spans) * 0.45)
 })

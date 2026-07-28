@@ -12,22 +12,11 @@ export interface GalaxyBloomSettings {
   threshold: number
 }
 
-export interface GalaxyPhysicsSettings {
-  repel: number
-  linkDistance: number
-  linkStrength: number
-  centerPull: number
-  flatten: number
-  coreGravity: number
-  spiral: number
-}
-
 export type GalaxySizeBy = 'degree' | 'fileSize' | 'uniform'
 
 export interface GalaxyLookSettings {
   nodeSize: number
   linkOpacity: number
-  linkCurve: number
   twinkle: number
   sizeBy: GalaxySizeBy
 }
@@ -40,7 +29,6 @@ export interface GalaxySpaceSettings {
 
 export interface ProjectGalaxySettings {
   bloom: GalaxyBloomSettings
-  physics: GalaxyPhysicsSettings
   look: GalaxyLookSettings
   space: GalaxySpaceSettings
   cruise: boolean
@@ -57,19 +45,9 @@ export interface ProjectGalaxySettings {
 
 export const DEFAULT_PROJECT_GALAXY_SETTINGS: ProjectGalaxySettings = {
   bloom: { strength: 0.35, radius: 0.35, threshold: 0.22 },
-  physics: {
-    repel: 170,
-    linkDistance: 55,
-    linkStrength: 1.1,
-    centerPull: 0.05,
-    flatten: 0.55,
-    coreGravity: 0.1,
-    spiral: 0.02,
-  },
   look: {
     nodeSize: 1,
     linkOpacity: 0.14,
-    linkCurve: 0.35,
     twinkle: 0.5,
     sizeBy: 'degree',
   },
@@ -98,7 +76,6 @@ export function mergeProjectGalaxySettings(saved: unknown): ProjectGalaxySetting
   const defaults = DEFAULT_PROJECT_GALAXY_SETTINGS
   const value = isObject(saved) ? saved : {}
   const bloom = isObject(value.bloom) ? value.bloom : {}
-  const physics = isObject(value.physics) ? value.physics : {}
   const look = isObject(value.look) ? value.look : {}
   const space = isObject(value.space) ? value.space : {}
   const tour = isObject(value.tour) ? value.tour : {}
@@ -112,19 +89,9 @@ export function mergeProjectGalaxySettings(saved: unknown): ProjectGalaxySetting
       radius: number(bloom.radius, defaults.bloom.radius),
       threshold: number(bloom.threshold, defaults.bloom.threshold),
     },
-    physics: {
-      repel: number(physics.repel, defaults.physics.repel),
-      linkDistance: number(physics.linkDistance, defaults.physics.linkDistance),
-      linkStrength: number(physics.linkStrength, defaults.physics.linkStrength),
-      centerPull: number(physics.centerPull, defaults.physics.centerPull),
-      flatten: number(physics.flatten, defaults.physics.flatten),
-      coreGravity: number(physics.coreGravity, defaults.physics.coreGravity),
-      spiral: number(physics.spiral, defaults.physics.spiral),
-    },
     look: {
       nodeSize: number(look.nodeSize, defaults.look.nodeSize),
       linkOpacity: number(look.linkOpacity, defaults.look.linkOpacity),
-      linkCurve: number(look.linkCurve, defaults.look.linkCurve),
       twinkle: number(look.twinkle, defaults.look.twinkle),
       sizeBy: ['degree', 'fileSize', 'uniform'].includes(String(look.sizeBy))
         ? look.sizeBy as GalaxySizeBy

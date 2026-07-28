@@ -76,14 +76,6 @@ export function ProjectGalaxyControlPanel({
             onChange={(linkOpacity) => patch({ look: { ...settings.look, linkOpacity } })}
           />
           <RangeSetting
-            label="连线弯曲"
-            value={settings.look.linkCurve}
-            min={0}
-            max={1}
-            step={0.05}
-            onChange={(linkCurve) => patch({ look: { ...settings.look, linkCurve } })}
-          />
-          <RangeSetting
             label="亮星眨眼"
             value={settings.look.twinkle}
             min={0}
@@ -115,6 +107,42 @@ export function ProjectGalaxyControlPanel({
               ))}
             </select>
           </label>
+        </PanelSection>
+
+        <PanelSection title="光效">
+          <RangeSetting
+            label="光晕强度"
+            value={settings.bloom.strength}
+            min={0}
+            max={2}
+            step={0.05}
+            onChange={(strength) => patch({
+              bloom: { ...settings.bloom, strength },
+            })}
+          />
+          <RangeSetting
+            label="光晕扩散"
+            value={settings.bloom.radius}
+            min={0}
+            max={1}
+            step={0.05}
+            onChange={(radius) => patch({
+              bloom: { ...settings.bloom, radius },
+            })}
+          />
+          <RangeSetting
+            label="发光阈值"
+            value={settings.bloom.threshold}
+            min={0}
+            max={1}
+            step={0.01}
+            onChange={(threshold) => patch({
+              bloom: { ...settings.bloom, threshold },
+            })}
+          />
+          <p className="text-[10px] leading-4 text-zinc-500">
+            深空高画质启用，流畅与移动画质关闭。
+          </p>
         </PanelSection>
 
         <PanelSection title="深空背景">
@@ -150,71 +178,6 @@ export function ProjectGalaxyControlPanel({
           >
             星空背景 {settings.showStarfield ? '开' : '关'}
           </PanelButton>
-        </PanelSection>
-
-        <PanelSection title="布局与物理">
-          <RangeSetting
-            label="排斥力"
-            value={settings.physics.repel}
-            min={20}
-            max={500}
-            step={5}
-            onChange={(repel) => patch({ physics: { ...settings.physics, repel } })}
-          />
-          <RangeSetting
-            label="链接距离"
-            value={settings.physics.linkDistance}
-            min={10}
-            max={180}
-            step={5}
-            onChange={(linkDistance) => patch({
-              physics: { ...settings.physics, linkDistance },
-            })}
-          />
-          <RangeSetting
-            label="链接强度"
-            value={settings.physics.linkStrength}
-            min={0.1}
-            max={3}
-            step={0.1}
-            onChange={(linkStrength) => patch({
-              physics: { ...settings.physics, linkStrength },
-            })}
-          />
-          <RangeSetting
-            label="中心引力"
-            value={settings.physics.centerPull}
-            min={0}
-            max={0.3}
-            step={0.01}
-            onChange={(centerPull) => patch({ physics: { ...settings.physics, centerPull } })}
-          />
-          <RangeSetting
-            label="星盘压扁"
-            value={settings.physics.flatten}
-            min={0}
-            max={1}
-            step={0.05}
-            onChange={(flatten) => patch({ physics: { ...settings.physics, flatten } })}
-          />
-          <RangeSetting
-            label="核心引力"
-            value={settings.physics.coreGravity}
-            min={-0.2}
-            max={0.5}
-            step={0.01}
-            onChange={(coreGravity) => patch({
-              physics: { ...settings.physics, coreGravity },
-            })}
-          />
-          <RangeSetting
-            label="旋臂"
-            value={settings.physics.spiral}
-            min={0}
-            max={0.2}
-            step={0.01}
-            onChange={(spiral) => patch({ physics: { ...settings.physics, spiral } })}
-          />
         </PanelSection>
 
         <PanelSection title="导航">

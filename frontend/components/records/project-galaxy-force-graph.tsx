@@ -1,14 +1,23 @@
 'use client'
 
 import { Settings2 } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  type RefObject,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
 import ForceGraph3D, {
   type ForceGraphMethods,
 } from 'react-force-graph-3d'
-import { Color } from 'three'
+import { Color, Raycaster, Vector2 } from 'three'
+import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js'
 
 import { ProjectGalaxyControlPanel } from '@/components/records/project-galaxy-control-panel'
 import type { ProjectRecordGraphPreview } from '@/lib/api/types'
+import { formatDateTime } from '@/lib/format'
 import { GALAXY_COLOR_THEMES } from '@/lib/records/project-galaxy-color-themes'
 import {
   ProjectClusterClouds,
@@ -17,11 +26,13 @@ import {
 import {
   buildGalaxyFieldStars,
   buildGalaxyStarfield,
+  buildStaticGalaxyLayer,
   disposeGalaxyObject,
   disposeGalaxyPoints,
   GALAXY_QUALITY_TIERS,
   GALAXY_VISUAL_PRESETS,
   type GalaxyQualityTierId,
+  type GalaxyStaticLayer,
 } from '@/lib/records/project-galaxy-rendering'
 import {
   cloneDefaultProjectGalaxySettings,
@@ -31,16 +42,32 @@ import {
 import {
   buildProjectForceGraph,
   forceNodeId,
-  projectForceNodeTooltip,
+  layoutStaticGalaxyNodes,
+  projectForceNodeHash,
   type ProjectForceLink,
   type ProjectForceNode,
 } from '@/lib/records/project-force-graph'
+import {
+  RECORD_GRAPH_KIND_COLOR,
+  RECORD_GRAPH_KIND_LABEL,
+} from '@/lib/records/project-record-graph'
 
 type ProjectGalaxyForceGraphProps = {
   preview: ProjectRecordGraphPreview
   selectedNodeId: string | null
   onSelectNode: (nodeId: string | null) => void
 }
+
+const GALAXY_RENDERER_CONFIG = {
+  antialias: false,
+  alpha: false,
+  powerPreference: 'high-performance',
+} as const
+
+const EMPTY_FORCE_GRAPH_DATA: {
+  nodes: ProjectForceNode[]
+  links: ProjectForceLink[]
+} = { nodes: [], links: [] }
 
 export function ProjectGalaxyForceGraph({
   preview,
@@ -49,9 +76,13 @@ export function ProjectGalaxyForceGraph({
 }: ProjectGalaxyForceGraphProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const graphRef = useRef<ForceGraphMethods<ProjectForceNode, ProjectForceLink> | undefined>(undefined)
-  const clusterCloudsRef = useRef<ProjectClusterClouds | null>(null)
+  const staticLayerRef = useRef<GalaxyStaticLayer | null>(null)
+  const hoverCardRef = useRef<HTMLDivElement>(null)
+  const hoverPositionRef = useRef({ x: 12, y: 56 })
+  const hoveredNodeIdRef = useRef<string | null>(null)
   const [size, setSize] = useState({ width: 800, height: 720 })
   const [panelOpen, setPanelOpen] = useState(false)
+  const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null)
   const [settings, setSettings] = useState<ProjectGalaxySettings>(
     cloneDefaultProjectGalaxySettings,
   )
@@ -61,13 +92,17 @@ export function ProjectGalaxyForceGraph({
   }, [preview.nodes])
   const graphData = useMemo(() => {
     const data = buildProjectForceGraph(preview)
-    if (settings.showOrphans) return data
-    const connected = new Set(data.links.flatMap((link) => [
-      forceNodeId(link.source),
-      forceNodeId(link.target),
-    ]))
+    const connected = settings.showOrphans
+      ? null
+      : new Set(data.links.flatMap((link) => [
+        forceNodeId(link.source),
+        forceNodeId(link.target),
+      ]))
+    const nodes = connected
+      ? data.nodes.filter((node) => connected.has(node.id))
+      : data.nodes
     return {
-      nodes: data.nodes.filter((node) => connected.has(node.id)),
+      nodes: layoutStaticGalaxyNodes(nodes, data.links),
       links: data.links,
     }
   }, [preview, settings.showOrphans])
@@ -75,13 +110,16 @@ export function ProjectGalaxyForceGraph({
     () => buildSelectionScope(graphData.links, selectedNodeId, settings.selectionDepth),
     [graphData.links, selectedNodeId, settings.selectionDepth],
   )
+  const hoveredNode = useMemo(
+    () => graphData.nodes.find((node) => node.id === hoveredNodeId) ?? null,
+    [graphData.nodes, hoveredNodeId],
+  )
   const presetId = settings.preset === 'deep-space'
     ? 'deep-space'
     : 'daylight'
   const qualityId = resolveQualityTier(settings.qualityOverride)
   const preset = GALAXY_VISUAL_PRESETS[presetId]
   const quality = GALAXY_QUALITY_TIERS[qualityId]
-  const physics = settings.physics
   const colorTheme = GALAXY_COLOR_THEMES.find((theme) => theme.id === settings.colorTheme)
     ?? GALAXY_COLOR_THEMES[0]!
 
@@ -116,30 +154,56 @@ export function ProjectGalaxyForceGraph({
   useEffect(() => {
     const graph = graphRef.current
     if (!graph) return
-    const charge = graph.d3Force('charge')
-    if (charge && 'strength' in charge && typeof charge.strength === 'function') {
-      charge.strength(-physics.repel)
-    }
-    const link = graph.d3Force('link')
-    if (link && 'distance' in link && typeof link.distance === 'function') {
-      link.distance(physics.linkDistance)
-    }
-    if (link && 'strength' in link && typeof link.strength === 'function') {
-      link.strength(physics.linkStrength)
-    }
-    graph.d3Force(
-      'opencli-galaxy-structure',
-      createGalaxyStructureForce(physics),
-    )
-    graph.d3ReheatSimulation()
-    const fitTimer = window.setTimeout(() => graph.zoomToFit(800, 80), 550)
+    const layer = buildStaticGalaxyLayer({
+      nodes: graphData.nodes,
+      links: graphData.links,
+      nodeResolution: quality.nodeResolution,
+      nodeOpacity: preset.nodeOpacity,
+      nodeValue: (node) => (
+        galaxyNodeValue(node, settings.look.sizeBy)
+        * settings.look.nodeSize
+        * (
+          !selectedNodeId
+            ? 1
+            : node.id === selectedNodeId
+              ? 2.4
+              : selection.nodeIds.has(node.id) ? 1.16 : 0.68
+        )
+      ),
+      nodeColor: (node) => galaxyNodeColor(
+        node,
+        colorTheme.colors,
+        selectedNodeId,
+        selection.nodeIds,
+        preset.lightMode,
+      ),
+      linkColor: (link) => {
+        if (!selectedNodeId) return preset.linkInk ?? '#77739b'
+        return selection.linkIds.has(link.id) ? '#a78bfa' : '#25252d'
+      },
+      linkOpacity: settings.look.linkOpacity * preset.linkOpacityScale,
+    })
+    staticLayerRef.current = layer
+    graph.scene().add(layer.group)
     return () => {
-      window.clearTimeout(fitTimer)
-      graph.d3Force('opencli-galaxy-structure', null)
+      graph.scene().remove(layer.group)
+      if (staticLayerRef.current === layer) staticLayerRef.current = null
+      layer.dispose()
     }
   }, [
+    colorTheme.colors,
     graphData,
-    physics,
+    preset.linkInk,
+    preset.lightMode,
+    preset.linkOpacityScale,
+    preset.nodeOpacity,
+    quality.nodeResolution,
+    selectedNodeId,
+    selection.linkIds,
+    selection.nodeIds,
+    settings.look.linkOpacity,
+    settings.look.nodeSize,
+    settings.look.sizeBy,
   ])
 
   useEffect(() => {
@@ -177,7 +241,6 @@ export function ProjectGalaxyForceGraph({
         ? settings.space.clusterClouds
         : 0,
     )
-    clusterCloudsRef.current = clusterClouds
     starfield.visible = preset.space && settings.showStarfield
     fieldStars.visible = preset.space && settings.space.fieldStars > 0.005
     graph.scene().add(starfield, fieldStars, nebula.object, clusterClouds.points)
@@ -192,9 +255,13 @@ export function ProjectGalaxyForceGraph({
 
     let animationFrame = 0
     let previousTime = performance.now()
+    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
     const animateAtmosphere = (now: number) => {
       const deltaSeconds = Math.min((now - previousTime) / 1_000, 0.05)
       previousTime = now
+      if (!document.hidden) {
+        staticLayerRef.current?.update(reducedMotion ? 0 : now / 1_000)
+      }
       if (!document.hidden && preset.space) {
         twinkler.update(deltaSeconds, settings.look.twinkle)
         fieldStars.rotation.y += deltaSeconds * 0.0008
@@ -207,7 +274,6 @@ export function ProjectGalaxyForceGraph({
     return () => {
       window.cancelAnimationFrame(animationFrame)
       graph.scene().remove(starfield, fieldStars, nebula.object, clusterClouds.points)
-      if (clusterCloudsRef.current === clusterClouds) clusterCloudsRef.current = null
       disposeGalaxyObject(starfield)
       disposeGalaxyPoints(fieldStars)
       nebula.dispose()
@@ -241,6 +307,39 @@ export function ProjectGalaxyForceGraph({
 
   useEffect(() => {
     const graph = graphRef.current
+    if (
+      !graph
+      || qualityId !== 'high'
+      || !preset.bloomEnabled
+      || !quality.bloomAllowed
+    ) return
+
+    const bloom = new UnrealBloomPass(
+      new Vector2(size.width, size.height),
+      settings.bloom.strength,
+      settings.bloom.radius,
+      settings.bloom.threshold,
+    )
+    const composer = graph.postProcessingComposer()
+    composer.addPass(bloom)
+
+    return () => {
+      composer.removePass(bloom)
+      bloom.dispose()
+    }
+  }, [
+    preset.bloomEnabled,
+    quality.bloomAllowed,
+    qualityId,
+    settings.bloom.radius,
+    settings.bloom.strength,
+    settings.bloom.threshold,
+    size.height,
+    size.width,
+  ])
+
+  useEffect(() => {
+    const graph = graphRef.current
     if (!graph) return
     const handleVisibility = () => {
       if (document.hidden) graph.pauseAnimation()
@@ -250,13 +349,143 @@ export function ProjectGalaxyForceGraph({
     return () => document.removeEventListener('visibilitychange', handleVisibility)
   }, [])
 
+  const graphBounds = useMemo(() => {
+    if (!graphData.nodes.length) {
+      return { center: { x: 0, y: 0, z: 0 }, radius: 1 }
+    }
+    const axes = ['x', 'y', 'z'] as const
+    const center = { x: 0, y: 0, z: 0 }
+    axes.forEach((axis) => {
+      const values = graphData.nodes.map((node) => node[axis] ?? 0)
+      center[axis] = (Math.min(...values) + Math.max(...values)) / 2
+    })
+    const radius = graphData.nodes.reduce((largest, node) => Math.max(
+      largest,
+      Math.hypot(
+        (node.x ?? 0) - center.x,
+        (node.y ?? 0) - center.y,
+        (node.z ?? 0) - center.z,
+      ),
+    ), 1)
+    return { center, radius }
+  }, [graphData.nodes])
+
+  const fitGalaxy = useCallback(() => {
+    const distance = Math.max(260, graphBounds.radius * 2.25)
+    const { center } = graphBounds
+    graphRef.current?.cameraPosition(
+      {
+        x: center.x + distance * 0.12,
+        y: center.y + distance * 0.22,
+        z: center.z + distance,
+      },
+      center,
+      700,
+    )
+  }, [graphBounds])
+
+  useEffect(() => {
+    const timer = window.setTimeout(fitGalaxy, 120)
+    return () => window.clearTimeout(timer)
+  }, [fitGalaxy])
+
+  useEffect(() => {
+    const graph = graphRef.current
+    if (!graph) return
+    const canvas = graph.renderer().domElement
+    const raycaster = new Raycaster()
+    const pointer = new Vector2()
+    let pointerDown: { x: number; y: number } | null = null
+    let lastHoverAt = 0
+    const setHoveredNode = (nodeId: string | null) => {
+      if (hoveredNodeIdRef.current === nodeId) return
+      hoveredNodeIdRef.current = nodeId
+      setHoveredNodeId(nodeId)
+    }
+    const pickNode = (event: PointerEvent) => {
+      const layer = staticLayerRef.current
+      if (!layer) return null
+      const bounds = canvas.getBoundingClientRect()
+      pointer.set(
+        ((event.clientX - bounds.left) / bounds.width) * 2 - 1,
+        -((event.clientY - bounds.top) / bounds.height) * 2 + 1,
+      )
+      raycaster.setFromCamera(pointer, graph.camera())
+      const instanceId = raycaster.intersectObject(layer.nodeMesh, false)[0]?.instanceId
+      return typeof instanceId === 'number' ? layer.nodeIds[instanceId] ?? null : null
+    }
+    const positionHoverCard = (event: PointerEvent) => {
+      const bounds = containerRef.current?.getBoundingClientRect()
+      if (!bounds) return
+      const x = Math.max(12, Math.min(bounds.width - 364, event.clientX - bounds.left + 14))
+      const y = Math.max(56, Math.min(bounds.height - 260, event.clientY - bounds.top + 14))
+      hoverPositionRef.current = { x, y }
+      hoverCardRef.current?.style.setProperty(
+        'transform',
+        `translate3d(${x}px, ${y}px, 0)`,
+      )
+    }
+    const handlePointerMove = (event: PointerEvent) => {
+      if (
+        quality.hoverThrottleMs === null
+        || event.pointerType === 'touch'
+        || event.timeStamp - lastHoverAt < quality.hoverThrottleMs
+      ) return
+      lastHoverAt = event.timeStamp
+      const nodeId = pickNode(event)
+      canvas.style.cursor = nodeId ? 'pointer' : 'grab'
+      if (nodeId) positionHoverCard(event)
+      setHoveredNode(nodeId)
+    }
+    const handlePointerLeave = () => {
+      canvas.style.cursor = ''
+      setHoveredNode(null)
+    }
+    const handlePointerDown = (event: PointerEvent) => {
+      pointerDown = { x: event.clientX, y: event.clientY }
+    }
+    const handlePointerUp = (event: PointerEvent) => {
+      if (
+        !pointerDown
+        || Math.hypot(event.clientX - pointerDown.x, event.clientY - pointerDown.y) > 4
+      ) {
+        pointerDown = null
+        return
+      }
+      pointerDown = null
+      const nodeId = pickNode(event)
+      setHoveredNode(null)
+      onSelectNode(nodeId)
+    }
+    canvas.addEventListener('pointermove', handlePointerMove, { passive: true })
+    canvas.addEventListener('pointerleave', handlePointerLeave, { passive: true })
+    canvas.addEventListener('pointerdown', handlePointerDown, { passive: true })
+    canvas.addEventListener('pointerup', handlePointerUp, { passive: true })
+    return () => {
+      canvas.style.cursor = ''
+      canvas.removeEventListener('pointermove', handlePointerMove)
+      canvas.removeEventListener('pointerleave', handlePointerLeave)
+      canvas.removeEventListener('pointerdown', handlePointerDown)
+      canvas.removeEventListener('pointerup', handlePointerUp)
+    }
+  }, [onSelectNode, quality.hoverThrottleMs])
+
+  useEffect(() => {
+    if (!hoveredNodeId) return
+    const { x, y } = hoverPositionRef.current
+    hoverCardRef.current?.style.setProperty(
+      'transform',
+      `translate3d(${x}px, ${y}px, 0)`,
+    )
+  }, [hoveredNodeId])
+
   const flyToNode = useCallback((node: ProjectForceNode) => {
     if (
       typeof node.x !== 'number'
       || typeof node.y !== 'number'
       || typeof node.z !== 'number'
     ) return
-    const distance = 115
+    const distance = 280
     const magnitude = Math.hypot(node.x, node.y, node.z) || 1
     graphRef.current?.cameraPosition(
       {
@@ -268,25 +497,6 @@ export function ProjectGalaxyForceGraph({
       Math.round(900 / settings.tour.speed),
     )
   }, [settings.tour.speed])
-
-  const rebuildClusterClouds = useCallback(() => {
-    const clouds = clusterCloudsRef.current
-    if (!clouds || !graphData.nodes.length) return
-    rebuildProjectClusterClouds(
-      clouds,
-      graphData.nodes,
-      colorTheme.colors,
-      preset.space && quality.clusterCloudsAllowed
-        ? settings.space.clusterClouds
-        : 0,
-    )
-  }, [
-    colorTheme.colors,
-    graphData.nodes,
-    preset.space,
-    quality.clusterCloudsAllowed,
-    settings.space.clusterClouds,
-  ])
 
   useEffect(() => {
     if (!selectedNodeId) return
@@ -321,7 +531,7 @@ export function ProjectGalaxyForceGraph({
         />
         <button
           type="button"
-          onClick={() => graphRef.current?.zoomToFit(700, 80)}
+          onClick={fitGalaxy}
           className="min-h-9 rounded-md border border-white/15 bg-black/55 px-3 text-xs text-white shadow-lg backdrop-blur hover:bg-black/70"
         >
           全图
@@ -341,54 +551,100 @@ export function ProjectGalaxyForceGraph({
           settings={settings}
           onChange={setSettings}
           onClose={() => setPanelOpen(false)}
-          onRecenter={() => graphRef.current?.zoomToFit(700, 80)}
+          onRecenter={fitGalaxy}
           onReset={() => setSettings(cloneDefaultProjectGalaxySettings())}
         />
+      ) : null}
+      {hoveredNode ? (
+        <GalaxyNodeHoverCard node={hoveredNode} cardRef={hoverCardRef} />
       ) : null}
       <ForceGraph3D<ProjectForceNode, ProjectForceLink>
         ref={graphRef}
         width={size.width}
         height={size.height}
-        graphData={graphData}
+        rendererConfig={GALAXY_RENDERER_CONFIG}
+        graphData={EMPTY_FORCE_GRAPH_DATA}
         backgroundColor={preset.background}
-        nodeId="id"
-        nodeVal={(node) => (
-          galaxyNodeValue(node, settings.look.sizeBy)
-          * settings.look.nodeSize
-          * (node.id === selectedNodeId ? 1.8 : 1)
-        )}
-        nodeColor={(node) => galaxyNodeColor(node, colorTheme.colors)}
-        nodeOpacity={preset.nodeOpacity}
-        nodeResolution={quality.nodeResolution}
-        nodeLabel={projectForceNodeTooltip}
-        linkColor={(link) => {
-          if (!selectedNodeId) {
-            return preset.linkInk ?? 'rgba(120, 119, 160, 0.38)'
-          }
-          return selection.linkIds.has(link.id) ? '#a78bfa' : 'rgba(39, 39, 42, 0.1)'
-        }}
-        linkWidth={(link) => {
-          if (!selectedNodeId) return Math.min(1.2, 0.16 + Math.log1p(link.weight) * 0.18)
-          return selection.linkIds.has(link.id) ? 1.5 : 0.12
-        }}
-        linkOpacity={settings.look.linkOpacity * preset.linkOpacityScale}
-        linkCurvature={(link) => link.bidirectional ? settings.look.linkCurve : 0}
-        linkDirectionalParticles={(link) => (
-          selectedNodeId && selection.linkIds.has(link.id) ? 2 : 0
-        )}
-        linkDirectionalParticleWidth={1.4}
-        linkDirectionalParticleSpeed={0.004}
-        cooldownTicks={180}
-        d3VelocityDecay={0.26}
-        enableNodeDrag
+        warmupTicks={0}
+        cooldownTicks={0}
+        enableNodeDrag={false}
+        enablePointerInteraction={false}
         enableNavigationControls
         showNavInfo={false}
-        onNodeClick={(node) => onSelectNode(node.id)}
-        onBackgroundClick={() => onSelectNode(null)}
-        onEngineStop={rebuildClusterClouds}
       />
     </div>
   )
+}
+
+function GalaxyNodeHoverCard({
+  node,
+  cardRef,
+}: {
+  node: ProjectForceNode
+  cardRef: RefObject<HTMLDivElement | null>
+}) {
+  const summary = node.preview ?? node.subtitle
+  const source = node.source_id ?? readableNodeUrl(node.url)
+  const publishedAt = node.source_published_at ?? node.created_at
+
+  return (
+    <aside
+      ref={cardRef}
+      className="pointer-events-none absolute left-0 top-0 z-30 w-[min(22rem,calc(100%-1.5rem))] overflow-hidden rounded-xl border border-white/15 bg-[#0c0f16]/94 text-zinc-100 shadow-2xl backdrop-blur-xl will-change-transform"
+      role="tooltip"
+    >
+      <header className="border-b border-white/10 px-4 py-3">
+        <div className="flex items-center justify-between gap-3 text-[10px] uppercase tracking-[0.18em] text-zinc-400">
+          <span className="flex items-center gap-2">
+            <span
+              className="size-2 rounded-full"
+              style={{
+                backgroundColor: RECORD_GRAPH_KIND_COLOR[node.kind],
+                boxShadow: `0 0 10px ${RECORD_GRAPH_KIND_COLOR[node.kind]}`,
+              }}
+            />
+            {RECORD_GRAPH_KIND_LABEL[node.kind]}
+          </span>
+          <span>{node.degree.toLocaleString('zh-CN')} 条关系</span>
+        </div>
+        <h2 className="mt-2 break-words text-sm font-semibold leading-5">
+          {node.displayLabel}
+        </h2>
+        {summary ? (
+          <p className="mt-1.5 line-clamp-3 text-xs leading-5 text-zinc-400">
+            {summary}
+          </p>
+        ) : null}
+      </header>
+      <dl className="grid grid-cols-2 gap-x-4 gap-y-3 px-4 py-3 text-xs">
+        <GalaxyHoverFact label="来源" value={source ?? '未标注'} />
+        <GalaxyHoverFact label="状态" value={node.status ?? '可用'} />
+        <GalaxyHoverFact label="源发布时间" value={formatDateTime(publishedAt)} />
+        <GalaxyHoverFact label="关联计数" value={node.count.toLocaleString('zh-CN')} />
+      </dl>
+      <p className="truncate border-t border-white/10 px-4 py-2 font-mono text-[9px] text-zinc-600">
+        {node.id}
+      </p>
+    </aside>
+  )
+}
+
+function GalaxyHoverFact({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="min-w-0">
+      <dt className="text-[9px] uppercase tracking-wider text-zinc-600">{label}</dt>
+      <dd className="mt-1 truncate text-zinc-300" title={value}>{value}</dd>
+    </div>
+  )
+}
+
+function readableNodeUrl(value: string | null) {
+  if (!value) return null
+  try {
+    return new URL(value).hostname.replace(/^www\./, '')
+  } catch {
+    return value
+  }
 }
 
 function resolveQualityTier(
@@ -398,6 +654,7 @@ function resolveQualityTier(
   if (typeof window !== 'undefined' && window.matchMedia('(max-width: 768px)').matches) {
     return 'mobile'
   }
+  if (typeof window !== 'undefined' && window.devicePixelRatio > 1) return 'low'
   return 'high'
 }
 
@@ -410,9 +667,21 @@ function galaxyNodeValue(
   return node.val
 }
 
-function galaxyNodeColor(node: ProjectForceNode, colors: string[]) {
-  const index = hashString(node.kind) % colors.length
-  return colors[index] ?? node.color
+function galaxyNodeColor(
+  node: ProjectForceNode,
+  colors: string[],
+  selectedNodeId: string | null = null,
+  selectedScope: Set<string> = new Set(),
+  lightMode = false,
+) {
+  const index = projectForceNodeHash(node.kind) % colors.length
+  const base = colors[index] ?? node.color
+  if (!selectedNodeId) return base
+  if (node.id === selectedNodeId) return lightMode ? '#171717' : '#ffffff'
+  if (selectedScope.has(node.id)) {
+    return new Color(base).lerp(new Color('#ffffff'), 0.28).getStyle()
+  }
+  return lightMode ? '#cfccc5' : '#10131b'
 }
 
 function estimateNebulaRadius(nodeCount: number) {
@@ -440,44 +709,6 @@ function rebuildProjectClusterClouds(
   clouds.rebuild(nodes, positions, graphRadius)
   clouds.recolor((index) => new Color(galaxyNodeColor(nodes[index]!, colors)))
   clouds.setIntensity(intensity)
-}
-
-function createGalaxyStructureForce(
-  physics: ProjectGalaxySettings['physics'],
-) {
-  let nodes: ProjectForceNode[] = []
-  const force = ((alpha: number) => {
-    nodes.forEach((node) => {
-      const x = node.x ?? 0
-      const y = node.y ?? 0
-      const z = node.z ?? 0
-      const planarRadius = Math.hypot(x, y) || 1
-      const radius = Math.hypot(x, y, z) || 1
-      const centerStrength = physics.centerPull * alpha * 0.015
-      const coreStrength = physics.coreGravity * alpha * 0.12
-      const flattenStrength = physics.flatten * alpha * 0.08
-      const spiralStrength = physics.spiral * alpha
-
-      node.vx = (node.vx ?? 0)
-        - x * centerStrength
-        - (x / radius) * coreStrength
-        - (y / planarRadius) * spiralStrength
-      node.vy = (node.vy ?? 0)
-        - y * centerStrength
-        - (y / radius) * coreStrength
-        + (x / planarRadius) * spiralStrength
-      node.vz = (node.vz ?? 0)
-        - z * centerStrength
-        - (z / radius) * coreStrength
-        - z * flattenStrength
-    })
-  }) as ((alpha: number) => void) & {
-    initialize: (nextNodes: ProjectForceNode[]) => void
-  }
-  force.initialize = (nextNodes) => {
-    nodes = nextNodes
-  }
-  return force
 }
 
 function buildSelectionScope(
@@ -510,15 +741,6 @@ function buildSelectionScope(
     frontier = next
   }
   return { nodeIds, linkIds }
-}
-
-function hashString(value: string) {
-  let hash = 2166136261
-  for (let index = 0; index < value.length; index += 1) {
-    hash ^= value.charCodeAt(index)
-    hash = Math.imul(hash, 16777619)
-  }
-  return hash >>> 0
 }
 
 function GalaxySegmentedControl({
