@@ -1,17 +1,25 @@
 'use client'
 
-import { BrainCircuit, ChartNoAxesCombined, Database, LayoutDashboard, Settings2, Workflow } from 'lucide-react'
+import { BrainCircuit, ChartNoAxesCombined, Database, LayoutDashboard, Network, Orbit, Settings2, Workflow } from 'lucide-react'
 import Link from 'next/link'
 
 import { cn } from '@/lib/utils'
 
-export type ProjectNavigationSection = 'overview' | 'orchestration' | 'data' | 'evidence'
+export type ProjectNavigationSection =
+  | 'overview'
+  | 'orchestration'
+  | 'data'
+  | 'evidence'
+  | 'relationships'
+  | 'galaxy'
 
 const PROJECT_SECTIONS = [
   { id: 'overview', label: '概览', icon: LayoutDashboard },
   { id: 'orchestration', label: '业务编排', icon: Workflow },
   { id: 'data', label: '数据工作台', icon: Database },
   { id: 'evidence', label: '逻辑与证据', icon: BrainCircuit },
+  { id: 'relationships', label: '证据关系', icon: Network },
+  { id: 'galaxy', label: 'Galaxy', icon: Orbit },
   { id: 'operations', label: '运行记录', icon: ChartNoAxesCombined },
   { id: 'settings', label: '设置', icon: Settings2 },
 ] as const
@@ -39,6 +47,12 @@ export function ProjectNavigation({
   const evidenceHref = workspaceId && projectId
     ? `/studio/projects/${projectId}/evidence?workspace=${workspaceId}${workflowId ? `&workflow=${workflowId}` : ''}`
     : null
+  const relationshipsHref = workspaceId && projectId
+    ? `/studio/projects/${projectId}/relationships?workspace=${workspaceId}${workflowId ? `&workflow=${workflowId}` : ''}`
+    : null
+  const galaxyHref = workspaceId && projectId
+    ? `/studio/projects/${projectId}/galaxy?workspace=${workspaceId}${workflowId ? `&workflow=${workflowId}` : ''}`
+    : null
 
   return (
     <nav className="-mx-1 flex min-w-0 items-center gap-1 overflow-x-auto px-1" aria-label="项目导航">
@@ -51,6 +65,10 @@ export function ProjectNavigation({
               ? dataHref
               : section.id === 'evidence'
                 ? evidenceHref
+                : section.id === 'relationships'
+                  ? relationshipsHref
+                  : section.id === 'galaxy'
+                    ? galaxyHref
                 : null
         const isActive = section.id === active
         const Icon = section.icon

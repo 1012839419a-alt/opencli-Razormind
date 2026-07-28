@@ -137,14 +137,14 @@ export function ProjectGraphExplorer({
     >
       <div className="border-b pb-3">
         <ProjectNavigation
-          active="evidence"
+          active={mode}
           workspaceId={workspaceId}
           projectId={projectId}
           workflowId={workflowId}
         />
       </div>
 
-      <section className="overflow-hidden rounded-md border bg-card">
+      <section className="overflow-hidden rounded-xl border bg-card">
         <header className="border-b bg-background/85">
           <div className="flex flex-wrap items-center justify-between gap-3 px-3 pt-3">
             <div className="flex rounded-lg border bg-muted/30 p-1" aria-label="项目图谱页面">
@@ -192,7 +192,7 @@ export function ProjectGraphExplorer({
                       className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left text-sm hover:bg-muted"
                     >
                       <span className="truncate">{node.label}</span>
-                      <span className="text-3xs text-muted-foreground">
+                      <span className="text-[10px] text-muted-foreground">
                         {RECORD_GRAPH_KIND_LABEL[node.kind]}
                       </span>
                     </button>
@@ -273,7 +273,7 @@ function GraphInspector({
   relatedCount: number
 }) {
   return (
-    <aside className="absolute bottom-4 right-4 z-20 w-[min(22rem,calc(100%-2rem))] overflow-hidden rounded-lg border bg-background/92 shadow-overlay backdrop-blur-xl">
+    <aside className="absolute bottom-4 right-4 z-20 w-[min(22rem,calc(100%-2rem))] overflow-hidden rounded-xl border bg-background/92 shadow-2xl backdrop-blur-xl">
       <header className="border-b p-4">
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
           <span
@@ -293,7 +293,7 @@ function GraphInspector({
       </dl>
       <div className="flex items-center justify-between gap-3 p-3">
         <Badge variant="outline">{node.status ?? '可用'}</Badge>
-        <p className="truncate font-mono text-3xs text-muted-foreground">
+        <p className="truncate font-mono text-[9px] text-muted-foreground">
           {node.id}
         </p>
       </div>
@@ -304,7 +304,7 @@ function GraphInspector({
 function GraphFact({ label, value }: { label: string; value: number }) {
   return (
     <div className="rounded-lg border bg-muted/15 p-3">
-      <dt className="text-3xs uppercase tracking-wider text-muted-foreground">{label}</dt>
+      <dt className="text-[10px] uppercase tracking-wider text-muted-foreground">{label}</dt>
       <dd className="mt-1 text-lg font-semibold">{value.toLocaleString('zh-CN')}</dd>
     </div>
   )
@@ -312,7 +312,7 @@ function GraphFact({ label, value }: { label: string; value: number }) {
 
 function GraphLoading({ label }: { label: string }) {
   return (
-    <div className="grid min-h-[44rem] place-items-center bg-ops-black text-sm text-zinc-400">
+    <div className="grid min-h-[44rem] place-items-center bg-[#08090c] text-sm text-zinc-400">
       {label}
     </div>
   )

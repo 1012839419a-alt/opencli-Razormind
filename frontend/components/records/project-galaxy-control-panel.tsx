@@ -27,19 +27,19 @@ export function ProjectGalaxyControlPanel({
 
   return (
     <aside
-      className="absolute right-3 top-3 z-30 max-h-[calc(100%-1.5rem)] overflow-y-auto rounded-lg border border-ops-line bg-ops-raised/95 text-zinc-200 shadow-overlay backdrop-blur-xl"
+      className="absolute right-3 top-3 z-30 max-h-[calc(100%-1.5rem)] overflow-y-auto rounded-xl border border-white/15 bg-[#111217]/92 text-zinc-200 shadow-2xl backdrop-blur-xl"
       style={{ width: settings.panelWidth }}
       aria-label="Galaxy 设置"
     >
-      <header className="sticky top-0 z-10 flex items-center justify-between border-b border-ops-line bg-ops-raised/95 px-3 py-2.5">
+      <header className="sticky top-0 z-10 flex items-center justify-between border-b border-white/10 bg-[#111217]/95 px-3 py-2.5">
         <div>
           <div className="text-sm font-semibold">Galaxy</div>
-          <div className="text-3xs text-zinc-500">项目证据图设置</div>
+          <div className="text-[10px] text-zinc-500">项目证据图设置</div>
         </div>
         <button
           type="button"
           onClick={onClose}
-          className="grid size-8 place-items-center rounded-md text-zinc-400 hover:bg-muted hover:text-zinc-100"
+          className="grid size-8 place-items-center rounded-md text-zinc-400 hover:bg-white/10 hover:text-white"
           aria-label="关闭设置"
         >
           <X className="size-4" />
@@ -104,53 +104,17 @@ export function ProjectGalaxyControlPanel({
             })}
           />
           <label className="block">
-            <span className="mb-1.5 block text-2xs text-zinc-400">配色主题</span>
+            <span className="mb-1.5 block text-[11px] text-zinc-400">配色主题</span>
             <select
               value={settings.colorTheme}
               onChange={(event) => patch({ colorTheme: event.target.value })}
-              className="min-h-9 w-full rounded-md border border-ops-line bg-ops-black/70 px-2 text-xs text-zinc-300"
+              className="min-h-9 w-full rounded-md border border-white/10 bg-black/25 px-2 text-xs text-zinc-300"
             >
               {GALAXY_COLOR_THEMES.map((theme) => (
                 <option key={theme.id} value={theme.id}>{theme.name}</option>
               ))}
             </select>
           </label>
-        </PanelSection>
-
-        <PanelSection title="光效" defaultOpen>
-          <RangeSetting
-            label="光晕强度"
-            value={settings.bloom.strength}
-            min={0}
-            max={2}
-            step={0.05}
-            onChange={(strength) => patch({
-              bloom: { ...settings.bloom, strength },
-            })}
-          />
-          <RangeSetting
-            label="光晕扩散"
-            value={settings.bloom.radius}
-            min={0}
-            max={1}
-            step={0.05}
-            onChange={(radius) => patch({
-              bloom: { ...settings.bloom, radius },
-            })}
-          />
-          <RangeSetting
-            label="发光阈值"
-            value={settings.bloom.threshold}
-            min={0}
-            max={1}
-            step={0.01}
-            onChange={(threshold) => patch({
-              bloom: { ...settings.bloom, threshold },
-            })}
-          />
-          <p className="text-3xs leading-4 text-zinc-500">
-            深空模式下启用；移动画质自动关闭以保证帧率。
-          </p>
         </PanelSection>
 
         <PanelSection title="深空背景">
@@ -316,13 +280,13 @@ export function ProjectGalaxyControlPanel({
         <button
           type="button"
           onClick={onReset}
-          className="flex min-h-9 w-full items-center justify-center gap-2 rounded-md border border-ops-line text-xs text-zinc-400 hover:bg-muted hover:text-zinc-100"
+          className="flex min-h-9 w-full items-center justify-center gap-2 rounded-md border border-white/10 text-xs text-zinc-400 hover:bg-white/5 hover:text-white"
         >
           <RotateCcw className="size-3.5" />
           恢复全部默认值
         </button>
 
-        <p className="px-1 text-3xs leading-4 text-zinc-600">
+        <p className="px-1 text-[10px] leading-4 text-zinc-600">
           默认参数来自 Galaxy View 0.6.0。项目数据适配为 OpenCLI 的来源、运行、记录与实体。
         </p>
       </div>
@@ -341,13 +305,13 @@ function PanelSection({
 }) {
   return (
     <details
-      className="group rounded-md border border-ops-line bg-ops-panel"
+      className="group rounded-lg border border-white/10 bg-white/[0.025]"
       open={defaultOpen}
     >
       <summary className="cursor-pointer select-none px-3 py-2 text-xs font-medium text-zinc-300">
         {title}
       </summary>
-      <div className="space-y-3 border-t border-ops-line p-3">{children}</div>
+      <div className="space-y-3 border-t border-white/10 p-3">{children}</div>
     </details>
   )
 }
@@ -371,7 +335,7 @@ function RangeSetting({
 }) {
   return (
     <label className="block">
-      <span className="mb-1.5 flex justify-between text-2xs text-zinc-400">
+      <span className="mb-1.5 flex justify-between text-[11px] text-zinc-400">
         <span>{label}</span>
         <span className="font-mono text-zinc-500">{format(value)}</span>
       </span>
@@ -401,16 +365,16 @@ function Segmented({
 }) {
   return (
     <div>
-      <div className="mb-1.5 text-2xs text-zinc-400">{label}</div>
-      <div className="flex flex-wrap rounded-md border border-ops-line bg-ops-black/70 p-1">
+      <div className="mb-1.5 text-[11px] text-zinc-400">{label}</div>
+      <div className="flex flex-wrap rounded-md border border-white/10 bg-black/20 p-1">
         {options.map((option) => (
           <button
             key={option.value}
             type="button"
             onClick={() => onChange(option.value)}
-            className={`min-h-7 flex-1 rounded px-2 text-3xs ${
+            className={`min-h-7 flex-1 rounded px-2 text-[10px] ${
               value === option.value
-                ? 'bg-muted text-zinc-100'
+                ? 'bg-white/12 text-white'
                 : 'text-zinc-500 hover:text-zinc-200'
             }`}
           >
@@ -438,7 +402,7 @@ function PanelButton({
       className={`min-h-9 w-full rounded-md border px-2 text-xs ${
         active
           ? 'border-violet-400/35 bg-violet-400/10 text-violet-200'
-          : 'border-ops-line bg-ops-panel text-zinc-400 hover:bg-muted hover:text-zinc-100'
+          : 'border-white/10 bg-white/[0.025] text-zinc-400 hover:bg-white/5 hover:text-white'
       }`}
     >
       {children}

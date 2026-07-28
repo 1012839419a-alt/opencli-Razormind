@@ -5,8 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import ForceGraph3D, {
   type ForceGraphMethods,
 } from 'react-force-graph-3d'
-import { Color, Vector2 } from 'three'
-import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js'
+import { Color } from 'three'
 
 import { ProjectGalaxyControlPanel } from '@/components/records/project-galaxy-control-panel'
 import type { ProjectRecordGraphPreview } from '@/lib/api/types'
@@ -242,33 +241,6 @@ export function ProjectGalaxyForceGraph({
 
   useEffect(() => {
     const graph = graphRef.current
-    if (!graph || !preset.bloomEnabled || !quality.bloomAllowed) return
-
-    const bloom = new UnrealBloomPass(
-      new Vector2(size.width, size.height),
-      settings.bloom.strength,
-      settings.bloom.radius,
-      settings.bloom.threshold,
-    )
-    const composer = graph.postProcessingComposer()
-    composer.addPass(bloom)
-
-    return () => {
-      composer.removePass(bloom)
-      bloom.dispose()
-    }
-  }, [
-    preset.bloomEnabled,
-    quality.bloomAllowed,
-    settings.bloom.radius,
-    settings.bloom.strength,
-    settings.bloom.threshold,
-    size.height,
-    size.width,
-  ])
-
-  useEffect(() => {
-    const graph = graphRef.current
     if (!graph) return
     const handleVisibility = () => {
       if (document.hidden) graph.pauseAnimation()
@@ -350,14 +322,14 @@ export function ProjectGalaxyForceGraph({
         <button
           type="button"
           onClick={() => graphRef.current?.zoomToFit(700, 80)}
-          className="min-h-9 rounded-md border border-ops-line bg-ops-panel/90 px-3 text-xs text-zinc-100 shadow-panel backdrop-blur hover:bg-ops-raised"
+          className="min-h-9 rounded-md border border-white/15 bg-black/55 px-3 text-xs text-white shadow-lg backdrop-blur hover:bg-black/70"
         >
           全图
         </button>
         <button
           type="button"
           onClick={() => setPanelOpen((open) => !open)}
-          className="flex min-h-9 items-center gap-2 rounded-md border border-ops-line bg-ops-panel/90 px-3 text-xs text-zinc-100 shadow-panel backdrop-blur hover:bg-ops-raised"
+          className="flex min-h-9 items-center gap-2 rounded-md border border-white/15 bg-black/55 px-3 text-xs text-white shadow-lg backdrop-blur hover:bg-black/70"
           aria-pressed={panelOpen}
         >
           <Settings2 className="size-3.5" />
@@ -562,7 +534,7 @@ function GalaxySegmentedControl({
 }) {
   return (
     <div
-      className="flex items-center rounded-md border border-ops-line bg-ops-panel/90 p-1 text-zinc-100 shadow-panel backdrop-blur"
+      className="flex items-center rounded-md border border-white/15 bg-black/55 p-1 text-white shadow-lg backdrop-blur"
       aria-label={label}
     >
       {options.map((option) => (
@@ -571,8 +543,8 @@ function GalaxySegmentedControl({
           type="button"
           aria-pressed={value === option.id}
           onClick={() => onChange(option.id)}
-          className={`min-h-7 rounded px-2 text-2xs transition-colors ${
-            value === option.id ? 'bg-muted text-zinc-100' : 'text-zinc-400 hover:text-zinc-100'
+          className={`min-h-7 rounded px-2 text-[11px] transition-colors ${
+            value === option.id ? 'bg-white/18 text-white' : 'text-zinc-400 hover:text-white'
           }`}
         >
           {option.label}

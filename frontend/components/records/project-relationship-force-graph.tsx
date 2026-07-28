@@ -180,11 +180,11 @@ export function ProjectRelationshipForceGraph({
   ])
 
   return (
-    <div ref={containerRef} className="relative h-full min-h-[44rem] w-full overflow-hidden bg-ops-black">
+    <div ref={containerRef} className="relative h-full min-h-[44rem] w-full overflow-hidden bg-[#1e1e1e]">
       <button
         type="button"
         onClick={() => setPanelOpen((open) => !open)}
-        className="absolute left-3 top-3 z-20 flex min-h-9 items-center gap-2 rounded-md border border-ops-line bg-ops-raised/90 px-3 text-xs text-zinc-300 shadow-panel backdrop-blur hover:bg-ops-raised"
+        className="absolute left-3 top-3 z-20 flex min-h-9 items-center gap-2 rounded-md border border-white/10 bg-[#242424]/90 px-3 text-xs text-zinc-300 shadow-lg backdrop-blur hover:bg-[#303030]"
         aria-pressed={panelOpen}
       >
         <Settings2 className="size-3.5" />
@@ -203,7 +203,7 @@ export function ProjectRelationshipForceGraph({
         width={size.width}
         height={size.height}
         graphData={graphData}
-        backgroundColor="var(--oc-bg)"
+        backgroundColor="#1e1e1e"
         nodeId="id"
         nodeVal="val"
         nodeLabel={projectForceNodeTooltip}

@@ -43,16 +43,16 @@ export function ProjectRelationshipControlPanel({
   })
 
   return (
-    <aside className="absolute right-3 top-3 z-30 w-[19rem] overflow-hidden rounded-lg border border-ops-line bg-ops-raised/95 text-zinc-200 shadow-overlay backdrop-blur">
-      <header className="flex items-center justify-between border-b border-ops-line px-3 py-2.5">
+    <aside className="absolute right-3 top-3 z-30 w-[19rem] overflow-hidden rounded-xl border border-white/10 bg-[#242424]/95 text-zinc-200 shadow-2xl backdrop-blur">
+      <header className="flex items-center justify-between border-b border-white/10 px-3 py-2.5">
         <div>
           <div className="text-sm font-semibold">图谱控制</div>
-          <div className="text-3xs text-zinc-500">Obsidian Graph View 模式</div>
+          <div className="text-[10px] text-zinc-500">Obsidian Graph View 模式</div>
         </div>
         <button
           type="button"
           onClick={onClose}
-          className="grid size-8 place-items-center rounded-md text-zinc-400 hover:bg-muted hover:text-zinc-100"
+          className="grid size-8 place-items-center rounded-md text-zinc-400 hover:bg-white/10 hover:text-white"
           aria-label="关闭图谱控制"
         >
           <X className="size-4" />
@@ -132,14 +132,14 @@ export function ProjectRelationshipControlPanel({
           <button
             type="button"
             onClick={onRecenter}
-            className="min-h-9 rounded-md border border-ops-line text-xs text-zinc-400 hover:bg-muted hover:text-zinc-100"
+            className="min-h-9 rounded-md border border-white/10 text-xs text-zinc-400 hover:bg-white/5 hover:text-white"
           >
             重新居中
           </button>
           <button
             type="button"
             onClick={() => onChange({ ...DEFAULT_PROJECT_RELATIONSHIP_SETTINGS })}
-            className="flex min-h-9 items-center justify-center gap-1.5 rounded-md border border-ops-line text-xs text-zinc-400 hover:bg-muted hover:text-zinc-100"
+            className="flex min-h-9 items-center justify-center gap-1.5 rounded-md border border-white/10 text-xs text-zinc-400 hover:bg-white/5 hover:text-white"
           >
             <RotateCcw className="size-3.5" />
             恢复默认
@@ -162,12 +162,12 @@ function RelationshipSection({
   return (
     <details
       open={defaultOpen}
-      className="rounded-md border border-ops-line bg-ops-panel"
+      className="rounded-lg border border-white/10 bg-white/[0.02]"
     >
       <summary className="cursor-pointer select-none px-3 py-2 text-xs font-medium">
         {title}
       </summary>
-      <div className="space-y-3 border-t border-ops-line p-3">{children}</div>
+      <div className="space-y-3 border-t border-white/10 p-3">{children}</div>
     </details>
   )
 }
@@ -182,7 +182,7 @@ function RelationshipToggle({
   onChange: (checked: boolean) => void
 }) {
   return (
-    <label className="flex cursor-pointer items-center justify-between gap-3 text-2xs text-zinc-400">
+    <label className="flex cursor-pointer items-center justify-between gap-3 text-[11px] text-zinc-400">
       <span>{label}</span>
       <input
         type="checkbox"
@@ -211,7 +211,7 @@ function RelationshipRange({
 }) {
   return (
     <label className="block">
-      <span className="mb-1.5 flex justify-between text-2xs text-zinc-400">
+      <span className="mb-1.5 flex justify-between text-[11px] text-zinc-400">
         <span>{label}</span>
         <span className="font-mono text-zinc-500">{value.toFixed(2)}</span>
       </span>
