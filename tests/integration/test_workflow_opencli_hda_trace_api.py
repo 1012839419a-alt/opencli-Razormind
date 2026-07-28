@@ -1614,6 +1614,7 @@ async def test_workflow_run_blocks_unapproved_or_unauthorized_opencli_write(
         "backend.workflow.opencli_hda_tracer._dispatch_opencli_source_to_fleet",
         fake_dispatch,
     )
+    run_id = f"run-write-{proposal_state}-{int(can_mutate)}"
 
     response = await client.post(
         "/api/v1/workflows/runs",
@@ -1622,16 +1623,14 @@ async def test_workflow_run_blocks_unapproved_or_unauthorized_opencli_write(
                 proposal_state=proposal_state,
                 can_mutate_external_sites=can_mutate,
             ),
-            "runId": f"run-opencli-write-{expected_code}",
+            "runId": run_id,
             "trigger": {"kind": "manual", "triggerNodeId": "manual-entry"},
         },
     )
 
     assert response.status_code == 202
     events = (
-        await client.get(
-            f"/api/v1/workflows/runs/run-opencli-write-{expected_code}/events"
-        )
+        await client.get(f"/api/v1/workflows/runs/{run_id}/events")
     ).json()["data"]
     blocked = next(
         event
