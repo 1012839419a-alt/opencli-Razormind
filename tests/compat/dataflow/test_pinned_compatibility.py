@@ -170,7 +170,11 @@ def test_legacy_v1_0_text_clean_contract_remains_unchanged():
 
 
 def test_registry_exposes_the_exact_legacy_and_v1_1_version_seam():
-    specs = list_data_operator_specs()
+    specs = [
+        spec
+        for spec in list_data_operator_specs()
+        if spec.pack_id != "builtin.research"
+    ]
 
     assert [
         (

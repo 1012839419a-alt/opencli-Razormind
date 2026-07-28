@@ -20,8 +20,8 @@ RunId = Annotated[
     str,
     Field(
         min_length=1,
-        max_length=128,
-        pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$",
+        max_length=36,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,35}$",
     ),
 ]
 

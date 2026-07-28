@@ -1,6 +1,6 @@
 version: 1
 source: backend.main.app.openapi
-openapi_operation_count: 207
+openapi_operation_count: 224
 allowed_dispositions:
 - operator_ui
 - studio_binding
@@ -2101,6 +2101,159 @@ operations:
   decision: Re-pin a SourceBinding only by creating an immutable binding revision.
   target_epic: Epic 8
   capability_id: studio.sources
+- method: GET
+  path: /api/v1/workflows/bbx-tool-nodes
+  operation_id: get_bbx_tool_nodes_api_v1_workflows_bbx_tool_nodes_get
+  disposition: studio_binding
+  frontend_route: /studio
+  wrapper: null
+  decision: Project BBX tool nodes into the existing Workflow Studio capability catalog.
+  target_epic: Epic 8
+  capability_id: studio.workflow
+- method: GET
+  path: /api/v1/workflows/opentabs-tool-nodes
+  operation_id: get_opentabs_tool_nodes_api_v1_workflows_opentabs_tool_nodes_get
+  disposition: studio_binding
+  frontend_route: /studio
+  wrapper: null
+  decision: Project OpenTabs tool nodes into the existing Workflow Studio capability catalog.
+  target_epic: Epic 8
+  capability_id: studio.workflow
+- method: GET
+  path: /api/v1/workflows/runs/{run_id}/research-ledger
+  operation_id: get_run_research_ledger_api_v1_workflows_runs__run_id__research_ledger_get
+  disposition: studio_binding
+  frontend_route: /studio
+  wrapper: null
+  decision: Keep the bounded research ledger inside Workflow Studio run inspection.
+  target_epic: Epic 8
+  capability_id: studio.workflow
+- method: POST
+  path: /api/v1/workflows/runs/{run_id}/research-continuations
+  operation_id: continue_research_run_api_v1_workflows_runs__run_id__research_continuations_post
+  disposition: studio_binding
+  frontend_route: /studio
+  wrapper: null
+  decision: Keep approved bounded research continuation inside Workflow Studio.
+  target_epic: Epic 8
+  capability_id: studio.workflow
+- method: POST
+  path: /api/v1/workspaces/{workspace_id}/projects/{project_id}/image-studio/documents
+  operation_id: create_document_api_v1_workspaces__workspace_id__projects__project_id__image_studio_documents_post
+  disposition: studio_binding
+  frontend_route: /studio/workflow/image
+  wrapper: null
+  decision: Bind governed image documents to the first-party Workflow Image Studio.
+  target_epic: Epic 8
+  capability_id: studio.workflow
+- method: GET
+  path: /api/v1/workspaces/{workspace_id}/projects/{project_id}/image-studio/documents/{document_id}
+  operation_id: get_document_api_v1_workspaces__workspace_id__projects__project_id__image_studio_documents__document_id__get
+  disposition: studio_binding
+  frontend_route: /studio/workflow/image
+  wrapper: null
+  decision: Bind governed image documents to the first-party Workflow Image Studio.
+  target_epic: Epic 8
+  capability_id: studio.workflow
+- method: PUT
+  path: /api/v1/workspaces/{workspace_id}/projects/{project_id}/image-studio/documents/{document_id}
+  operation_id: save_document_api_v1_workspaces__workspace_id__projects__project_id__image_studio_documents__document_id__put
+  disposition: studio_binding
+  frontend_route: /studio/workflow/image
+  wrapper: null
+  decision: Save governed image documents only through the first-party Workflow Image Studio.
+  target_epic: Epic 8
+  capability_id: studio.workflow
+- method: POST
+  path: /api/v1/workspaces/{workspace_id}/projects/{project_id}/image-studio/documents/{document_id}/snapshots
+  operation_id: create_snapshot_api_v1_workspaces__workspace_id__projects__project_id__image_studio_documents__document_id__snapshots_post
+  disposition: studio_binding
+  frontend_route: /studio/workflow/image
+  wrapper: null
+  decision: Create immutable canvas snapshots through the Workflow Image Studio.
+  target_epic: Epic 8
+  capability_id: studio.workflow
+- method: POST
+  path: /api/v1/workspaces/{workspace_id}/projects/{project_id}/image-studio/jobs
+  operation_id: create_job_api_v1_workspaces__workspace_id__projects__project_id__image_studio_jobs_post
+  disposition: studio_binding
+  frontend_route: /studio/workflow/image
+  wrapper: null
+  decision: Submit governed image jobs through the Workflow Image Studio.
+  target_epic: Epic 8
+  capability_id: studio.workflow
+- method: GET
+  path: /api/v1/workspaces/{workspace_id}/projects/{project_id}/image-studio/jobs/{job_id}
+  operation_id: get_job_api_v1_workspaces__workspace_id__projects__project_id__image_studio_jobs__job_id__get
+  disposition: studio_binding
+  frontend_route: /studio/workflow/image
+  wrapper: null
+  decision: Inspect governed image jobs through the Workflow Image Studio.
+  target_epic: Epic 8
+  capability_id: studio.workflow
+- method: POST
+  path: /api/v1/workspaces/{workspace_id}/projects/{project_id}/image-studio/jobs/{job_id}/cancel
+  operation_id: cancel_job_api_v1_workspaces__workspace_id__projects__project_id__image_studio_jobs__job_id__cancel_post
+  disposition: studio_binding
+  frontend_route: /studio/workflow/image
+  wrapper: null
+  decision: Cancel governed image jobs through the Workflow Image Studio.
+  target_epic: Epic 8
+  capability_id: studio.workflow
+- method: GET
+  path: /api/v1/workspaces/{workspace_id}/projects/{project_id}/image-studio/jobs/{job_id}/events
+  operation_id: stream_job_events_api_v1_workspaces__workspace_id__projects__project_id__image_studio_jobs__job_id__events_get
+  disposition: studio_binding
+  frontend_route: /studio/workflow/image
+  wrapper: null
+  decision: Stream governed image job progress into the Workflow Image Studio.
+  target_epic: Epic 8
+  capability_id: studio.workflow
+- method: POST
+  path: /api/v1/workspaces/{workspace_id}/projects/{project_id}/image-studio/jobs/{job_id}/retry-ingest
+  operation_id: retry_job_ingest_api_v1_workspaces__workspace_id__projects__project_id__image_studio_jobs__job_id__retry_ingest_post
+  disposition: studio_binding
+  frontend_route: /studio/workflow/image
+  wrapper: null
+  decision: Retry governed image ingestion through the Workflow Image Studio.
+  target_epic: Epic 8
+  capability_id: studio.workflow
+- method: GET
+  path: /api/v1/workspaces/{workspace_id}/projects/{project_id}/image-studio/media-assets
+  operation_id: list_assets_api_v1_workspaces__workspace_id__projects__project_id__image_studio_media_assets_get
+  disposition: studio_binding
+  frontend_route: /studio/workflow/image
+  wrapper: null
+  decision: List project-scoped media assets inside the Workflow Image Studio.
+  target_epic: Epic 8
+  capability_id: studio.workflow
+- method: GET
+  path: /api/v1/workspaces/{workspace_id}/projects/{project_id}/image-studio/media-assets/{asset_id}/content
+  operation_id: get_asset_content_api_v1_workspaces__workspace_id__projects__project_id__image_studio_media_assets__asset_id__content_get
+  disposition: studio_binding
+  frontend_route: /studio/workflow/image
+  wrapper: null
+  decision: Read authenticated media content only through the Workflow Image Studio.
+  target_epic: Epic 8
+  capability_id: studio.workflow
+- method: POST
+  path: /api/v1/workspaces/{workspace_id}/projects/{project_id}/image-studio/media-assets/import
+  operation_id: import_asset_api_v1_workspaces__workspace_id__projects__project_id__image_studio_media_assets_import_post
+  disposition: studio_binding
+  frontend_route: /studio/workflow/image
+  wrapper: null
+  decision: Import governed media assets through the Workflow Image Studio.
+  target_epic: Epic 8
+  capability_id: studio.workflow
+- method: GET
+  path: /api/v1/workspaces/{workspace_id}/projects/{project_id}/image-studio/models
+  operation_id: list_models_api_v1_workspaces__workspace_id__projects__project_id__image_studio_models_get
+  disposition: studio_binding
+  frontend_route: /studio/workflow/image
+  wrapper: null
+  decision: Expose only attested image models inside the Workflow Image Studio.
+  target_epic: Epic 8
+  capability_id: studio.workflow
 unreferenced_wrappers:
 - wrapper: getWorkspaceSettings
   operation_id: null

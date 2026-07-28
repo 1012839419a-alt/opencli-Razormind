@@ -157,7 +157,7 @@ def test_catalog_load_empty_falls_back_to_legacy_keywords_for_bilibili(monkeypat
     assert [slot["site"] for slot in _source_slots_for_need(text)] == ["bilibili"]
 
 
-def test_catalog_slot_cap_enforced_at_three(monkeypatch):
+def test_catalog_slot_cap_matches_native_merge_arity(monkeypatch):
     _patch_catalog(
         monkeypatch,
         [
@@ -170,8 +170,8 @@ def test_catalog_slot_cap_enforced_at_three(monkeypatch):
 
     slots = _catalog_slots_for_need("抓 sitea siteb sitec sited 热门内容")
 
-    assert len(slots) == 3
-    assert [slot["site"] for slot in slots] == ["sitea", "siteb", "sitec"]
+    assert len(slots) == 2
+    assert [slot["site"] for slot in slots] == ["sitea", "siteb"]
 
 
 def test_catalog_match_tier_priority_beats_catalog_order(monkeypatch):

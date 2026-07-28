@@ -1,16 +1,23 @@
 """add OpenCLI-owned image studio domain
 
-Revision ID: v1b2c3d4e5f6
-Revises: u0a1b2c3d4e5
+Revision ID: h5i6j7k8l9m0
+Revises: g4h5i6j7k8l9
 """
 
 import sqlalchemy as sa
-from alembic import op
+from alembic import context, op
 
-revision = "v1b2c3d4e5f6"
-down_revision = "u0a1b2c3d4e5"
+revision = "h5i6j7k8l9m0"
+down_revision = "g4h5i6j7k8l9"
 branch_labels = None
 depends_on = None
+
+_STUDIO_TABLES = {
+    "studio_workspaces",
+    "studio_projects",
+    "studio_workflows",
+    "studio_workflow_validation_runs",
+}
 
 
 def _timestamps() -> tuple[sa.Column, ...]:
@@ -23,6 +30,12 @@ def _timestamps() -> tuple[sa.Column, ...]:
 
 
 def upgrade() -> None:
+    if (
+        not context.is_offline_mode()
+        and not _STUDIO_TABLES.issubset(sa.inspect(op.get_bind()).get_table_names())
+    ):
+        return
+
     op.add_column(
         "studio_workflow_validation_runs",
         sa.Column("resolved_graph", sa.JSON(), nullable=True),
@@ -184,6 +197,12 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    if (
+        not context.is_offline_mode()
+        and not _STUDIO_TABLES.issubset(sa.inspect(op.get_bind()).get_table_names())
+    ):
+        return
+
     op.drop_table("image_generation_jobs")
     op.drop_table("canvas_snapshots")
     op.drop_table("media_assets")
