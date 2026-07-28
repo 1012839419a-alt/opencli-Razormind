@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils"
 export const workflowStatusText: Record<string, string> = {
   idle: "Idle",
   running: "Running",
+  waiting: "Waiting",
   success: "Done",
   partial_success: "Partial success",
   error: "Error",
@@ -15,6 +16,7 @@ export const workflowStatusText: Record<string, string> = {
 export const workflowStatusDotClass: Record<string, string> = {
   idle: "border-muted-foreground/50 bg-transparent",
   running: "border-info bg-info",
+  waiting: "border-violet-400 bg-violet-400",
   success: "border-success bg-success",
   partial_success: "border-warning bg-warning",
   error: "border-destructive bg-destructive",

@@ -83,6 +83,7 @@ function SectionCaption({ children }: { children: React.ReactNode }) {
 const RUN_STATUS_LABELS: Record<WorkflowRunStatus, string> = {
   queued: "排队中",
   running: "运行中",
+  waiting: "等待中",
   partial: "处理中",
   partial_success: "部分成功",
   blocked: "已阻止",
