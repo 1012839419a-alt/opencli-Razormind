@@ -11,7 +11,7 @@ import {
 import { parseWorkflowProject, workflowNodeSchema, type WorkflowProjectNode } from './schema'
 
 export const STUDIO_TEMPLATES = [
-  { id: 'ashare-market-intelligence', variant: 'collection-to-consumption', appType: 'workflow', title: 'A 股真实金融数据采集', description: '用 OpenCLI 并行采集国内行情、公告财报、宏观快讯、财经媒体与社区热度，并写入可追溯 Records。', category: '真实业务测试', steps: ['国内全网 OODA 采集', '清洗与准入', '数据工作台'] },
+  { id: 'ashare-market-intelligence', variant: 'collection-to-consumption', appType: 'workflow', title: 'A 股真实金融数据采集', description: '用 OpenCLI 并行采集国内行情、公告财报、宏观快讯、财经媒体与社区热度，并写入可追溯 Records。', category: '真实业务测试', steps: ['消息与数据来源', '清洗与准入', '数据工作台'] },
   { id: 'opencli-situation-awareness', variant: 'collection-to-consumption', appType: 'workflow', title: 'OpenCLI 态势感知框架', description: '采集实时事件、新闻和视频字幕，保留证据血缘，并投影到数据工作台与逻辑证据页。', category: '真实业务测试', steps: ['多模态证据采集', '证据准入', '数据与证据工作台'] },
   { id: 'opencli-live-pipeline', variant: 'collection-to-consumption', appType: 'workflow', title: 'OpenCLI 实时采集清洗发送', description: '从 OpenCLI 动态数据源实时提取，完成标准化、去重、Records 入库并发送结果。', category: '完整链路', steps: ['OpenCLI 实时采集', '清洗与 Records', 'Webhook 发送'] },
   { id: 'financial-rss-intelligence', variant: 'collect', appType: 'workflow', title: '财经多源 RSS 情报', description: '并行采集央行政策、监管公告与研究动态，按来源 Group 清洗后写入成果与数据。', category: '采集与监控', steps: ['多源 RSS', 'Group 标准化', 'Records 入库'] },

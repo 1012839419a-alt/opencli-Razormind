@@ -96,6 +96,8 @@ const FEATURED_OPENCLI_SOURCES: FeaturedOpenCLISource[] = [
   { id: "opencli.adapter.eastmoney.longhu", label: "东方财富 · 龙虎榜", description: "交易所披露的龙虎榜、净流入、成交额与上榜原因", labelEn: "Eastmoney · Dragon-Tiger List", descriptionEn: "Exchange-disclosed active seats, flows, turnover, and reasons" },
   { id: "opencli.adapter.eastmoney.rzrq", label: "东方财富 · 融资融券", description: "沪深融资余额、融券余量与历史变化", labelEn: "Eastmoney · Margin Trading", descriptionEn: "Margin financing, securities lending, and historical balances" },
   { id: "opencli.adapter.ths.hot", label: "同花顺 · 强势股与题材", description: "当日强势股、题材归因、换手与主力净量", labelEn: "10jqka · Hot Stocks & Themes", descriptionEn: "Intraday hot stocks, theme attribution, turnover, and fund flow" },
+  { id: "opencli.adapter.tdx.hot-rank", label: "通达信 · 热度排行", description: "通达信股票热度、涨跌与题材标签排行", labelEn: "Tongdaxin · Hot Ranking", descriptionEn: "Tongdaxin stock heat, price change, and theme rankings" },
+  { id: "opencli.adapter.szse.market-summary", label: "深交所 · 市场总览", description: "深市证券数量、成交额与总市值统计", labelEn: "SZSE · Market Summary", descriptionEn: "Shenzhen listings, turnover, and market-cap statistics" },
   { id: "opencli.adapter.eastmoney.valuation", label: "东方财富 · A 股估值", description: "A 股 PE、PB、PS 与 PCF 估值横截面", labelEn: "Eastmoney · A-share Valuation", descriptionEn: "A-share PE, PB, PS, and PCF valuation snapshot" },
   { id: "opencli.adapter.eastmoney.bbsj-summary", label: "东方财富 · 财务摘要", description: "收入、净利润与 EPS 等上市公司关键财务指标", labelEn: "Eastmoney · Financial Summary", descriptionEn: "Revenue, net profit, EPS, and other company fundamentals" },
   { id: "opencli.adapter.eastmoney.research", label: "东方财富 · 券商研报", description: "A 股个股与行业券商研报列表", labelEn: "Eastmoney · Broker Research", descriptionEn: "A-share company and sector broker research" },
@@ -121,6 +123,13 @@ const FEATURED_OPENCLI_SOURCES: FeaturedOpenCLISource[] = [
   { id: "opencli.adapter.yicai.kuaixun", label: "第一财经 · 实时快讯", description: "第一财经市场、公司与宏观快讯", labelEn: "Yicai · Live News", descriptionEn: "Yicai market, company, and macro flash news" },
   { id: "opencli.adapter.cnstock.kuaixun", label: "上海证券报 · 实时快讯", description: "上证报财经与上市公司快讯", labelEn: "Shanghai Securities News · Live News", descriptionEn: "Shanghai Securities News company and market updates" },
   { id: "opencli.adapter.cs.kuaixun", label: "中国证券报 · 实时快讯", description: "中证报财经与资本市场快讯", labelEn: "China Securities Journal · Live News", descriptionEn: "China Securities Journal capital-market updates" },
+  { id: "opencli.adapter.douyin.search", label: "抖音 · 视频搜索", description: "按主题搜索抖音视频、作者与互动数据", labelEn: "Douyin · Video Search", descriptionEn: "Search Douyin videos, creators, and engagement by topic" },
+  { id: "opencli.adapter.douyin.tophot", label: "抖音 · 实时热点", description: "抖音全站实时热点与传播热度", labelEn: "Douyin · Live Trends", descriptionEn: "Live Douyin trends and propagation signals" },
+  { id: "opencli.adapter.bilibili.hot", label: "B 站 · 热门视频", description: "B 站全站热门视频与互动热度", labelEn: "Bilibili · Popular Videos", descriptionEn: "Popular Bilibili videos and engagement signals" },
+  { id: "opencli.adapter.bilibili.search", label: "B 站 · 视频搜索", description: "按主题检索 B 站视频和 UP 主", labelEn: "Bilibili · Video Search", descriptionEn: "Search Bilibili videos and creators by topic" },
+  { id: "opencli.adapter.bilibili.ranking", label: "B 站 · 视频排行榜", description: "B 站视频分区排行榜与热度指标", labelEn: "Bilibili · Video Rankings", descriptionEn: "Bilibili category rankings and popularity metrics" },
+  { id: "opencli.adapter.bilibili.subtitle", label: "B 站 · 字幕提取", description: "按 BV 号提取视频字幕，供内容分析使用", labelEn: "Bilibili · Subtitle Extraction", descriptionEn: "Extract subtitles by BV id for content analysis" },
+  { id: "opencli.adapter.bilibili.summary", label: "B 站 · 视频摘要", description: "按 BV 号读取视频摘要与结构化内容", labelEn: "Bilibili · Video Summary", descriptionEn: "Read video summaries and structured content by BV id" },
 ]
 
 const DOMESTIC_OODA_SOURCE_GROUPS: FeaturedOpenCLISourceGroup[] = [
@@ -141,6 +150,8 @@ const DOMESTIC_OODA_SOURCE_GROUPS: FeaturedOpenCLISourceGroup[] = [
       "opencli.adapter.eastmoney.valuation",
       "opencli.adapter.eastmoney.hot-rank",
       "opencli.adapter.ths.hot",
+      "opencli.adapter.tdx.hot-rank",
+      "opencli.adapter.szse.market-summary",
       "opencli.adapter.xueqiu.hot-stocks",
       "opencli.adapter.xueqiu.stock-social",
       "opencli.adapter.xueqiu.industries",
@@ -227,14 +238,23 @@ const DOMESTIC_OODA_SOURCE_GROUPS: FeaturedOpenCLISourceGroup[] = [
       "opencli.adapter.eastmoney.guba",
       "opencli.adapter.weibo.hot",
       "opencli.adapter.weibo.search",
-      "opencli.adapter.weixin.search",
+      "opencli.adapter.weixin.search-articles",
       "opencli.adapter.xiaohongshu.search",
       "opencli.adapter.xiaohongshu.feed",
+    ],
+  },
+  {
+    id: "video",
+    label: "视频与多媒体情报",
+    labelEn: "Video & multimedia intelligence",
+    sourceIds: [
       "opencli.adapter.douyin.search",
       "opencli.adapter.douyin.tophot",
       "opencli.adapter.bilibili.hot",
       "opencli.adapter.bilibili.search",
       "opencli.adapter.bilibili.ranking",
+      "opencli.adapter.bilibili.subtitle",
+      "opencli.adapter.bilibili.summary",
     ],
   },
 ]
@@ -250,10 +270,13 @@ export function featuredOpenCLIAdapterGroups(
   language: WorkflowLanguage = "zh-CN",
 ): FeaturedOpenCLIAdapterGroup[] {
   const byId = new Map(nodes.map((node) => [node.id, node]))
+  const seen = new Set<string>()
   return DOMESTIC_OODA_SOURCE_GROUPS.flatMap((group) => {
     const groupNodes = group.sourceIds.flatMap((id) => {
       const node = byId.get(id)
-      return node ? [node] : []
+      if (!node || seen.has(node.id)) return []
+      seen.add(node.id)
+      return [node]
     })
     return groupNodes.length
       ? [{ id: group.id, label: language === "zh-CN" ? group.label : group.labelEn, nodes: groupNodes }]
@@ -315,6 +338,8 @@ export function openCLIAdapterNodeMaterialization(
 
 export function openCLIAdapterNodeSearchText(node: WorkflowOpenCLIAdapterNode): string {
   const materialization = openCLIAdapterNodeMaterialization(node)
+  const chinese = openCLIAdapterNodePresentation(node, "zh-CN")
+  const english = openCLIAdapterNodePresentation(node, "en-US")
   const roleAliases = node.access === "read"
     ? "read source source-slot 数据读取 数据源"
     : "write tool action 操作工具 写入"
@@ -329,6 +354,11 @@ export function openCLIAdapterNodeSearchText(node: WorkflowOpenCLIAdapterNode): 
     node.id,
     node.label,
     node.description,
+    chinese.label,
+    chinese.description,
+    chinese.label.replace(/\s+/g, ""),
+    english.label,
+    english.description,
     node.site,
     node.command,
     node.capability,

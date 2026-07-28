@@ -10,6 +10,7 @@ import {
   GitBranch,
   Plus,
   PlugZap,
+  RotateCcw,
   Search,
   Trash2,
   Unplug,
@@ -69,6 +70,10 @@ import {
   type OpenCLISourceSlot,
 } from "@/lib/workflow/node-catalog"
 import {
+  ASHARE_OPENCLI_SOURCES,
+  OPENCLI_SITUATION_SOURCES,
+} from "@/lib/workflow/opencli-business-workflows"
+import {
   openCLISlotFromDataSource,
   SOURCE_ARGUMENT_LABELS,
   SOURCE_MARKET_OPTIONS,
@@ -104,6 +109,28 @@ const edgeTypeHints: Record<string, string> = {
   workflow: "标准平滑曲线连线。",
   editable: "选中后可拖动控制点调整路径，双击线条添加控制点、双击控制点删除。",
   routed: "自动绕开中间节点的正交折线，适合密集流程图。",
+}
+
+const BUILT_IN_SOURCE_IDS = new Set([
+  ...ASHARE_OPENCLI_SOURCES,
+  ...OPENCLI_SITUATION_SOURCES,
+].map((source) => source.id))
+
+const SOURCE_ID_ACRONYMS: Record<string, string> = {
+  bse: "BSE",
+  cninfo: "CNInfo",
+  pdf: "PDF",
+  sse: "SSE",
+  szse: "SZSE",
+  ths: "THS",
+}
+
+function sourceCardLabel(source: OpenCLISourceSlot, language: WorkflowLanguage): string {
+  if (language === "zh-CN" || !BUILT_IN_SOURCE_IDS.has(source.id)) return source.label
+  return source.id
+    .split("-")
+    .map((part) => SOURCE_ID_ACRONYMS[part] ?? `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
+    .join(" ")
 }
 
 const INSPECTOR_COPY = {
@@ -173,6 +200,20 @@ const INSPECTOR_COPY = {
     collectionTopicPlaceholder: "例如：人工智能、贵州茅台",
     collectionTopicHint: "一次设置会同步到所有搜索型来源。",
     market: "市场范围",
+    contentType: "采集内容",
+    addContent: "添加一类来源",
+    contentTypes: {
+      market: "行情",
+      filings: "公告财报",
+      macro: "宏观",
+      news: "新闻",
+      social: "社区舆情",
+      video: "视频",
+    },
+    configureSource: "设置",
+    positionalArgument: "搜索词 / 资源 ID",
+    removedSource: "已移除",
+    undoRemove: "撤销",
     collectionOptions: "采集选项",
     items: "项",
     opencliMapping: "OpenCLI 映射",
@@ -251,6 +292,20 @@ const INSPECTOR_COPY = {
     collectionTopicPlaceholder: "Example: artificial intelligence, Apple",
     collectionTopicHint: "One value is synchronized to every search-based source.",
     market: "Market scope",
+    contentType: "Content",
+    addContent: "Add a source group",
+    contentTypes: {
+      market: "Market",
+      filings: "Filings",
+      macro: "Macro",
+      news: "News",
+      social: "Social",
+      video: "Video",
+    },
+    configureSource: "Configure",
+    positionalArgument: "Search term / resource ID",
+    removedSource: "Removed",
+    undoRemove: "Undo",
     collectionOptions: "Collection options",
     items: "items",
     opencliMapping: "OpenCLI mapping",
@@ -1527,6 +1582,7 @@ export function Inspector({ compact = false, onClose }: { compact?: boolean; onC
 
         {openCLISources ? (
           <OpenCLISourceEditor
+            key={configurationNodeId}
             sources={openCLISources}
             language={language}
             onChange={(sources) => updateWorkflowNodeParams(configurationNodeId, { sources })}
@@ -1886,6 +1942,7 @@ function OpenCLISourceEditor({
   const availableSources = registeredSources.filter((source) => !selectedSourceKeys.has(sourceSlotKey(source)))
   const businessQuery = sourceBusinessQuery(sources)
   const market = sourceMarket(sources)
+  const [removedSource, setRemovedSource] = useState<{ source: OpenCLISourceSlot; index: number } | null>(null)
 
   const updateSource = (index: number, patch: Partial<OpenCLISourceSlot>) => {
     onChange(sources.map((source, sourceIndex) => (
@@ -1897,6 +1954,34 @@ function OpenCLISourceEditor({
     const source = availableSources.find((candidate) => candidate.id === sourceId)
     if (!source) return
     onChange([...sources, source])
+  }
+
+  const addContentSources = (contentType: string | null) => {
+    if (!contentType) return
+    const presets = contentType === "video"
+      ? OPENCLI_SITUATION_SOURCES.filter((source) => source.sourceGroup?.startsWith("video-"))
+      : ASHARE_OPENCLI_SOURCES.filter((source) => source.sourceGroup === contentType)
+    const selectedKeys = new Set(sources.map(sourceSlotKey))
+    const additions = presets.filter((source) => !selectedKeys.has(sourceSlotKey(source)))
+    if (additions.length > 0) onChange([...sources, ...additions])
+  }
+
+  const removeSource = (index: number) => {
+    setRemovedSource({ source: sources[index], index })
+    onChange(sources.filter((_, sourceIndex) => sourceIndex !== index))
+  }
+
+  const restoreSource = () => {
+    if (!removedSource) return
+    const removedKey = sourceSlotKey(removedSource.source)
+    if (sources.some((source) => sourceSlotKey(source) === removedKey)) {
+      setRemovedSource(null)
+      return
+    }
+    const restored = [...sources]
+    restored.splice(Math.min(removedSource.index, restored.length), 0, removedSource.source)
+    onChange(restored)
+    setRemovedSource(null)
   }
 
   return (
@@ -1943,6 +2028,28 @@ function OpenCLISourceEditor({
               ))}
             </SelectContent>
           </Select>
+        </div>
+        <div className="space-y-1.5">
+          <Label className="text-[11px] font-medium text-foreground">{copy.contentType}</Label>
+          <Select onValueChange={addContentSources}>
+            <SelectTrigger
+              aria-label={copy.addContent}
+              className="h-8 rounded-[3px] border-[#303640] bg-[#080a0c] text-xs shadow-none focus:ring-0"
+            >
+              <Plus className="size-3" />
+              <SelectValue placeholder={copy.addContent} />
+            </SelectTrigger>
+            <SelectContent>
+              {Object.entries(copy.contentTypes).map(([value, label]) => (
+                <SelectItem key={value} value={value}>{label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <p className="text-[10px] leading-relaxed text-muted-foreground">
+            {language === "zh-CN"
+              ? "市场范围只影响行情类卡片；新闻、社区和视频按来源卡片独立配置。"
+              : "Market scope affects market cards only; news, social, and video are configured per source card."}
+          </p>
         </div>
         {sourceCatalog.isError ? (
           <p className="text-[10px] leading-relaxed text-[#fca5a5]">
@@ -1998,36 +2105,57 @@ function OpenCLISourceEditor({
       ) : null}
 
       <div className="space-y-2 p-2">
+        {removedSource ? (
+          <div role="status" className="flex items-center justify-between gap-3 rounded-[3px] border border-[#3a3327] bg-[#18140e] px-2.5 py-2 text-[10px] text-[#f7c77d]">
+            <span className="truncate">{copy.removedSource}: {sourceCardLabel(removedSource.source, language)}</span>
+            <button
+              type="button"
+              onClick={restoreSource}
+              className="inline-flex h-6 shrink-0 items-center gap-1 rounded-[2px] border border-[#6b5230] px-2 font-medium transition-colors hover:border-[#f7c77d] hover:text-[#ffe4b5]"
+            >
+              <RotateCcw className="size-3" />
+              {copy.undoRemove}
+            </button>
+          </div>
+        ) : null}
         {sources.map((source, index) => {
           const businessArguments = sourceBusinessArguments(source)
+          const optionCount = businessArguments.length + (source.positionalArgs?.length ? 1 : 0)
+          const contentType = source.sourceGroup?.startsWith("video-") ? "video" : source.sourceGroup
+          const contentLabel = contentType && contentType in copy.contentTypes
+            ? copy.contentTypes[contentType as keyof typeof copy.contentTypes]
+            : (language === "zh-CN" ? "数据采集" : "Data collection")
           return (
-            <div key={source.id} className="rounded-[3px] border border-[#252a31] bg-[#090a0c]/70">
-              <div className="flex items-center gap-2 p-2.5">
+            <details key={source.id} className="group rounded-[3px] border border-[#252a31] bg-[#090a0c]/70 open:border-[#3a414c]">
+              <summary className="flex cursor-pointer list-none items-center gap-2 p-2.5">
                 <span className="flex size-7 shrink-0 items-center justify-center rounded-[3px] border border-[#343a43] bg-[#15181d] font-mono text-[11px] font-semibold uppercase text-[#ff9a4a]">
                   {source.site.slice(0, 1)}
                 </span>
                 <div className="min-w-0 flex-1">
-                  <p className="truncate text-xs font-medium text-foreground">{source.label}</p>
+                  <p className="truncate text-xs font-medium text-foreground">{sourceCardLabel(source, language)}</p>
                   <p className="truncate text-[10px] text-muted-foreground">
-                    {source.site} · {source.sourceGroup || (language === "zh-CN" ? "数据采集" : "Data collection")}
+                    {source.site} · {contentLabel}
                   </p>
                 </div>
-                <button
-                  type="button"
-                  aria-label={`${copy.removeSource} ${source.label}`}
-                  disabled={sources.length <= 1}
-                  onClick={() => onChange(sources.filter((_, sourceIndex) => sourceIndex !== index))}
-                  className="inline-flex size-7 shrink-0 items-center justify-center rounded-[2px] border border-[#2c3036] text-muted-foreground transition-colors hover:border-[#7f1d1d] hover:text-[#f87171] disabled:cursor-not-allowed disabled:opacity-30"
-                >
-                  <Trash2 className="size-3" />
-                </button>
-              </div>
-              {businessArguments.length > 0 ? (
-                <details className="border-t border-[#20242a]">
-                  <summary className="cursor-pointer list-none px-2.5 py-2 text-[10px] text-muted-foreground transition-colors hover:text-foreground">
-                    {copy.collectionOptions} · {businessArguments.length} {copy.items}
-                  </summary>
-                  <div className="grid gap-2 border-t border-[#20242a] p-2.5">
+                <span className="shrink-0 text-[10px] text-muted-foreground">{copy.configureSource}</span>
+                <ChevronRight className="size-3.5 shrink-0 text-muted-foreground transition-transform group-open:rotate-90" />
+              </summary>
+              <div className="grid gap-2 border-t border-[#20242a] p-2.5">
+                {optionCount > 0 ? (
+                  <>
+                    <p className="font-mono text-[9px] uppercase tracking-wider text-muted-foreground">
+                      {copy.collectionOptions} · {optionCount} {copy.items}
+                    </p>
+                    {source.positionalArgs?.length ? (
+                      <div className="space-y-1">
+                        <Label className="text-[10px] text-muted-foreground">{copy.positionalArgument}</Label>
+                        <Input
+                          value={source.positionalArgs[0] ?? ""}
+                          onChange={(event) => updateSource(index, { positionalArgs: [event.target.value] })}
+                          className={houdiniInputClass}
+                        />
+                      </div>
+                    ) : null}
                     {businessArguments.map(([key, value]) => (
                       <SourceBusinessArgument
                         key={key}
@@ -2037,10 +2165,26 @@ function OpenCLISourceEditor({
                         onChange={(nextValue) => updateSource(index, { args: { ...source.args, [key]: nextValue } })}
                       />
                     ))}
-                  </div>
-                </details>
-              ) : null}
-            </div>
+                  </>
+                ) : (
+                  <p className="text-[10px] text-muted-foreground">
+                    {language === "zh-CN" ? "此来源没有必须填写的业务参数。" : "This source has no required business parameters."}
+                  </p>
+                )}
+                <div className="flex justify-end border-t border-[#20242a] pt-2">
+                  <button
+                    type="button"
+                    aria-label={`${copy.removeSource} ${source.label}`}
+                    disabled={sources.length <= 1}
+                    onClick={() => removeSource(index)}
+                    className="inline-flex h-7 items-center gap-1.5 rounded-[2px] border border-[#4a2525] px-2 text-[10px] text-[#f87171] transition-colors hover:border-[#f87171] disabled:cursor-not-allowed disabled:opacity-30"
+                  >
+                    <Trash2 className="size-3" />
+                    {copy.removeSource}
+                  </button>
+                </div>
+              </div>
+            </details>
           )
         })}
       </div>

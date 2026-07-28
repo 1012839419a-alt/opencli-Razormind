@@ -232,7 +232,6 @@ def _load_opencli_catalog() -> tuple[dict[str, Any], ...]:
             check=False,
             text=True,
             encoding="utf-8",
-            errors="replace",
             timeout=_OPENCLI_LIST_TIMEOUT_SECONDS,
         )
     except Exception as exc:

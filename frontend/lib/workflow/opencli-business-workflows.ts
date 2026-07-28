@@ -64,6 +64,14 @@ export const ASHARE_OPENCLI_SOURCES: OpenCLISourceSlot[] = [
     args: { limit: 50 },
   },
   {
+    id: "tdx-hot-rank",
+    label: "通达信股票热度排行",
+    sourceGroup: "market",
+    site: "tdx",
+    command: "hot-rank",
+    args: { limit: 20 },
+  },
+  {
     id: "fundamentals",
     label: "东方财富上市公司财务摘要",
     sourceGroup: "filings",
@@ -178,6 +186,14 @@ export const OPENCLI_SITUATION_SOURCES: OpenCLISourceSlot[] = [
     command: "search",
     args: { limit: 20 },
     positionalArgs: ["A股 市场"],
+  },
+  {
+    id: "douyin-discovery",
+    label: "短视频发现 · 抖音",
+    sourceGroup: "video-discovery",
+    site: "douyin",
+    command: "search",
+    args: { query: "A股 市场", limit: 20 },
   },
   {
     id: "bilibili-transcript",
@@ -307,13 +323,14 @@ export function buildAshareMarketWorkflow(name: string) {
     workflowId: "ashare-market-intelligence",
     cadence: "5m",
     sources: ASHARE_OPENCLI_SOURCES,
-    sourceLabel: "国内全网 OODA 数据源",
+    sourceLabel: "A 股消息与数据来源",
     sourceDescription: "行情、公告与 PDF、宏观、新闻、社交五类来源并行采集；逐来源显示完成、空结果或失败",
     recordsLabel: "A 股金融数据集",
     maxItemsPerRun: 1_000,
     allowedDomains: [
       "eastmoney.com",
       "10jqka.com.cn",
+      "tdx.com.cn",
       "xueqiu.com",
       "cninfo.com.cn",
       "sse.com.cn",
@@ -335,6 +352,6 @@ export function buildOpenCLISituationAwarenessWorkflow(name: string) {
     sourceDescription: "并行采集实时事件、新闻、视频目录与字幕；在运行痕迹中公开来源、时间和采集证据",
     recordsLabel: "态势证据数据集",
     maxItemsPerRun: 300,
-    allowedDomains: ["cls.cn", "sina.com.cn", "bilibili.com", "youtube.com"],
+    allowedDomains: ["cls.cn", "sina.com.cn", "bilibili.com", "douyin.com", "youtube.com"],
   })
 }

@@ -31,6 +31,7 @@ export function openCLISlotFromDataSource(source: DataSource): OpenCLISourceSlot
   const site = source.channel_config.site
   const command = source.channel_config.command
   const args = source.channel_config.args
+  const positionalArgs = source.channel_config.positional_args ?? source.channel_config.positionalArgs
   if (
     typeof site !== "string" ||
     !site.trim() ||
@@ -49,12 +50,21 @@ export function openCLISlotFromDataSource(source: DataSource): OpenCLISourceSlot
     site,
     command,
     args: { ...(args as Record<string, unknown>) },
+    ...(Array.isArray(positionalArgs) && positionalArgs.every((value) => typeof value === "string")
+      ? { positionalArgs: [...positionalArgs] }
+      : {}),
     format: typeof source.channel_config.format === "string" ? source.channel_config.format : undefined,
   }
 }
 
-export function sourceSlotKey(source: Pick<OpenCLISourceSlot, "site" | "command" | "args">): string {
-  return `${source.site}::${source.command}::${stableSerialize(source.args)}`
+export function sourceCapabilityKey(source: Pick<OpenCLISourceSlot, "site" | "command">): string {
+  return `${source.site.trim().toLowerCase()}::${source.command.trim().toLowerCase()}`
+}
+
+export function sourceSlotKey(
+  source: Pick<OpenCLISourceSlot, "site" | "command" | "args" | "positionalArgs">,
+): string {
+  return `${sourceCapabilityKey(source)}::${stableSerialize(source.args)}::${stableSerialize(source.positionalArgs ?? [])}`
 }
 
 export function sourceBusinessQuery(sources: OpenCLISourceSlot[]): string | undefined {
@@ -77,7 +87,7 @@ export function updateSourceBusinessQuery(
 
 export function sourceMarket(sources: OpenCLISourceSlot[]): string | undefined {
   for (const source of sources) {
-    if (typeof source.args.market === "string") return source.args.market
+    if (source.sourceGroup === "market" && typeof source.args.market === "string") return source.args.market
   }
   return undefined
 }
@@ -87,7 +97,7 @@ export function updateSourceMarket(
   value: string,
 ): OpenCLISourceSlot[] {
   return sources.map((source) => (
-    Object.prototype.hasOwnProperty.call(source.args, "market")
+    source.sourceGroup === "market" && Object.prototype.hasOwnProperty.call(source.args, "market")
       ? { ...source, args: { ...source.args, market: value } }
       : source
   ))

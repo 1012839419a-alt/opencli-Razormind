@@ -159,6 +159,66 @@ test('core catalog nodes and common parameters expose Chinese and English copy',
   assert.equal(i18n.shouldPreserveNodeAuthoredText(customNodeData), true)
 })
 
+test('market scope changes market cards without rewriting filing source arguments', async () => {
+  const sourceConfig = await importTypeScript('lib/workflow/source-business-config.ts')
+  const sources = [
+    { id: 'market', label: '行情', sourceGroup: 'market', site: 'eastmoney', command: 'gridlist', args: { market: 'hs-a' } },
+    { id: 'filings', label: '公告', sourceGroup: 'filings', site: 'eastmoney', command: 'announcement', args: { market: 'SHA,SZA,BJA' } },
+    { id: 'news', label: '新闻', sourceGroup: 'news', site: 'cls', command: 'telegraph', args: { limit: 30 } },
+  ]
+
+  assert.equal(sourceConfig.sourceMarket(sources), 'hs-a')
+  const updated = sourceConfig.updateSourceMarket(sources, 'bj-a')
+  assert.equal(updated[0].args.market, 'bj-a')
+  assert.equal(updated[1].args.market, 'SHA,SZA,BJA')
+  assert.deepStrictEqual(updated[2].args, { limit: 30 })
+})
+
+test('source identity separates a capability from its configured query', async () => {
+  const sourceConfig = await importTypeScript('lib/workflow/source-business-config.ts')
+  const base = {
+    site: ' Bilibili ',
+    command: ' Search ',
+    args: { limit: 20, type: 'video' },
+    positionalArgs: ['A 股'],
+  }
+
+  assert.equal(
+    sourceConfig.sourceCapabilityKey(base),
+    sourceConfig.sourceCapabilityKey({ ...base, site: 'bilibili', command: 'search' }),
+  )
+  assert.equal(
+    sourceConfig.sourceSlotKey(base),
+    sourceConfig.sourceSlotKey({
+      ...base,
+      site: 'bilibili',
+      command: 'search',
+      args: { type: 'video', limit: 20 },
+    }),
+  )
+  assert.notEqual(
+    sourceConfig.sourceSlotKey(base),
+    sourceConfig.sourceSlotKey({ ...base, positionalArgs: ['港股'] }),
+  )
+
+  const registered = sourceConfig.openCLISlotFromDataSource({
+    id: 'source-1',
+    name: 'B 站视频搜索',
+    channel_type: 'opencli',
+    channel_config: {
+      site: 'bilibili',
+      command: 'search',
+      args: { limit: 20 },
+      positional_args: ['A 股'],
+    },
+    enabled: true,
+    tags: ['video'],
+    created_at: '',
+    updated_at: '',
+  })
+  assert.deepStrictEqual(registered.positionalArgs, ['A 股'])
+})
+
 test('backend node catalog overlays matching nodes without hiding runnable workflow capabilities', async () => {
   const [{ mergeBackendNodeCapabilityCatalog }, nodeCatalog] = await Promise.all([
     importTypeScript('lib/workflow/backend-node-capability-adapter.ts'),
@@ -348,9 +408,10 @@ test('OpenCLI preset results use a navigable two-pane catalog without changing n
 })
 
 test('Studio materializes every searchable OpenCLI capability preset as a node', async () => {
-  const [adapterNodes, adapterCatalog, palette, editor] = await Promise.all([
+  const [adapterNodes, adapterCatalog, pluginCatalog, palette, editor] = await Promise.all([
     importTypeScript('lib/workflow/backend-opencli-adapter-nodes.ts'),
     importTypeScript('lib/workflow/opencli-adapter-catalog.ts'),
+    importTypeScript('lib/plugins/opencli-adapter-catalog.ts'),
     readFrontendSource('components/flow/command-palette.tsx'),
     readFrontendSource('components/flow/workflow-editor.tsx'),
   ])
@@ -397,10 +458,25 @@ test('Studio materializes every searchable OpenCLI capability preset as a node',
   assert.match(adapterNodes.openCLIAdapterNodePresentation(sourcePreset, 'zh-CN').description, /从 example 读取 search 数据/)
   assert.equal(adapterNodes.openCLIAdapterNodePresentation(sourcePreset, 'en-US').description, 'Search public records')
   assert.match(adapterNodes.openCLIAdapterNodeSearchText(sourcePreset), /read source source-slot 数据读取/)
+  assert.match(adapterNodes.openCLIAdapterNodeSearchText({
+    ...sourcePreset,
+    id: 'opencli.adapter.bilibili.subtitle',
+    site: 'bilibili',
+    command: 'subtitle',
+  }), /b 站 · 字幕提取/)
+  const bilibiliRankingSearchText = adapterNodes.openCLIAdapterNodeSearchText({
+    ...sourcePreset,
+    id: 'opencli.adapter.bilibili.ranking',
+    site: 'bilibili',
+    command: 'ranking',
+  })
+  assert.match(bilibiliRankingSearchText, /b 站 · 视频排行榜/)
+  assert.match(bilibiliRankingSearchText, /b站/)
   assert.match(adapterNodes.openCLIAdapterNodeSearchText(writePreset), /write tool action 操作工具/)
   const oodaSourceIds = [
     'opencli.adapter.eastmoney.index-quote',
     'opencli.adapter.eastmoney.money-flow',
+    'opencli.adapter.tdx.hot-rank',
     'opencli.adapter.xueqiu.stock-social',
     'opencli.adapter.eastmoney.bbsj-summary',
     'opencli.adapter.cninfo.disclosure-pdf',
@@ -409,6 +485,8 @@ test('Studio materializes every searchable OpenCLI capability preset as a node',
     'opencli.adapter.jin10.kuaixun',
     'opencli.adapter.gelonghui.kuaixun',
     'opencli.adapter.xueqiu.news',
+    'opencli.adapter.douyin.search',
+    'opencli.adapter.bilibili.subtitle',
   ]
   assert.deepStrictEqual(
     adapterNodes.featuredOpenCLIAdapterNodes(oodaSourceIds.map((id) => ({ id }))).map((node) => node.id),
@@ -417,9 +495,19 @@ test('Studio materializes every searchable OpenCLI capability preset as a node',
   assert.deepStrictEqual(
     adapterNodes.featuredOpenCLIAdapterGroups(oodaSourceIds.map((id) => ({ id })), 'zh-CN')
       .map((group) => group.label),
-    ['行情、资金与交易结构', '财报、公告、研报与 PDF', '财经媒体与实时快讯', '社交舆情与全网观察'],
+    ['行情、资金与交易结构', '财报、公告、研报与 PDF', '财经媒体与实时快讯', '社交舆情与全网观察', '视频与多媒体情报'],
   )
-  assert.match(palette, /国内全网 OODA 数据源/)
+  assert.match(palette, /消息与数据来源/)
+  assert.doesNotMatch(palette, /国内全网 OODA 数据源/)
+  assert.match(palette, /行情、官方披露、财经媒体、社交与视频/)
+  const inspector = await readFrontendSource('components/flow/inspector.tsx')
+  assert.match(inspector, /addContentSources/)
+  assert.match(inspector, /OPENCLI_SITUATION_SOURCES/)
+  assert.match(inspector, /restoreSource/)
+  assert.match(inspector, /key=\{configurationNodeId\}/)
+  assert.match(inspector, /presets\.filter\(\(source\) => !selectedKeys\.has\(sourceSlotKey\(source\)\)\)/)
+  assert.match(inspector, /sourceCardLabel/)
+  assert.match(inspector, /视频按来源卡片独立配置/)
   assert.match(palette, /loginRequired:\s*"需登录"/)
   assert.doesNotMatch(palette, /featuredOpenCLIAdapterNodes\(matchingOpenCLINodes\)\.filter/)
   assert.equal(adapterCatalog.openCLIAdapterNodeToCatalogItem(sourcePreset).params.opencliAdapterNodeId, sourcePreset.id)
@@ -444,11 +532,63 @@ test('Studio materializes every searchable OpenCLI capability preset as a node',
     }),
     true,
   )
+  const directoryFixture = [
+    ...Array.from({ length: 75 }, (_, index) => ({
+      ...sourcePreset,
+      id: `opencli.adapter.a-site-${String(index).padStart(2, '0')}.list`,
+      site: `a-site-${String(index).padStart(2, '0')}`,
+      command: 'list',
+      adapter: { id: `opencli-a-site-${String(index).padStart(2, '0')}` },
+    })),
+    {
+      ...sourcePreset,
+      id: 'opencli.adapter.discord-app.messages',
+      site: 'discord-app',
+      command: 'messages',
+      adapter: { id: 'opencli-discord-app' },
+    },
+    {
+      ...sourcePreset,
+      id: 'opencli.adapter.weixin.search-articles',
+      site: 'weixin',
+      command: 'search-articles',
+      adapter: { id: 'opencli-weixin' },
+    },
+    {
+      ...sourcePreset,
+      id: 'opencli.adapter.cninfo-reports.market-reports',
+      site: 'cninfo-reports',
+      command: 'market-reports',
+      adapter: { id: 'opencli-cninfo-reports' },
+    },
+  ]
+  const directory = pluginCatalog.groupOpenCLIAdapterPlugins(directoryFixture)
+  assert.equal(directory.length, 78)
+  assert.equal(directory.find((site) => site.site === 'discord-app').siteCategory, 'local-app')
+  assert.equal(directory.find((site) => site.site === 'weixin').commands[0].id, 'opencli.adapter.weixin.search-articles')
+  assert.equal(directory.find((site) => site.site === 'cninfo-reports').siteCategory, 'finance')
+  assert.deepStrictEqual(pluginCatalog.openCLIKeyboardCandidates('', null, directoryFixture), [])
+  assert.equal(
+    pluginCatalog.openCLIKeyboardCandidates(
+      '',
+      directory.find((site) => site.site === 'weixin'),
+      directoryFixture,
+    )[0].id,
+    'opencli.adapter.weixin.search-articles',
+  )
+  assert.equal(
+    adapterNodes.workflowCatalogItemForOpenCLIAdapterNode(
+      directory.find((site) => site.site === 'cninfo-reports').commands[0],
+    ).params.opencliAdapterNodeId,
+    'opencli.adapter.cninfo-reports.market-reports',
+  )
   assert.match(palette, /adapterCatalogResponse\?\.nodes \?\? fallbackOpenCLINodes/)
   assert.match(palette, /includeWrite: true, limit: 5000/)
   assert.match(palette, /!workflowCatalogItemIsOpenCLIAdapterPreset\(item\)/)
-  assert.match(palette, /OPENCLI_RESULT_LIMIT = 60/)
   assert.match(palette, /OPENCLI_SEARCH_RESULT_LIMIT = 120/)
+  assert.match(palette, /groupOpenCLIAdapterPlugins\(matchingOpenCLINodes\)/)
+  assert.match(palette, /openCLIKeyboardCandidates/)
+  assert.doesNotMatch(palette, /OPENCLI_RESULT_LIMIT = 60/)
   assert.match(palette, /opencliPresetGroups/)
   assert.match(palette, /item\.site.*openCLIPresetKind\(item\)/s)
   assert.match(palette, /运行前设置/)
