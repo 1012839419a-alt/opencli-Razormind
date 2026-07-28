@@ -19,6 +19,107 @@ def run_acquisition(execution_id: str) -> None:
     _run_async(run_acquisition_execution(execution_id))
 
 
+@celery_app.task(name="resume_workflow_image_generation")
+def resume_workflow_image_generation(
+    job_id: str,
+    run_id: str,
+    node_id: str,
+    assets: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Resume one waiting image node after final assets are platform-owned.
+
+    Invoke queue completion alone must not call this task. The image adapter
+    schedules it only after asset ingestion has committed successfully.
+    """
+
+    return _run_async(_resume_workflow_image_generation(job_id, run_id, node_id, assets))
+
+
+@celery_app.task(
+    name="run_image_generation_job",
+    autoretry_for=(Exception,),
+    retry_backoff=True,
+    retry_backoff_max=60,
+    retry_jitter=True,
+    max_retries=5,
+)
+def run_image_generation_job(job_id: str) -> str:
+    """Advance one durable ImageStudio job step and arrange later polling."""
+
+    from backend.image_studio.worker_runtime import execute_image_generation_job
+
+    def schedule_poll(pending_job_id: str) -> None:
+        run_image_generation_job.apply_async(args=[pending_job_id], countdown=2)
+
+    def schedule_resume(
+        run_id: str, node_id: str, assets: list[dict[str, Any]]
+    ) -> None:
+        resume_workflow_image_generation.delay(job_id, run_id, node_id, assets)
+
+    return _run_async(
+        execute_image_generation_job(
+            job_id,
+            schedule_poll=schedule_poll,
+            schedule_resume=schedule_resume,
+        )
+    )
+
+
+@celery_app.task(name="cancel_image_generation_job")
+def cancel_image_generation_job(job_id: str) -> str:
+    """Reconcile cancellation with the private sidecar in a worker."""
+
+    from backend.image_studio.worker_runtime import (
+        cancel_image_generation_job as cancel_job,
+    )
+
+    return _run_async(cancel_job(job_id))
+
+
+async def _resume_workflow_image_generation(
+    job_id: str,
+    run_id: str,
+    node_id: str,
+    assets: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    from backend.database import AsyncSessionLocal
+    from backend.schemas.workflow import WorkflowRunSourceOutputsRequest
+    from backend.services import image_studio_service
+    from backend.workflow.opencli_hda_tracer import (
+        continue_workflow_run_with_source_outputs,
+    )
+
+    async with AsyncSessionLocal() as session:
+        try:
+            canonical_assets = await image_studio_service.prepare_workflow_image_resume(
+                session,
+                job_id=job_id,
+                run_id=run_id,
+                node_id=node_id,
+                assets=assets,
+            )
+        except image_studio_service.ImageStudioError:
+            logger.warning(
+                "Rejected image workflow resume for job=%s run=%s node=%s",
+                job_id,
+                run_id,
+                node_id,
+                exc_info=True,
+            )
+            return None
+        if canonical_assets is None:
+            return None
+        projection = await continue_workflow_run_with_source_outputs(
+            run_id,
+            WorkflowRunSourceOutputsRequest(sourceOutputs={node_id: canonical_assets}),
+            session=session,
+        )
+        if projection is None:
+            return None
+        await session.commit()
+        return projection.model_dump(mode="json")
+
+
 def _run_async(coro: Any) -> Any:
     """Run an async coroutine in a Celery task."""
     loop = asyncio.new_event_loop()
@@ -43,7 +144,12 @@ class _AlertOnRetriesExhaustedTask(Task):
     """
 
     def on_failure(
-        self, exc: BaseException, task_id: str, args: tuple, kwargs: dict, einfo: Any
+        self,
+        exc: BaseException,
+        task_id: str,
+        args: tuple,
+        kwargs: dict,
+        einfo: Any,
     ) -> None:
         retries = getattr(self.request, "retries", 0)
         max_retries = self.max_retries or 0
@@ -59,7 +165,12 @@ class _AlertOnRetriesExhaustedTask(Task):
             )
             try:
                 _run_async(
-                    _mark_retries_exhausted(collection_task_id, retries, max_retries, str(exc))
+                    _mark_retries_exhausted(
+                        collection_task_id,
+                        retries,
+                        max_retries,
+                        str(exc),
+                    )
                 )
             except Exception:
                 # Best-effort signal: a failure recording the signal must not
@@ -173,7 +284,10 @@ def run_collection(self: Task, task_id: str, parameters: dict | None = None) -> 
     retry_jitter=True,
 )
 def run_scheduled_collection(
-    self: Task, schedule_id: str, source_id: str, parameters: dict | None = None
+    self: Task,
+    schedule_id: str,
+    source_id: str,
+    parameters: dict | None = None,
 ) -> dict:
     """Execute one idempotently identified scheduled occurrence."""
     from backend.pipeline.runner import run_scheduled_pipeline

@@ -472,6 +472,33 @@ RUNTIME_IO_CONTRACTS: dict[str, RuntimeIOContract] = {
         event_shape=("tool_call_started", "partial:outputItemCount", "tool_call_completed"),
         fixture_coverage=("workflow-capabilities-api", "workflow-tool-capabilities-api"),
     ),
+    "workflow.media.image-generation": RuntimeIOContract(
+        binding_id="workflow.media.image-generation",
+        status="dispatch_only",
+        input_ports=(("prompt", "text"), ("assets", "mediaAsset[]")),
+        output_ports=(
+            ("assets", "mediaAsset[]"),
+            ("generation", "mediaGenerationResult"),
+        ),
+        input_params=("canvasSnapshotId",),
+        output_artifacts=("mediaAsset[]", "mediaGenerationResult"),
+        permission_gate=("workspace_asset_write",),
+        config_gate=("canvasSnapshotId", "image_runtime_capability"),
+        event_shape=("queued", "started", "waiting", "partial", "completed"),
+        fixture_coverage=("workflow-image-runtime",),
+    ),
+    "workflow.media.image-asset": RuntimeIOContract(
+        binding_id="workflow.media.image-asset",
+        status="executable",
+        input_ports=(),
+        output_ports=(("assets", "mediaAsset[]"),),
+        input_params=("assetIds",),
+        output_artifacts=("mediaAsset[]",),
+        permission_gate=("workspace_asset_read",),
+        config_gate=("assetIds",),
+        event_shape=("queued", "started", "partial", "completed"),
+        fixture_coverage=("workflow-image-runtime",),
+    ),
 }
 
 NATIVE_INTELLIGENCE_ACTION_CONTRACT_ROWS = (

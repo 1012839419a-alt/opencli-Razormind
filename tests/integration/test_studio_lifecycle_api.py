@@ -1,5 +1,8 @@
 import pytest
+from sqlalchemy import select
 
+from backend.models.studio import StudioProject, StudioWorkflow, StudioWorkspace
+from backend.services import image_studio_service
 from tests.fixtures.workflow_conformance import workflow_conformance_project
 
 
@@ -225,3 +228,83 @@ async def test_studio_workflow_versions_keep_immutable_graph_snapshots(client):
         (2, "Second revision"),
         (1, original_graph["name"]),
     ]
+
+
+@pytest.mark.asyncio
+async def test_image_canvas_document_is_fixed_to_snapshot_during_validation_and_publish(
+    client, db_session
+):
+    created = await _create_studio_workflow(client)
+    workflow_id = created["workflow"]["id"]
+    workflow = await db_session.scalar(
+        select(StudioWorkflow).where(StudioWorkflow.id == workflow_id)
+    )
+    assert workflow is not None
+    project = await db_session.scalar(
+        select(StudioProject).where(StudioProject.id == workflow.project_id)
+    )
+    assert project is not None
+    workspace = await db_session.scalar(
+        select(StudioWorkspace).where(StudioWorkspace.id == project.workspace_id)
+    )
+    assert workspace is not None
+
+    document = await image_studio_service.create_document(
+        db_session,
+        workspace_id=workspace.id,
+        project_id=project.id,
+        workflow_id=workflow.id,
+        node_id="generate-hero",
+        document={"version": 1, "layers": [], "settings": {}},
+        updated_by_user_id="test-user",
+    )
+    snapshot = await image_studio_service.create_snapshot(
+        db_session,
+        document=document,
+        expected_revision=1,
+        executable_graph={"nodes": {"image": {"type": "test"}}},
+        model_fingerprint="sha256:test-model",
+        seed=42,
+        lora_revisions=[],
+        asset_ids=[],
+        created_by_user_id="test-user",
+    )
+    graph = {
+        "id": workflow.id,
+        "name": "Published image workflow",
+        "profile": "intelligence",
+        "version": 1,
+        "nodes": [
+            {
+                "id": "generate-hero",
+                "kind": "media",
+                "capability": "generate",
+                "params": {"canvasDocumentId": document.id},
+                "ui": {"catalogId": "media.image-generation"},
+            }
+        ],
+        "edges": [],
+    }
+    updated = await client.put(
+        f"{created['base_url']}/draft",
+        json={"graph": graph, "revision": 1},
+    )
+    assert updated.status_code == 200, updated.text
+
+    validation = await client.post(
+        f"{created['base_url']}/draft/validation-runs", json={}
+    )
+    assert validation.status_code == 201, validation.text
+    assert validation.json()["data"]["valid"] is True
+    published = await client.post(
+        f"{created['base_url']}/versions",
+        json={
+            "reason": "Fix Canvas recipe",
+            "expectedRevision": 2,
+            "validationRunId": validation.json()["data"]["runId"],
+        },
+    )
+
+    assert published.status_code == 201, published.text
+    params = published.json()["data"]["graph"]["nodes"][0]["params"]
+    assert params == {"canvasSnapshotId": snapshot.id}

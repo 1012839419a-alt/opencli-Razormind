@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "name": "InvokeAI",
+  "repository": "https://github.com/invoke-ai/InvokeAI",
+  "commit": "d315b8967f548732912bd9b390853ed4af97d8cb",
+  "source_tree": "https://github.com/invoke-ai/InvokeAI/tree/d315b8967f548732912bd9b390853ed4af97d8cb",
+  "license": "Apache-2.0",
+  "license_source": "https://github.com/invoke-ai/InvokeAI/blob/d315b8967f548732912bd9b390853ed4af97d8cb/LICENSE",
+  "openapi_source": "invokeai/frontend/web/openapi.json",
+  "openapi_sha256": "2793f48c5b3b31cb849e7afcfa204c7f47d834bc5a684fdb06481c06f7befac1",
+  "container_image": "ghcr.io/invoke-ai/invokeai@sha256:413462b4a1551055335b3acc949dbe61b942e07dd858897460d856d4db4285c4",
+  "container_published_tag": "sha-c6a9847-cuda",
+  "container_source_commit": "c6a9847",
+  "container_deployable": false,
+  "container_block_reason": "The published digest is an immutable discovery baseline but is not attested to the approved d315b896 commit. Build and attest a private image from the approved commit before deployment.",
+  "custom_node_installation": "disabled",
+  "verified_at": "2026-07-23"
+}

@@ -67,6 +67,8 @@ INBOX_STORE_BINDING_ID = "workflow.inbox.store"
 WEBHOOK_NOTIFY_BINDING_ID = "workflow.notifier.webhook.send"
 NOTIFY_SEND_BINDING_ID = "workflow.notify.send"
 EXTERNAL_TOOL_BINDING_ID = "workflow.external-tool.capability"
+IMAGE_GENERATION_BINDING_ID = "workflow.media.image-generation"
+IMAGE_ASSET_BINDING_ID = "workflow.media.image-asset"
 SUPPORTED_TOOL_EXECUTOR_MODES = {
     "fixture",
     "okx_market_ticker_snapshot",
@@ -116,6 +118,10 @@ def resolve_runtime_metadata(
         metadata = native_metadata
     elif _is_dify_graphon_managed_package(node):
         metadata = _resolve_dify_graphon_package(node, node_id=resolved_node_id)
+    elif _is_image_generation(node):
+        metadata = _resolve_image_generation(node, node_id=resolved_node_id)
+    elif _is_image_asset(node):
+        metadata = _resolve_image_asset(node, node_id=resolved_node_id)
     elif _is_collection_need(node):
         metadata = _resolve_collection_need(node, node_id=resolved_node_id)
     elif _is_webhook_trigger(node):
@@ -237,6 +243,61 @@ def _resolve_native_node(
             "binding_id": preparation.binding_id,
             "readiness": readiness,
         },
+    }
+
+
+def _resolve_image_generation(node: WorkflowProjectNode, *, node_id: str) -> dict[str, Any]:
+    canvas_snapshot_id = _read_string(node.params.get("canvasSnapshotId"))
+    if canvas_snapshot_id is None:
+        return {
+            "missing_runtime": _dump_missing_runtime(
+                WorkflowMissingRuntime(
+                    code=MISSING_RUNTIME_PARAMETER,
+                    node_id=node_id,
+                    kind=node.kind,
+                    capability=node.capability,
+                    required_params=["canvasSnapshotId"],
+                    message=(
+                        "Image generation runtime requires an immutable "
+                        "node.params.canvasSnapshotId."
+                    ),
+                )
+            )
+        }
+    return {
+        "binding": {
+            "status": "bound",
+            "binding_id": IMAGE_GENERATION_BINDING_ID,
+            "runtime": "workflow",
+            "channel": "image-generation",
+            "input": {"canvasSnapshotId": canvas_snapshot_id},
+        }
+    }
+
+
+def _resolve_image_asset(node: WorkflowProjectNode, *, node_id: str) -> dict[str, Any]:
+    asset_ids = _read_string_list(node.params.get("assetIds"))
+    if not asset_ids:
+        return {
+            "missing_runtime": _dump_missing_runtime(
+                WorkflowMissingRuntime(
+                    code=MISSING_RUNTIME_PARAMETER,
+                    node_id=node_id,
+                    kind=node.kind,
+                    capability=node.capability,
+                    required_params=["assetIds"],
+                    message="Image asset runtime requires node.params.assetIds.",
+                )
+            )
+        }
+    return {
+        "binding": {
+            "status": "bound",
+            "binding_id": IMAGE_ASSET_BINDING_ID,
+            "runtime": "workflow",
+            "channel": "media-asset",
+            "input": {"assetIds": asset_ids},
+        }
     }
 
 
@@ -1154,6 +1215,24 @@ def _is_external_tool_capability(node: WorkflowProjectNode) -> bool:
 
 def _is_schedule_trigger(node: WorkflowProjectNode) -> bool:
     return node.kind == "schedule" and node.capability == "trigger"
+
+
+def _is_image_generation(node: WorkflowProjectNode) -> bool:
+    catalog_id = _read_string((node.ui or {}).get("catalogId"))
+    return (
+        node.kind == "media"
+        and node.capability == "generate"
+        and catalog_id in {None, "media.image-generation"}
+    )
+
+
+def _is_image_asset(node: WorkflowProjectNode) -> bool:
+    catalog_id = _read_string((node.ui or {}).get("catalogId"))
+    return (
+        node.kind == "media"
+        and node.capability == "fetch"
+        and catalog_id in {None, "media.image-asset"}
+    )
 
 
 def _is_webhook_trigger(node: WorkflowProjectNode) -> bool:

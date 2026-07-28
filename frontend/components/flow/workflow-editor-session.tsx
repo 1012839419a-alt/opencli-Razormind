@@ -18,6 +18,7 @@ import { useFlowStore } from '@/lib/flow/store'
 import { studioGraphForTemplate } from '@/lib/workflow/studio-templates'
 import { useWorkflowCapabilities } from '@/lib/workflow/use-workflow-capabilities'
 import { parseWorkflowProject, type WorkflowProject, type WorkflowProjectNode } from '@/lib/workflow/schema'
+import { IMAGE_ASSET_CATALOG_ID } from '@/lib/workflow/node-catalog'
 
 import { WorkflowEditor } from './workflow-editor'
 
@@ -62,6 +63,7 @@ export function WorkflowEditorSession({ forceStandalone = false }: WorkflowEdito
   const primaryWorkflowPending = !requestedWorkflowId && workspaceProjects.isLoading
   const workflowProject = useFlowStore((state) => state.workflowProject)
   const importWorkflowProject = useFlowStore((state) => state.importWorkflowProject)
+  const updateWorkflowNodeParams = useFlowStore((state) => state.updateWorkflowNodeParams)
   const [workflowId, setWorkflowId] = useState<string | null>(null)
   const [loadState, setLoadState] = useState<WorkflowLoadState>('loading')
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -79,6 +81,7 @@ export function WorkflowEditorSession({ forceStandalone = false }: WorkflowEdito
   const saveQueuePromise = useRef<Promise<void> | null>(null)
   const saveBlocked = useRef(false)
   const createWorkflow = useCreateProjectWorkflow()
+  const consumedImageReturn = useRef<string | null>(null)
   const { error: capabilityError, loading: capabilityLoading } = useWorkflowCapabilities(true)
   const standalone = forceStandalone
   const missingProjectContext = !standalone && (!workspaceId || !projectId)
@@ -186,6 +189,36 @@ export function WorkflowEditorSession({ forceStandalone = false }: WorkflowEdito
     }, 800)
     return () => window.clearTimeout(timer)
   }, [projectId, saveDraft, workflowId, workflowProject, workspaceId])
+
+  useEffect(() => {
+    if (!loaded.current) return
+    const imageNodeId = params.get('imageNode')
+    const imageDocumentId = params.get('imageDocument')
+    const imageAssetIds = (params.get('imageAssets') ?? '')
+      .split(',')
+      .map((assetId) => assetId.trim())
+      .filter(Boolean)
+    if (!imageNodeId || (!imageDocumentId && imageAssetIds.length === 0)) return
+    const returnKey = `${imageNodeId}:${imageDocumentId ?? ''}:${imageAssetIds.join(',')}`
+    if (consumedImageReturn.current === returnKey) return
+    const imageNode = workflowProject.nodes.find((node) => node.id === imageNodeId)
+    if (!imageNode) {
+      toast.error('图像工作台返回了不存在的工作流节点')
+      return
+    }
+
+    consumedImageReturn.current = returnKey
+    if (imageNode.ui?.catalogId === IMAGE_ASSET_CATALOG_ID && imageAssetIds.length > 0) {
+      updateWorkflowNodeParams(imageNodeId, { assetIds: imageAssetIds })
+    } else if (imageDocumentId) {
+      updateWorkflowNodeParams(imageNodeId, { canvasDocumentId: imageDocumentId })
+    }
+    const searchParams = new URLSearchParams(params.toString())
+    searchParams.delete('imageNode')
+    searchParams.delete('imageDocument')
+    searchParams.delete('imageAssets')
+    router.replace(`/studio/workflow?${searchParams.toString()}`, { scroll: false })
+  }, [params, router, updateWorkflowNodeParams, workflowProject.nodes])
 
   useEffect(() => {
     if (loaded.current) {

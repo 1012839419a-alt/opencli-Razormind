@@ -50,6 +50,7 @@ from backend.workflow.bbx_tool_nodes import (
     bbx_result_items,
     invoke_bbx_tool,
 )
+from backend.workflow.async_orchestrator import image_generation_execution_key
 from backend.workflow.block_reasons import (
     FETCH_PERMISSION_REQUIRED,
     MISSING_DELIVERY_PROJECTION,
@@ -119,6 +120,8 @@ from backend.workflow.runtime_registry import (
     DEDUPE_BINDING_ID,
     DIFY_GRAPHON_BINDING_ID,
     EXTERNAL_TOOL_BINDING_ID,
+    IMAGE_ASSET_BINDING_ID,
+    IMAGE_GENERATION_BINDING_ID,
     INBOX_STORE_BINDING_ID,
     MERGE_BINDING_ID,
     NORMALIZE_BINDING_ID,
@@ -445,6 +448,7 @@ async def start_workflow_run(
     managed_package_terminal_ids: set[str] = set()
     outputs_by_node: dict[str, list[dict[str, Any]]] = {}
     materialized_source_tasks: dict[str, tuple[str, str]] = {}
+    waiting_nodes: set[str] = set()
 
     for node in runtime_nodes:
         emitter.emit(node, "queued", message="Node queued for workflow run")
@@ -574,6 +578,13 @@ async def start_workflow_run(
                 managed_package_terminal_ids.add(node.id)
             continue
 
+        if any(dependency in waiting_nodes for dependency in node.depends_on):
+            # The queued event is the durable declaration that this node has
+            # not executed yet. It will be reconsidered after the async node
+            # resumes with platform-owned output assets.
+            waiting_nodes.add(node.id)
+            continue
+
         missing_runtime = _read_dict(node.runtime.get("missing_runtime"))
         if missing_runtime:
             reason = WorkflowRunBlockReason(
@@ -626,6 +637,30 @@ async def start_workflow_run(
                 },
             )
             emitter.emit(node, "completed", message="Workflow webhook input completed")
+            continue
+
+        resumed_assets = _read_dict_list(body.sourceOutputs.get(node.id))
+        if _binding_id(node) == IMAGE_GENERATION_BINDING_ID and resumed_assets:
+            outputs_by_node[node.id] = resumed_assets
+            waiting_details = _latest_waiting_details(prior_events, node.id)
+            emitter.emit(node, "started", message="Ingested image assets loaded")
+            emitter.emit(
+                node,
+                "partial",
+                message="Image generation result committed to OpenCLI assets",
+                details={
+                    "bindingId": IMAGE_GENERATION_BINDING_ID,
+                    "outputPort": "mediaAsset[]",
+                    "assetCount": len(resumed_assets),
+                    "assets": resumed_assets,
+                    "generation": {
+                        "jobId": waiting_details.get("jobId"),
+                        "attempt": waiting_details.get("attempt", 1),
+                        "status": "succeeded",
+                    },
+                },
+            )
+            emitter.emit(node, "completed", message="Image generation node completed")
             continue
 
         request_items = _request_source_items(node, body.sourceOutputs)
@@ -699,6 +734,51 @@ async def start_workflow_run(
                 },
             )
             emitter.emit(node, "completed", message="Bound source records completed")
+            continue
+
+        if _binding_id(node) == IMAGE_GENERATION_BINDING_ID:
+            binding = _read_dict(node.runtime.get("binding"))
+            binding_input = _read_dict(binding.get("input"))
+            snapshot_id = _read_string(binding_input.get("canvasSnapshotId"))
+            execution_key = image_generation_execution_key(run_id, node.id, 1)
+            emitter.emit(node, "started", message="Image generation job prepared")
+            emitter.emit(
+                node,
+                "waiting",
+                message="Image generation is waiting for asset ingestion",
+                details={
+                    "bindingId": IMAGE_GENERATION_BINDING_ID,
+                    "canvasSnapshotId": snapshot_id,
+                    **execution_key.as_details(),
+                },
+            )
+            waiting_nodes.add(node.id)
+            continue
+
+        if _binding_id(node) == IMAGE_ASSET_BINDING_ID:
+            binding = _read_dict(node.runtime.get("binding"))
+            binding_input = _read_dict(binding.get("input"))
+            asset_ids = [
+                value
+                for value in binding_input.get("assetIds", [])
+                if isinstance(value, str) and value
+            ]
+            outputs_by_node[node.id] = [
+                {"id": asset_id, "type": "mediaAsset"} for asset_id in asset_ids
+            ]
+            emitter.emit(node, "started", message="Fixed image assets loaded")
+            emitter.emit(
+                node,
+                "partial",
+                message="OpenCLI media assets projected",
+                details={
+                    "bindingId": IMAGE_ASSET_BINDING_ID,
+                    "outputPort": "mediaAsset[]",
+                    "assetIds": asset_ids,
+                    "assetCount": len(asset_ids),
+                },
+            )
+            emitter.emit(node, "completed", message="Image asset node completed")
             continue
 
         if _is_workflow_source_fetch_node(node):
@@ -1504,7 +1584,65 @@ async def start_workflow_run(
                 session=session,
                 workflow_version_id=workflow_version_id,
             )
+    await _materialize_waiting_image_jobs(
+        body,
+        run_id=run_id,
+        events=events,
+        session=session,
+    )
     return projection
+
+
+async def _materialize_waiting_image_jobs(
+    request: WorkflowRunStartRequest,
+    *,
+    run_id: str,
+    events: list[WorkflowNodeRunEvent],
+    session: AsyncSession | None,
+) -> None:
+    """Persist durable generation intent in the same transaction as waiting.
+
+    Stateless preview runs may still use synthetic snapshot ids. They retain
+    the waiting projection, but only a scope-valid platform snapshot can create
+    a job that a worker is allowed to dispatch.
+    """
+
+    if session is None:
+        return
+
+    from backend.models.image_studio import CanvasSnapshot
+    from backend.services import image_studio_service
+
+    waiting_events = [
+        event
+        for event in events
+        if event.eventType == "waiting"
+        and event.details.get("bindingId") == IMAGE_GENERATION_BINDING_ID
+    ]
+    for event in waiting_events:
+        snapshot_id = _read_string(event.details.get("canvasSnapshotId"))
+        attempt = event.details.get("attempt")
+        idempotency_key = _read_string(event.details.get("idempotencyKey"))
+        if snapshot_id is None or not isinstance(attempt, int) or idempotency_key is None:
+            continue
+        snapshot = await session.scalar(
+            select(CanvasSnapshot).where(
+                CanvasSnapshot.id == snapshot_id,
+                CanvasSnapshot.workflow_id == request.project.id,
+                CanvasSnapshot.node_id == event.nodeId,
+            )
+        )
+        if snapshot is None:
+            continue
+        await image_studio_service.create_job(
+            session,
+            snapshot=snapshot,
+            run_id=run_id,
+            node_id=event.nodeId,
+            attempt=attempt,
+            idempotency_key=idempotency_key,
+            mode="workflow",
+        )
 
 
 async def get_workflow_run_projection(
@@ -1587,6 +1725,17 @@ async def continue_workflow_run_with_source_outputs(
         )
         if stored is None:
             return None
+
+        incoming_node_ids = set(body.sourceOutputs)
+        duplicate_image_node_ids = {
+            node_id
+            for node_id in incoming_node_ids
+            if _is_image_generation_project_node(stored.request.project, node_id)
+            and stored.request.sourceOutputs.get(node_id) == body.sourceOutputs.get(node_id)
+            and _projection_node_status(stored.projection, node_id) == "completed"
+        }
+        if incoming_node_ids and duplicate_image_node_ids == incoming_node_ids:
+            return stored.projection
 
         merged_outputs = _merge_source_outputs(
             stored.request.sourceOutputs,
@@ -1752,6 +1901,21 @@ def _build_checkpoint(
     source_output_item_count = sum(len(items) for items in source_outputs.values())
     last_sequence = max((event.sequence for event in events), default=0)
     checkpoint_id = f"{projection.runId}:{last_sequence:04d}"
+    waiting_node_ids = sorted(
+        state.nodeId for state in projection.nodeStates if state.status == "waiting"
+    )
+    pending_jobs: list[dict[str, Any]] = []
+    for node_id in waiting_node_ids:
+        waiting_event = next(
+            (
+                event
+                for event in reversed(events)
+                if event.nodeId == node_id and event.eventType == "waiting"
+            ),
+            None,
+        )
+        if waiting_event is not None:
+            pending_jobs.append(dict(waiting_event.details))
     return WorkflowRunCheckpoint(
         checkpointId=checkpoint_id,
         workflowId=projection.workflowId,
@@ -1765,6 +1929,8 @@ def _build_checkpoint(
         nodeStates=projection.nodeStates,
         sourceOutputNodeIds=source_output_node_ids,
         sourceOutputItemCount=source_output_item_count,
+        waitingNodeIds=waiting_node_ids,
+        pendingJobs=pending_jobs,
         canContinueWithSourceOutputs=True,
         continuationPath=f"/api/v1/workflows/runs/{projection.runId}/source-outputs",
         tracePath=f"/api/v1/workflows/runs/{projection.runId}/trace",
@@ -2240,7 +2406,7 @@ def _status_after_event(event_type: WorkflowNodeRunEventType) -> WorkflowRunStat
         return "partial"
     if event_type == "failed":
         return "failed"
-    if event_type in {"blocked", "partial", "completed", "queued"}:
+    if event_type in {"blocked", "waiting", "partial", "completed", "queued"}:
         return event_type
     return "partial"
 
@@ -2300,6 +2466,8 @@ def _run_status(
         return "failed"
     if "blocked" in effective_statuses:
         return "blocked"
+    if "waiting" in effective_statuses:
+        return "waiting"
     if "running" in effective_statuses or "partial" in effective_statuses:
         return "partial"
     if tolerated_source_failure_ids and effective_statuses and effective_statuses <= {"completed"}:
@@ -2466,6 +2634,38 @@ def _runtime_trigger_kind(node: CompiledWorkflowNode) -> str | None:
     node_type = _read_string(builder.get("nodeType"))
     mode = _read_string(node.params.get("mode"))
     return "manual" if node_type == "manual-trigger" or mode == "manual" else "schedule"
+
+
+def _is_image_generation_project_node(project: WorkflowProject, node_id: str) -> bool:
+    return any(
+        node.id == node_id and node.kind == "media" and node.capability == "generate"
+        for node in project.nodes
+    )
+
+
+def _projection_node_status(
+    projection: WorkflowRunProjection,
+    node_id: str,
+) -> WorkflowRunStatus | None:
+    return next(
+        (state.status for state in projection.nodeStates if state.nodeId == node_id),
+        None,
+    )
+
+
+def _latest_waiting_details(
+    events: list[WorkflowNodeRunEvent],
+    node_id: str,
+) -> dict[str, Any]:
+    event = next(
+        (
+            event
+            for event in reversed(events)
+            if event.nodeId == node_id and event.eventType == "waiting"
+        ),
+        None,
+    )
+    return dict(event.details) if event is not None else {}
 
 
 def _select_package_id(

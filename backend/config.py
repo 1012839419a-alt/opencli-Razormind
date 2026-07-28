@@ -163,6 +163,16 @@ class Settings(BaseSettings):
     # Webhooks
     webhook_secret: str = "change-me-webhook-secret"
 
+    # Image Studio / InvokeAI sidecar. These values are server-only; the
+    # browser talks exclusively to OpenCLI's allowlisted image-studio API.
+    # Disabled by default so an absent or unconfigured GPU service fails
+    # closed instead of silently dispatching work elsewhere.
+    invokeai_enabled: bool = False
+    invokeai_base_url: str = "http://invokeai:9090"
+    invokeai_api_token: str = ""
+    invokeai_request_timeout_seconds: int = 30
+    image_asset_storage_path: str = "/data/image-studio/assets"
+
     # Timezone
     default_timezone: str = "UTC"
 

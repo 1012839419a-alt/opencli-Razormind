@@ -92,6 +92,7 @@ class StudioWorkflowValidationRun(TimestampMixin):
     errors: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     warnings: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     compile_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    resolved_graph: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
 
 class StudioWorkflowVersion(TimestampMixin):

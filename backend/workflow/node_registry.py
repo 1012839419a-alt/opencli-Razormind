@@ -43,6 +43,8 @@ WORKFLOW_CATALOG_IDS = {
     "intelligence.output.collection-result",
     "intelligence.sink.records",
     "intelligence.output.turbopush-publish",
+    "media.image-generation",
+    "media.image-asset",
     "external.tool.capability",
     "package.collection.pipeline",
     "package.processing.record-hygiene",

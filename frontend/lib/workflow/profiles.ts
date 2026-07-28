@@ -52,6 +52,7 @@ const BASE_SECTIONS_BY_KIND = {
   inbox: ["identity", "storage", "params"],
   action: ["identity", "adapter", "params"],
   sink: ["identity", "storage", "params"],
+  media: ["identity", "storage", "params"],
 } as const satisfies Record<WorkflowNodeKind, readonly WorkflowInspectorSection[]>
 
 function sectionsWith(

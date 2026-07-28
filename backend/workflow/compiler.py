@@ -54,6 +54,20 @@ class _PortContract:
 
 
 _PORT_CONTRACTS: dict[str, tuple[list[_PortContract], list[_PortContract]]] = {
+    "media.image-generation": (
+        [
+            _PortContract("prompt", "input", "text", required=False),
+            _PortContract("assets", "input", "mediaAsset[]", required=False),
+        ],
+        [
+            _PortContract("assets", "output", "mediaAsset[]"),
+            _PortContract("generation", "output", "mediaGenerationResult"),
+        ],
+    ),
+    "media.image-asset": (
+        [],
+        [_PortContract("assets", "output", "mediaAsset[]")],
+    ),
     "intelligence.input.collection-need": (
         [_PortContract("in", "input", "collectionNeed", required=False)],
         [_PortContract("patch", "output", "workflowPatch")],
@@ -432,6 +446,8 @@ def _validate_capability_version_pin(
 
 
 def _requires_adapter(node: WorkflowProjectNode) -> bool:
+    if _read_string((node.ui or {}).get("catalogId")) == "media.image-asset":
+        return False
     return node.kind == "source" or node.capability in {"fetch", "send"}
 
 

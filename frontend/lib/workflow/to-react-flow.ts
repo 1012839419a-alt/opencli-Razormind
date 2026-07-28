@@ -14,6 +14,7 @@ const KIND_TO_NODE_TYPE: Record<WorkflowProjectNode["kind"], WorkflowNodeType> =
   inbox: "action",
   action: "action",
   sink: "action",
+  media: "action",
 }
 
 const KIND_TO_CATEGORY: Record<WorkflowProjectNode["kind"], NodeCategory> = {
@@ -27,6 +28,7 @@ const KIND_TO_CATEGORY: Record<WorkflowProjectNode["kind"], NodeCategory> = {
   inbox: "data",
   action: "action",
   sink: "data",
+  media: "data",
 }
 
 const KIND_TO_ICON: Record<WorkflowProjectNode["kind"], string> = {
@@ -40,6 +42,7 @@ const KIND_TO_ICON: Record<WorkflowProjectNode["kind"], string> = {
   inbox: "Inbox",
   action: "Play",
   sink: "Database",
+  media: "Image",
 }
 
 export function workflowProjectToReactFlow(project: WorkflowProject): { nodes: WorkflowNode[]; edges: WorkflowEdge[] } {
@@ -94,6 +97,7 @@ export function workflowNodeToReactFlow(node: WorkflowProjectNode, index: number
     runtimeContract: readRuntimeContract(ui),
     runtimeRunState,
     runtimeLatestEvent: readRuntimeLatestEvent(ui),
+    imageStudioSummary: readImageStudioSummary(ui),
     miniNetwork: node.miniNetwork,
     topicCollapse: node.topicCollapse,
     proposalState: node.proposalState,
@@ -109,13 +113,28 @@ export function workflowNodeToReactFlow(node: WorkflowProjectNode, index: number
   }
 }
 
+function readImageStudioSummary(ui: Record<string, unknown>): WorkflowNodeData["imageStudioSummary"] {
+  const value = ui.imageStudioSummary
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined
+  const record = value as Record<string, unknown>
+  const recentAssetIds = Array.isArray(record.recentAssetIds)
+    ? record.recentAssetIds.filter((item): item is string => typeof item === "string")
+    : []
+  return {
+    snapshotId: typeof record.snapshotId === "string" ? record.snapshotId : undefined,
+    modelFingerprint: typeof record.modelFingerprint === "string" ? record.modelFingerprint : undefined,
+    recentAssetIds,
+  }
+}
+
 function workflowNodeStatusFromRun(status: WorkflowRunStatus): WorkflowNodeData["status"] {
   switch (status) {
     case "queued":
       return "idle"
     case "running":
+    case "waiting":
     case "partial":
-      return "running"
+      return status === "waiting" ? "waiting" : "running"
     case "completed":
       return "success"
     case "partial_success":
@@ -175,6 +194,7 @@ function isWorkflowRunStatus(value: string): value is WorkflowRunStatus {
   return (
     value === "queued" ||
     value === "running" ||
+    value === "waiting" ||
     value === "partial" ||
     value === "partial_success" ||
     value === "blocked" ||

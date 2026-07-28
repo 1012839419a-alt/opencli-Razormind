@@ -15,6 +15,7 @@ export const workflowNodeKindSchema = z.enum([
   "flow",
   "control",
   "sink",
+  "media",
 ])
 
 export const workflowCapabilitySchema = z.enum([
@@ -30,6 +31,7 @@ export const workflowCapabilitySchema = z.enum([
   "store",
   "merge",
   "accept",
+  "generate",
 ])
 
 const jsonRecordSchema = z.record(z.string(), z.unknown())
