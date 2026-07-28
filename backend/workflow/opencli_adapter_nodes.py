@@ -241,6 +241,7 @@ def _load_opencli_catalog() -> tuple[dict[str, Any], ...]:
             check=False,
             text=True,
             encoding="utf-8",
+            errors="replace",
             timeout=_OPENCLI_LIST_TIMEOUT_SECONDS,
         )
     except Exception as exc:
@@ -250,10 +251,10 @@ def _load_opencli_catalog() -> tuple[dict[str, Any], ...]:
         logger.warning(
             "opencli list -f json exited %s; stderr=%s",
             result.returncode,
-            result.stderr[:500],
+            (result.stderr or "")[:500],
         )
         return ()
-    raw = result.stdout
+    raw = result.stdout or ""
     if not raw:
         logger.warning("opencli list -f json produced no stdout")
         return ()

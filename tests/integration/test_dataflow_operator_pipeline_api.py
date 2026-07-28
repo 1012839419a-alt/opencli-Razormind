@@ -160,6 +160,28 @@ _EXPECTED_OPERATOR_MANIFEST = {
             "readiness": "ready",
             "configKeys": ["pairsField", "contextField"],
         },
+        {
+            "id": "research.counter-thesis",
+            "operatorId": "research.counter-thesis",
+            "kind": "generate",
+            "label": "Research counter thesis",
+            "packId": "builtin.research",
+            "packVersion": "1.0.0",
+            "status": "runnable",
+            "readiness": "ready",
+            "configKeys": [],
+        },
+        {
+            "id": "research.scenario-simulate",
+            "operatorId": "research.scenario-simulate",
+            "kind": "generate",
+            "label": "Research scenario simulation",
+            "packId": "builtin.research",
+            "packVersion": "1.0.0",
+            "status": "runnable",
+            "readiness": "ready",
+            "configKeys": ["scenarios"],
+        },
     ],
     "intelligence.data.filter": [
         {
@@ -244,6 +266,17 @@ _EXPECTED_OPERATOR_MANIFEST = {
             "readiness": "ready",
             "configKeys": ["fields", "rules"],
         },
+        {
+            "id": "research.publish-gate",
+            "operatorId": "research.publish-gate",
+            "kind": "filter",
+            "label": "Research publish gate",
+            "packId": "builtin.research",
+            "packVersion": "1.0.0",
+            "status": "runnable",
+            "readiness": "ready",
+            "configKeys": [],
+        },
     ],
     "intelligence.data.evaluate": [
         {
@@ -267,6 +300,34 @@ _EXPECTED_OPERATOR_MANIFEST = {
             "status": "runnable",
             "readiness": "ready",
             "configKeys": ["fields", "outputField"],
+        },
+        {
+            "id": "research.coverage-audit",
+            "operatorId": "research.coverage-audit",
+            "kind": "evaluate",
+            "label": "Research coverage audit",
+            "packId": "builtin.research",
+            "packVersion": "1.0.0",
+            "status": "runnable",
+            "readiness": "ready",
+            "configKeys": [
+                "requiredDimensions",
+                "iteration",
+                "maxIterations",
+                "additionalCollectionCount",
+                "maxAdditionalCollections",
+            ],
+        },
+        {
+            "id": "research.revision-diff",
+            "operatorId": "research.revision-diff",
+            "kind": "evaluate",
+            "label": "Research revision diff",
+            "packId": "builtin.research",
+            "packVersion": "1.0.0",
+            "status": "runnable",
+            "readiness": "ready",
+            "configKeys": ["previousClaims", "previousScenarios"],
         },
     ],
     "intelligence.data.refine": [
@@ -336,6 +397,23 @@ _EXPECTED_OPERATOR_MANIFEST = {
             "status": "runnable",
             "readiness": "ready",
             "configKeys": ["fields", "operations", "htmlEntities"],
+        },
+        {
+            "id": "research.claim-project",
+            "operatorId": "research.claim-project",
+            "kind": "refine",
+            "label": "Research claim projection",
+            "packId": "builtin.research",
+            "packVersion": "1.0.0",
+            "status": "runnable",
+            "readiness": "ready",
+            "configKeys": [
+                "claimKeyField",
+                "statementField",
+                "evidenceIdField",
+                "stanceField",
+                "dimensionField",
+            ],
         },
     ],
 }
@@ -787,7 +865,10 @@ async def test_capabilities_publish_one_aggregated_manifest_per_data_operator_ki
         "configKeys",
     )
     for row in rows:
-        expected = _EXPECTED_OPERATOR_MANIFEST[row["id"]]
+        expected = sorted(
+            _EXPECTED_OPERATOR_MANIFEST[row["id"]],
+            key=lambda operator: (operator["operatorId"], operator["packVersion"]),
+        )
         operators = [
             {key: operator[key] for key in selected_keys}
             for operator in row["manifest"]["operators"]

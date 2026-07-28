@@ -40,6 +40,11 @@ from backend.workflow.opencli_hda_tracer import (
 )
 from backend.workflow.opentabs_tool_nodes import list_opentabs_tool_nodes
 from backend.workflow.patcher import preview_workflow_patch
+from backend.workflow.research_continuation import (
+    ResearchContinuationError,
+    continue_research_workflow_run,
+    get_research_ledger,
+)
 from backend.workflow.runtime_registry import WEBHOOK_TRIGGER_BINDING_ID
 from backend.workflow.tool_capabilities import list_workflow_tool_capabilities
 
@@ -523,6 +528,47 @@ async def continue_run_with_source_outputs(
     if projection is None:
         raise HTTPException(status_code=404, detail="Workflow run not found")
     return ApiResponse.ok(projection)
+
+
+@router.get(
+    "/runs/{run_id}/research-ledger",
+    response_model=ApiResponse[workflow_schemas.WorkflowResearchLedgerResponse],
+)
+async def get_run_research_ledger(
+    run_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> ApiResponse[workflow_schemas.WorkflowResearchLedgerResponse]:
+    """Return the immutable parent/child revision chain for one research run."""
+
+    ledger = await get_research_ledger(run_id, session=db)
+    if ledger is None:
+        raise HTTPException(status_code=404, detail="Workflow run not found")
+    return ApiResponse.ok(ledger)
+
+
+@router.post(
+    "/runs/{run_id}/research-continuations",
+    response_model=ApiResponse[workflow_schemas.WorkflowResearchContinuationResponse],
+    status_code=202,
+)
+async def continue_research_run(
+    run_id: str,
+    body: workflow_schemas.WorkflowResearchContinuationRequest,
+    db: AsyncSession = Depends(get_db),
+) -> ApiResponse[workflow_schemas.WorkflowResearchContinuationResponse]:
+    """Start one bounded child Run from an accepted collect_more proposal."""
+
+    try:
+        result = await continue_research_workflow_run(run_id, body, session=db)
+    except ResearchContinuationError as exc:
+        status_code = 413 if "too_large" in exc.code else 409
+        raise HTTPException(
+            status_code=status_code,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
+    if result is None:
+        raise HTTPException(status_code=404, detail="Workflow run not found")
+    return ApiResponse.ok(result)
 
 
 @router.get(

@@ -23,6 +23,14 @@ export type WorkflowRunTrigger = {
   idempotencyKey?: string
 }
 
+export type WorkflowResearchStatus =
+  | "running"
+  | "needs_evidence"
+  | "final"
+  | "incomplete"
+  | "blocked"
+  | "failed"
+
 export type WorkflowNodeRunEventType =
   | "queued"
   | "started"
@@ -172,6 +180,54 @@ export type WorkflowRunProjection = {
   eventCount: number
   nodeStates: WorkflowRunNodeState[]
   errors: Array<{ code: string; message: string; node_id?: string | null; edge_id?: string | null }>
+}
+
+export type WorkflowResearchLedgerEntry = {
+  runId: string
+  parentRunId?: string | null
+  rootRunId: string
+  iteration: number
+  additionalCollectionCount: number
+  revisionId?: string | null
+  parentRevisionId?: string | null
+  claimSetHash?: string | null
+  semanticClaimSetHash?: string | null
+  scenarioSetHash?: string | null
+  decision?: "finalize" | "collect_more" | "stop_incomplete" | null
+  researchStatus: WorkflowResearchStatus
+  stopReason?: string | null
+  proposal?: {
+    proposalId?: string
+    action?: string
+    gaps?: string[]
+    nextIteration?: number
+    nextAdditionalCollectionCount?: number
+  } | null
+  gaps: string[]
+  publishAllowed?: boolean | null
+  gateReasons: string[]
+  evidenceRefs: Array<Record<string, unknown>>
+  createdAt: string
+}
+
+export type WorkflowResearchLedgerResponse = {
+  ledgerId: string
+  rootRunId: string
+  currentRunId: string
+  entries: WorkflowResearchLedgerEntry[]
+}
+
+export type WorkflowResearchContinuationResponse = {
+  ledgerId: string
+  parentRunId: string
+  childRunId: string
+  iteration: number
+  additionalCollectionCount: number
+  researchStatus: WorkflowResearchStatus
+  replayed: boolean
+  projectionPath: string
+  eventsPath: string
+  projection: WorkflowRunProjection
 }
 
 export type WorkflowRunCheckpoint = {
@@ -338,6 +394,40 @@ export async function continueWorkflowRunWithSourceOutputs(
     body: JSON.stringify({ sourceOutputs }),
   })
   return readApiResponse(response, "Workflow run continuation failed")
+}
+
+export async function fetchWorkflowResearchLedger(
+  runId: string,
+  options: { authorization?: string | null } = {},
+): Promise<WorkflowResearchLedgerResponse> {
+  const response = await fetch(`${workflowRunEndpoint(runId)}/research-ledger`, {
+    headers: {
+      ...(options.authorization ? { Authorization: options.authorization } : {}),
+    },
+    cache: "no-store",
+  })
+  return readApiResponse(response, "Workflow research ledger failed")
+}
+
+export async function continueWorkflowResearch(
+  runId: string,
+  input: {
+    expectedRevisionId: string
+    proposalId: string
+    idempotencyKey: string
+    sourceOutputs: Record<string, Array<Record<string, unknown>>>
+  },
+  options: { authorization?: string | null } = {},
+): Promise<WorkflowResearchContinuationResponse> {
+  const response = await fetch(`${workflowRunEndpoint(runId)}/research-continuations`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(options.authorization ? { Authorization: options.authorization } : {}),
+    },
+    body: JSON.stringify(input),
+  })
+  return readApiResponse(response, "Workflow research continuation failed")
 }
 
 export async function replayWorkflowRunEventStream(

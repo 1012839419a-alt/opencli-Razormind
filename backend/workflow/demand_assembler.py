@@ -311,6 +311,11 @@ def _native_first_loop_operations(
 def _data_operators_for_need(text: str) -> list[dict[str, Any]]:
     normalized = text.lower()
     dataflow_compat = "dataflow" in normalized
+    research_work = any(
+        token in normalized
+        for token in ("deep research", "deep-research", "深度调研", "深度研究", "投研")
+    )
+
     training_data = any(
         token in normalized
         for token in ("训练数据", "sft", "instruction", "instruction data", "微调数据")
@@ -332,7 +337,7 @@ def _data_operators_for_need(text: str) -> list[dict[str, Any]]:
             "筛选",
         )
     )
-    if not quality_work:
+    if not (quality_work or research_work):
         return []
 
     operators = [
@@ -416,7 +421,115 @@ def _data_operators_for_need(text: str) -> list[dict[str, Any]]:
                 "label": "Generate Instruction Pairs",
             }
         )
+    if research_work:
+        operators.extend(_research_operators_for_need(text))
+
     return operators
+
+
+def _research_operators_for_need(text: str) -> list[dict[str, Any]]:
+    dimensions = _research_dimensions_for_need(text)
+    operators = [
+        {
+            "id": "research-claim",
+            "catalogId": "intelligence.data.refine",
+            "operatorId": "research.claim-project",
+            "packVersion": "1.0.0",
+            "label": "Project Research Claims",
+        },
+        {
+            "id": "research-coverage",
+            "catalogId": "intelligence.data.evaluate",
+            "operatorId": "research.coverage-audit",
+            "packVersion": "1.0.0",
+            "config": {
+                "requiredDimensions": dimensions,
+                "iteration": 1,
+                "maxIterations": 2,
+                "additionalCollectionCount": 0,
+                "maxAdditionalCollections": 1,
+            },
+            "label": "Audit Research Coverage",
+        },
+        {
+            "id": "research-counter",
+            "catalogId": "intelligence.data.generate",
+            "operatorId": "research.counter-thesis",
+            "packVersion": "1.0.0",
+            "label": "Generate Counter Thesis",
+        },
+    ]
+    if dimensions:
+        operators.append(
+            {
+                "id": "research-scenario",
+                "catalogId": "intelligence.data.generate",
+                "operatorId": "research.scenario-simulate",
+                "packVersion": "1.0.0",
+                "config": {"scenarios": _research_scenarios_for_dimensions(dimensions)},
+                "label": "Simulate Research Scenarios",
+            }
+        )
+    operators.extend(
+        [
+        {
+            "id": "research-revision",
+            "catalogId": "intelligence.data.evaluate",
+            "operatorId": "research.revision-diff",
+            "packVersion": "1.0.0",
+            "config": {"previousClaims": [], "previousScenarios": []},
+            "label": "Record Research Revision",
+        },
+        {
+            "id": "research-publish-gate",
+            "catalogId": "intelligence.data.filter",
+            "operatorId": "research.publish-gate",
+            "packVersion": "1.0.0",
+            "label": "Gate Research Publication",
+        },
+        ]
+    )
+    return operators
+
+
+def _research_scenarios_for_dimensions(dimensions: list[str]) -> list[dict[str, Any]]:
+    magnitude = min(0.3 / len(dimensions), 0.15)
+    return [
+        {
+            "scenarioId": "upside",
+            "label": "Evidence-aligned upside",
+            "priorScore": 0.5,
+            "drivers": [
+                {"dimension": dimension, "weight": magnitude}
+                for dimension in dimensions
+            ],
+            "assumptions": ["Verified evidence remains valid during the decision window."],
+            "invalidationSignals": ["A required dimension loses verified evidence."],
+        },
+        {
+            "scenarioId": "downside",
+            "label": "Evidence-challenged downside",
+            "priorScore": 0.5,
+            "drivers": [
+                {"dimension": dimension, "weight": -magnitude}
+                for dimension in dimensions
+            ],
+            "assumptions": ["Contradicting evidence dominates the decision window."],
+            "invalidationSignals": ["All required dimensions remain supported."],
+        },
+    ]
+
+
+def _research_dimensions_for_need(text: str) -> list[str]:
+    match = re.search(
+        r"(?:维度|dimensions?)\s*[:：]\s*([^\n;；。]+)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return []
+    values = re.split(r"[,，、\s]+", match.group(1).strip())
+    return list(dict.fromkeys(value for value in values if value))[:12]
 
 
 def _source_slots_for_need(text: str) -> list[dict[str, Any]]:
@@ -483,7 +596,8 @@ _CATALOG_SITE_ALIASES: dict[str, tuple[str, ...]] = {
     "bilibili": ("哔哩", "bilibili", "b站", "bili"),
 }
 
-_CATALOG_SLOT_CAP = 3
+# The native merge capability exposes in1/in2.
+_CATALOG_SLOT_CAP = 2
 _CATALOG_TOKEN_PATTERN = re.compile(r"[a-zA-Z一-鿿]+")
 
 
@@ -566,6 +680,15 @@ def _catalog_match_tier(normalized: str, node: Any) -> tuple[int, int] | None:
     if token_positions:
         return 2, min(token_positions)
     return None
+
+
+def _catalog_mention_position(normalized: str, site: str) -> int:
+    candidates = (site, *_CATALOG_SITE_ALIASES.get(site, ()))
+    positions = (
+        normalized.find(candidate.lower())
+        for candidate in candidates
+    )
+    return min((position for position in positions if position >= 0), default=len(normalized))
 
 
 def _catalog_description_tokens(node: Any) -> list[str]:

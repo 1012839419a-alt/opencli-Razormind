@@ -50,6 +50,8 @@ _FIELD_ALIASES = {
     "published": "published_at",
     "url": "url",
     "content": "content",
+    "contenthash": "contentHash",
+    "content_hash": "contentHash",
     "author": "author",
 }
 _TIME_FIELDS = frozenset({"published_at"})

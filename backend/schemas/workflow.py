@@ -673,6 +673,14 @@ WorkflowRunStatus = Literal[
 WorkflowRunTriggerKind = Literal["manual", "ai", "schedule", "webhook"]
 WorkflowRunInputSource = Literal["operator", "agent", "external"]
 WorkflowRunResponseMode = Literal["async", "sync-short-wait", "callback"]
+WorkflowResearchStatus = Literal[
+    "running",
+    "needs_evidence",
+    "final",
+    "incomplete",
+    "blocked",
+    "failed",
+]
 WorkflowNodeRunEventType = Literal[
     "queued",
     "started",
@@ -725,6 +733,13 @@ class WorkflowWebhookIngressRequest(BaseModel):
 
 
 class WorkflowRunSourceOutputsRequest(BaseModel):
+    sourceOutputs: dict[str, list[dict[str, Any]]] = Field(..., min_length=1)
+
+
+class WorkflowResearchContinuationRequest(BaseModel):
+    expectedRevisionId: str = Field(..., min_length=1)
+    proposalId: str = Field(..., min_length=1)
+    idempotencyKey: str = Field(..., min_length=1, max_length=255)
     sourceOutputs: dict[str, list[dict[str, Any]]] = Field(..., min_length=1)
 
 
@@ -837,6 +852,48 @@ class WorkflowRunProjection(BaseModel):
     eventCount: int = Field(..., ge=0)
     nodeStates: list[WorkflowRunNodeState] = Field(default_factory=list)
     errors: list[WorkflowCompileError] = Field(default_factory=list)
+
+
+class WorkflowResearchLedgerEntry(BaseModel):
+    runId: str = Field(..., min_length=1)
+    parentRunId: Optional[str] = None
+    rootRunId: str = Field(..., min_length=1)
+    iteration: int = Field(..., ge=1, le=5)
+    additionalCollectionCount: int = Field(..., ge=0, le=3)
+    revisionId: Optional[str] = None
+    parentRevisionId: Optional[str] = None
+    claimSetHash: Optional[str] = None
+    semanticClaimSetHash: Optional[str] = None
+    scenarioSetHash: Optional[str] = None
+    decision: Optional[Literal["finalize", "collect_more", "stop_incomplete"]] = None
+    researchStatus: WorkflowResearchStatus
+    stopReason: Optional[str] = None
+    proposal: Optional[dict[str, Any]] = None
+    gaps: list[str] = Field(default_factory=list)
+    publishAllowed: Optional[bool] = None
+    gateReasons: list[str] = Field(default_factory=list)
+    evidenceRefs: list[dict[str, Any]] = Field(default_factory=list)
+    createdAt: str = Field(..., min_length=1)
+
+
+class WorkflowResearchLedgerResponse(BaseModel):
+    ledgerId: str = Field(..., min_length=1)
+    rootRunId: str = Field(..., min_length=1)
+    currentRunId: str = Field(..., min_length=1)
+    entries: list[WorkflowResearchLedgerEntry] = Field(default_factory=list)
+
+
+class WorkflowResearchContinuationResponse(BaseModel):
+    ledgerId: str = Field(..., min_length=1)
+    parentRunId: str = Field(..., min_length=1)
+    childRunId: str = Field(..., min_length=1)
+    iteration: int = Field(..., ge=2, le=5)
+    additionalCollectionCount: int = Field(..., ge=1, le=3)
+    researchStatus: WorkflowResearchStatus
+    replayed: bool
+    projectionPath: str = Field(..., min_length=1)
+    eventsPath: str = Field(..., min_length=1)
+    projection: WorkflowRunProjection
 
 
 class EvidenceBatchSummary(BaseModel):

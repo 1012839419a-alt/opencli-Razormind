@@ -1,0 +1,344 @@
+{
+  "id": "workflow-a-share-premarket-research",
+  "name": "A 股盘前 Deep Research PTT",
+  "profile": "intelligence",
+  "version": 1,
+  "settings": {
+    "timezone": "Asia/Shanghai",
+    "deterministicSimulation": true,
+    "maxItemsPerRun": 20
+  },
+  "adapters": [
+    {
+      "id": "official-exchange-snapshot",
+      "type": "source",
+      "provider": "official-web",
+      "mode": "fixture",
+      "config": {
+        "provenanceMode": "verified_snapshot",
+        "capturedOn": "2026-07-28"
+      }
+    },
+    {
+      "id": "official-calendar-macro-snapshot",
+      "type": "source",
+      "provider": "official-web",
+      "mode": "fixture",
+      "config": {
+        "provenanceMode": "verified_snapshot",
+        "capturedOn": "2026-07-28"
+      }
+    }
+  ],
+  "agentPermissions": {
+    "canFetchNetwork": false,
+    "canSendNotifications": false,
+    "canWriteInbox": true,
+    "allowedDomains": [
+      "www.sse.com.cn",
+      "www.szse.cn",
+      "www.stats.gov.cn"
+    ]
+  },
+  "nodes": [
+    {
+      "id": "source-exchange-official",
+      "kind": "source",
+      "capability": "fetch",
+      "adapter": "official-exchange-snapshot",
+      "params": {
+        "fixtureItems": [
+          {
+            "claimKey": "sse-announcements",
+            "statement": "上交所 2026-07-28 盘前公告批次包含 576 条记录。",
+            "evidenceId": "sse-announcements-2026-07-28",
+            "stance": "support",
+            "dimension": "沪市公告",
+            "content": "上交所 stock_bulletin_publish_order.json 于 2026-07-27 23:03:11 CST 更新，实测 576 条 discloseDate=2026-07-28 的公告元数据。",
+            "url": "https://www.sse.com.cn/disclosure/listedinfo/announcement/json/stock_bulletin_publish_order.json",
+            "requestMethod": "GET",
+            "httpStatus": 200,
+            "provenanceMode": "verified_snapshot"
+          },
+          {
+            "claimKey": "szse-announcements",
+            "statement": "深交所 2026-07-28 指定日期公告查询返回 469 条。",
+            "evidenceId": "szse-announcements-2026-07-28",
+            "stance": "support",
+            "dimension": "深市公告",
+            "content": "深交所 annList POST 实测 announceCount=469，查询体 seDate 为 2026-07-28，channelCode 为 listedNotice_disc。",
+            "url": "https://www.szse.cn/api/disc/announcement/annList",
+            "requestMethod": "POST",
+            "httpStatus": 200,
+            "provenanceMode": "verified_snapshot"
+          }
+        ]
+      },
+      "sourceAnchor": {
+        "kind": "url",
+        "label": "沪深交易所公告",
+        "href": "https://www.sse.com.cn/disclosure/listedinfo/announcement/"
+      },
+      "ui": {
+        "position": { "x": 80, "y": 80 }
+      }
+    },
+    {
+      "id": "normalize-exchange",
+      "kind": "agent",
+      "capability": "normalize",
+      "params": { "language": "zh-CN", "preserveSourceRefs": true },
+      "ui": {
+        "catalogId": "intelligence.processing.normalize",
+        "position": { "x": 340, "y": 80 }
+      }
+    },
+    {
+      "id": "source-calendar-macro",
+      "kind": "source",
+      "capability": "fetch",
+      "adapter": "official-calendar-macro-snapshot",
+      "params": {
+        "fixtureItems": [
+          {
+            "claimKey": "trading-calendar",
+            "statement": "2026-07-28 不在上交所 2026 年休市安排内，且为周二。",
+            "evidenceId": "sse-calendar-2026-07-28",
+            "stance": "support",
+            "dimension": "交易日",
+            "content": "上交所年度休市安排页面覆盖 2026 年法定节假日，2026-07-28 未列为休市日。",
+            "url": "https://www.sse.com.cn/disclosure/dealinstruc/closed/",
+            "requestMethod": "GET",
+            "httpStatus": 200,
+            "provenanceMode": "verified_snapshot"
+          },
+          {
+            "claimKey": "macro-release",
+            "statement": "国家统计局数据发布页在 2026-07-28 盘前可见 7 月 27 日工业企业利润等最新发布。",
+            "evidenceId": "nbs-releases-2026-07-28",
+            "stance": "support",
+            "dimension": "宏观",
+            "content": "国家统计局数据发布页实测列出 2026-07-27 工业企业利润和 2026-07-24 生产资料价格等官方发布。",
+            "url": "https://www.stats.gov.cn/sj/zxfb/",
+            "requestMethod": "GET",
+            "httpStatus": 200,
+            "provenanceMode": "verified_snapshot"
+          }
+        ]
+      },
+      "sourceAnchor": {
+        "kind": "url",
+        "label": "交易日与宏观发布",
+        "href": "https://www.stats.gov.cn/sj/zxfb/"
+      },
+      "ui": {
+        "position": { "x": 80, "y": 300 }
+      }
+    },
+    {
+      "id": "normalize-calendar-macro",
+      "kind": "agent",
+      "capability": "normalize",
+      "params": { "language": "zh-CN", "preserveSourceRefs": true },
+      "ui": {
+        "catalogId": "intelligence.processing.normalize",
+        "position": { "x": 340, "y": 300 }
+      }
+    },
+    {
+      "id": "merge-official-evidence",
+      "kind": "flow",
+      "capability": "merge",
+      "params": {
+        "strategy": "concat",
+        "preserveLineage": true,
+        "inputType": "recordCandidate[]",
+        "outputType": "recordCandidate[]"
+      },
+      "ui": {
+        "catalogId": "intelligence.flow.merge",
+        "position": { "x": 600, "y": 190 }
+      }
+    },
+    {
+      "id": "research-claim",
+      "kind": "agent",
+      "capability": "normalize",
+      "params": {
+        "operatorId": "research.claim-project",
+        "packVersion": "1.0.0",
+        "config": {}
+      },
+      "ui": {
+        "catalogId": "intelligence.data.refine",
+        "position": { "x": 860, "y": 190 }
+      }
+    },
+    {
+      "id": "research-coverage",
+      "kind": "agent",
+      "capability": "normalize",
+      "params": {
+        "operatorId": "research.coverage-audit",
+        "packVersion": "1.0.0",
+        "config": {
+          "requiredDimensions": ["交易日", "宏观", "沪市公告", "深市公告"],
+          "iteration": 1,
+          "maxIterations": 2,
+          "additionalCollectionCount": 0,
+          "maxAdditionalCollections": 1
+        }
+      },
+      "ui": {
+        "catalogId": "intelligence.data.evaluate",
+        "position": { "x": 1120, "y": 190 }
+      }
+    },
+    {
+      "id": "research-counter",
+      "kind": "agent",
+      "capability": "normalize",
+      "params": {
+        "operatorId": "research.counter-thesis",
+        "packVersion": "1.0.0",
+        "config": {}
+      },
+      "ui": {
+        "catalogId": "intelligence.data.generate",
+        "position": { "x": 1380, "y": 190 }
+      }
+    },
+    {
+      "id": "research-scenario",
+      "kind": "agent",
+      "capability": "normalize",
+      "params": {
+        "operatorId": "research.scenario-simulate",
+        "packVersion": "1.0.0",
+        "config": {
+          "scenarios": [
+            {
+              "scenarioId": "complete-official-coverage",
+              "label": "四类官方证据保持可用",
+              "priorScore": 0.5,
+              "drivers": [
+                { "dimension": "交易日", "weight": 0.1 },
+                { "dimension": "宏观", "weight": 0.1 },
+                { "dimension": "沪市公告", "weight": 0.1 },
+                { "dimension": "深市公告", "weight": 0.1 }
+              ],
+              "assumptions": ["四个官方端点在盘前采集窗口内保持可访问。"],
+              "invalidationSignals": ["任一必需来源无法获取或响应日期不匹配。"]
+            },
+            {
+              "scenarioId": "partial-source-failure",
+              "label": "官方来源部分失效",
+              "priorScore": 0.5,
+              "drivers": [
+                { "dimension": "交易日", "weight": -0.1 },
+                { "dimension": "宏观", "weight": -0.1 },
+                { "dimension": "沪市公告", "weight": -0.1 },
+                { "dimension": "深市公告", "weight": -0.1 }
+              ],
+              "assumptions": ["至少一个来源在盘前采集窗口内失效。"],
+              "invalidationSignals": ["所有必需来源均返回日期匹配且可审计的证据。"]
+            }
+          ]
+        }
+      },
+      "ui": {
+        "catalogId": "intelligence.data.generate",
+        "position": { "x": 1640, "y": 190 }
+      }
+    },
+    {
+      "id": "research-revision",
+      "kind": "agent",
+      "capability": "normalize",
+      "params": {
+        "operatorId": "research.revision-diff",
+        "packVersion": "1.0.0",
+        "config": {
+          "previousClaims": [],
+          "previousScenarios": []
+        }
+      },
+      "ui": {
+        "catalogId": "intelligence.data.evaluate",
+        "position": { "x": 1900, "y": 190 }
+      }
+    },
+    {
+      "id": "research-publish-gate",
+      "kind": "agent",
+      "capability": "normalize",
+      "params": {
+        "operatorId": "research.publish-gate",
+        "packVersion": "1.0.0",
+        "config": {}
+      },
+      "ui": {
+        "catalogId": "intelligence.data.filter",
+        "position": { "x": 2160, "y": 190 }
+      }
+    },
+    {
+      "id": "accept-records",
+      "kind": "control",
+      "capability": "accept",
+      "params": {
+        "mode": "automatic_with_review",
+        "schema": "record.v1",
+        "dedupe": "required",
+        "lineageRequired": true,
+        "minQuality": 0
+      },
+      "ui": {
+        "catalogId": "intelligence.control.record-acceptance",
+        "position": { "x": 2680, "y": 190 }
+      }
+    },
+    {
+      "id": "dedupe-research",
+      "kind": "agent",
+      "capability": "dedupe",
+      "params": {
+        "key": "contentHash",
+        "window": "24h"
+      },
+      "ui": {
+        "catalogId": "intelligence.processing.dedupe",
+        "position": { "x": 2420, "y": 190 }
+      }
+    },
+    {
+      "id": "record-sink",
+      "kind": "sink",
+      "capability": "store",
+      "params": {
+        "target": "records",
+        "writeMode": "append",
+        "preserveLineage": true
+      },
+      "ui": {
+        "catalogId": "intelligence.sink.records",
+        "position": { "x": 2940, "y": 190 }
+      }
+    }
+  ],
+  "edges": [
+    { "id": "e-exchange-normalize", "source": "source-exchange-official", "target": "normalize-exchange", "sourcePort": "out", "targetPort": "in" },
+    { "id": "e-calendar-normalize", "source": "source-calendar-macro", "target": "normalize-calendar-macro", "sourcePort": "out", "targetPort": "in" },
+    { "id": "e-exchange-merge", "source": "normalize-exchange", "target": "merge-official-evidence", "sourcePort": "out", "targetPort": "in1" },
+    { "id": "e-calendar-merge", "source": "normalize-calendar-macro", "target": "merge-official-evidence", "sourcePort": "out", "targetPort": "in2" },
+    { "id": "e-merge-claim", "source": "merge-official-evidence", "target": "research-claim", "sourcePort": "out", "targetPort": "in" },
+    { "id": "e-claim-coverage", "source": "research-claim", "target": "research-coverage", "sourcePort": "out", "targetPort": "in" },
+    { "id": "e-coverage-counter", "source": "research-coverage", "target": "research-counter", "sourcePort": "out", "targetPort": "in" },
+    { "id": "e-counter-scenario", "source": "research-counter", "target": "research-scenario", "sourcePort": "out", "targetPort": "in" },
+    { "id": "e-scenario-revision", "source": "research-scenario", "target": "research-revision", "sourcePort": "out", "targetPort": "in" },
+    { "id": "e-revision-gate", "source": "research-revision", "target": "research-publish-gate", "sourcePort": "out", "targetPort": "in" },
+    { "id": "e-gate-dedupe", "source": "research-publish-gate", "target": "dedupe-research", "sourcePort": "out", "targetPort": "in" },
+    { "id": "e-dedupe-accept", "source": "dedupe-research", "target": "accept-records", "sourcePort": "out", "targetPort": "candidates" },
+    { "id": "e-accept-sink", "source": "accept-records", "target": "record-sink", "sourcePort": "records", "targetPort": "records" }
+  ]
+}

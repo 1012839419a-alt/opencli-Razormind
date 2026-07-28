@@ -88,6 +88,17 @@ def test_dedupe_profile_parses_compound_key_and_uses_24_hour_window():
     assert result.metrics["dedupeCoverage"] == {"scope": "batch", "priorSeenCount": 0}
 
 
+def test_dedupe_profile_supports_derived_content_hashes():
+    candidates = execute_record_hygiene("normalize", RAW_ITEMS[:2], {}, CONTEXT).records
+    result = execute_record_hygiene(
+        "dedupe", candidates, {"key": "contentHash", "window": "24h"}, CONTEXT
+    )
+
+    assert len(result.records) == 2
+    assert result.rejected == []
+    assert result.records[0]["dedupe"]["fields"] == ["contentHash"]
+
+
 def test_studio_window_string_overrides_numeric_window_and_changes_decision():
     items = deepcopy(RAW_ITEMS[:2])
     items[1]["published_at"] = "2026-07-22T13:00:00Z"
