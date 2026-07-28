@@ -174,6 +174,51 @@ test('market scope changes market cards without rewriting filing source argument
   assert.deepStrictEqual(updated[2].args, { limit: 30 })
 })
 
+test('source identity separates a capability from its configured query', async () => {
+  const sourceConfig = await importTypeScript('lib/workflow/source-business-config.ts')
+  const base = {
+    site: ' Bilibili ',
+    command: ' Search ',
+    args: { limit: 20, type: 'video' },
+    positionalArgs: ['A 股'],
+  }
+
+  assert.equal(
+    sourceConfig.sourceCapabilityKey(base),
+    sourceConfig.sourceCapabilityKey({ ...base, site: 'bilibili', command: 'search' }),
+  )
+  assert.equal(
+    sourceConfig.sourceSlotKey(base),
+    sourceConfig.sourceSlotKey({
+      ...base,
+      site: 'bilibili',
+      command: 'search',
+      args: { type: 'video', limit: 20 },
+    }),
+  )
+  assert.notEqual(
+    sourceConfig.sourceSlotKey(base),
+    sourceConfig.sourceSlotKey({ ...base, positionalArgs: ['港股'] }),
+  )
+
+  const registered = sourceConfig.openCLISlotFromDataSource({
+    id: 'source-1',
+    name: 'B 站视频搜索',
+    channel_type: 'opencli',
+    channel_config: {
+      site: 'bilibili',
+      command: 'search',
+      args: { limit: 20 },
+      positional_args: ['A 股'],
+    },
+    enabled: true,
+    tags: ['video'],
+    created_at: '',
+    updated_at: '',
+  })
+  assert.deepStrictEqual(registered.positionalArgs, ['A 股'])
+})
+
 test('backend node catalog overlays matching nodes without hiding runnable workflow capabilities', async () => {
   const [{ mergeBackendNodeCapabilityCatalog }, nodeCatalog] = await Promise.all([
     importTypeScript('lib/workflow/backend-node-capability-adapter.ts'),
@@ -412,10 +457,25 @@ test('Studio materializes every searchable OpenCLI capability preset as a node',
   assert.match(adapterNodes.openCLIAdapterNodePresentation(sourcePreset, 'zh-CN').description, /从 example 读取 search 数据/)
   assert.equal(adapterNodes.openCLIAdapterNodePresentation(sourcePreset, 'en-US').description, 'Search public records')
   assert.match(adapterNodes.openCLIAdapterNodeSearchText(sourcePreset), /read source source-slot 数据读取/)
+  assert.match(adapterNodes.openCLIAdapterNodeSearchText({
+    ...sourcePreset,
+    id: 'opencli.adapter.bilibili.subtitle',
+    site: 'bilibili',
+    command: 'subtitle',
+  }), /b 站 · 字幕提取/)
+  const bilibiliRankingSearchText = adapterNodes.openCLIAdapterNodeSearchText({
+    ...sourcePreset,
+    id: 'opencli.adapter.bilibili.ranking',
+    site: 'bilibili',
+    command: 'ranking',
+  })
+  assert.match(bilibiliRankingSearchText, /b 站 · 视频排行榜/)
+  assert.match(bilibiliRankingSearchText, /b站/)
   assert.match(adapterNodes.openCLIAdapterNodeSearchText(writePreset), /write tool action 操作工具/)
   const oodaSourceIds = [
     'opencli.adapter.eastmoney.index-quote',
     'opencli.adapter.eastmoney.money-flow',
+    'opencli.adapter.tdx.hot-rank',
     'opencli.adapter.xueqiu.stock-social',
     'opencli.adapter.eastmoney.bbsj-summary',
     'opencli.adapter.cninfo.disclosure-pdf',
@@ -424,6 +484,8 @@ test('Studio materializes every searchable OpenCLI capability preset as a node',
     'opencli.adapter.jin10.kuaixun',
     'opencli.adapter.gelonghui.kuaixun',
     'opencli.adapter.xueqiu.news',
+    'opencli.adapter.douyin.search',
+    'opencli.adapter.bilibili.subtitle',
   ]
   assert.deepStrictEqual(
     adapterNodes.featuredOpenCLIAdapterNodes(oodaSourceIds.map((id) => ({ id }))).map((node) => node.id),
@@ -432,11 +494,11 @@ test('Studio materializes every searchable OpenCLI capability preset as a node',
   assert.deepStrictEqual(
     adapterNodes.featuredOpenCLIAdapterGroups(oodaSourceIds.map((id) => ({ id })), 'zh-CN')
       .map((group) => group.label),
-    ['行情、资金与交易结构', '财报、公告、研报与 PDF', '财经媒体与实时快讯', '社交舆情与全网观察'],
+    ['行情、资金与交易结构', '财报、公告、研报与 PDF', '财经媒体与实时快讯', '社交舆情与全网观察', '视频与多媒体情报'],
   )
-  assert.match(palette, /A 股数据源/)
+  assert.match(palette, /消息与数据来源/)
   assert.doesNotMatch(palette, /国内全网 OODA 数据源/)
-  assert.match(palette, /行情、公告、新闻、社区与视频/)
+  assert.match(palette, /行情、官方披露、财经媒体、社交与视频/)
   const inspector = await readFrontendSource('components/flow/inspector.tsx')
   assert.match(inspector, /addContentSources/)
   assert.match(inspector, /OPENCLI_SITUATION_SOURCES/)
