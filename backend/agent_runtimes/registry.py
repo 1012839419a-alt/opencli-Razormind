@@ -45,7 +45,12 @@ def available_runtimes() -> list[str]:
 
 def _load_all_runtimes() -> None:
     """Import all agent-runtime adapter modules to trigger registration."""
-    from backend.agent_runtimes import miniflow_adapter, opentabs_adapter, pi_adapter  # noqa: F401
+    from backend.agent_runtimes import (  # noqa: F401
+        bbx_adapter,
+        miniflow_adapter,
+        opentabs_adapter,
+        pi_adapter,
+    )
 
 
 _load_all_runtimes()

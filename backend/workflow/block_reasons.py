@@ -14,6 +14,8 @@ BlockReasonCategory = Literal[
 ]
 
 FETCH_PERMISSION_REQUIRED = "fetch_permission_required"
+OPENCLI_WRITE_APPROVAL_REQUIRED = "opencli_write_approval_required"
+OPENCLI_WRITE_PERMISSION_REQUIRED = "opencli_write_permission_required"
 SEND_PERMISSION_REQUIRED = "send_permission_required"
 MISSING_DELIVERY_PROJECTION = "missing_delivery_projection"
 MISSING_ADAPTER_RESOURCE = "missing_adapter_resource"
@@ -89,6 +91,18 @@ WORKFLOW_BLOCK_REASON_TAXONOMY: dict[str, WorkflowBlockReasonDefinition] = {
         category="missing_permission",
         stable_fields=("code", "source", "details.bindingId", "details.requiredPermission"),
         description="Source fetch is blocked because canFetchNetwork is false.",
+    ),
+    OPENCLI_WRITE_APPROVAL_REQUIRED: WorkflowBlockReasonDefinition(
+        code=OPENCLI_WRITE_APPROVAL_REQUIRED,
+        category="missing_permission",
+        stable_fields=("code", "source", "details.bindingId", "details.proposalState"),
+        description="OpenCLI mutation is blocked until the action node is accepted.",
+    ),
+    OPENCLI_WRITE_PERMISSION_REQUIRED: WorkflowBlockReasonDefinition(
+        code=OPENCLI_WRITE_PERMISSION_REQUIRED,
+        category="missing_permission",
+        stable_fields=("code", "source", "details.bindingId", "details.requiredPermission"),
+        description="OpenCLI mutation is blocked because canMutateExternalSites is false.",
     ),
     SEND_PERMISSION_REQUIRED: WorkflowBlockReasonDefinition(
         code=SEND_PERMISSION_REQUIRED,
@@ -194,6 +208,8 @@ __all__ = [
     "SEND_PERMISSION_REQUIRED",
     "SOURCE_OUTPUT_REQUIRED",
     "MISSING_WORKER_CAPACITY",
+    "OPENCLI_WRITE_APPROVAL_REQUIRED",
+    "OPENCLI_WRITE_PERMISSION_REQUIRED",
     "PROFILE_LOCK_CONTENDED",
     "WORKFLOW_BLOCK_REASON_TAXONOMY",
     "WorkflowBlockReasonDefinition",

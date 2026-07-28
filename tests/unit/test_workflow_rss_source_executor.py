@@ -175,10 +175,8 @@ async def test_rss_source_executor_resolves_generator_provider_without_leaking_t
                 "feedUrl": "http://127.0.0.1:1200/rsshub/routes/en",
                 "providerId": provider.id,
                 "generatorType": "rsshub",
-                "generatorSelection": {
-                    "route": "/rsshub/routes/en",
-                    "parameters": {},
-                },
+                "route": "/rsshub/routes/en",
+                "routeParameters": {},
             },
         },
         allowed_domains=["127.0.0.1"],

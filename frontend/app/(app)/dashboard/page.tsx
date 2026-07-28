@@ -1,6 +1,7 @@
 'use client'
 
 import Link from 'next/link'
+import { useEffect, useState } from 'react'
 import {
   Activity,
   Bot,
@@ -20,11 +21,22 @@ import {
   Tags,
 } from 'lucide-react'
 
-import { useAgents, useDashboardActivity, useDashboardStats, useNotificationLogs, useOpinionMonitor, useWorkers } from '@/lib/api/hooks'
+import {
+  useAgents,
+  useDashboardActivity,
+  useDashboardStats,
+  useNotificationLogs,
+  useNotificationRules,
+  useOpinionMonitor,
+  useSchedules,
+  useWorkers,
+} from '@/lib/api/hooks'
 import type { OpinionMonitor, WorkerNode } from '@/lib/api/types'
 import type { FailureItem, StreamTask, ThroughputPoint, WorkerView } from '@/lib/demo/monitor'
 import { formatNumber, formatRelative } from '@/lib/format'
+import { notificationChannelLabel } from '@/lib/notification-channels'
 import { cn } from '@/lib/utils'
+import { MatrixClock } from '@/components/monitor/matrix-clock'
 import { FailureFeed, TaskStream } from '@/components/monitor/task-stream'
 import { ThroughputChart } from '@/components/monitor/throughput-chart'
 import { OperationalAnalytics } from '@/components/monitor/operational-analytics'
@@ -76,19 +88,64 @@ function normalizedSuccessRate(value: number) {
   return Math.round(value <= 1 ? value * 100 : value)
 }
 
+function countdownLabel(nextRunAt: string, now: number) {
+  const target = new Date(nextRunAt).getTime()
+  if (Number.isNaN(target)) return '时间无效'
+
+  const remaining = target - now
+  if (remaining <= 0) return '即将执行'
+
+  const totalSeconds = Math.floor(remaining / 1000)
+  const days = Math.floor(totalSeconds / 86_400)
+  const hours = Math.floor((totalSeconds % 86_400) / 3_600)
+  const minutes = Math.floor((totalSeconds % 3_600) / 60)
+  const seconds = totalSeconds % 60
+  const clock = [hours, minutes, seconds].map((value) => String(value).padStart(2, '0')).join(':')
+
+  return days > 0 ? `${days}天 ${clock}` : clock
+}
+
+function NextRunCountdown({ nextRunAt }: { nextRunAt?: string }) {
+  const [now, setNow] = useState<number | null>(null)
+
+  useEffect(() => {
+    const tick = () => setNow(Date.now())
+    tick()
+    const interval = window.setInterval(tick, 1_000)
+    return () => window.clearInterval(interval)
+  }, [nextRunAt])
+
+  if (!nextRunAt) return <span>未设置</span>
+  if (now === null) return <span>计算中</span>
+  return <span>{countdownLabel(nextRunAt, now)}</span>
+}
+
+function notificationStatusLabel(item: OpinionMonitor['recent'][number]) {
+  const channels = (item.notification_channels ?? []).map(notificationChannelLabel)
+  const channelPrefix = channels.join('、')
+
+  if (item.notification_status === 'sent') {
+    return channelPrefix ? `${channelPrefix} 已发送` : '已有发送记录'
+  }
+  if (item.notification_status === 'failed') {
+    return channelPrefix ? `${channelPrefix} 发送失败` : '发送失败'
+  }
+  return '无发送记录'
+}
+
 function SignalFlow({
   sources,
   runs,
   records,
   aiProcessed,
-  delivered,
+  deliveryChannels,
   failures,
 }: {
   sources: { enabled: number; total: number }
   runs: { successRate: number; total: number }
   records: number
   aiProcessed: number
-  delivered: number
+  deliveryChannels: number
   failures: number
 }) {
   const stages = [
@@ -96,7 +153,7 @@ function SignalFlow({
     { label: '运行', detail: '成功率', value: `${runs.successRate}%`, progress: runs.total ? runs.successRate : 0, icon: Play },
     { label: '数据', detail: '已采集', value: formatNumber(records), progress: records ? 100 : 0, icon: ArrowDownToLine },
     { label: 'Agent', detail: 'AI 已处理', value: `${percent(aiProcessed, records)}%`, progress: percent(aiProcessed, records), icon: Bot },
-    { label: '交付', detail: '已连接渠道', value: formatNumber(delivered), progress: delivered ? 100 : 0, icon: Send },
+    { label: '交付', detail: '已配置渠道', value: formatNumber(deliveryChannels), progress: deliveryChannels ? 100 : 0, icon: Send },
   ]
 
   return (
@@ -108,7 +165,7 @@ function SignalFlow({
           <h2 id="signal-flow-title" className="mt-1 text-lg font-semibold">
             从来源到 Agent，再到交付
           </h2>
-          <p className="mt-1 text-sm text-muted-foreground">沿真实业务顺序定位停滞点；邮箱是本期 P0，专属投递统计等待后端接入。</p>
+          <p className="mt-1 text-sm text-muted-foreground">沿真实业务顺序定位停滞点；交付渠道按用户启用的通知规则统计。</p>
         </div>
         <Badge variant={failures ? 'destructive' : 'outline'}>{failures ? `${failures} 个运行异常` : '链路无阻塞'}</Badge>
       </div>
@@ -146,13 +203,17 @@ function SignalFlow({
 function AgentDeliveryPanel({
   agents,
   notificationLogs,
+  notificationChannels,
   agentsLoading,
   logsLoading,
+  rulesLoading,
 }: {
   agents: Array<{ id: string; name: string; processor_type: string; model?: string; enabled: boolean }>
   notificationLogs: Array<{ id: string; status: string; ack_status: string; created_at: string }>
+  notificationChannels: string[]
   agentsLoading: boolean
   logsLoading: boolean
+  rulesLoading: boolean
 }) {
   const enabledAgents = agents.filter((agent) => agent.enabled)
   const delivered = notificationLogs.filter((log) => ['sent', 'success', 'completed'].includes(log.status.toLowerCase())).length
@@ -168,7 +229,9 @@ function AgentDeliveryPanel({
           </CardTitle>
           <p className="mt-1 text-sm text-muted-foreground">谁在处理信号，以及结果是否抵达外部渠道。</p>
         </div>
-        <Badge variant="outline">邮箱 P0</Badge>
+        <Badge variant="outline">
+          {rulesLoading ? '同步渠道' : notificationChannels.length ? `${notificationChannels.length} 个渠道` : '未配置渠道'}
+        </Badge>
       </CardHeader>
       <CardContent className="grid gap-4 md:grid-cols-[1.2fr_0.8fr]">
         <div className="space-y-2">
@@ -211,14 +274,24 @@ function AgentDeliveryPanel({
             </div>
           </div>
           <div className="mt-4 border-t pt-3">
-            <div className="flex items-center justify-between text-xs">
-              <span className="text-muted-foreground">邮箱专属统计</span>
-              <span>待后端接入</span>
+            <div className="text-xs text-muted-foreground">已启用渠道</div>
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {rulesLoading ? (
+                <span className="text-xs text-muted-foreground">正在同步…</span>
+              ) : notificationChannels.length ? (
+                notificationChannels.map((channel) => (
+                  <Badge key={channel} variant="secondary">
+                    {notificationChannelLabel(channel)}
+                  </Badge>
+                ))
+              ) : (
+                <span className="text-xs text-muted-foreground">尚未配置通知规则</span>
+              )}
             </div>
-            <p className="mt-2 text-[10px] leading-4 text-muted-foreground">当前只展示通用通知日志，不把其他渠道计数冒充邮件发送结果。</p>
+            <p className="mt-2 text-[10px] leading-4 text-muted-foreground">发送目标由通知规则决定，不预设为某一个平台。</p>
           </div>
           <Link href="/notifications" className="mt-4 inline-flex items-center gap-1 text-xs text-primary hover:underline">
-            查看通知与邮箱配置
+            查看通知渠道配置
             <ArrowRight className="size-3" />
           </Link>
         </div>
@@ -231,6 +304,7 @@ function OpinionMonitorPanel({ data, isLoading, isError }: { data?: OpinionMonit
   const topTags = data?.tags.slice(0, 6) ?? []
   const topSentiment = data?.sentiment.slice(0, 4) ?? []
   const recent = data?.recent ?? []
+  const notificationLogCount = (data?.summary.notification_sent ?? 0) + (data?.summary.notification_failed ?? 0)
 
   return (
     <Card>
@@ -240,7 +314,7 @@ function OpinionMonitorPanel({ data, isLoading, isError }: { data?: OpinionMonit
             <BrainCircuit className="size-4 text-primary" aria-hidden />
             舆情监控
           </CardTitle>
-          <p className="mt-1 text-sm text-muted-foreground">采集、AI 打标、飞书推送的最近 7 天实况</p>
+          <p className="mt-1 text-sm text-muted-foreground">采集、AI 标注与通知日志的近 7 天记录</p>
         </div>
         {isError ? (
           <Badge variant="outline">未连接</Badge>
@@ -249,12 +323,12 @@ function OpinionMonitorPanel({ data, isLoading, isError }: { data?: OpinionMonit
         ) : (
           <Badge variant="outline" className="gap-1.5">
             <span className="size-1.5 rounded-full bg-success" aria-hidden />
-            真实数据
+            30 秒刷新
           </Badge>
         )}
       </CardHeader>
-      <CardContent className="grid gap-4 lg:grid-cols-[280px_1fr]">
-        <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-1">
+      <CardContent className="grid items-start gap-4 lg:grid-cols-[280px_1fr]">
+        <div className="grid content-start gap-3 sm:grid-cols-3 lg:grid-cols-1">
           <div className="rounded-md border p-3">
             <div className="flex items-center gap-2 text-xs text-muted-foreground">
               <ArrowDownToLine className="size-3.5" aria-hidden />
@@ -267,12 +341,15 @@ function OpinionMonitorPanel({ data, isLoading, isError }: { data?: OpinionMonit
           <div className="rounded-md border p-3">
             <div className="flex items-center gap-2 text-xs text-muted-foreground">
               <BellRing className="size-3.5" aria-hidden />
-              飞书发送
+              通知日志
             </div>
             <div className="mt-2 font-mono text-xl">
-              {formatNumber(data?.summary.feishu_sent ?? 0)}
-              <span className="ml-2 text-xs text-muted-foreground">失败 {data?.summary.feishu_failed ?? 0}</span>
+              {formatNumber(notificationLogCount)}
+              <span className="ml-2 text-xs text-muted-foreground">
+                成功 {data?.summary.notification_sent ?? 0} · 失败 {data?.summary.notification_failed ?? 0}
+              </span>
             </div>
+            <p className="mt-1 text-[10px] text-muted-foreground">来自通知日志，非实时回执</p>
           </div>
           <div className="rounded-md border p-3">
             <div className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -301,7 +378,7 @@ function OpinionMonitorPanel({ data, isLoading, isError }: { data?: OpinionMonit
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="truncate font-medium">{item.title}</span>
                       <Badge variant={item.notification_status === 'sent' ? 'secondary' : 'outline'}>
-                        飞书 {item.notification_status === 'sent' ? '已发' : item.notification_status === 'failed' ? '失败' : '待发'}
+                        {notificationStatusLabel(item)}
                       </Badge>
                     </div>
                     <p className="mt-1 line-clamp-2 text-sm text-muted-foreground">{item.summary || item.source_name}</p>
@@ -369,6 +446,8 @@ export default function DashboardPage() {
   const workersQuery = useWorkers()
   const agentsQuery = useAgents({ enabled: true })
   const notificationLogsQuery = useNotificationLogs()
+  const notificationRulesQuery = useNotificationRules()
+  const schedulesQuery = useSchedules({ enabled: true })
 
   if (stats.isLoading) {
     return (
@@ -449,10 +528,16 @@ export default function DashboardPage() {
       retries: task.retries,
       at: task.startedAt,
     }))
-  const latestRun = stream[0]
   const hasAttention = s.tasks.failed > 0 || failures.length > 0
   const agents = agentsQuery.data?.data ?? []
   const notificationLogs = notificationLogsQuery.data?.data ?? []
+  const notificationRules = notificationRulesQuery.data?.data ?? []
+  const activeDeliveryChannels = Array.from(
+    new Set(notificationRules.filter((rule) => rule.enabled).map((rule) => rule.notifier_type)),
+  ).sort()
+  const nextSchedule = [...(schedulesQuery.data?.data ?? [])]
+    .filter((schedule) => schedule.enabled && schedule.next_run_at && !Number.isNaN(new Date(schedule.next_run_at).getTime()))
+    .sort((left, right) => new Date(left.next_run_at as string).getTime() - new Date(right.next_run_at as string).getTime())[0]
 
   return (
     <PageContainer
@@ -460,102 +545,83 @@ export default function DashboardPage() {
       title="运营工作台"
       description="先处理异常，再推进正在运行的工作。"
       actions={
-        <Badge variant="outline" className="gap-1.5">
-          <span className="size-1.5 animate-pulse rounded-full bg-success" aria-hidden />
-          实时
-        </Badge>
+        <>
+          <MatrixClock />
+          <Badge variant="outline" className="gap-1.5">
+            <span className="size-1.5 animate-pulse rounded-full bg-success" aria-hidden />
+            实时
+          </Badge>
+        </>
       }
     >
-      <section className="grid gap-4 lg:grid-cols-[minmax(0,1.45fr)_minmax(300px,0.75fr)]" aria-labelledby="attention-title">
+      <section className="grid items-start gap-3 lg:grid-cols-[minmax(0,1.45fr)_minmax(300px,0.75fr)]" aria-labelledby="attention-title">
         <Card
+          size="sm"
           className={cn(
-            'relative isolate min-h-72 overflow-hidden border-0 py-0 ring-1',
+            'relative isolate overflow-hidden border-0 py-0 ring-1',
             hasAttention ? 'bg-destructive/[0.055] ring-destructive/25' : 'bg-primary/[0.045] ring-primary/20',
           )}
         >
           <div className={cn('absolute inset-y-0 left-0 w-1', hasAttention ? 'bg-destructive' : 'bg-success')} aria-hidden />
-          <CardContent className="flex h-full flex-col justify-between gap-8 p-5 pl-6 md:p-7 md:pl-8">
-            <div className="flex flex-wrap items-start justify-between gap-4">
-              <div>
+          <CardContent className="grid gap-4 p-4 pl-5 md:grid-cols-[minmax(0,1fr)_auto] md:items-center md:px-5">
+            <div className="flex min-w-0 items-start gap-3">
+              <span className={cn('grid size-9 shrink-0 place-items-center rounded-lg', hasAttention ? 'bg-destructive/10 text-destructive' : 'bg-success/10 text-success')}>
+                {hasAttention ? <AlertTriangle className="size-4" aria-hidden /> : <CheckCircle2 className="size-4" aria-hidden />}
+              </span>
+              <div className="min-w-0">
                 <p className="eyebrow-mono" id="attention-title">
                   需要你处理
                 </p>
-                <h2 className="mt-3 max-w-2xl text-balance text-2xl font-semibold tracking-tight md:text-3xl">
+                <h2 className="mt-1 text-lg font-semibold tracking-tight">
                   {hasAttention ? `${formatNumber(s.tasks.failed)} 个失败任务需要检查` : '当前没有阻塞，可以继续推进工作'}
                 </h2>
-                <p className="mt-3 max-w-xl text-sm leading-6 text-muted-foreground">
+                <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
                   {hasAttention ? '先查看失败原因和最近运行记录，再决定重试、调整来源或修改工作流。' : '运行链路没有发现失败任务。你可以创建工作流、接入来源，或检查下一次调度。'}
                 </p>
               </div>
-              <span className={cn('grid size-12 shrink-0 place-items-center rounded-xl', hasAttention ? 'bg-destructive/10 text-destructive' : 'bg-success/10 text-success')}>
-                {hasAttention ? <AlertTriangle className="size-6" aria-hidden /> : <CheckCircle2 className="size-6" aria-hidden />}
-              </span>
             </div>
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2 md:justify-end">
               <Link
                 href="/tasks"
                 className={buttonVariants({
                   variant: hasAttention ? 'destructive' : 'default',
-                  size: 'lg',
+                  size: 'sm',
                 })}
               >
                 {hasAttention ? '查看失败工作项' : '查看工作项'}
                 <ArrowRight aria-hidden />
               </Link>
-              <Link href="/control/actions" className={buttonVariants({ variant: 'outline', size: 'lg' })}>
-                查看控制记录
+              <Link href="/control/actions" className={buttonVariants({ variant: 'outline', size: 'sm' })}>
+                控制记录
               </Link>
             </div>
           </CardContent>
         </Card>
 
-        <Card className="min-h-72">
-          <CardHeader>
-            <p className="eyebrow-mono">现在正在发生</p>
-            <CardTitle className="mt-2 text-xl">运行态势</CardTitle>
+        <Card size="sm">
+          <CardHeader className="flex flex-row items-center justify-between gap-3">
+            <div>
+              <p className="eyebrow-mono">现在正在发生</p>
+              <CardTitle className="mt-1 text-base">运行态势</CardTitle>
+            </div>
+            <Badge variant="outline" className="font-normal">30 秒刷新</Badge>
           </CardHeader>
-          <CardContent className="grid gap-3">
-            <div className="flex items-center justify-between rounded-lg border border-border/70 p-3">
-              <div className="flex items-center gap-3">
-                <span className="grid size-9 place-items-center rounded-lg bg-primary/10 text-primary">
-                  <Play className="size-4" aria-hidden />
-                </span>
-                <div>
-                  <div className="text-sm font-medium">正在运行</div>
-                  <div className="text-xs text-muted-foreground">当前活跃任务</div>
-                </div>
-              </div>
-              <span className="font-mono text-2xl tabular-nums">{formatNumber(s.tasks.running)}</span>
+          <CardContent className="grid grid-cols-3 divide-x divide-border/70">
+            <div className="pr-3">
+              <div className="text-xs text-muted-foreground">正在运行</div>
+              <div className="mt-1 font-mono text-xl tabular-nums">{formatNumber(s.tasks.running)}</div>
             </div>
-            <div className="flex items-center justify-between rounded-lg border border-border/70 p-3">
-              <div className="flex items-center gap-3">
-                <span className="grid size-9 place-items-center rounded-lg bg-muted text-muted-foreground">
-                  <Clock3 className="size-4" aria-hidden />
-                </span>
-                <div>
-                  <div className="text-sm font-medium">最近一次运行</div>
-                  <div className="text-xs text-muted-foreground">{latestRun ? formatRelative(new Date(latestRun.startedAt).toISOString()) : '暂无运行记录'}</div>
-                </div>
+            <div className="px-3">
+              <div className="text-xs text-muted-foreground">下次执行</div>
+              <div className="mt-1 truncate font-mono text-sm font-medium tabular-nums" title={nextSchedule?.name}>
+                <NextRunCountdown nextRunAt={nextSchedule?.next_run_at} />
               </div>
-              {latestRun ? (
-                <Badge variant="outline">
-                  {latestRun.phase === 'success' ? '成功' : latestRun.phase === 'failed' ? '失败' : latestRun.phase === 'running' ? '运行中' : '排队中'}
-                </Badge>
-              ) : null}
             </div>
-            <div className="flex items-center justify-between rounded-lg border border-border/70 p-3">
-              <div className="flex items-center gap-3">
-                <span className="grid size-9 place-items-center rounded-lg bg-muted text-muted-foreground">
-                  <Server className="size-4" aria-hidden />
-                </span>
-                <div>
-                  <div className="text-sm font-medium">在线 Worker</div>
-                  <div className="text-xs text-muted-foreground">执行节点可用性</div>
-                </div>
-              </div>
-              <span className="font-mono text-lg tabular-nums">
+            <div className="pl-3">
+              <div className="text-xs text-muted-foreground">在线 Worker</div>
+              <div className="mt-1 font-mono text-sm tabular-nums">
                 {workers.filter((worker) => worker.online).length} / {workers.length}
-              </span>
+              </div>
             </div>
           </CardContent>
         </Card>
@@ -590,7 +656,7 @@ export default function DashboardPage() {
           runs={{ successRate: normalizedSuccessRate(s.runs.success_rate ?? 0), total: s.runs.total }}
           records={s.records.total}
           aiProcessed={s.records.ai_processed}
-          delivered={opinion.data?.summary.feishu_sent ?? notificationLogs.filter((log) => ['sent', 'success', 'completed'].includes(log.status.toLowerCase())).length}
+          deliveryChannels={activeDeliveryChannels.length}
           failures={failures.length}
         />
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -607,14 +673,19 @@ export default function DashboardPage() {
         opinionError={opinion.isError}
       />
 
-      <AgentDeliveryPanel agents={agents} notificationLogs={notificationLogs} agentsLoading={agentsQuery.isLoading} logsLoading={notificationLogsQuery.isLoading} />
+      <AgentDeliveryPanel
+        agents={agents}
+        notificationLogs={notificationLogs}
+        notificationChannels={activeDeliveryChannels}
+        agentsLoading={agentsQuery.isLoading}
+        logsLoading={notificationLogsQuery.isLoading}
+        rulesLoading={notificationRulesQuery.isLoading}
+      />
 
-      <div className="grid gap-4 lg:grid-cols-3">
-        <div className="lg:col-span-2">
-          <TaskStream tasks={stream} />
-        </div>
+      <section className="grid gap-4" aria-label="运行与异常">
         <FailureFeed failures={failures} />
-      </div>
+        <TaskStream tasks={stream} />
+      </section>
 
       <div className="grid gap-4 lg:grid-cols-3">
         <div className="lg:col-span-2">

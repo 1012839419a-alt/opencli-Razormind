@@ -366,6 +366,7 @@ export function useSchedules(params?: { source_id?: string; enabled?: boolean })
   return useQuery({
     queryKey: ['schedules', params],
     queryFn: () => api.listSchedules(params),
+    refetchInterval: 30_000,
   })
 }
 

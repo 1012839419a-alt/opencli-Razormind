@@ -21,8 +21,20 @@ const NODE_TEXT: Record<string, Record<WorkflowLanguage, LocalizedNodeText>> = {
     "en-US": { label: "JIN10 Source", description: "Read JIN10 flash news from fixture or live feed" },
   },
   "intelligence.source.rss": {
-    "zh-CN": { label: "RSS / Atom 数据源", description: "实时读取 feed，并保留来源 Group 和血缘" },
-    "en-US": { label: "RSS / Atom Source", description: "Read a live feed while preserving source group lineage" },
+    "zh-CN": { label: "RSS / Atom Reader", description: "读取已有订阅源，并保留来源 Group 和血缘" },
+    "en-US": { label: "RSS / Atom Reader", description: "Read an existing feed while preserving source group lineage" },
+  },
+  "intelligence.source.rsshub": {
+    "zh-CN": { label: "RSSHub Reader", description: "通过受管 RSSHub 路由生成并读取订阅源" },
+    "en-US": { label: "RSSHub Reader", description: "Generate and read a feed through a managed RSSHub route" },
+  },
+  "intelligence.source.rss-bridge": {
+    "zh-CN": { label: "RSS-Bridge Reader", description: "通过受管 Bridge 为网页生成并读取订阅源" },
+    "en-US": { label: "RSS-Bridge Reader", description: "Generate and read a feed through a managed bridge" },
+  },
+  "intelligence.source.http": {
+    "zh-CN": { label: "HTTP / API Reader", description: "通过受控网络请求读取 JSON API" },
+    "en-US": { label: "HTTP / API Reader", description: "Read a JSON API through a guarded network request" },
   },
   "intelligence.source.opencli-slot": {
     "zh-CN": { label: "OpenCLI 来源槽", description: "由 HDA/source planner 生成并交给 OpenCLI channel 执行的来源槽" },

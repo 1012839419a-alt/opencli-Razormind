@@ -140,7 +140,7 @@ const CONTRACTS: Record<string, NodeContract> = {
   ),
   "intelligence.source.rss": contract(
     "intelligence.source.rss",
-    "RSS / Atom Source",
+    "RSS / Atom Reader",
     "trigger -> items[]",
     [port("in", "input", "trigger", false, "Consumes a schedule trigger.")],
     [port("out", "output", "items[]", true, "Emits parsed RSS or Atom entries.")],
@@ -173,6 +173,115 @@ const CONTRACTS: Record<string, NodeContract> = {
     [
       "feed host must be allowed",
       "provider token must remain backend-only",
+      "items[] must retain sourceGroup lineage",
+    ],
+  ),
+  "intelligence.source.rsshub": contract(
+    "intelligence.source.rsshub",
+    "RSSHub Reader",
+    "trigger -> items[]",
+    [port("in", "input", "trigger", false, "Consumes a schedule or source-pool trigger.")],
+    [port("out", "output", "items[]", true, "Emits entries from the selected RSSHub route.")],
+    [
+      param("providerId", "params", "string", true, "", {
+        description: "Enabled RSSHub Provider connection resolved by the backend.",
+      }),
+      param("generatorType", "params", "string", true, "rsshub", {
+        enum: ["rsshub"],
+        description: "Locks this atomic node to the RSSHub generator.",
+      }),
+      param("route", "params", "string", true, "", {
+        description: "RSSHub route selected from the connected Provider.",
+      }),
+      param("routeParameters", "params", "object", false, {}, {
+        description: "Non-secret RSSHub route parameters.",
+      }),
+      param("generatorSelection", "params", "object", false, {}, {
+        description: "Provider-generated route payload retained for API-created nodes.",
+      }),
+      param("maxEntries", "params", "number", true, 20, {
+        min: 1,
+        max: 500,
+        description: "Maximum generated-feed entries read per run.",
+      }),
+      param("sourceGroup", "params", "string", true, "rsshub", {
+        description: "Business grouping key preserved in lineage and Records.",
+      }),
+    ],
+    [
+      "providerId must reference an enabled RSSHub Provider",
+      "route must be selected before execution",
+      "provider credentials must remain backend-only",
+    ],
+  ),
+  "intelligence.source.rss-bridge": contract(
+    "intelligence.source.rss-bridge",
+    "RSS-Bridge Reader",
+    "trigger -> items[]",
+    [port("in", "input", "trigger", false, "Consumes a schedule or source-pool trigger.")],
+    [port("out", "output", "items[]", true, "Emits entries from the selected RSS-Bridge bridge.")],
+    [
+      param("providerId", "params", "string", true, "", {
+        description: "Enabled RSS-Bridge Provider connection resolved by the backend.",
+      }),
+      param("generatorType", "params", "string", true, "rss_bridge", {
+        enum: ["rss_bridge"],
+        description: "Locks this atomic node to the RSS-Bridge generator.",
+      }),
+      param("bridge", "params", "string", true, "", {
+        description: "RSS-Bridge bridge selected from the connected Provider.",
+      }),
+      param("bridgeParameters", "params", "object", false, {}, {
+        description: "Non-secret RSS-Bridge parameters.",
+      }),
+      param("generatorSelection", "params", "object", false, {}, {
+        description: "Provider-generated bridge payload retained for API-created nodes.",
+      }),
+      param("maxEntries", "params", "number", true, 20, {
+        min: 1,
+        max: 500,
+        description: "Maximum generated-feed entries read per run.",
+      }),
+      param("sourceGroup", "params", "string", true, "rss-bridge", {
+        description: "Business grouping key preserved in lineage and Records.",
+      }),
+    ],
+    [
+      "providerId must reference an enabled RSS-Bridge Provider",
+      "bridge must be selected before execution",
+      "provider credentials must remain backend-only",
+    ],
+  ),
+  "intelligence.source.http": contract(
+    "intelligence.source.http",
+    "HTTP / API Reader",
+    "trigger -> items[]",
+    [port("in", "input", "trigger", false, "Consumes a schedule or source-pool trigger.")],
+    [port("out", "output", "items[]", true, "Emits JSON objects selected from the HTTP response.")],
+    [
+      param("url", "params", "string", true, "", {
+        description: "HTTP or HTTPS endpoint whose host must be allowed by project permissions.",
+      }),
+      param("method", "params", "string", true, "GET", {
+        enum: ["GET", "POST"],
+        description: "Guarded request method.",
+      }),
+      param("resultPath", "params", "string", false, "", {
+        description: "Optional dot-separated path selecting the item list from the JSON response.",
+      }),
+      param("headers", "params", "object", false, {}, {
+        description: "Non-secret request headers. Credentials should use a managed connection.",
+      }),
+      param("query", "params", "object", false, {}, {
+        description: "Query-string parameters.",
+      }),
+      param("sourceGroup", "params", "string", true, "http-api", {
+        description: "Business grouping key preserved in lineage and Records.",
+      }),
+    ],
+    [
+      "endpoint host must be listed in agentPermissions.allowedDomains",
+      "response must be valid JSON and no larger than the runtime limit",
       "items[] must retain sourceGroup lineage",
     ],
   ),

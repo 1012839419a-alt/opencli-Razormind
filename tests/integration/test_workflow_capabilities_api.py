@@ -1,5 +1,8 @@
 import json
 import subprocess
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -320,6 +323,19 @@ async def test_workflow_capabilities_project_real_backend_surfaces(client, monke
         "workflow.trigger.schedule_tick"
     )
     assert "workflow_trigger_binding" not in catalog["intelligence.schedule.cron"]["missing"]
+    for source_id in (
+        "intelligence.source.rss",
+        "intelligence.source.rsshub",
+        "intelligence.source.rss-bridge",
+        "intelligence.source.http",
+    ):
+        assert catalog[source_id]["status"] == "runnable"
+        assert catalog[source_id]["backendAvailable"] is True
+        assert catalog[source_id]["runtimeBinding"] == "workflow.source.fetch"
+        assert catalog[source_id]["manifest"]["ports"]["outputs"] == [
+            {"name": "out", "type": "items[]"}
+        ]
+        assert "network.fetch" in catalog[source_id]["manifest"]["permissions"]
     assert catalog["intelligence.source.opencli-slot"]["status"] == "runnable"
     assert catalog["intelligence.source.opencli-slot"]["backendAvailable"] is True
     assert catalog["intelligence.source.opencli-slot"]["runtimeBinding"]
@@ -658,6 +674,40 @@ def test_opencli_adapter_nodes_reject_invalid_utf8_catalog(monkeypatch):
 
     assert response.total == 0
     assert response.nodes == []
+    opencli_adapter_nodes.refresh_opencli_adapter_catalog()
+
+
+def test_opencli_adapter_catalog_coalesces_concurrent_discovery(monkeypatch):
+    calls = 0
+
+    def fake_run(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        time.sleep(0.05)
+        return subprocess.CompletedProcess(
+            args=args[0],
+            returncode=0,
+            stdout=json.dumps(
+                [{"site": "bbc", "name": "news", "access": "read", "args": []}]
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr(opencli_adapter_nodes, "resolve_opencli_bin", lambda: "opencli-test")
+    monkeypatch.setattr(opencli_adapter_nodes.subprocess, "run", fake_run)
+    opencli_adapter_nodes.refresh_opencli_adapter_catalog()
+
+    ready = threading.Barrier(2)
+
+    def force_refresh():
+        ready.wait()
+        return opencli_adapter_nodes.get_opencli_adapter_catalog(refresh=True)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        catalogs = list(executor.map(lambda _: force_refresh(), range(2)))
+
+    assert calls == 1
+    assert catalogs[0] == catalogs[1]
     opencli_adapter_nodes.refresh_opencli_adapter_catalog()
 
 

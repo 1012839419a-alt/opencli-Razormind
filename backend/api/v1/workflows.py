@@ -12,6 +12,7 @@ from backend.models.workflow_run import WorkflowRun as WorkflowRunRow
 from backend.schemas import workflow as workflow_schemas
 from backend.schemas.common import ApiResponse
 from backend.services.plugin_registry_service import list_plugin_installations
+from backend.workflow.bbx_tool_nodes import list_bbx_tool_nodes
 from backend.workflow.capability_projection import build_workflow_capabilities
 from backend.workflow.compiler import compile_workflow_project
 from backend.workflow.demand_assembler import draft_workflow_demand
@@ -37,6 +38,7 @@ from backend.workflow.opencli_hda_tracer import (
     list_workflow_run_events,
     start_workflow_run,
 )
+from backend.workflow.opentabs_tool_nodes import list_opentabs_tool_nodes
 from backend.workflow.patcher import preview_workflow_patch
 from backend.workflow.runtime_registry import WEBHOOK_TRIGGER_BINDING_ID
 from backend.workflow.tool_capabilities import list_workflow_tool_capabilities
@@ -157,6 +159,50 @@ def get_opencli_adapter_nodes(
             runtime_readiness=runtime_readiness,
             limit=limit,
             refresh=refresh,
+        )
+    )
+
+
+@router.get(
+    "/bbx-tool-nodes",
+    response_model=ApiResponse[workflow_schemas.WorkflowBbxToolNodesResponse],
+)
+async def get_bbx_tool_nodes(
+    group: str | None = None,
+    q: str | None = None,
+    include_write: bool = Query(True, alias="includeWrite"),
+    limit: int = Query(2000, ge=1, le=5000),
+) -> ApiResponse[workflow_schemas.WorkflowBbxToolNodesResponse]:
+    """Return Browser Bridge (BBX) methods as callable Canvas nodes."""
+
+    return ApiResponse.ok(
+        await list_bbx_tool_nodes(
+            group=group,
+            q=q,
+            include_write=include_write,
+            limit=limit,
+        )
+    )
+
+
+@router.get(
+    "/opentabs-tool-nodes",
+    response_model=ApiResponse[workflow_schemas.WorkflowOpenTabsToolNodesResponse],
+)
+async def get_opentabs_tool_nodes(
+    plugin: str | None = None,
+    q: str | None = None,
+    include_write: bool = Query(True, alias="includeWrite"),
+    limit: int = Query(2000, ge=1, le=5000),
+) -> ApiResponse[workflow_schemas.WorkflowOpenTabsToolNodesResponse]:
+    """Return live OpenTabs tools projected as callable Canvas nodes."""
+
+    return ApiResponse.ok(
+        await list_opentabs_tool_nodes(
+            plugin=plugin,
+            q=q,
+            include_write=include_write,
+            limit=limit,
         )
     )
 

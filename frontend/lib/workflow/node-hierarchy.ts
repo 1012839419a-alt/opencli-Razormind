@@ -11,7 +11,7 @@ export type WorkflowNodeLayer = {
 }
 
 const WORKFLOW_NODE_LAYERS: readonly WorkflowNodeLayer[] = [
-  { depth: 1, role: "operator", label: "业务节点", description: "Dify 风格的业务编排层" },
+  { depth: 1, role: "operator", label: "业务节点", description: "面向业务流程的节点编排层" },
   { depth: 2, role: "implementation", label: "实现节点", description: "现有 OpenCLI 节点层" },
   { depth: 3, role: "component", label: "组件节点", description: "实现节点的内部组件层" },
   { depth: 4, role: "primitive", label: "原子节点", description: "常规最深执行层" },

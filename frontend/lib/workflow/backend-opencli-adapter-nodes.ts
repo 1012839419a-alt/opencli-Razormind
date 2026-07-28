@@ -431,6 +431,7 @@ export function workflowCatalogItemForOpenCLIAdapterNode(
   requiredValues: Record<string, string> = {},
 ): WorkflowNodeCatalogItem {
   const presentation = openCLIAdapterNodePresentation(node)
+  const isWrite = node.access !== "read"
   const args = { ...((node.params.args as Record<string, unknown> | undefined) ?? {}) }
   const positionalArgs = Array.isArray(node.params.positional_args)
     ? [...node.params.positional_args]
@@ -444,15 +445,15 @@ export function workflowCatalogItemForOpenCLIAdapterNode(
   const adapter = node.adapter as AdapterBinding
   return {
     id: node.catalogId,
-    idPrefix: `source-opencli-${safeIdPart(node.site)}-${safeIdPart(node.command)}`,
+    idPrefix: `${isWrite ? "action" : "source"}-opencli-${safeIdPart(node.site)}-${safeIdPart(node.command)}`,
     label: presentation.label,
     description: presentation.description,
-    category: "source",
+    category: isWrite ? "output" : "source",
     profile: "intelligence",
-    kind: "source",
-    capability: "fetch",
-    icon: "Globe",
-    color: "var(--chart-4)",
+    kind: isWrite ? "action" : "source",
+    capability: isWrite ? "store" : "fetch",
+    icon: isWrite ? "Wrench" : "Globe",
+    color: isWrite ? "var(--chart-3)" : "var(--chart-4)",
     adapter: adapter.id,
     requiredAdapters: [adapter],
     params: {
@@ -460,8 +461,13 @@ export function workflowCatalogItemForOpenCLIAdapterNode(
       args,
       ...(positionalArgs.length ? { positional_args: positionalArgs } : {}),
       opencliAdapterNodeId: node.id,
+      opencliAccess: node.access,
       sourceGroup: node.site,
     },
+    proposalState: isWrite ? "accepted" : undefined,
+    agentPermissionPatch: isWrite
+      ? { canMutateExternalSites: true }
+      : undefined,
     keywords: [
       "opencli",
       "realtime",
@@ -469,6 +475,7 @@ export function workflowCatalogItemForOpenCLIAdapterNode(
       "采集",
       node.site,
       node.command,
+      node.access,
       node.label,
       node.description,
     ].filter(Boolean),

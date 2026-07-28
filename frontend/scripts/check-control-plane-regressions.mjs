@@ -22,6 +22,7 @@ test('work item detail keeps runs, events, results, and audit in one context', a
 })
 
 test('plugin hub keeps provider management without hiding provider capabilities', async () => {
+  const sources = await read('app/(app)/sources/page.tsx')
   const plugins = await read('app/(app)/plugins/page.tsx')
   const opencli = await read('app/(app)/plugins/opencli/page.tsx')
   const rssImport = await read('components/plugins/rss-catalog-import-dialog.tsx')
@@ -53,4 +54,92 @@ test('plugin hub keeps provider management without hiding provider capabilities'
   assert.match(opencli, /refresh\(\)/)
   assert.match(rssImport, /api\.importRssCatalog/)
   assert.match(rssImport, /所有(?:源|条目)默认停用/)
+  assert.match(sources, /redirect\('\/records'\)/)
+})
+
+test('studio node selector exposes the complete Dify-compatible component split', async () => {
+  const selector = await read('components/flow/command-palette.tsx')
+  const nodeCatalog = await read('lib/workflow/node-catalog.ts')
+
+  assert.match(selector, /type SelectorTab = "blocks" \| "sources" \| "tools" \| "start" \| "snippets"/)
+  assert.match(selector, /\["blocks", "节点"\]/)
+  assert.match(selector, /\["sources", "数据源"\]/)
+  assert.match(selector, /\["tools", "工具"\]/)
+  assert.match(selector, /\["start", "开始"\]/)
+  assert.match(selector, /\["snippets", "片段"\]/)
+  assert.match(selector, /item\.category === "source"/)
+  assert.match(selector, /item\.category === "package"/)
+  assert.match(selector, /item\.category === "trigger"/)
+  for (const id of [
+    'workflow.block.agent',
+    'workflow.block.llm',
+    'workflow.block.knowledge-retrieval',
+    'workflow.block.if-else',
+    'workflow.block.iteration',
+    'workflow.block.loop',
+    'workflow.block.code',
+    'workflow.block.template-transform',
+    'workflow.block.variable-aggregator',
+    'workflow.block.document-extractor',
+    'workflow.block.parameter-extractor',
+    'workflow.block.http-request',
+    'workflow.block.list-filter',
+  ]) {
+    assert.match(nodeCatalog, new RegExp(id.replaceAll('.', '\\.')))
+  }
+  assert.doesNotMatch(selector, /一级业务节点 · Dify 风格/)
+})
+
+test('data explorer shows record shape and pipeline lineage without a source workspace', async () => {
+  const [sources, plugins, navigation] = await Promise.all([
+    read('app/(app)/sources/page.tsx'),
+    read('app/(app)/plugins/page.tsx'),
+    read('lib/navigation.ts'),
+  ])
+  const records = await read('app/(app)/records/page.tsx')
+
+  assert.match(sources, /redirect\('\/records'\)/)
+  assert.match(records, /数据预览/)
+  assert.match(records, /管线血缘/)
+  assert.match(records, /workflow_id/)
+  assert.match(records, /workflow_run_id/)
+  assert.match(records, /source_id/)
+  assert.doesNotMatch(records, /useSources|selectedSourceId|数据集|按采集入口切换/)
+  assert.doesNotMatch(plugins, /数据源连接器|内置来源包|数据源工作台/)
+  assert.doesNotMatch(navigation, /href: '\/sources', label: '数据源'/)
+})
+
+test('OpenCLI is one provider with a full live website adapter directory', async () => {
+  const [plugins, opencli, catalog, registryHook, adapterClient] = await Promise.all([
+    read('app/(app)/plugins/page.tsx'),
+    read('app/(app)/plugins/opencli/page.tsx'),
+    read('lib/plugins/opencli-adapter-catalog.ts'),
+    read('lib/plugins/use-opencli-adapter-registry.ts'),
+    read('lib/workflow/backend-opencli-adapter-nodes.ts'),
+  ])
+
+  assert.match(plugins, /useOpenCLIAdapterRegistry\(true\)/)
+  assert.match(plugins, /summary\.adapterCount/)
+  assert.match(plugins, /OpenCLI/)
+  assert.match(opencli, /网站适配/)
+  assert.match(opencli, /搜索网站、域名或能力/)
+  assert.match(opencli, /OPENCLI_SITE_CATEGORIES/)
+  assert.match(opencli, /selectedPlugin/)
+  assert.match(catalog, /new Map<string, WorkflowOpenCLIAdapterNode\[\]>/)
+  assert.match(catalog, /groupOpenCLIAdapterPlugins/)
+  assert.match(catalog, /OPENCLI_SITE_CATEGORIES/)
+  assert.match(catalog, /classifyOpenCLISiteCategory/)
+  assert.match(catalog, /SITE_CATEGORY_MEMBERS/)
+  assert.match(catalog, /SITE_PRESENTATION_OVERRIDES/)
+  assert.match(catalog, /百度财经/)
+  assert.match(catalog, /百度学术/)
+  assert.match(catalog, /siteFeatures/)
+  assert.match(catalog, /siteCategory:/)
+  assert.match(catalog, /parameterReadyCount: commands\.filter/)
+  assert.match(registryHook, /includeWrite: true/)
+  assert.match(registryHook, /refresh: forceRefresh/)
+  assert.match(registryHook, /signal/)
+  assert.match(registryHook, /load\(\{ signal: controller\.signal \}\)/)
+  assert.match(adapterClient, /params\.set\("refresh"/)
+  assert.match(adapterClient, /signal: options\.signal/)
 })

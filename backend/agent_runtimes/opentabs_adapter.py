@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 import shutil
+from inspect import isawaitable
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -77,7 +78,7 @@ class OpenTabsRuntimeAdapter(RuntimeAdapter):
     async def health(self) -> bool:
         config: dict[str, Any] = {}
         try:
-            client, _validated_base_url = await self._client(config)
+            client = await self._resolved_client(config)
             async with client:
                 response = await client.get("/health", headers=self._headers(config))
             return response.status_code == 200 and _read_json(response).get("status") == "ok"
@@ -130,7 +131,7 @@ class OpenTabsRuntimeAdapter(RuntimeAdapter):
             args["plugin"] = plugin
 
         yield event_tool_call(task.task_id, "opentabs_list_tools", args=args)
-        client, _validated_base_url = await self._client(task.config)
+        client = await self._resolved_client(task.config)
         async with client:
             response = await client.get(
                 "/tools",
@@ -147,7 +148,7 @@ class OpenTabsRuntimeAdapter(RuntimeAdapter):
 
     async def _invoke_health(self, task: AgentTask) -> AsyncIterator[dict[str, Any]]:
         yield event_tool_call(task.task_id, "opentabs_health", args={})
-        client, _validated_base_url = await self._client(task.config)
+        client = await self._resolved_client(task.config)
         async with client:
             response = await client.get("/health", headers=self._headers(task.config))
         payload = _checked_json_response(response, "/health")
@@ -167,7 +168,7 @@ class OpenTabsRuntimeAdapter(RuntimeAdapter):
             return
 
         yield event_tool_call(task.task_id, tool_name, args=arguments)
-        client, _validated_base_url = await self._client(task.config)
+        client = await self._resolved_client(task.config)
         async with client:
             response = await client.post(
                 f"/tools/{tool_name}/call",
@@ -214,6 +215,12 @@ class OpenTabsRuntimeAdapter(RuntimeAdapter):
             trust_env=False,
         )
         return client, validated_base_url
+
+    async def _resolved_client(self, config: dict[str, Any]) -> httpx.AsyncClient:
+        result = self._client(config)
+        if isawaitable(result):
+            result = await result
+        return result[0] if isinstance(result, tuple) else result
 
     def _headers(self, config: dict[str, Any]) -> dict[str, str]:
         secret = _read_optional_string(config.get("secret")) or os.environ.get("OPENTABS_SECRET", "")

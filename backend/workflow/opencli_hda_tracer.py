@@ -6,6 +6,7 @@ import asyncio
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from inspect import signature
 from typing import Any
 
 from sqlalchemy import select
@@ -42,10 +43,19 @@ from backend.schemas.workflow import (
     WorkflowRunStartRequest,
     WorkflowRunStatus,
 )
+from backend.workflow.bbx_tool_nodes import (
+    BBX_EXECUTOR_MODE,
+    BBX_TOOL_CAPABILITY_ID,
+    BbxToolExecutionError,
+    bbx_result_items,
+    invoke_bbx_tool,
+)
 from backend.workflow.block_reasons import (
     FETCH_PERMISSION_REQUIRED,
     MISSING_DELIVERY_PROJECTION,
     MISSING_SOURCE_CREDENTIAL,
+    OPENCLI_WRITE_APPROVAL_REQUIRED,
+    OPENCLI_WRITE_PERMISSION_REQUIRED,
     SEND_PERMISSION_REQUIRED,
     SOURCE_OUTPUT_REQUIRED,
 )
@@ -81,6 +91,13 @@ from backend.workflow.native_node_runtime import (
     NATIVE_BINDING_IDS,
     NativeNodeValidationError,
     execute_native_node,
+)
+from backend.workflow.opentabs_tool_nodes import (
+    OPENTABS_EXECUTOR_MODE,
+    OPENTABS_TOOL_CAPABILITY_ID,
+    OpenTabsToolExecutionError,
+    invoke_opentabs_tool,
+    opentabs_result_items,
 )
 from backend.workflow.realtime_market_executor import (
     OKX_MARKET_TICKER_SNAPSHOT_EXECUTOR,
@@ -917,12 +934,25 @@ async def start_workflow_run(
             continue
 
         if _is_first_loop_native_node(node):
+            browser_tool_block = _opentabs_tool_block_reason(
+                node,
+                body.project.agentPermissions,
+            ) or _bbx_tool_block_reason(node, body.project.agentPermissions)
+            if browser_tool_block is not None:
+                emitter.emit(
+                    node,
+                    "blocked",
+                    message=browser_tool_block.message,
+                    block_reason=browser_tool_block,
+                )
+                outputs_by_node[node.id] = []
+                continue
             emitter.emit(node, "started", message=_native_node_started_message(node))
             if _is_external_tool_node(node):
                 emitter.emit(
                     node,
                     "tool_call_started",
-                    message="OpenCLI Tool Capability call started",
+                    message=f"{_external_tool_runtime_label(node)} tool call started",
                     details=_tool_call_trace_details(
                         _external_tool_call_details(
                             node,
@@ -971,6 +1001,38 @@ async def start_workflow_run(
                     message=str(exc),
                     source="record_hygiene",
                     details={"nodeId": node.id, "bindingId": _binding_id(node)},
+                )
+                emitter.emit(
+                    node,
+                    "failed",
+                    message=str(exc),
+                    block_reason=reason,
+                    details=reason.details,
+                )
+                await _persist_emitter_events(run_id, emitter, session=session)
+                continue
+            except OpenTabsToolExecutionError as exc:
+                reason = WorkflowRunBlockReason(
+                    code="opentabs_tool_call_failed",
+                    message=str(exc),
+                    source="opentabs_runtime",
+                    details={"nodeId": node.id},
+                )
+                emitter.emit(
+                    node,
+                    "failed",
+                    message=str(exc),
+                    block_reason=reason,
+                    details=reason.details,
+                )
+                await _persist_emitter_events(run_id, emitter, session=session)
+                continue
+            except BbxToolExecutionError as exc:
+                reason = WorkflowRunBlockReason(
+                    code="bbx_tool_call_failed",
+                    message=str(exc),
+                    source="bbx_runtime",
+                    details={"nodeId": node.id},
                 )
                 emitter.emit(
                     node,
@@ -1092,7 +1154,7 @@ async def start_workflow_run(
                 emitter.emit(
                     node,
                     "tool_call_completed",
-                    message="OpenCLI Tool Capability call completed",
+                    message=f"{_external_tool_runtime_label(node)} tool call completed",
                     details=_tool_call_trace_details(details),
                 )
             emitter.emit(node, "completed", message=_native_node_completed_message(node))
@@ -1108,7 +1170,30 @@ async def start_workflow_run(
             emitter.emit(node, "completed", message="Node completed")
             continue
 
-        emitter.emit(node, "started", message="OpenCLI source dispatch started")
+        mutation_block = _opencli_mutation_block_reason(
+            node,
+            body.project.agentPermissions,
+        )
+        if mutation_block is not None:
+            emitter.emit(
+                node,
+                "blocked",
+                message=mutation_block.message,
+                block_reason=mutation_block,
+            )
+            outputs_by_node[node.id] = []
+            continue
+
+        is_write = _is_opencli_write_node(node)
+        emitter.emit(
+            node,
+            "started",
+            message=(
+                "OpenCLI action dispatch started"
+                if is_write
+                else "OpenCLI source dispatch started"
+            ),
+        )
         fleet_match = await _match_dispatch_fleet_target(
             dispatch,
             node,
@@ -1149,10 +1234,30 @@ async def start_workflow_run(
             outputs_by_node[node.id] = []
             continue
 
-        output_items, agent_dispatch_details = await _dispatch_opencli_source_to_fleet(
+        batch = _batch_reference(body.project.id, run_id, dispatch)
+        if is_write:
+            emitter.emit(
+                node,
+                "tool_call_started",
+                message="OpenCLI action call started",
+                batch=batch,
+                details={
+                    "functionId": OPENCLI_FUNCTION_ID,
+                    "worker": OPENCLI_WORKER,
+                    **(
+                        {"fleetMatch": fleet_match_details}
+                        if fleet_match_details
+                        else {}
+                    ),
+                    **resource_details,
+                },
+            )
+        dispatch_call = _dispatch_opencli_source_to_fleet
+        dispatch_kwargs = {"node": node} if "node" in signature(dispatch_call).parameters else {}
+        output_items, agent_dispatch_details = await dispatch_call(
             dispatch,
             fleet_match,
-            node=node,
+            **dispatch_kwargs,
         )
         output_items = _opencli_dispatch_source_items(node, dispatch, output_items)
         batch = _batch_reference(body.project.id, run_id, dispatch)
@@ -1163,17 +1268,18 @@ async def start_workflow_run(
             **resource_details,
             **({"agentDispatch": agent_dispatch_details} if agent_dispatch_details else {}),
         }
-        emitter.emit(
-            node,
-            "batch_ready",
-            message="OpenCLI batch reference ready",
-            batch=batch,
-            details={
-                "functionId": OPENCLI_FUNCTION_ID,
-                "worker": OPENCLI_WORKER,
-                **dispatch_trace_details,
-            },
-        )
+        if not is_write:
+            emitter.emit(
+                node,
+                "batch_ready",
+                message="OpenCLI batch reference ready",
+                batch=batch,
+                details={
+                    "functionId": OPENCLI_FUNCTION_ID,
+                    "worker": OPENCLI_WORKER,
+                    **dispatch_trace_details,
+                },
+            )
         if agent_dispatch_details and agent_dispatch_details.get("success") is False:
             reason = WorkflowRunBlockReason(
                 code="fleet_agent_dispatch_failed",
@@ -1202,12 +1308,20 @@ async def start_workflow_run(
             node,
             "partial",
             message=(
-                "OpenCLI source items collected through local OpenCLI"
-                if _is_local_opencli_dispatch(agent_dispatch_details)
+                "OpenCLI action completed through selected fleet agent"
+                if is_write and agent_dispatch_details
                 else (
-                    "OpenCLI source items collected through selected fleet agent"
-                    if agent_dispatch_details
-                    else "OpenCLI dispatch envelope is ready for worker fanout"
+                    "OpenCLI action result received"
+                    if is_write
+                    else (
+                        "OpenCLI source items collected through local OpenCLI"
+                        if _is_local_opencli_dispatch(agent_dispatch_details)
+                        else (
+                            "OpenCLI source items collected through selected fleet agent"
+                            if agent_dispatch_details
+                            else "OpenCLI dispatch envelope is ready for worker fanout"
+                        )
+                    )
                 )
             ),
             details={
@@ -1218,16 +1332,31 @@ async def start_workflow_run(
                 **dispatch_trace_details,
             },
         )
+        if is_write:
+            emitter.emit(
+                node,
+                "tool_call_completed",
+                message="OpenCLI action call completed",
+                details={
+                    "functionId": OPENCLI_FUNCTION_ID,
+                    "worker": OPENCLI_WORKER,
+                    **dispatch_trace_details,
+                },
+            )
         emitter.emit(
             node,
             "completed",
             message=(
-                "OpenCLI source dispatch completed through local OpenCLI"
-                if _is_local_opencli_dispatch(agent_dispatch_details)
+                "OpenCLI action dispatch completed"
+                if is_write
                 else (
-                    "OpenCLI source dispatch completed through selected fleet agent"
-                    if agent_dispatch_details
-                    else "OpenCLI source dispatch completed"
+                    "OpenCLI source dispatch completed through local OpenCLI"
+                    if _is_local_opencli_dispatch(agent_dispatch_details)
+                    else (
+                        "OpenCLI source dispatch completed through selected fleet agent"
+                        if agent_dispatch_details
+                        else "OpenCLI source dispatch completed"
+                    )
                 )
             ),
         )
@@ -1926,13 +2055,17 @@ async def _dispatch_opencli_source_to_fleet(
     dispatch: WorkflowOpenCLIHDATraceDispatch,
     match: WorkflowFleetCapabilityMatchResponse | None,
     *,
-    node: CompiledWorkflowNode,
+    node: CompiledWorkflowNode | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, object] | None]:
     target = _fleet_agent_dispatch_target(dispatch, match)
     if target is None:
         payload = _read_dict(dispatch.iii.get("payload"))
         dispatch_policy = _read_string(payload.get("dispatch_policy"))
-        adapter_node_id = _read_string(node.params.get("opencliAdapterNodeId"))
+        adapter_node_id = (
+            _read_string(node.params.get("opencliAdapterNodeId"))
+            if node is not None
+            else None
+        )
         local_adapter = False
         if adapter_node_id:
             from backend.workflow.opencli_adapter_nodes import resolve_opencli_adapter_node
@@ -1948,7 +2081,7 @@ async def _dispatch_opencli_source_to_fleet(
             # contract unless the package explicitly exposes raw items to a
             # downstream node in the same run.
             return [], None
-        from backend.channels.opencli_channel import OpenCLIChannel
+        from backend.channels.registry import get_channel
 
         config: dict[str, Any] = {
             "site": dispatch.site,
@@ -1958,7 +2091,7 @@ async def _dispatch_opencli_source_to_fleet(
         }
         positional_args = payload.get("positional_args", payload.get("positionalArgs"))
         config["positional_args"] = positional_args if isinstance(positional_args, list) else []
-        result = await OpenCLIChannel().collect(config, {})
+        result = await get_channel("opencli").collect(config, {})
         details: dict[str, object] = {
             "attempted": True,
             "protocol": "local",
@@ -2382,6 +2515,144 @@ def _is_webhook_notify_node(node: CompiledWorkflowNode) -> bool:
 
 def _is_capability_native_node(node: CompiledWorkflowNode) -> bool:
     return _binding_id(node) in NATIVE_BINDING_IDS.values()
+
+
+def _is_opentabs_tool_node(node: CompiledWorkflowNode) -> bool:
+    binding = _read_dict(node.runtime.get("binding"))
+    binding_input = _read_dict(binding.get("input"))
+    return (
+        binding.get("binding_id") == EXTERNAL_TOOL_BINDING_ID
+        and binding_input.get("executorMode") == OPENTABS_EXECUTOR_MODE
+        and binding_input.get("toolCapabilityId") == OPENTABS_TOOL_CAPABILITY_ID
+    )
+
+
+def _is_bbx_tool_node(node: CompiledWorkflowNode) -> bool:
+    binding = _read_dict(node.runtime.get("binding"))
+    binding_input = _read_dict(binding.get("input"))
+    return (
+        binding.get("binding_id") == EXTERNAL_TOOL_BINDING_ID
+        and binding_input.get("executorMode") == BBX_EXECUTOR_MODE
+        and binding_input.get("toolCapabilityId") == BBX_TOOL_CAPABILITY_ID
+    )
+
+
+def _external_tool_runtime_label(node: CompiledWorkflowNode) -> str:
+    if _is_opentabs_tool_node(node):
+        return "OpenTabs"
+    if _is_bbx_tool_node(node):
+        return "BBX"
+    return "OpenCLI Tool Capability"
+
+
+def _opentabs_tool_block_reason(
+    node: CompiledWorkflowNode,
+    permissions: object,
+) -> WorkflowRunBlockReason | None:
+    if not _is_opentabs_tool_node(node):
+        return None
+    binding_input = _read_dict(_read_dict(node.runtime.get("binding")).get("input"))
+    executor_params = _read_dict(binding_input.get("executorParams"))
+    read_only = executor_params.get("readOnly") is True
+    if read_only:
+        if bool(getattr(permissions, "canFetchNetwork", False)):
+            return None
+        return WorkflowRunBlockReason(
+            code=FETCH_PERMISSION_REQUIRED,
+            message=(
+                "OpenTabs read tool is bound, but "
+                "agentPermissions.canFetchNetwork is false."
+            ),
+            source="workflow_permissions",
+            details={
+                "nodeId": node.id,
+                "bindingId": EXTERNAL_TOOL_BINDING_ID,
+                "requiredPermission": "canFetchNetwork",
+            },
+        )
+
+    proposal_state = _read_string(node.runtime.get("proposal_state"))
+    if proposal_state != "accepted":
+        return WorkflowRunBlockReason(
+            code=OPENCLI_WRITE_APPROVAL_REQUIRED,
+            message="OpenTabs write tool must be explicitly accepted before it can run.",
+            source="workflow_permissions",
+            details={
+                "nodeId": node.id,
+                "bindingId": EXTERNAL_TOOL_BINDING_ID,
+                "proposalState": proposal_state or "proposed",
+            },
+        )
+    if not bool(getattr(permissions, "canMutateExternalSites", False)):
+        return WorkflowRunBlockReason(
+            code=OPENCLI_WRITE_PERMISSION_REQUIRED,
+            message=(
+                "OpenTabs write tool is accepted, but "
+                "agentPermissions.canMutateExternalSites is false."
+            ),
+            source="workflow_permissions",
+            details={
+                "nodeId": node.id,
+                "bindingId": EXTERNAL_TOOL_BINDING_ID,
+                "requiredPermission": "canMutateExternalSites",
+            },
+        )
+    return None
+
+
+def _bbx_tool_block_reason(
+    node: CompiledWorkflowNode,
+    permissions: object,
+) -> WorkflowRunBlockReason | None:
+    if not _is_bbx_tool_node(node):
+        return None
+    binding_input = _read_dict(_read_dict(node.runtime.get("binding")).get("input"))
+    executor_params = _read_dict(binding_input.get("executorParams"))
+    read_only = executor_params.get("readOnly") is True
+    if read_only:
+        if bool(getattr(permissions, "canFetchNetwork", False)):
+            return None
+        return WorkflowRunBlockReason(
+            code=FETCH_PERMISSION_REQUIRED,
+            message=(
+                "BBX read tool is bound, but "
+                "agentPermissions.canFetchNetwork is false."
+            ),
+            source="workflow_permissions",
+            details={
+                "nodeId": node.id,
+                "bindingId": EXTERNAL_TOOL_BINDING_ID,
+                "requiredPermission": "canFetchNetwork",
+            },
+        )
+
+    proposal_state = _read_string(node.runtime.get("proposal_state"))
+    if proposal_state != "accepted":
+        return WorkflowRunBlockReason(
+            code=OPENCLI_WRITE_APPROVAL_REQUIRED,
+            message="BBX write tool must be explicitly accepted before it can run.",
+            source="workflow_permissions",
+            details={
+                "nodeId": node.id,
+                "bindingId": EXTERNAL_TOOL_BINDING_ID,
+                "proposalState": proposal_state or "proposed",
+            },
+        )
+    if not bool(getattr(permissions, "canMutateExternalSites", False)):
+        return WorkflowRunBlockReason(
+            code=OPENCLI_WRITE_PERMISSION_REQUIRED,
+            message=(
+                "BBX write tool is accepted, but "
+                "agentPermissions.canMutateExternalSites is false."
+            ),
+            source="workflow_permissions",
+            details={
+                "nodeId": node.id,
+                "bindingId": EXTERNAL_TOOL_BINDING_ID,
+                "requiredPermission": "canMutateExternalSites",
+            },
+        )
+    return None
 
 
 def _is_first_loop_native_node(node: CompiledWorkflowNode) -> bool:
@@ -2950,6 +3221,46 @@ async def _execute_external_tool_capability(
         return [_external_tool_output(node, output, input_items, run_id, 0, binding_input)]
 
     if (
+        binding_input.get("executorMode") == BBX_EXECUTOR_MODE
+        and binding_input.get("toolCapabilityId") == BBX_TOOL_CAPABILITY_ID
+    ):
+        executor_params = _read_dict(binding_input.get("executorParams"))
+        tool_name = _read_string(executor_params.get("tool"))
+        if not tool_name:
+            raise BbxToolExecutionError(
+                "BBX tool node is missing toolCapability.executor.params.tool"
+            )
+        result = await invoke_bbx_tool(
+            tool_name,
+            _read_dict(binding_input.get("toolParams")),
+            task_id=f"{run_id}:{node.id}",
+        )
+        return [
+            _external_tool_output(node, output, input_items, run_id, index, binding_input)
+            for index, output in enumerate(bbx_result_items(result))
+        ]
+
+    if (
+        binding_input.get("executorMode") == OPENTABS_EXECUTOR_MODE
+        and binding_input.get("toolCapabilityId") == OPENTABS_TOOL_CAPABILITY_ID
+    ):
+        executor_params = _read_dict(binding_input.get("executorParams"))
+        tool_name = _read_string(executor_params.get("tool"))
+        if not tool_name:
+            raise OpenTabsToolExecutionError(
+                "OpenTabs tool node is missing toolCapability.executor.params.tool"
+            )
+        result = await invoke_opentabs_tool(
+            tool_name,
+            _read_dict(binding_input.get("toolParams")),
+            task_id=f"{run_id}:{node.id}",
+        )
+        return [
+            _external_tool_output(node, output, input_items, run_id, index, binding_input)
+            for index, output in enumerate(opentabs_result_items(result))
+        ]
+
+    if (
         binding_input.get("executorMode") == OKX_MARKET_TICKER_SNAPSHOT_EXECUTOR
         and binding_input.get("toolCapabilityId") == "tool.realtime.stream.subscribe"
     ):
@@ -3119,6 +3430,16 @@ def _trace_sample_output(item: dict[str, Any]) -> dict[str, Any]:
             "result",
             "readiness",
             "provenance",
+            "id",
+            "title",
+            "name",
+            "url",
+            "ok",
+            "text",
+            "value",
+            "truncated",
+            "omitted",
+            "length",
         )
         if key in raw
     }
@@ -3731,6 +4052,52 @@ def _notify_send_block_reason(
                     "evidencebatch_projection_api",
                     "delivery_projection",
                 ],
+            },
+        )
+    return None
+
+
+def _is_opencli_write_node(node: CompiledWorkflowNode) -> bool:
+    return (
+        _binding_id(node) == OPENCLI_BINDING_ID
+        and (
+            _read_string(node.params.get("opencliAccess")) == "write"
+            or (node.kind == "action" and node.capability == "store")
+        )
+    )
+
+
+def _opencli_mutation_block_reason(
+    node: CompiledWorkflowNode,
+    permissions: object,
+) -> WorkflowRunBlockReason | None:
+    if not _is_opencli_write_node(node):
+        return None
+
+    proposal_state = _read_string(node.runtime.get("proposal_state"))
+    if proposal_state != "accepted":
+        return WorkflowRunBlockReason(
+            code=OPENCLI_WRITE_APPROVAL_REQUIRED,
+            message="OpenCLI write action must be explicitly accepted before it can run.",
+            source="workflow_permissions",
+            details={
+                "nodeId": node.id,
+                "bindingId": OPENCLI_BINDING_ID,
+                "proposalState": proposal_state or "proposed",
+            },
+        )
+    if not bool(getattr(permissions, "canMutateExternalSites", False)):
+        return WorkflowRunBlockReason(
+            code=OPENCLI_WRITE_PERMISSION_REQUIRED,
+            message=(
+                "OpenCLI write action is accepted, but "
+                "agentPermissions.canMutateExternalSites is false."
+            ),
+            source="workflow_permissions",
+            details={
+                "nodeId": node.id,
+                "bindingId": OPENCLI_BINDING_ID,
+                "requiredPermission": "canMutateExternalSites",
             },
         )
     return None

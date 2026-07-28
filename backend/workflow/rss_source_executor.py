@@ -82,6 +82,15 @@ async def execute_workflow_rss_source(
         selection = _read_dict(
             _first_value(config.get("generatorSelection"), params.get("generatorSelection"))
         )
+        route_parameters = _read_dict(
+            _first_value(
+                selection.get("parameters"),
+                config.get("routeParameters"),
+                config.get("bridgeParameters"),
+                params.get("routeParameters"),
+                params.get("bridgeParameters"),
+            )
+        )
         generator_type = _first_string(
             config.get("generatorType"), params.get("generatorType")
         )
@@ -95,11 +104,19 @@ async def execute_workflow_rss_source(
         try:
             feed_url = feed_provider_service.build_provider_feed_url(
                 provider,
-                route=_first_string(selection.get("route")),
-                bridge=_first_string(selection.get("bridge")),
+                route=_first_string(
+                    selection.get("route"),
+                    config.get("route"),
+                    params.get("route"),
+                ),
+                bridge=_first_string(
+                    selection.get("bridge"),
+                    config.get("bridge"),
+                    params.get("bridge"),
+                ),
                 parameters={
                     str(key): str(value)
-                    for key, value in _read_dict(selection.get("parameters")).items()
+                    for key, value in route_parameters.items()
                 },
                 include_token=True,
             )

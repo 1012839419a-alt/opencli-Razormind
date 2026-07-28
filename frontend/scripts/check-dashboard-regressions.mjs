@@ -13,6 +13,8 @@ test('dashboard is an action-first control plane backed by real hooks', async ()
   assert.match(dashboard, /useWorkers\(\)/)
   assert.match(dashboard, /useAgents\(\{ enabled: true \}\)/)
   assert.match(dashboard, /useNotificationLogs\(\)/)
+  assert.match(dashboard, /useNotificationRules\(\)/)
+  assert.match(dashboard, /useSchedules\(\{ enabled: true \}\)/)
   assert.doesNotMatch(dashboard, /useMonitorFeed/)
   assert.doesNotMatch(dashboard, /演示数据/)
 })
@@ -24,10 +26,11 @@ test('dashboard restores the real signal chain and makes Agent delivery visible'
     assert.match(dashboard, new RegExp(label))
   }
   assert.match(dashboard, /<AgentDeliveryPanel/)
-  assert.match(dashboard, /邮箱 P0/)
-  assert.match(dashboard, /邮箱专属统计/)
-  assert.match(dashboard, /待后端接入/)
-  assert.doesNotMatch(dashboard, /邮箱已发送/)
+  assert.match(dashboard, /发送目标由通知规则决定，不预设为某一个平台/)
+  assert.match(dashboard, /notificationChannels=\{activeDeliveryChannels\}/)
+  assert.match(dashboard, /deliveryChannels=\{activeDeliveryChannels\.length\}/)
+  assert.doesNotMatch(dashboard, /邮箱 P0/)
+  assert.doesNotMatch(dashboard, /邮箱专属统计/)
 })
 
 test('dashboard answers attention, live state, and next action before analytics', async () => {
@@ -65,4 +68,61 @@ test('task stream uses a compact empty state instead of rendering an empty table
   assert.match(taskStream, /data-stream-empty/)
   assert.match(taskStream, /当前没有排队或运行中的任务/)
   assert.match(taskStream, /<Card size="sm" className="h-full">/)
+})
+
+test('dashboard treats failures as a compact state layer above the full-width run history', async () => {
+  const dashboard = await read('app/(app)/dashboard/page.tsx')
+  const taskStream = await read('components/monitor/task-stream.tsx')
+
+  assert.doesNotMatch(dashboard, /min-h-72/)
+  assert.match(dashboard, /grid items-start gap-3/)
+  assert.match(dashboard, /<section className="grid gap-4" aria-label="运行与异常">/)
+  assert.doesNotMatch(dashboard, /grid items-start gap-4 lg:grid-cols-3/)
+  assert.match(taskStream, /groupStreamTasks/)
+  assert.match(taskStream, /groupFailures/)
+  assert.match(taskStream, /相同任务、Worker 与状态已合并/)
+  assert.match(taskStream, /同类失败 ×/)
+  assert.match(taskStream, /aria-label="失败与重试"/)
+  assert.match(taskStream, /最近运行未发现需要重试或人工处理的异常/)
+  assert.match(taskStream, /href="\/tasks"/)
+  assert.match(taskStream, /divide-y divide-border/)
+  assert.doesNotMatch(taskStream, /rounded-lg border border-border p-3/)
+})
+
+test('opinion monitor projects configured notification channels without hardcoding Feishu', async () => {
+  const [dashboard, channelLabels] = await Promise.all([
+    read('app/(app)/dashboard/page.tsx'),
+    read('lib/notification-channels.ts'),
+  ])
+
+  assert.match(dashboard, /通知日志/)
+  assert.match(dashboard, /来自通知日志，非实时回执/)
+  assert.match(dashboard, /无发送记录/)
+  assert.match(dashboard, /\(item\.notification_channels \?\? \[\]\)\.map\(notificationChannelLabel\)/)
+  assert.match(dashboard, /已有发送记录/)
+  assert.match(dashboard, /grid items-start gap-4 lg:grid-cols-\[280px_1fr\]/)
+  assert.doesNotMatch(dashboard, /飞书通知日志/)
+  assert.doesNotMatch(dashboard, /飞书已记录发送/)
+  for (const label of ['飞书', 'QQ', '微信', '企业微信', '邮件', 'Webhook']) {
+    assert.match(channelLabels, new RegExp(label))
+  }
+})
+
+test('dashboard restores the next schedule countdown from backend next_run_at', async () => {
+  const [dashboard, hooks, matrixClock] = await Promise.all([
+    read('app/(app)/dashboard/page.tsx'),
+    read('lib/api/hooks.ts'),
+    read('components/monitor/matrix-clock.tsx'),
+  ])
+
+  assert.match(dashboard, /function NextRunCountdown/)
+  assert.match(dashboard, /window\.setInterval\(tick, 1_000\)/)
+  assert.match(dashboard, /nextSchedule\?\.next_run_at/)
+  assert.match(dashboard, />下次执行</)
+  assert.match(dashboard, /<MatrixClock \/>[\s\S]*实时/)
+  assert.match(matrixClock, /const DIGITS =/)
+  assert.match(matrixClock, /role="timer"/)
+  assert.match(matrixClock, /当前时间/)
+  assert.match(matrixClock, /window\.setInterval\(update, 1_000\)/)
+  assert.match(hooks, /queryKey: \['schedules', params\][\s\S]*refetchInterval: 30_000/)
 })

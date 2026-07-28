@@ -48,6 +48,14 @@ _Avoid_: arbitrary frontend module, copied product shell, hardcoded node card, u
 The workspace-owned record of an OpenCLI Plugin version, its enabled state, configuration, granted permissions, runtime availability, health probes, and upgrade status. Projects reference the capabilities it exposes rather than owning separate plugin copies.
 _Avoid_: Project-owned plugin binary, global implicit enablement, installing by placing files in a Workflow
 
+**Plugin Hub**:
+The Provider-package management surface with separate Installed and Marketplace views. It installs, upgrades, configures, and reports the readiness of Plugin packages. A Provider may own a drill-down management surface for its complete registered capability directory, such as OpenCLI websites and commands or optional RSS OPML onboarding, while the Hub still presents only one top-level card per Provider.
+_Avoid_: flattening every command into a plugin card, hiding Provider capabilities, source workspace, one plugin card per command
+
+**Workflow Node Selector**:
+The Studio add-node surface that exposes capabilities registered by installed Providers, grouped as Blocks, Data Sources, Tools, Start, and Snippets. Blocks include the platform's Dify-compatible workflow components, Start owns triggers, and Snippets owns reusable HDA/packages. Selecting a node configures a Workflow; installing or governing its Provider remains a Plugin Hub or Governance responsibility.
+_Avoid_: plugin installer inside the Canvas, mixing commands with nodes, hardcoded source-pack picker
+
 **Declarative Plugin UI**:
 The platform-rendered configuration, node inspector, tool description, status, and validation UI generated from a Plugin's manifest, schemas, icons, and localized metadata. Plugins do not inject arbitrary frontend code, top-level navigation, or competing application shells in the initial plugin contract.
 _Avoid_: plugin iframe, arbitrary React bundle, plugin-owned global route
@@ -350,6 +358,12 @@ _Avoid_: user-facing Plan, treating Plan and Workflow as different execution des
 **Canvas Source Node**: An atomic Workflow Node that represents exactly one executable collection source through exactly one Project-owned Source Binding. It may set bounded Run controls such as time window, item limit, sampling, and input/output mapping, but cannot run by referencing or editing a Workspace Source directly.
 _Avoid_: decorative source node, abstract placeholder, UI-only source, inline source definition, a `sources[]` collection inside one atomic node
 
+**Data Source**: The legacy API and storage name for persisted Source Node configuration and Source State. It remains an implementation boundary where required by existing collectors, but it is not a top-level operator object, catalog entry, or enablement workspace.
+_Avoid_: standalone source manager, built-in source pack, public source directory, user-facing object separate from its Source Node
+
+**Website Collection Capability**: An executable browser, Skill, or site-adapter capability that reads a website and emits Record Candidates or Runtime Artifacts. It is registered in the Capability Catalog and exposed through a Source Node only when its runtime binding and probes support execution.
+_Avoid_: source directory, website card as a durable Source, claiming a capability is runnable before its runtime binding and probes pass
+
 **Executable Canvas Node**: Any node on the Collection Canvas that participates in a Workflow. It must either execute, route, transform, store, notify, gate, or expose package-owned executable internals; if it lacks a runtime binding, the node is explicitly blocked rather than treated as decorative.
 _Avoid_: fake node, visual-only node, silent mock execution
 
@@ -443,6 +457,15 @@ _Avoid_: My Work, project notifications, issue tracker
 **Project Context**:
 The active Project filter and navigation context applied to shared platform modules. A Project aggregates its Workflows, recent results, Data Feeds, Automations, and Triage without duplicating global data-source, run, device, worker, or integration administration.
 _Avoid_: Project admin console, nested workspace, duplicated module
+
+**Data View**: The operator-facing surface for inspecting Records as fields and rows together with their Workflow, Run, Source Node, and task lineage. It presents what the collected data looks like and does not configure, enable, or catalog Sources.
+_Avoid_: Source workspace, collection configuration page, per-source enablement list
+
+**Record Acceptance Gate**: A Gate Node that decides whether a Record Candidate becomes a Record based on schema completeness, dedupe result, lineage preservation, quality threshold, review policy, and automatic-acceptance rules.
+_Avoid_: normalize-implies-accepted, silently storing raw candidates as records, accepting records without lineage
+
+**Runtime Artifact**: A non-record output produced during execution, such as a screenshot, HTML snapshot, trace attachment, LLM summary, diagnostic report, or checkpoint blob. It may support evidence or debugging without becoming a Record.
+_Avoid_: forcing every artifact into records, sending diagnostic blobs as business results by default
 
 **Artifact Transform Node**: A Transform-family Workflow node that explicitly converts Runtime Artifacts into Record Candidates, Run State, diagnostics, review material, or other typed outputs. Artifacts must pass through a typed transform before entering record or business-result flows.
 _Avoid_: artifact-to-record shortcuts, untyped artifact edges, treating screenshots or HTML as records without extraction
