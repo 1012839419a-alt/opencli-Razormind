@@ -111,6 +111,7 @@ export function CommandStrip({
   onToggleSettings,
   projectSettingsOpen,
   onToggleProjectSettings,
+  onRunWorkflow,
   runTraceOpen,
   onToggleRunTrace,
   nodeManagementOpen,
@@ -128,6 +129,7 @@ export function CommandStrip({
   onToggleSettings?: () => void
   projectSettingsOpen?: boolean
   onToggleProjectSettings?: () => void
+  onRunWorkflow: () => void
   runTraceOpen?: boolean
   onToggleRunTrace?: () => void
   nodeManagementOpen?: boolean
@@ -404,9 +406,14 @@ export function CommandStrip({
           保存
         </Button>
 
-        <Button size="sm" className="min-h-11 gap-1.5 rounded-lg" onClick={onToggleRunTrace}>
+        <Button
+          data-testid="workflow-run"
+          size="sm"
+          className="min-h-11 gap-1.5 rounded-lg"
+          onClick={onRunWorkflow}
+        >
           <Play className="size-3.5" />
-          试运行
+          运行
         </Button>
 
         <DropdownMenu>
@@ -494,7 +501,7 @@ export function CommandStrip({
               <DropdownMenuLabel>运行与设置</DropdownMenuLabel>
               <DropdownMenuItem onClick={onToggleRunTrace}>
                 <Play className="size-3.5" />
-                {runTraceOpen ? "关闭运行记录" : "运行记录与结果"}
+                {runTraceOpen ? "关闭运行面板" : "运行面板"}
               </DropdownMenuItem>
               <DropdownMenuItem onClick={() => onChangeWorkbenchMode?.(workbenchMode === "evidence" ? null : "evidence")}>
                 <BrainCircuit className="size-3.5" />

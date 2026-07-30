@@ -17,6 +17,9 @@ export type WorkflowOpenCLIHDATraceDispatchItem = {
   site: string
   command: string
   args: Record<string, unknown>
+  sourceBindingId?: string | null
+  sourceBindingRevisionId?: string | null
+  sourceBindingRevisionNumber?: number | null
   iii: WorkflowOpenCLIHDATraceDispatchEnvelope
 }
 

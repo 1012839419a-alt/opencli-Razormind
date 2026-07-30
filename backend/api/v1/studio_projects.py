@@ -175,6 +175,10 @@ async def delete_project(
             .where(StudioProject.id == project_id)
             .values(primary_workflow_id=None)
         )
+        # Runtime rows RESTRICT their published Studio version, so remove them first.
+        await db.execute(
+            delete(WorkflowRun).where(WorkflowRun.workflow_id.in_(workflow_ids))
+        )
         # Versions RESTRICT their validation run, so remove them in dependency order.
         await db.execute(
             delete(StudioWorkflowVersion).where(
@@ -190,9 +194,6 @@ async def delete_project(
             delete(StudioWorkflowDraft).where(
                 StudioWorkflowDraft.workflow_id.in_(workflow_ids)
             )
-        )
-        await db.execute(
-            delete(WorkflowRun).where(WorkflowRun.workflow_id.in_(workflow_ids))
         )
         await db.execute(
             delete(StudioWorkflow).where(StudioWorkflow.id.in_(workflow_ids))

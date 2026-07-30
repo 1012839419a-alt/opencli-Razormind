@@ -135,6 +135,7 @@ def test_event_types_is_exactly_the_documented_set():
 
 def test_agent_task_defaults():
     task = AgentTask(task_id="t1", workflow="wf")
+    assert task.instructions == ""
     assert task.input == {}
     assert task.config == {}
     assert task.session_id is None

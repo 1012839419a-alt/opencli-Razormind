@@ -1,6 +1,6 @@
 """Integration tests for fleet auth (ADR-0005, closeout issue 04).
 
-FleetAuthMiddleware guards every HTTP /api route with a static bearer token.
+FleetAuthMiddleware guards every HTTP /api and /mcp route with a static bearer token.
 These tests mutate the lru_cached Settings instance via monkeypatch.setattr —
 the middleware reads ``get_settings().api_auth_token`` per request, so the
 change is visible immediately and undone automatically after each test.
@@ -84,6 +84,16 @@ async def test_correct_token_on_db_backed_route(client, auth_enabled):
     assert response.status_code == 200
 
     response = await client.get("/api/v1/sources")
+    assert response.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_mcp_endpoint_uses_same_fleet_token_boundary(client, auth_enabled):
+    response = await client.post(
+        "/mcp",
+        headers={"Content-Type": "application/json"},
+        json={"jsonrpc": "2.0", "id": 1, "method": "server/discover"},
+    )
     assert response.status_code == 401
 
 

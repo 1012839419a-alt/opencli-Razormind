@@ -914,11 +914,11 @@ test('the production studio adopts the selected project-workspace concept with a
   assert.doesNotMatch(projectOverview, /title="检查草稿"[\s\S]*done=\{Boolean\(primaryWorkflow\)\}/)
   assert.match(projectNavigation, /概览/)
   assert.match(projectNavigation, /编排/)
-  assert.match(projectNavigation, /运行/)
+  assert.match(projectNavigation, /日志监测/)
   assert.match(projectNavigation, /数据/)
   assert.match(projectNavigation, /逻辑与证据/)
   assert.match(projectNavigation, /设置/)
-  assert.match(projectNavigation, /\{ id: 'operations', label: '运行记录'/)
+  assert.match(projectNavigation, /\{ id: 'operations', label: '日志监测'/)
   assert.match(projectNavigation, /: null/)
   assert.match(projectNavigation, /aria-disabled="true"/)
   assert.match(workflowPage, /<WorkflowProjectHeader\s*\/>/)
@@ -934,13 +934,15 @@ test('the production studio adopts the selected project-workspace concept with a
 })
 
 test('studio and workflow primary controls keep touch targets and explicit selected state', async () => {
-  const [studio, templates, newProject, projectNavigation, projectHeader, commandStrip] = await Promise.all([
+  const [studio, templates, newProject, projectNavigation, projectHeader, commandStrip, workflowEditor, runTracePanel] = await Promise.all([
     readSource('app/(app)/studio/page.tsx'),
     readSource('app/(app)/studio/templates/page.tsx'),
     readSource('app/(app)/studio/new/page.tsx'),
     readSource('components/studio/project-navigation.tsx'),
     readSource('components/studio/workflow-project-header.tsx'),
     readSource('components/flow/command-strip.tsx'),
+    readSource('components/flow/workflow-editor.tsx'),
+    readSource('components/flow/run-trace-panel.tsx'),
   ])
 
   assert.match(studio, /aria-pressed=\{type === value\}/)
@@ -949,7 +951,12 @@ test('studio and workflow primary controls keep touch targets and explicit selec
     assert.doesNotMatch(source, /(?:sm|md):min-h-[89]\b/)
   }
   assert.match(commandStrip, /"size-11 text-muted-foreground hover:text-foreground"/)
-  assert.match(commandStrip, /className="min-h-11 gap-1\.5 rounded-lg" onClick=\{onToggleRunTrace\}/)
+  assert.match(commandStrip, /data-testid="workflow-run"[\s\S]*className="min-h-11 gap-1\.5 rounded-lg"[\s\S]*onClick=\{onRunWorkflow\}[\s\S]*<Play[\s\S]*运行/)
+  assert.match(commandStrip, /<DropdownMenuItem onClick=\{onToggleRunTrace\}>[\s\S]*运行面板/)
+  assert.match(workflowEditor, /const runWorkflow = useCallback\(\(\) => \{[\s\S]*setRunTraceOpen\(true\)[\s\S]*setRunRequestId/)
+  assert.match(workflowEditor, /onRunWorkflow=\{runWorkflow\}/)
+  assert.match(runTracePanel, /if \(runRequestId > 0\) runButtonRef\.current\?\.click\(\)/)
+  assert.match(runTracePanel, /startWorkflowRun\(workflowProject/)
   assert.match(commandStrip, /persistenceNeedsAttention && "text-\[#ff7a17\]"/)
   assert.doesNotMatch(commandStrip, /className="size-[78] rounded-lg"/)
 })
@@ -1385,6 +1392,81 @@ test('event and projection actions retain the node reducer contract', async () =
   assert.match(projectionAction, /runId:\s*projection\.runId/)
 
   assert.match(evidenceAction, /applyEvidenceBatchRuntimePatches\(state\.nodes, state\.edges, projection, batches\)/)
+})
+
+test('Preview reports dispatch readiness without mutating real execution state', async () => {
+  const { applyRuntimeNodePatches, buildRuntimeNodePatches } = await importTypeScript('lib/workflow/runtime-bridge.ts')
+  const runArtifact = {
+    runId: 'real-run',
+    artifactPath: 'runtime://real-trace',
+    apiPath: '/api/v1/workflows/runs/real-run',
+  }
+  const nodes = ['compile-error', 'bound-node', 'missing-node', 'source-a'].map((id) => ({
+    id,
+    data: { label: id, status: 'success', runArtifact },
+  }))
+  const patches = buildRuntimeNodePatches({
+    compile: {
+      valid: false,
+      errors: [{ node_id: 'compile-error', code: 'invalid', message: 'Invalid configuration' }],
+      plan: {
+        runtime: {
+          nodes: [
+            {
+              id: 'bound-node',
+              runtime: { binding: { worker: 'worker-a', function_id: 'opencli.dispatch' } },
+            },
+            {
+              id: 'missing-node',
+              runtime: {
+                missing_runtime: {
+                  code: 'missing_runtime_parameter',
+                  message: 'Worker is missing',
+                },
+              },
+            },
+          ],
+        },
+      },
+    },
+    trace: {
+      valid: true,
+      errors: [],
+      workflowId: 'workflow-a',
+      runId: 'preview-run',
+      traceId: 'preview-trace',
+      dispatch: {
+        runtime: 'opencli',
+        worker: 'worker-a',
+        functionId: 'opencli.dispatch',
+        mode: 'preview',
+      },
+      dispatches: [{
+        taskId: 'task-a',
+        nodeId: 'source-a',
+        sourceGroup: 'news',
+        site: 'example',
+        command: 'search',
+        args: {},
+        iii: { function_id: 'opencli.dispatch', payload: {} },
+      }],
+    },
+  })
+
+  assert.equal(patches.length, 4)
+  for (const patch of patches) {
+    assert.equal(Object.hasOwn(patch.data, 'status'), false)
+    assert.equal(Object.hasOwn(patch.data, 'runArtifact'), false)
+  }
+  const result = applyRuntimeNodePatches(nodes, patches)
+  for (const node of result) {
+    assert.equal(node.data.status, 'success')
+    assert.strictEqual(node.data.runArtifact, runArtifact)
+  }
+  assert.deepStrictEqual(
+    result.map((node) => node.data.runtimePreview.status),
+    ['blocked', 'bound', 'blocked', 'dispatch-ready'],
+  )
 })
 
 test('EvidenceBatch projection produces stable node and edge view-models', async () => {

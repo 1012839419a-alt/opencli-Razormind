@@ -57,6 +57,22 @@ export function useProjectSourceBindings(workspaceId: string | null, projectId: 
   })
 }
 
+export function useProjectSourceBindingRevisions(
+  workspaceId: string | null,
+  projectId: string | null,
+  bindingId: string | null,
+) {
+  return useQuery({
+    queryKey: ['project-source-binding-revisions', workspaceId, projectId, bindingId],
+    queryFn: () => api.listProjectSourceBindingRevisions(
+      workspaceId as string,
+      projectId as string,
+      bindingId as string,
+    ),
+    enabled: !!workspaceId && !!projectId && !!bindingId,
+  })
+}
+
 export function useCreateProjectSourceBinding() {
   const queryClient = useQueryClient()
   return useMutation({
@@ -93,6 +109,58 @@ export function useProjectWorkflows(workspaceId: string | null, projectId: strin
     queryKey: ['project-workflows', workspaceId, projectId],
     queryFn: () => api.listProjectWorkflows(workspaceId as string, projectId as string),
     enabled: !!workspaceId && !!projectId,
+  })
+}
+
+export function useProjectRuntimeSummary(workspaceId: string | null, projectId: string | null) {
+  return useQuery({
+    queryKey: ['project-runtime-summary', workspaceId, projectId],
+    queryFn: () => api.getProjectRuntimeSummary(workspaceId as string, projectId as string),
+    enabled: !!workspaceId && !!projectId,
+    refetchInterval: 15_000,
+  })
+}
+
+export function useProjectRuntimeLogs(
+  workspaceId: string | null,
+  projectId: string | null,
+  params: { status?: string; search?: string; page: number; limit: number },
+) {
+  return useQuery({
+    queryKey: ['project-runtime-logs', workspaceId, projectId, params],
+    queryFn: () => api.listProjectRuntimeLogs(
+      workspaceId as string,
+      projectId as string,
+      params,
+    ),
+    enabled: !!workspaceId && !!projectId,
+    refetchInterval: 10_000,
+  })
+}
+
+export function useProjectRuntimeTrace(
+  workspaceId: string | null,
+  projectId: string | null,
+  workflowId: string | null,
+  runId: string | null,
+  params?: { afterSequence?: number; limit?: number },
+) {
+  return useQuery({
+    queryKey: ['project-runtime-trace', workspaceId, projectId, workflowId, runId, params],
+    queryFn: () => api.getProjectRuntimeTrace(
+      workspaceId as string,
+      projectId as string,
+      workflowId as string,
+      runId as string,
+      params,
+    ),
+    enabled: !!workspaceId && !!projectId && !!workflowId && !!runId,
+    refetchInterval: (query) => {
+      const status = query.state.data?.trace.projection.status
+      return status && ['completed', 'failed', 'blocked', 'partial_success'].includes(status)
+        ? false
+        : 3_000
+    },
   })
 }
 
@@ -177,6 +245,61 @@ export function useOperationsAgentActivity(workspaceId: string | null) {
     queryFn: () => api.listOperationsAgentActivity(workspaceId as string),
     enabled: !!workspaceId,
     refetchInterval: 5_000,
+  })
+}
+
+export function useOperationsAgentDraft(workspaceId: string | null, agentId: string | null) {
+  return useQuery({
+    queryKey: ['operations-agent-draft', workspaceId, agentId],
+    queryFn: () => api.getOperationsAgentDraft(workspaceId as string, agentId as string),
+    enabled: !!workspaceId && !!agentId,
+  })
+}
+
+export function useOperationsAgentVersions(workspaceId: string | null, agentId: string | null) {
+  return useQuery({
+    queryKey: ['operations-agent-versions', workspaceId, agentId],
+    queryFn: () => api.listOperationsAgentVersions(workspaceId as string, agentId as string),
+    enabled: !!workspaceId && !!agentId,
+  })
+}
+
+export function useUpdateOperationsAgentDraft() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ workspaceId, agentId, data }: { workspaceId: string; agentId: string; data: Parameters<typeof api.updateOperationsAgentDraft>[2] }) =>
+      api.updateOperationsAgentDraft(workspaceId, agentId, data),
+    onSuccess: (draft, { workspaceId, agentId }) =>
+      queryClient.setQueryData(['operations-agent-draft', workspaceId, agentId], draft),
+  })
+}
+
+export function usePublishOperationsAgentVersion() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ workspaceId, agentId, reason }: { workspaceId: string; agentId: string; reason: string }) =>
+      api.publishOperationsAgentVersion(workspaceId, agentId, reason),
+    onSuccess: (_version, { workspaceId, agentId }) => {
+      void queryClient.invalidateQueries({ queryKey: ['operations-agent-versions', workspaceId, agentId] })
+      void queryClient.invalidateQueries({ queryKey: ['operations-agents', workspaceId] })
+    },
+  })
+}
+
+export function useStartOperationsAgentRun() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({
+      workspaceId,
+      agentId,
+      data,
+    }: {
+      workspaceId: string
+      agentId: string
+      data: Parameters<typeof api.startOperationsAgentRun>[2]
+    }) => api.startOperationsAgentRun(workspaceId, agentId, data),
+    onSuccess: (_run, { workspaceId }) =>
+      queryClient.invalidateQueries({ queryKey: ['operations-agent-activity', workspaceId] }),
   })
 }
 

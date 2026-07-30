@@ -54,7 +54,7 @@ class Settings(BaseSettings):
     api_key_enabled: bool = False
     api_key: str = ""
     # Fleet auth (ADR-0005, closeout issue 04): single static bearer token
-    # required on every /api route once set (backend/security/fleet_auth.py).
+    # required on every /api and /mcp route once set (backend/security/fleet_auth.py).
     # Empty (default) = auth disabled — dev posture, which the startup bind
     # guard only allows on a localhost bind. Env: API_AUTH_TOKEN.
     api_auth_token: str = ""

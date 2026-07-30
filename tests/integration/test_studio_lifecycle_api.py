@@ -1,7 +1,14 @@
 import pytest
 from sqlalchemy import select
 
-from backend.models.studio import StudioProject, StudioWorkflow, StudioWorkspace
+from backend.models.studio import (
+    StudioProject,
+    StudioWorkflow,
+    StudioWorkflowVersion,
+    StudioWorkspace,
+)
+from backend.models.workflow_run import WorkflowRun
+from backend.schemas import workflow as workflow_schemas
 from backend.services import image_studio_service
 from tests.fixtures.workflow_conformance import workflow_conformance_project
 
@@ -30,6 +37,22 @@ async def _create_studio_workflow(client, *, graph: dict | None = None) -> dict:
         f"/workflows/{workflow['id']}"
     )
     return {"workflow": workflow, "base_url": base_url}
+
+
+async def _publish_studio_workflow(client, created: dict) -> dict:
+    validation = (
+        await client.post(f"{created['base_url']}/draft/validation-runs", json={})
+    ).json()["data"]
+    response = await client.post(
+        f"{created['base_url']}/versions",
+        json={
+            "reason": "Publish for API execution",
+            "expectedRevision": 1,
+            "validationRunId": validation["runId"],
+        },
+    )
+    assert response.status_code == 201, response.text
+    return response.json()["data"]
 
 
 @pytest.mark.asyncio
@@ -127,6 +150,123 @@ async def test_studio_workflow_current_validated_revision_can_be_published(clien
     workflows_url = created["base_url"].rsplit("/", 1)[0]
     workflow = (await client.get(workflows_url)).json()["data"][0]
     assert workflow["current_published_version"] == 1
+
+
+@pytest.mark.asyncio
+async def test_studio_api_run_requires_a_published_version(client):
+    created = await _create_studio_workflow(client)
+
+    response = await client.post(
+        f"{created['base_url']}/runs",
+        json={"inputs": {"topic": "OpenCLI"}, "user": "server-worker"},
+    )
+
+    assert response.status_code == 409, response.text
+    assert "published" in response.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_studio_api_run_is_version_bound_idempotent_and_visible_in_logs(
+    client,
+    db_session,
+):
+    created = await _create_studio_workflow(client)
+    published = await _publish_studio_workflow(client, created)
+    request = {
+        "inputs": {"topic": "OpenCLI ecosystem"},
+        "response_mode": "async",
+        "user": "server-worker",
+    }
+    headers = {
+        "Idempotency-Key": "nightly-project-job",
+        "X-Request-ID": "request-001",
+    }
+
+    first = await client.post(f"{created['base_url']}/runs", json=request, headers=headers)
+    replay = await client.post(f"{created['base_url']}/runs", json=request, headers=headers)
+
+    assert first.status_code == 202, first.text
+    assert replay.status_code == 202, replay.text
+    projection = first.json()["data"]
+    assert replay.json()["data"]["runId"] == projection["runId"]
+    row = await db_session.get(WorkflowRun, projection["runId"])
+    assert row is not None
+    version = await db_session.get(StudioWorkflowVersion, row.studio_workflow_version_id)
+    assert version is not None
+    assert version.id == published["id"]
+    assert row.workflow_version_id is None
+    assert row.request["project"] == workflow_schemas.WorkflowProject.model_validate(
+        published["graph"]
+    ).model_dump(mode="json")
+    assert row.request["input"]["payload"] == request["inputs"]
+    assert row.request["input"]["source"] == "external"
+    assert row.request["input"]["sourceId"] == request["user"]
+    assert row.request["trigger"]["requestId"] == headers["X-Request-ID"]
+
+    project_url = created["base_url"].split("/workflows/", 1)[0]
+    summary = await client.get(f"{project_url}/runtime-summary")
+    logs = await client.get(
+        f"{project_url}/runtime-logs",
+        params={"search": projection["runId"], "status": projection["status"]},
+    )
+    trace = await client.get(f"{created['base_url']}/runs/{projection['runId']}/trace")
+
+    assert summary.status_code == 200, summary.text
+    assert summary.json()["data"]["total_runs"] == 1
+    assert logs.status_code == 200, logs.text
+    assert logs.json()["meta"]["total"] == 1
+    log = logs.json()["data"][0]
+    assert log["workflow_version"] == published["version"]
+    assert log["trace_id"] == projection["traceId"]
+    assert log["response_mode"] == request["response_mode"]
+    assert trace.status_code == 200, trace.text
+    trace_data = trace.json()["data"]
+    assert trace_data["workflow_version"] == published["version"]
+    assert trace_data["inputs"] == request["inputs"]
+    assert trace_data["user"] == request["user"]
+    assert trace_data["trace"]["projection"]["runId"] == projection["runId"]
+    paged_trace = await client.get(
+        f"{created['base_url']}/runs/{projection['runId']}/trace",
+        params={"afterSequence": 0, "limit": 1},
+    )
+    assert paged_trace.status_code == 200, paged_trace.text
+    paged_events = paged_trace.json()["data"]["trace"]["events"]
+    assert len(paged_events) == 1
+    assert paged_trace.json()["data"]["trace"]["filters"] == {
+        "afterSequence": 0,
+        "limit": 1,
+    }
+    assert (
+        paged_trace.json()["data"]["trace"]["nextAfterSequence"]
+        == paged_events[0]["sequence"]
+    )
+
+    generic_run_url = f"/api/v1/workflows/runs/{projection['runId']}"
+    for suffix in (
+        "",
+        "/evidence-batches",
+        "/evidence-batches/hidden-batch",
+        "/projection",
+        "/research-ledger",
+        "/checkpoint",
+        "/trace",
+        "/events",
+    ):
+        hidden = await client.get(f"{generic_run_url}{suffix}")
+        assert hidden.status_code == 404, (suffix, hidden.text)
+    hidden_continuation = await client.post(
+        f"{generic_run_url}/research-continuations",
+        json={
+            "expectedRevisionId": "hidden-revision",
+            "proposalId": "hidden-proposal",
+            "idempotencyKey": "hidden-continuation",
+            "sourceOutputs": {"source": [{"recordId": "hidden-record"}]},
+        },
+    )
+    assert hidden_continuation.status_code == 404, hidden_continuation.text
+
+    deleted = await client.delete(project_url)
+    assert deleted.status_code == 200, deleted.text
 
 
 @pytest.mark.asyncio

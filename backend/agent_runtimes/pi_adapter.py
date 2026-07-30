@@ -91,6 +91,8 @@ logger = logging.getLogger(__name__)
 _DEFAULT_TIMEOUT_SECONDS = 300
 _KILL_GRACE_SECONDS = 10
 _STDERR_TAIL_BYTES = 2048
+_READ_ONLY_PROFILE_MODES = frozenset({"observe_only", "suggest_changes"})
+_READ_ONLY_TOOLS = "read,grep,find,ls"
 
 
 @register_runtime
@@ -108,6 +110,14 @@ class PiRuntimeAdapter(RuntimeAdapter):
 
     def validate_config(self, config: dict[str, Any]) -> list[str]:
         errors: list[str] = []
+        permission_mode = config.get("permission_mode")
+        if permission_mode in _READ_ONLY_PROFILE_MODES:
+            unsupported = sorted(set(config) - {"permission_mode", "timeout_seconds"})
+            if unsupported:
+                errors.append(
+                    "read-only permission modes cannot override Fleet launch config: "
+                    + ", ".join(unsupported)
+                )
         binary = config.get("binary", "pi")
         if not isinstance(binary, str) or not binary:
             errors.append("'binary' must be a non-empty string")
@@ -123,6 +133,8 @@ class PiRuntimeAdapter(RuntimeAdapter):
             args = config["args"]
             if not isinstance(args, list) or not all(isinstance(a, str) for a in args):
                 errors.append("'args' must be a list of strings when provided")
+        if permission_mode not in {None, *_READ_ONLY_PROFILE_MODES}:
+            errors.append("'permission_mode' must be 'observe_only' or 'suggest_changes'")
         if "timeout_seconds" in config and config["timeout_seconds"] is not None:
             timeout = config["timeout_seconds"]
             if not isinstance(timeout, (int, float)) or isinstance(timeout, bool) or timeout <= 0:
@@ -153,7 +165,18 @@ class PiRuntimeAdapter(RuntimeAdapter):
         # invoking a real `pi` binary directly. This keeps `binary` a plain
         # str (matching cli_channel.py's config shape) with no special-casing
         # for "binary is actually an argv list".
-        return [binary, *extra_args, "--mode", "rpc"]
+        argv = [binary, *extra_args]
+        if config.get("permission_mode") in _READ_ONLY_PROFILE_MODES:
+            argv.extend(
+                [
+                    "--no-extensions",
+                    "--no-skills",
+                    "--no-prompt-templates",
+                    "--tools",
+                    _READ_ONLY_TOOLS,
+                ]
+            )
+        return [*argv, "--mode", "rpc"]
 
     def _compose_env(self, config: dict[str, Any]) -> dict[str, str] | None:
         import os
@@ -174,12 +197,18 @@ class PiRuntimeAdapter(RuntimeAdapter):
             message = task.input.get("prompt") if isinstance(task.input, dict) else None
         if message is None:
             message = ""
+        if task.instructions:
+            message = f"{task.instructions}\n\n{message}".strip()
         return {"type": "prompt", "id": task.task_id, "message": message}
 
     # ── invoke ────────────────────────────────────────────────────────────────
 
     async def invoke(self, task: AgentTask) -> AsyncIterator[dict[str, Any]]:
         config = task.config or {}
+        config_errors = self.validate_config(config)
+        if config_errors:
+            yield event_error(task.task_id, "; ".join(config_errors), error_type="ConfigError")
+            return
         argv = self._compose_argv(config)
         env = self._compose_env(config)
         cwd = config.get("cwd")
@@ -248,13 +277,15 @@ class PiRuntimeAdapter(RuntimeAdapter):
                         error_message = event["message"]
                         break
                     yield event
-        except TimeoutError:
+        except (TimeoutError, asyncio.CancelledError) as exc:
             proc.terminate()
             try:
                 await asyncio.wait_for(proc.wait(), timeout=_KILL_GRACE_SECONDS)
             except TimeoutError:
                 proc.kill()
                 await proc.wait()
+            if isinstance(exc, asyncio.CancelledError):
+                raise
             yield event_error(
                 task.task_id,
                 f"pi run timed out after {timeout_seconds}s",

@@ -137,6 +137,10 @@ class OperationsAgentRun(TimestampMixin):
     trigger_reference: Mapped[str | None] = mapped_column(String(255), nullable=True)
     target_resource_type: Mapped[str] = mapped_column(String(100), nullable=False)
     target_resource_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    input_payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    state_payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    output_payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="queued")
     started_by_user_id: Mapped[str] = mapped_column(
         ForeignKey("users.id", ondelete="RESTRICT"), nullable=False

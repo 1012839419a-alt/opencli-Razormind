@@ -636,6 +636,9 @@ class WorkflowOpenCLIHDATraceDispatch(BaseModel):
     site: str
     command: str
     args: dict[str, Any] = Field(default_factory=dict)
+    sourceBindingId: Optional[str] = None
+    sourceBindingRevisionId: Optional[str] = None
+    sourceBindingRevisionNumber: Optional[int] = Field(default=None, ge=1)
     iii: dict[str, Any]
 
     @model_validator(mode="after")

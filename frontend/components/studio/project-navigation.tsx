@@ -1,6 +1,6 @@
 'use client'
 
-import { BrainCircuit, ChartNoAxesCombined, Database, LayoutDashboard, Network, Orbit, Settings2, Workflow } from 'lucide-react'
+import { BrainCircuit, Braces, ChartNoAxesCombined, Database, LayoutDashboard, Network, Orbit, Settings2, Workflow } from 'lucide-react'
 import Link from 'next/link'
 
 import { cn } from '@/lib/utils'
@@ -12,6 +12,8 @@ export type ProjectNavigationSection =
   | 'evidence'
   | 'relationships'
   | 'galaxy'
+  | 'apiAccess'
+  | 'operations'
 
 const PROJECT_SECTIONS = [
   { id: 'overview', label: '概览', icon: LayoutDashboard },
@@ -20,7 +22,8 @@ const PROJECT_SECTIONS = [
   { id: 'evidence', label: '逻辑与证据', icon: BrainCircuit },
   { id: 'relationships', label: '证据关系', icon: Network },
   { id: 'galaxy', label: 'Galaxy', icon: Orbit },
-  { id: 'operations', label: '运行记录', icon: ChartNoAxesCombined },
+  { id: 'apiAccess', label: 'API / MCP', icon: Braces },
+  { id: 'operations', label: '日志监测', icon: ChartNoAxesCombined },
   { id: 'settings', label: '设置', icon: Settings2 },
 ] as const
 
@@ -53,23 +56,28 @@ export function ProjectNavigation({
   const galaxyHref = workspaceId && projectId
     ? `/studio/projects/${projectId}/galaxy?workspace=${workspaceId}${workflowId ? `&workflow=${workflowId}` : ''}`
     : null
+  const apiAccessHref = workspaceId && projectId
+    ? `/studio/projects/${projectId}/api?workspace=${workspaceId}${workflowId ? `&workflow=${workflowId}` : ''}`
+    : null
+  const operationsHref = workspaceId && projectId
+    ? `/studio/projects/${projectId}/operations?workspace=${workspaceId}${workflowId ? `&workflow=${workflowId}` : ''}`
+    : null
+  const sectionHrefs = {
+    overview: overviewHref,
+    orchestration: orchestrationHref,
+    data: dataHref,
+    evidence: evidenceHref,
+    relationships: relationshipsHref,
+    galaxy: galaxyHref,
+    apiAccess: apiAccessHref,
+    operations: operationsHref,
+    settings: null,
+  } satisfies Record<(typeof PROJECT_SECTIONS)[number]['id'], string | null>
 
   return (
     <nav className="-mx-1 flex min-w-0 items-center gap-1 overflow-x-auto px-1" aria-label="项目导航">
       {PROJECT_SECTIONS.map((section) => {
-        const href = section.id === 'overview'
-          ? overviewHref
-          : section.id === 'orchestration'
-            ? orchestrationHref
-            : section.id === 'data'
-              ? dataHref
-              : section.id === 'evidence'
-                ? evidenceHref
-                : section.id === 'relationships'
-                  ? relationshipsHref
-                  : section.id === 'galaxy'
-                    ? galaxyHref
-                : null
+        const href = sectionHrefs[section.id]
         const isActive = section.id === active
         const Icon = section.icon
         const className = cn(

@@ -215,6 +215,11 @@ test('situation workflow collects cross-platform discovery and stable transcript
 test('OpenCLI source slots preserve positional command arguments', () => {
   assert.match(catalogSource, /positionalArgs\?: string\[\]/)
   assert.match(catalogSource, /source\.positionalArgs \? \{ positionalArgs: source\.positionalArgs \}/)
+  assert.match(catalogSource, /sourceBindingId\?: string/)
+  assert.match(catalogSource, /sourceBindingRevisionId\?: string/)
+  assert.match(catalogSource, /sourceBindingRevisionNumber\?: number/)
+  assert.match(catalogSource, /Number\.isInteger\(slot\.sourceBindingRevisionNumber\)/)
+  assert.match(catalogSource, /source\.sourceBindingRevisionId \? \{ sourceBindingRevisionId: source\.sourceBindingRevisionId \}/)
   assert.match(businessSource, /positionalArgs: \["600519,000001,300750"\]/)
   assert.match(businessSource, /positionalArgs: \["SH600519"\]/)
   assert.match(businessSource, /positionalArgs: \["A股"\]/)

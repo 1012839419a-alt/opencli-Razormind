@@ -614,6 +614,12 @@ def _optional_source_runtime_params(source: dict[str, Any]) -> dict[str, Any]:
         "mode",
         "positionalArgs",
         "positional_args",
+        "sourceBindingId",
+        "source_binding_id",
+        "sourceBindingRevisionId",
+        "source_binding_revision_id",
+        "sourceBindingRevisionNumber",
+        "source_binding_revision_number",
     ):
         if key in source:
             optional[key] = source[key]

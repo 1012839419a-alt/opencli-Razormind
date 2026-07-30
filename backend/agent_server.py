@@ -159,7 +159,7 @@ async def _kill_process_tree(proc: asyncio.subprocess.Process) -> None:
                 check=False,
             )
         else:
-            os.killpg(proc.pid, signal.SIGKILL)
+            getattr(os, "killpg")(proc.pid, getattr(signal, "SIGKILL"))
     except (OSError, ProcessLookupError):
         proc.kill()
     await proc.wait()
@@ -341,10 +341,14 @@ async def _handle_ws_agent_task(ws, msg: dict) -> None:
         task = AgentTask(
             task_id=request_id,
             workflow=msg.get("workflow", ""),
+            instructions=msg.get("instructions", ""),
             input=msg.get("input") or {},
             config=msg.get("config") or {},
             session_id=msg.get("session_id"),
         )
+        config_errors = adapter.validate_config(task.config)
+        if config_errors:
+            raise RuntimeInvocationError("; ".join(config_errors), error_type="ConfigError")
 
         terminal_event: dict | None = None
         async for event in adapter.invoke(task):
@@ -391,6 +395,21 @@ async def _handle_ws_agent_task(ws, msg: dict) -> None:
             "message": str(exc),
             "error_type": type(exc).__name__,
         })
+
+
+_ACTIVE_AGENT_TASKS: dict[str, asyncio.Task[None]] = {}
+
+
+def _forget_ws_agent_task(request_id: str, task: asyncio.Task[None]) -> None:
+    if _ACTIVE_AGENT_TASKS.get(request_id) is task:
+        _ACTIVE_AGENT_TASKS.pop(request_id, None)
+
+
+def _start_ws_agent_task(ws, msg: dict) -> None:
+    request_id = msg.get("request_id", "")
+    task = asyncio.create_task(_handle_ws_agent_task(ws, msg))
+    _ACTIVE_AGENT_TASKS[request_id] = task
+    task.add_done_callback(lambda completed: _forget_ws_agent_task(request_id, completed))
 
 
 async def _register_via_ws(advertise_url: str) -> None:
@@ -464,11 +483,15 @@ async def _register_via_ws(advertise_url: str) -> None:
                     if msg_type == "collect":
                         asyncio.create_task(_handle_ws_collect(ws, msg))
                     elif msg_type == "agent_task":
-                        asyncio.create_task(_handle_ws_agent_task(ws, msg))
+                        _start_ws_agent_task(ws, msg)
                     elif msg_type == "cancel":
-                        proc = _ACTIVE_COLLECTS.get(msg.get("request_id", ""))
+                        request_id = msg.get("request_id", "")
+                        proc = _ACTIVE_COLLECTS.get(request_id)
                         if proc is not None:
                             asyncio.create_task(_kill_process_tree(proc))
+                        agent_task = _ACTIVE_AGENT_TASKS.get(request_id)
+                        if agent_task is not None:
+                            agent_task.cancel()
                     elif msg_type == "ping":
                         await ws.send(json.dumps({"type": "pong"}))
                     elif msg_type == "pong":
@@ -484,6 +507,9 @@ async def _register_via_ws(advertise_url: str) -> None:
             logger.warning("WS connection lost (attempt %d): %s — reconnecting in %ds",
                            attempt, exc, wait)
             await asyncio.sleep(wait)
+        finally:
+            for task in tuple(_ACTIVE_AGENT_TASKS.values()):
+                task.cancel()
 
 
 _ws_task: asyncio.Task | None = None

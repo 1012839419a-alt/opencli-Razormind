@@ -18,7 +18,6 @@ import pytest
 from backend.agent_runtimes.base import AgentTask
 from backend.agent_runtimes.pi_adapter import PiRuntimeAdapter
 
-
 _FAKE_PI_HAPPY = r'''
 import json
 import sys
@@ -239,6 +238,29 @@ async def test_invoke_timeout_kills_process_and_yields_timeout_error(tmp_path):
     assert sum(1 for e in events if e["type"] in ("done", "error")) == 1
 
 
+async def test_invoke_cancellation_stops_hanging_process(tmp_path):
+    script = _write_fake(tmp_path, "fake_pi_cancel.py", _FAKE_PI_HANGS)
+    adapter = PiRuntimeAdapter()
+    task = AgentTask(
+        task_id="t-cancel",
+        workflow="wf",
+        config=_adapter_config(script, timeout_seconds=30),
+    )
+    started = asyncio.Event()
+
+    async def consume():
+        async for event in adapter.invoke(task):
+            if event["type"] == "started":
+                started.set()
+
+    consumer = asyncio.create_task(consume())
+    await started.wait()
+    consumer.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(consumer, timeout=1)
+
+
 async def test_invoke_missing_binary_yields_error_without_raising():
     adapter = PiRuntimeAdapter()
     task = AgentTask(
@@ -372,6 +394,93 @@ def test_compose_argv_defaults_binary_to_pi():
     assert adapter._compose_argv({}) == ["pi", "--mode", "rpc"]
 
 
+def test_read_only_permission_mode_forces_builtin_read_tools():
+    adapter = PiRuntimeAdapter()
+    argv = adapter._compose_argv(
+        {
+            "binary": "pi-bin",
+            "args": ["--provider", "openai"],
+            "permission_mode": "suggest_changes",
+        }
+    )
+    assert argv == [
+        "pi-bin",
+        "--provider",
+        "openai",
+        "--no-extensions",
+        "--no-skills",
+        "--no-prompt-templates",
+        "--tools",
+        "read,grep,find,ls",
+        "--mode",
+        "rpc",
+    ]
+
+
+def test_read_only_permission_mode_rejects_explicit_extensions():
+    adapter = PiRuntimeAdapter()
+    errors = adapter.validate_config(
+        {
+            "permission_mode": "observe_only",
+            "args": ["--extension=unsafe.ts"],
+        }
+    )
+    assert errors == [
+        "read-only permission modes cannot override Fleet launch config: args"
+    ]
+
+
+async def test_read_only_permission_mode_never_spawns_explicit_extension(monkeypatch):
+    async def spawn(*args, **kwargs):
+        raise AssertionError("invalid runtime config must not spawn a process")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    adapter = PiRuntimeAdapter()
+    task = AgentTask(
+        task_id="restricted",
+        workflow="operations-agent",
+        config={
+            "permission_mode": "observe_only",
+            "args": ["--extension=unsafe.ts"],
+        },
+    )
+
+    events = [event async for event in adapter.invoke(task)]
+
+    assert events == [
+        {
+            "type": "error",
+            "task_id": "restricted",
+            "message": "read-only permission modes cannot override Fleet launch config: args",
+            "error_type": "ConfigError",
+        }
+    ]
+
+
+async def test_read_only_permission_mode_never_spawns_binary_override(monkeypatch):
+    async def spawn(*args, **kwargs):
+        raise AssertionError("Fleet-owned binary must not be overridden")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    adapter = PiRuntimeAdapter()
+    task = AgentTask(
+        task_id="restricted-binary",
+        workflow="operations-agent",
+        config={
+            "permission_mode": "suggest_changes",
+            "binary": sys.executable,
+            "args": ["-c", "print('BINARY_OVERRIDE_EXECUTED')"],
+        },
+    )
+
+    events = [event async for event in adapter.invoke(task)]
+
+    assert events[0]["type"] == "error"
+    assert events[0]["error_type"] == "ConfigError"
+    assert "binary" in events[0]["message"]
+    assert "args" in events[0]["message"]
+
+
 def test_compose_env_none_when_no_overrides():
     adapter = PiRuntimeAdapter()
     assert adapter._compose_env({}) is None
@@ -407,3 +516,17 @@ def test_compose_request_defaults_to_empty_message():
     adapter = PiRuntimeAdapter()
     task = AgentTask(task_id="t1", workflow="wf")
     assert adapter._compose_request(task)["message"] == ""
+
+
+def test_compose_request_prepends_operations_agent_instructions():
+    adapter = PiRuntimeAdapter()
+    task = AgentTask(
+        task_id="t1",
+        workflow="wf",
+        instructions="Follow the published behavior.",
+        input={"message": "Inspect target 42."},
+    )
+
+    assert adapter._compose_request(task)["message"] == (
+        "Follow the published behavior.\n\nInspect target 42."
+    )

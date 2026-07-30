@@ -329,8 +329,9 @@ def _tool_capabilities() -> list[WorkflowToolCapability]:
             description=(
                 "Vision-language interaction over video/image media via a "
                 "self-hosted JoyAI-VL-Interaction deployment (JD open source, "
-                "8B, vLLM-Omni serving). Sends the node prompt plus media "
-                "references, emits the model's interaction reply as event[]."
+                "8B, vLLM-Omni serving). Can send direct video or a bounded "
+                "ffmpeg-sampled frame set for fast OCR/content understanding; "
+                "emits the model's interaction reply as event[]."
             ),
             input_type="event[]",
             output_type="event[]",

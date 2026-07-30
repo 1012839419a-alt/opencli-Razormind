@@ -3,7 +3,7 @@
 The deployment surface is the operator's NetBird fleet LAN, so network
 reachability must not equal operability: once a token is configured
 (``API_AUTH_TOKEN`` / ``Settings.api_auth_token``), every HTTP request under
-``/api`` must carry ``Authorization: Bearer <token>``.
+``/api`` or ``/mcp`` must carry ``Authorization: Bearer <token>``.
 
 Dev posture: with no token configured (the default) the API stays open, and
 ``enforce_bind_guard`` only allows that posture on a localhost bind. The
@@ -51,9 +51,9 @@ Migration path (rollout is two independent, order-tolerant steps):
    ``AGENT_API_TOKEN`` on that node's environment and restarts/redeploys it
    — no center-side action required beyond having set the token.
 
-The MCP server (backend/mcp_server.py) and CLI (backend/cli.py) are HTTP
-*clients* of this API running as separate processes; they read
-``API_AUTH_TOKEN`` from their own environment and attach the same header.
+The standalone MCP stdio process and CLI are HTTP clients of this API; they
+read ``API_AUTH_TOKEN`` from their own environment and attach the same header.
+The built-in Streamable HTTP MCP endpoint is guarded directly by this middleware.
 
 HTTP callers that also need an OIDC bearer token may send the fleet token in
 ``X-API-Token`` and reserve ``Authorization`` for OIDC. WebSocket clients keep
@@ -74,8 +74,8 @@ from starlette.websockets import WebSocketClose
 
 from backend.config import get_settings
 
-#: Path prefix guarded by :class:`FleetAuthMiddleware`.
-PROTECTED_PREFIX = "/api"
+#: Path prefixes guarded by :class:`FleetAuthMiddleware`.
+PROTECTED_PREFIXES = ("/api", "/mcp")
 
 _LOCALHOST_HOSTS = frozenset({"localhost", "::1"})
 
@@ -140,7 +140,7 @@ def _query_token(query_string: bytes) -> str:
 
 
 class FleetAuthMiddleware:
-    """Pure-ASGI middleware validating a static bearer token on /api routes.
+    """Pure-ASGI middleware validating a static bearer token on API/MCP routes.
 
     Guards both ``http`` and ``websocket`` scopes — see module docstring for
     the websocket credential channels, the 4401 close code, and the
@@ -152,7 +152,7 @@ class FleetAuthMiddleware:
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] not in ("http", "websocket") or not scope["path"].startswith(
-            PROTECTED_PREFIX
+            PROTECTED_PREFIXES
         ):
             await self.app(scope, receive, send)
             return

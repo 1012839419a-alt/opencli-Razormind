@@ -59,7 +59,7 @@ def _read_chrome_endpoints() -> list[str]:
         from dotenv import dotenv_values
         for path in candidates:
             env = dotenv_values(path)
-            raw = env.get("AGENT_POOL_ENDPOINTS", "").strip()
+            raw = (env.get("AGENT_POOL_ENDPOINTS") or "").strip()
             if raw:
                 return [ep.strip() for ep in raw.split(",") if ep.strip()]
     except Exception:
@@ -75,6 +75,10 @@ async def lifespan(app: FastAPI):
     # snapshot) so env changes between import and startup are honored.
     enforce_bind_guard(resolve_uvicorn_host(), get_settings().api_auth_token)
 
+    from backend.mcp_server import mcp_http_app
+
+    mcp_lifespan = mcp_http_app.router.lifespan_context(mcp_http_app)
+    await mcp_lifespan.__aenter__()
     await run_migrations()
     # Re-apply logging config: alembic resets root logger level to WARNING during migrations
     # and uvicorn's dictConfig disables pre-existing loggers
@@ -134,12 +138,21 @@ async def lifespan(app: FastAPI):
     # Mark stale pending/running tasks as failed (lost on previous restart)
     from sqlalchemy import update
 
+    from backend.models.operations_agent import OperationsAgentRun
     from backend.models.task import CollectionTask
     async with AsyncSessionLocal() as session:
         await session.execute(
             update(CollectionTask)
             .where(CollectionTask.status.in_(["pending", "running", "ai_processing"]))
             .values(status="failed", error_message="Task lost on server restart")
+        )
+        await session.execute(
+            update(OperationsAgentRun)
+            .where(OperationsAgentRun.status.in_(["queued", "running"]))
+            .values(
+                status="failed",
+                error_message="Operations Agent run interrupted by server restart",
+            )
         )
         await session.commit()
     logger.info("Recovered stale tasks on startup")
@@ -202,6 +215,7 @@ async def lifespan(app: FastAPI):
     if use_admin_scheduler:
         from backend.scheduler import stop_scheduler
         stop_scheduler()
+    await mcp_lifespan.__aexit__(None, None, None)
 
 
 def create_app() -> FastAPI:
@@ -253,6 +267,12 @@ def create_app() -> FastAPI:
         # (task_executor, collection_mode, ...) lives at the authenticated
         # GET /api/v1/system/config instead.
         return {"status": "ok"}
+
+    # Keep MCP on the same deployment and auth boundary as the REST API.
+    # Mounting at the root preserves the protocol's canonical exact /mcp path.
+    from backend.mcp_server import mcp_http_app
+
+    app.mount("/", mcp_http_app, name="mcp")
 
     return app
 

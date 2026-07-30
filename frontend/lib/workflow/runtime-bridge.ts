@@ -49,7 +49,6 @@ export function buildRuntimeNodePatches(preview: WorkflowRuntimeBridgePreview): 
     if (binding) {
       for (const runtimeNodeId of runtimeNodeIds) {
         mergePatch(runtimeNodeId, {
-          status: "success",
           runtimePreview: {
             status: "bound",
             worker: readString(binding.worker),
@@ -64,7 +63,6 @@ export function buildRuntimeNodePatches(preview: WorkflowRuntimeBridgePreview): 
     if (missingRuntime && readString(missingRuntime.code) === "missing_runtime_parameter") {
       for (const runtimeNodeId of runtimeNodeIds) {
         mergePatch(runtimeNodeId, {
-          status: "error",
           runtimePreview: {
             status: "blocked",
             diagnostic: readString(missingRuntime.message) ?? "Missing runtime parameter",
@@ -89,12 +87,6 @@ export function buildRuntimeNodePatches(preview: WorkflowRuntimeBridgePreview): 
 
     for (const [nodeId, dispatches] of dispatchCountByNode) {
       mergePatch(nodeId, {
-        status: "running",
-        runArtifact: {
-          runId: preview.trace.runId,
-          artifactPath: `runtime://${preview.trace.traceId}`,
-          apiPath: `/api/v1/workflows/opencli-hda/trace`,
-        },
         runtimePreview: {
           status: "dispatch-ready",
           runId: preview.trace.runId,
@@ -196,7 +188,6 @@ export function applyEvidenceBatchRuntimePatches(
 
 function errorPatch(error: WorkflowCompileError): Partial<WorkflowNodeData> {
   return {
-    status: "error",
     runtimePreview: {
       status: "blocked",
       diagnostic: error.message,

@@ -986,6 +986,17 @@ export interface SourceBinding {
   updated_at: string
 }
 
+export interface SourceBindingRevision {
+  id: string
+  source_binding_id: string
+  revision_number: number
+  pinned_source_revision_id: string
+  scope_config: Record<string, unknown>
+  created_by_user_id: string
+  created_at: string
+  updated_at: string
+}
+
 export interface SourceBindingInput {
   source_id: string
   name: string
@@ -1080,6 +1091,46 @@ export interface WorkflowAssetSummary {
   updated_at: string
 }
 
+export interface ProjectRuntimeLog {
+  run_id: string
+  workflow_id: string
+  workflow_name: string
+  workflow_version: number | null
+  trace_id: string
+  status: import('@/lib/workflow/backend-runs').WorkflowRunStatus
+  trigger: string
+  response_mode: 'async' | 'sync-short-wait' | 'callback'
+  event_count: number
+  node_count: number
+  error_count: number
+  duration_ms: number
+  started_at: string
+  updated_at: string
+}
+
+export interface ProjectRuntimeLogPage {
+  logs: ProjectRuntimeLog[]
+  meta: PaginationMeta
+}
+
+export interface ProjectRuntimeTrace {
+  workflow_version: number | null
+  inputs: Record<string, unknown>
+  user: string | null
+  response_mode: ProjectRuntimeLog['response_mode']
+  trace: import('@/lib/workflow/backend-runs').WorkflowRunTraceResponse
+}
+
+export interface ProjectRuntimeSummary {
+  total_runs: number
+  successful_runs: number
+  failed_runs: number
+  blocked_runs: number
+  running_runs: number
+  total_events: number
+  recent_logs: ProjectRuntimeLog[]
+}
+
 export interface WorkflowDraftRead {
   revision: number
   graph: import('@/lib/workflow/schema').WorkflowProject
@@ -1155,10 +1206,50 @@ export interface OperationsAgent {
   name: string
   description: string | null
   disabled: boolean
+  current_published_version: number | null
   current_profile: OperationsAgentProfile
   effective_profile: OperationsAgentProfile | null
   created_at: string
   updated_at: string
+}
+
+export interface AgentContractV1 {
+  schema_version: 'agent.contract.v1'
+  input_schema: Record<string, unknown>
+  output_schema: Record<string, unknown>
+  state_schema: Record<string, unknown>
+}
+
+export interface AgentRuntimeBindingV1 {
+  schema_version: 'agent.runtime-binding.v1'
+  agent_url: string
+  runtime: 'pi'
+  workflow: string
+  config: Record<string, unknown>
+  dispatch_timeout_seconds: number
+}
+
+export interface OperationsAgentDraft {
+  revision: number
+  instructions: string
+  model_configuration: Record<string, unknown> & {
+    agent_contract?: AgentContractV1
+    runtime_binding?: AgentRuntimeBindingV1
+  }
+  tool_configuration: Record<string, unknown>
+  updated_by_user_id: string
+  updated_at: string
+}
+
+export interface PublishedOperationsAgentVersion {
+  version: number
+  draft_revision: number
+  instructions: string
+  model_configuration: OperationsAgentDraft['model_configuration']
+  tool_configuration: Record<string, unknown>
+  published_by_user_id: string
+  reason: string
+  created_at: string
 }
 
 export interface OperationsAgentRun {
@@ -1171,6 +1262,10 @@ export interface OperationsAgentRun {
   trigger_reference: string | null
   target_resource_type: string
   target_resource_id: string
+  input_payload: Record<string, unknown>
+  state_payload: Record<string, unknown>
+  output_payload: Record<string, unknown> | null
+  error_message: string | null
   status: 'queued' | 'running' | 'paused' | 'completed' | 'failed' | 'cancelled'
   started_by_user_id: string
   created_at: string

@@ -50,6 +50,7 @@ class AgentTask:
 
     task_id: str
     workflow: str  # runtime-native workflow/agent identifier
+    instructions: str = ""
     input: dict[str, Any] = field(default_factory=dict)
     # Runtime-specific settings such as model, tools, cwd, or sidecar config.
     config: dict[str, Any] = field(default_factory=dict)

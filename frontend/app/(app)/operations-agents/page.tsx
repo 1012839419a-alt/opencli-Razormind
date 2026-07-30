@@ -6,7 +6,7 @@ import { ArrowUp, Bell, Bot, CalendarClock, ChevronDown, CircleDot, Cloud, Code2
 import { toast } from 'sonner'
 
 import AgentAvatar from '@/components/smoothui/agent-avatar'
-import { useAutomations, useCreateAutomation, useMyWorkspaces, useOperationsAgentActivity, useOperationsAgents, usePatchAutomation } from '@/lib/api/hooks'
+import { useAutomations, useCreateAutomation, useMyWorkspaces, useOperationsAgentActivity, useOperationsAgentDraft, useOperationsAgents, useOperationsAgentVersions, usePatchAutomation, usePublishOperationsAgentVersion, useStartOperationsAgentRun, useUpdateOperationsAgentDraft } from '@/lib/api/hooks'
 import type { Automation, OperationsAgent, OperationsAgentMode } from '@/lib/api/types'
 import { cn } from '@/lib/utils'
 import { BACKEND_HINT, EmptyState, ErrorState, LoadingState } from '@/components/shell/data-states'
@@ -43,6 +43,137 @@ function scheduleText(value: string) {
   return `${kind === 'daily' ? '每天' : kind === 'weekdays' ? '工作日' : kind === 'weekly' ? '每周' : kind}${time ? ` ${time}` : ''}`
 }
 
+const EMPTY_SCHEMA = { type: 'object', properties: {} }
+
+function parseJsonObject(value: string, label: string) {
+  const parsed = JSON.parse(value)
+  if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') throw new Error(`${label} 必须是 JSON 对象`)
+  return parsed as Record<string, unknown>
+}
+
+function ContractEditor({ workspaceId, agent }: { workspaceId: string; agent: OperationsAgent }) {
+  const draft = useOperationsAgentDraft(workspaceId, agent.id)
+  const versions = useOperationsAgentVersions(workspaceId, agent.id)
+  const updateDraft = useUpdateOperationsAgentDraft()
+  const publishVersion = usePublishOperationsAgentVersion()
+  const [instructions, setInstructions] = useState('')
+  const [inputSchema, setInputSchema] = useState('')
+  const [outputSchema, setOutputSchema] = useState('')
+  const [stateSchema, setStateSchema] = useState('')
+  const [agentUrl, setAgentUrl] = useState('')
+  const [workflow, setWorkflow] = useState('')
+  const [dispatchTimeout, setDispatchTimeout] = useState(600)
+  const [runtimeConfig, setRuntimeConfig] = useState('')
+  const [reason, setReason] = useState('')
+
+  useEffect(() => {
+    if (!draft.data) return
+    const contract = draft.data.model_configuration.agent_contract
+    const binding = draft.data.model_configuration.runtime_binding
+    setInstructions(draft.data.instructions)
+    setInputSchema(JSON.stringify(contract?.input_schema ?? EMPTY_SCHEMA, null, 2))
+    setOutputSchema(JSON.stringify(contract?.output_schema ?? EMPTY_SCHEMA, null, 2))
+    setStateSchema(JSON.stringify(contract?.state_schema ?? EMPTY_SCHEMA, null, 2))
+    setAgentUrl(binding?.agent_url ?? '')
+    setWorkflow(binding?.workflow ?? '')
+    setDispatchTimeout(binding?.dispatch_timeout_seconds ?? 600)
+    setRuntimeConfig(JSON.stringify(binding?.config ?? {}, null, 2))
+  }, [draft.data])
+
+  async function saveDraft() {
+    if (!draft.data) return
+    try {
+      await updateDraft.mutateAsync({
+        workspaceId,
+        agentId: agent.id,
+        data: {
+          revision: draft.data.revision,
+          instructions: instructions.trim(),
+          model_configuration: {
+            ...draft.data.model_configuration,
+            agent_contract: {
+              schema_version: 'agent.contract.v1',
+              input_schema: parseJsonObject(inputSchema, 'Input schema'),
+              output_schema: parseJsonObject(outputSchema, 'Output schema'),
+              state_schema: parseJsonObject(stateSchema, 'State schema'),
+            },
+            runtime_binding: {
+              schema_version: 'agent.runtime-binding.v1',
+              agent_url: agentUrl.trim(),
+              runtime: 'pi',
+              workflow: workflow.trim(),
+              dispatch_timeout_seconds: dispatchTimeout,
+              config: parseJsonObject(runtimeConfig, 'Runtime config'),
+            },
+          },
+          tool_configuration: draft.data.tool_configuration,
+        },
+      })
+      toast.success('Contract 草稿已保存')
+    } catch (error) {
+      if ((error as Error & { status?: number }).status === 409) {
+        await draft.refetch()
+        toast.error('草稿已被其他人修改，已重新加载最新 revision')
+        return
+      }
+      toast.error(error instanceof Error ? error.message : '保存失败')
+    }
+  }
+
+  async function publish() {
+    if (!reason.trim()) return
+    try {
+      await publishVersion.mutateAsync({ workspaceId, agentId: agent.id, reason: reason.trim() })
+      setReason('')
+      toast.success('Contract 版本已发布')
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : '发布失败')
+    }
+  }
+
+  const currentPublishedVersion = Math.max(agent.current_published_version ?? 0, ...(versions.data?.map((version) => version.version) ?? [0]))
+  if (draft.isLoading) return <div className="p-6"><LoadingState rows={4} /></div>
+  if (draft.isError) return <div className="p-6"><ErrorState message={(draft.error as Error)?.message} hint={BACKEND_HINT} /></div>
+
+  return (
+    <div className="grid min-h-0 flex-1 md:grid-cols-[minmax(0,1fr)_280px]">
+      <div className="min-h-0 overflow-y-auto bg-[#090a0b] p-5">
+        <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
+          <div><h3 className="text-sm font-medium">Agent Contract</h3><p className="mt-1 text-xs text-muted-foreground">Draft r{draft.data?.revision ?? '—'} · 当前发布 v{currentPublishedVersion || '—'}</p></div>
+          <Button size="sm" onClick={() => void saveDraft()} disabled={!instructions.trim() || !agentUrl.trim() || !workflow.trim() || updateDraft.isPending}>保存草稿</Button>
+        </div>
+        <div className="space-y-5">
+          <label className="block space-y-1.5 text-xs text-muted-foreground">Instructions<Textarea value={instructions} onChange={(event) => setInstructions(event.target.value)} className="min-h-36 resize-y text-sm text-foreground" placeholder="描述智能体的职责、边界和执行要求" /></label>
+          <div className="grid gap-4 lg:grid-cols-3">
+            <label className="block space-y-1.5 text-xs text-muted-foreground">Input schema<Textarea value={inputSchema} onChange={(event) => setInputSchema(event.target.value)} spellCheck={false} className="min-h-64 resize-y font-mono text-xs text-foreground" /></label>
+            <label className="block space-y-1.5 text-xs text-muted-foreground">Output schema<Textarea value={outputSchema} onChange={(event) => setOutputSchema(event.target.value)} spellCheck={false} className="min-h-64 resize-y font-mono text-xs text-foreground" /></label>
+            <label className="block space-y-1.5 text-xs text-muted-foreground">State schema<Textarea value={stateSchema} onChange={(event) => setStateSchema(event.target.value)} spellCheck={false} className="min-h-64 resize-y font-mono text-xs text-foreground" /></label>
+          </div>
+          <details className="rounded-lg border border-white/[0.08] px-4 py-3">
+            <summary className="cursor-pointer text-sm text-muted-foreground">Runtime Binding 高级配置</summary>
+            <div className="mt-4 grid gap-4 sm:grid-cols-4">
+              <label className="space-y-1.5 text-xs text-muted-foreground">Agent URL<Input type="url" value={agentUrl} onChange={(event) => setAgentUrl(event.target.value)} placeholder="https://agent.example.com" /></label>
+              <label className="space-y-1.5 text-xs text-muted-foreground">Runtime<Input value="pi" readOnly aria-readonly="true" /></label>
+              <label className="space-y-1.5 text-xs text-muted-foreground">Workflow<Input value={workflow} onChange={(event) => setWorkflow(event.target.value)} placeholder="default" /></label>
+              <label className="space-y-1.5 text-xs text-muted-foreground">超时（秒）<Input type="number" min={1} max={3600} value={dispatchTimeout} onChange={(event) => setDispatchTimeout(Number(event.target.value))} /></label>
+            </div>
+            <label className="mt-4 block space-y-1.5 text-xs text-muted-foreground">Task config（仅 timeout_seconds）<Textarea value={runtimeConfig} onChange={(event) => setRuntimeConfig(event.target.value)} spellCheck={false} className="min-h-32 resize-y font-mono text-xs text-foreground" /></label>
+          </details>
+        </div>
+      </div>
+      <aside className="min-h-0 overflow-y-auto border-l border-white/[0.08] bg-white/[0.015] p-5">
+        <h3 className="text-xs font-medium text-muted-foreground">发布新版本</h3>
+        <Textarea value={reason} onChange={(event) => setReason(event.target.value)} placeholder="发布原因（必填）" className="mt-3 min-h-20 resize-y text-sm" />
+        <Button className="mt-3 w-full" size="sm" onClick={() => void publish()} disabled={!reason.trim() || publishVersion.isPending}>发布 Contract</Button>
+        <div className="mt-7 border-t border-white/[0.08] pt-5">
+          <h3 className="text-xs font-medium text-muted-foreground">版本历史</h3>
+          {versions.isLoading ? <div className="mt-3 text-xs text-muted-foreground">加载中…</div> : versions.isError ? <p className="mt-3 text-xs text-destructive">{(versions.error as Error)?.message}</p> : !versions.data?.length ? <p className="mt-3 text-xs text-muted-foreground">尚未发布版本</p> : <div className="mt-3 space-y-2">{versions.data.map((version) => <div key={version.version} className="rounded-lg border border-white/[0.08] p-3"><div className="flex items-center justify-between text-xs"><span className="font-medium text-foreground">v{version.version}</span><span className="text-muted-foreground">Draft r{version.draft_revision}</span></div><p className="mt-2 text-xs leading-5 text-muted-foreground">{version.reason}</p><p className="mt-1 text-[11px] text-muted-foreground">{new Date(version.created_at).toLocaleString()}</p></div>)}</div>}
+        </div>
+      </aside>
+    </div>
+  )
+}
+
 export default function OperationsAgentsPage() {
   const workspaces = useMyWorkspaces()
   const [workspaceId, setWorkspaceId] = useState<string | null>(null)
@@ -52,8 +183,10 @@ export default function OperationsAgentsPage() {
   const activity = useOperationsAgentActivity(workspaceId)
   const createAutomation = useCreateAutomation()
   const patchAutomation = usePatchAutomation()
+  const startRunMutation = useStartOperationsAgentRun()
   const [open, setOpen] = useState(false)
   const [selectedAgent, setSelectedAgent] = useState<OperationsAgent | null>(null)
+  const [agentDetailView, setAgentDetailView] = useState<'activity' | 'contract'>('activity')
   const [automationDraft, setAutomationDraft] = useState('')
   const [name, setName] = useState('')
   const [prompt, setPrompt] = useState('')
@@ -65,6 +198,10 @@ export default function OperationsAgentsPage() {
   const [time, setTime] = useState('09:00')
   const [sessionMode, setSessionMode] = useState<'fresh' | 'reuse'>('fresh')
   const [approvalMode, setApprovalMode] = useState<OperationsAgentMode>('suggest_changes')
+  const [runTargetType, setRunTargetType] = useState('manual')
+  const [runTargetId, setRunTargetId] = useState('')
+  const [runInput, setRunInput] = useState('{}')
+  const [runState, setRunState] = useState('{}')
 
   useEffect(() => {
     if (!workspaceId && workspaces.data?.length) setWorkspaceId(workspaces.data[0].id)
@@ -117,6 +254,25 @@ export default function OperationsAgentsPage() {
     }
   }
 
+  async function startRun() {
+    if (!workspaceId || !selectedAgent || !runTargetType.trim() || !runTargetId.trim()) return
+    try {
+      await startRunMutation.mutateAsync({
+        workspaceId,
+        agentId: selectedAgent.id,
+        data: {
+          target_resource_type: runTargetType.trim(),
+          target_resource_id: runTargetId.trim(),
+          input_payload: parseJsonObject(runInput, 'Input payload'),
+          state_payload: parseJsonObject(runState, 'State payload'),
+        },
+      })
+      toast.success('Run 已提交，Fleet 预检通过')
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Run 启动失败')
+    }
+  }
+
   if (workspaces.isLoading) return <div className="p-8"><LoadingState rows={3} /></div>
   if (workspaces.isError) return <div className="p-8"><ErrorState message={(workspaces.error as Error)?.message} hint={BACKEND_HINT} /></div>
   if (!workspaces.data?.length) return <div className="p-8"><EmptyState title="尚未加入 Workspace" description="加入 Workspace 后才能使用自动化和智能体。" /></div>
@@ -158,7 +314,7 @@ export default function OperationsAgentsPage() {
         ) : (
           <section className="mt-10">
             <div className="mb-7 flex items-start justify-between gap-4"><div><h2 className="text-xl font-medium tracking-[-0.015em]">智能体正在做什么</h2><p className="mt-1 text-sm text-muted-foreground">状态每 5 秒更新；需要你决定的动作会进入 Inbox。</p></div><Link href="/agents" className={buttonVariants()}><Plus />添加智能体</Link></div>
-            {agents.isLoading ? <LoadingState rows={3} /> : agents.isError ? <ErrorState message={(agents.error as Error)?.message} hint={BACKEND_HINT} /> : !agents.data?.length ? <EmptyState title="还没有智能体" description="添加一个智能体后，它的当前任务和最近活动会显示在这里。" /> : <div className="divide-y divide-white/[0.07] border-y border-white/[0.07]">{agents.data.map((agent) => { const run = latestRun.get(agent.id); const working = run?.status === 'running' || run?.status === 'queued'; return <article key={agent.id}><button type="button" onClick={() => setSelectedAgent(agent)} className="group flex w-full items-start gap-4 px-2 py-5 text-left transition-colors hover:bg-white/[0.025] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-white/30"><div className="relative size-10 shrink-0"><AgentAvatar seed={agent.id} size={40} />{working ? <span className="absolute -right-0.5 -top-0.5 size-2.5 animate-pulse rounded-full border-2 border-[#0f1012] bg-emerald-400" /> : null}</div><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-x-3 gap-y-1"><h3 className="text-sm font-medium">{agent.name}</h3><span className={cn('text-xs', working ? 'text-emerald-400' : agent.disabled ? 'text-amber-300' : 'text-muted-foreground')}>{agent.disabled ? '已停用' : working ? '工作中' : '空闲'}</span></div><p className="mt-1 text-sm text-muted-foreground">{run ? `${run.target_resource_type} · ${run.target_resource_id}` : agent.description || '等待任务'}</p>{run ? <div className="mt-3 flex items-center gap-2 text-xs text-muted-foreground"><CircleDot className="size-3" />{run.trigger_type} · {run.status}</div> : <div className="mt-3 text-xs text-muted-foreground">暂无进行中的任务</div>}</div><ChevronDown className="mt-2 size-4 -rotate-90 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" /></button></article> })}</div>}
+            {agents.isLoading ? <LoadingState rows={3} /> : agents.isError ? <ErrorState message={(agents.error as Error)?.message} hint={BACKEND_HINT} /> : !agents.data?.length ? <EmptyState title="还没有智能体" description="添加一个智能体后，它的当前任务和最近活动会显示在这里。" /> : <div className="divide-y divide-white/[0.07] border-y border-white/[0.07]">{agents.data.map((agent) => { const run = latestRun.get(agent.id); const working = run?.status === 'running' || run?.status === 'queued'; return <article key={agent.id}><button type="button" onClick={() => { setSelectedAgent(agent); setAgentDetailView('activity') }} className="group flex w-full items-start gap-4 px-2 py-5 text-left transition-colors hover:bg-white/[0.025] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-white/30"><div className="relative size-10 shrink-0"><AgentAvatar seed={agent.id} size={40} />{working ? <span className="absolute -right-0.5 -top-0.5 size-2.5 animate-pulse rounded-full border-2 border-[#0f1012] bg-emerald-400" /> : null}</div><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-x-3 gap-y-1"><h3 className="text-sm font-medium">{agent.name}</h3><span className={cn('text-xs', working ? 'text-emerald-400' : agent.disabled ? 'text-amber-300' : 'text-muted-foreground')}>{agent.disabled ? '已停用' : working ? '工作中' : '空闲'}</span></div><p className="mt-1 text-sm text-muted-foreground">{run ? `${run.target_resource_type} · ${run.target_resource_id}` : agent.description || '等待任务'}</p>{run ? <div className="mt-3 flex items-center gap-2 text-xs text-muted-foreground"><CircleDot className="size-3" />{run.trigger_type} · {run.status}</div> : <div className="mt-3 text-xs text-muted-foreground">暂无进行中的任务</div>}</div><ChevronDown className="mt-2 size-4 -rotate-90 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" /></button></article> })}</div>}
           </section>
         )}
       </div>
@@ -184,17 +340,29 @@ export default function OperationsAgentsPage() {
           {selectedAgent ? <>
             <DialogHeader className="border-b border-white/[0.08] px-6 py-4">
               <div className="flex items-center gap-3 pr-8"><AgentAvatar seed={selectedAgent.id} size={36} /><div className="min-w-0"><DialogTitle className="flex items-center gap-2 text-base"><span className="truncate">{selectedAgent.name}</span><span className={cn('text-xs font-normal', selectedAgent.disabled ? 'text-amber-300' : latestRun.get(selectedAgent.id)?.status === 'running' ? 'text-emerald-400' : 'text-muted-foreground')}>{selectedAgent.disabled ? '已停用' : latestRun.get(selectedAgent.id)?.status === 'running' ? '工作中' : '空闲'}</span></DialogTitle><DialogDescription className="mt-0.5">CLI Agent 会话 · {APPROVALS.find((item) => item.id === selectedAgent.current_profile.mode)?.label ?? selectedAgent.current_profile.mode}</DialogDescription></div></div>
+              <div className="mt-3 flex gap-1"><button type="button" onClick={() => setAgentDetailView('activity')} className={cn('rounded-md px-3 py-1.5 text-xs', agentDetailView === 'activity' ? 'bg-white/[0.08] text-foreground' : 'text-muted-foreground hover:text-foreground')}>活动</button><button type="button" onClick={() => setAgentDetailView('contract')} className={cn('rounded-md px-3 py-1.5 text-xs', agentDetailView === 'contract' ? 'bg-white/[0.08] text-foreground' : 'text-muted-foreground hover:text-foreground')}>Contract</button></div>
             </DialogHeader>
-            <div className="grid min-h-0 flex-1 md:grid-cols-[minmax(0,1fr)_250px]">
+            {agentDetailView === 'activity' ? <div className="grid min-h-0 flex-1 md:grid-cols-[minmax(0,1fr)_250px]">
               <div className="flex min-h-0 flex-col bg-[#090a0b]">
                 <div className="flex items-center gap-2 border-b border-white/[0.06] px-5 py-2 font-mono text-[11px] text-muted-foreground"><Terminal className="size-3" />SESSION OUTPUT</div>
                 <div className="min-h-0 flex-1 overflow-y-auto p-5 font-mono text-xs leading-6">
-                  {(activity.data ?? []).filter((run) => run.operations_agent_id === selectedAgent.id).length ? <div className="space-y-5">{(activity.data ?? []).filter((run) => run.operations_agent_id === selectedAgent.id).map((run) => <div key={run.id}><div className="text-muted-foreground"><span className="text-emerald-400">[{run.status}]</span> {new Date(run.updated_at).toLocaleString()}</div><div className="mt-1 text-white/80">{run.trigger_type} → {run.target_resource_type}/{run.target_resource_id}</div><div className="text-white/45">profile v{run.profile_version} · agent v{run.published_version}</div></div>)}</div> : <div className="flex h-full min-h-56 flex-col items-center justify-center text-center font-sans"><Terminal className="mb-3 size-6 text-white/25" /><p className="text-sm text-white/65">还没有会话输出</p><p className="mt-1 max-w-xs text-xs leading-5 text-white/35">智能体收到任务后，这里会显示真实的 CLI 活动和运行状态。</p></div>}
+                  {(activity.data ?? []).filter((run) => run.operations_agent_id === selectedAgent.id).length ? <div className="space-y-5">{(activity.data ?? []).filter((run) => run.operations_agent_id === selectedAgent.id).map((run) => <div key={run.id}><div className="text-muted-foreground"><span className="text-emerald-400">[{run.status}]</span> {new Date(run.updated_at).toLocaleString()}</div><div className="mt-1 text-white/80">{run.trigger_type} → {run.target_resource_type}/{run.target_resource_id}</div><div className="text-white/45">profile v{run.profile_version} · agent v{run.published_version}</div>{run.error_message ? <div className="mt-2 whitespace-pre-wrap text-red-300">{run.error_message}</div> : null}{run.output_payload ? <pre className="mt-2 overflow-x-auto whitespace-pre-wrap text-white/75">{JSON.stringify(run.output_payload, null, 2)}</pre> : null}</div>)}</div> : <div className="flex h-full min-h-56 flex-col items-center justify-center text-center font-sans"><Terminal className="mb-3 size-6 text-white/25" /><p className="text-sm text-white/65">还没有会话输出</p><p className="mt-1 max-w-xs text-xs leading-5 text-white/35">智能体收到任务后，这里会显示真实的 CLI 活动和运行状态。</p></div>}
                 </div>
-                <div className="border-t border-white/[0.06] p-3"><div className="flex items-end gap-2 rounded-xl border border-white/[0.08] bg-white/[0.03] p-2 pl-3"><Textarea disabled placeholder="启动任务后可在这里向智能体发送指令" aria-label="向智能体发送指令" className="min-h-10 resize-none border-0 bg-transparent px-0 py-2 text-sm shadow-none focus-visible:ring-0" /><Button size="icon" disabled className="rounded-full"><ArrowUp /></Button></div></div>
+                <div className="border-t border-white/[0.06] p-3">
+                  <details className="rounded-xl border border-white/[0.08] bg-white/[0.03] px-3 py-2">
+                    <summary className="cursor-pointer text-xs text-muted-foreground">启动真实 Run</summary>
+                    <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                      <Input value={runTargetType} onChange={(event) => setRunTargetType(event.target.value)} placeholder="资源类型" aria-label="Run 资源类型" />
+                      <Input value={runTargetId} onChange={(event) => setRunTargetId(event.target.value)} placeholder="资源 ID" aria-label="Run 资源 ID" />
+                      <Textarea value={runInput} onChange={(event) => setRunInput(event.target.value)} spellCheck={false} className="min-h-24 font-mono text-xs" aria-label="Run input payload" />
+                      <Textarea value={runState} onChange={(event) => setRunState(event.target.value)} spellCheck={false} className="min-h-24 font-mono text-xs" aria-label="Run state payload" />
+                    </div>
+                    <Button className="mt-3" size="sm" onClick={() => void startRun()} disabled={!runTargetType.trim() || !runTargetId.trim() || startRunMutation.isPending}><Play />启动并执行 Fleet 预检</Button>
+                  </details>
+                </div>
               </div>
               <aside className="border-l border-white/[0.08] bg-white/[0.015] p-5 text-xs"><div className="text-muted-foreground">职责</div><p className="mt-2 text-sm leading-6 text-foreground">{selectedAgent.description || '尚未填写职责说明'}</p><div className="mt-6 text-muted-foreground">权限模式</div><p className="mt-2 text-sm text-foreground">{APPROVALS.find((item) => item.id === selectedAgent.current_profile.mode)?.label}</p><p className="mt-1 leading-5 text-muted-foreground">Profile v{selectedAgent.current_profile.version} · {selectedAgent.current_profile.reason}</p><Link href="/agents" className={cn(buttonVariants({ variant: 'outline', size: 'sm' }), 'mt-6 w-full')}>配置智能体</Link></aside>
-            </div>
+            </div> : workspaceId ? <ContractEditor workspaceId={workspaceId} agent={selectedAgent} /> : null}
           </> : null}
         </DialogContent>
       </Dialog>

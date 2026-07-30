@@ -14,6 +14,8 @@ ChannelType = Literal[
     "skill",
     "crawl4ai",
     "browser_act",
+    "doubao_research",
+    "douyin_detail",
 ]
 
 

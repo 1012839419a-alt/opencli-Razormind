@@ -1,10 +1,12 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import Link from "next/link"
+import { useSearchParams } from "next/navigation"
 import {
   AlertTriangle,
   ChevronRight,
+  CircleHelp,
   Database,
   ExternalLink,
   GitBranch,
@@ -15,11 +17,19 @@ import {
   Trash2,
   Unplug,
 } from "lucide-react"
+import { driver, type Driver } from "driver.js"
+import "driver.js/dist/driver.css"
 import { useReactFlow } from "@xyflow/react"
+import { Ripple } from "@/components/canvasui/Ripple"
 import { clearParameterDraftEntry, useFlowStore } from "@/lib/flow/store"
 import { portTypesCompatible, wouldCreateCycle } from "@/lib/flow/graph"
 import { useSettingsStore } from "@/lib/flow/settings-store"
-import { useSources } from "@/lib/api/hooks"
+import {
+  useProjectSourceBindingRevisions,
+  useProjectSourceBindings,
+  useSources,
+} from "@/lib/api/hooks"
+import type { SourceBinding, SourceBindingRevision } from "@/lib/api/types"
 import type {
   FieldConfig,
   GeneratedWorkflowEdgeMapping,
@@ -74,6 +84,10 @@ import {
   OPENCLI_SITUATION_SOURCES,
 } from "@/lib/workflow/opencli-business-workflows"
 import {
+  matchWorkflowFleetCapability,
+  type WorkflowFleetCapabilityMatchResponse,
+} from "@/lib/workflow/backend-fleet"
+import {
   openCLISlotFromDataSource,
   SOURCE_ARGUMENT_LABELS,
   SOURCE_MARKET_OPTIONS,
@@ -123,6 +137,142 @@ const SOURCE_ID_ACRONYMS: Record<string, string> = {
   sse: "SSE",
   szse: "SZSE",
   ths: "THS",
+}
+
+const SOURCE_POOL_TOUR_STORAGE_KEY = "opencli:source-pool-tour:v1"
+
+const SOURCE_POOL_TOUR_COPY = {
+  "zh-CN": {
+    button: "查看来源池操作引导",
+    next: "下一步",
+    previous: "上一步",
+    done: "完成",
+    steps: [
+      {
+        title: "来源池",
+        description: "来源按业务分组呈现；每张卡片对应一个可独立配置的 OpenCLI 来源。",
+      },
+      {
+        title: "搜索与定位",
+        description: "按名称、站点、命令或分组过滤来源，匹配的分组会自动展开。",
+      },
+      {
+        title: "固定 Binding Revision",
+        description: "展开来源分组和卡片，选择当前项目的 Source Binding，并显式固定不可变 Revision。",
+      },
+      {
+        title: "Fleet 预检",
+        description: "先检查 Binding 生命周期、Worker、站点和命令能力；预检不会执行来源。",
+      },
+      {
+        title: "提交真实运行",
+        description: "确认预检后，使用画布顶部“运行”提交当前工作流；Preview 仍只做预览。",
+      },
+    ],
+  },
+  "en-US": {
+    button: "Open source pool guide",
+    next: "Next",
+    previous: "Previous",
+    done: "Done",
+    steps: [
+      {
+        title: "Source pool",
+        description: "Sources are grouped by business purpose; each card is an independently configured OpenCLI source.",
+      },
+      {
+        title: "Search and locate",
+        description: "Filter by name, site, command, or group. Matching groups open automatically.",
+      },
+      {
+        title: "Pin a Binding Revision",
+        description: "Open a source group and card, choose a Source Binding from this project, then pin an immutable Revision.",
+      },
+      {
+        title: "Fleet preflight",
+        description: "Check the Binding lifecycle, Worker, site, and command capability without executing the source.",
+      },
+      {
+        title: "Submit a real run",
+        description: "After preflight, use Run in the canvas header to submit the workflow. Preview remains non-executing.",
+      },
+    ],
+  },
+} as const
+
+function SourcePoolTour({ language }: { language: WorkflowLanguage }) {
+  const tourRef = useRef<Driver | null>(null)
+  const tourCopy = SOURCE_POOL_TOUR_COPY[language]
+  const startTour = useCallback(() => {
+    tourRef.current?.destroy()
+    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches
+    const tour = driver({
+      animate: !reduceMotion,
+      allowClose: true,
+      allowKeyboardControl: true,
+      smoothScroll: !reduceMotion,
+      overlayColor: "var(--oc-bg)",
+      overlayOpacity: 0.82,
+      stagePadding: 5,
+      stageRadius: 2,
+      popoverClass: "opencli-source-tour",
+      showProgress: true,
+      progressText: "{{current}} / {{total}}",
+      nextBtnText: tourCopy.next,
+      prevBtnText: tourCopy.previous,
+      doneBtnText: tourCopy.done,
+      skipMissingElement: true,
+      onDestroyed: () => {
+        window.localStorage.setItem(SOURCE_POOL_TOUR_STORAGE_KEY, "1")
+        tourRef.current = null
+      },
+      steps: [
+        {
+          element: '[data-testid="source-pool-editor"]',
+          popover: { ...tourCopy.steps[0], side: "left", align: "start" },
+        },
+        {
+          element: '[data-testid="source-pool-search"]',
+          popover: { ...tourCopy.steps[1], side: "bottom", align: "start" },
+        },
+        {
+          element: '[data-testid="source-pool-group"]',
+          popover: { ...tourCopy.steps[2], side: "left", align: "start" },
+        },
+        {
+          element: '[data-testid="source-pool-preflight"]',
+          popover: { ...tourCopy.steps[3], side: "bottom", align: "end" },
+        },
+        {
+          element: '[data-testid="workflow-run"]',
+          popover: { ...tourCopy.steps[4], side: "bottom", align: "end" },
+        },
+      ],
+    })
+    tourRef.current = tour
+    tour.drive()
+  }, [tourCopy])
+
+  useEffect(() => {
+    if (window.localStorage.getItem(SOURCE_POOL_TOUR_STORAGE_KEY)) return
+    const timer = window.setTimeout(startTour, 500)
+    return () => {
+      window.clearTimeout(timer)
+      tourRef.current?.destroy()
+    }
+  }, [startTour])
+
+  return (
+    <button
+      type="button"
+      aria-label={tourCopy.button}
+      title={tourCopy.button}
+      onClick={startTour}
+      className="inline-flex size-7 shrink-0 items-center justify-center rounded-xs border border-ops-line text-zinc-500 transition-colors hover:border-ops-line-strong hover:text-zinc-100"
+    >
+      <CircleHelp className="size-3.5" />
+    </button>
+  )
 }
 
 function sourceCardLabel(source: OpenCLISourceSlot, language: WorkflowLanguage): string {
@@ -186,8 +336,8 @@ const INSPECTOR_COPY = {
     noContract: "后端尚未为此节点投影输入/输出契约。",
     debug: "调试信息",
     dataSources: "数据来源",
-    sourceHelp: "选择系统中已经连接的数据源，执行时自动并行采集。",
-    manageSources: "管理数据源",
+    sourceHelp: "配置当前工作流的 OpenCLI 来源槽位；运行前会检查连接与 Worker。",
+    manageSources: "管理连接",
     sources: "个来源",
     parallel: "智能多源 · 并行执行",
     addConnectedSource: "添加已连接的数据源",
@@ -219,7 +369,7 @@ const INSPECTOR_COPY = {
     opencliMapping: "OpenCLI 映射",
     site: "站点",
     command: "命令",
-    autoSaveHint: "配置会自动保存。使用画布顶部“试运行”检查真实返回和数据新鲜度。",
+    autoSaveHint: "配置会自动保存。使用 Preview 预检运行能力，使用画布顶部“运行”提交真实运行。",
     parameters: "参数",
     jsonObjectRequired: "参数必须是 JSON 对象",
     invalidJson: "JSON 格式不正确",
@@ -278,8 +428,8 @@ const INSPECTOR_COPY = {
     noContract: "No backend input/output contract is projected for this node.",
     debug: "Debug",
     dataSources: "Data sources",
-    sourceHelp: "Choose connected data sources; the node collects from them in parallel at runtime.",
-    manageSources: "Manage sources",
+    sourceHelp: "Configure this workflow's OpenCLI source slots; connections and Workers are checked before Run.",
+    manageSources: "Manage connections",
     sources: "sources",
     parallel: "Smart multi-source · parallel execution",
     addConnectedSource: "Add a connected data source",
@@ -311,7 +461,7 @@ const INSPECTOR_COPY = {
     opencliMapping: "OpenCLI mapping",
     site: "Site",
     command: "Command",
-    autoSaveHint: "Configuration saves automatically. Use Test Run to verify live results and data freshness.",
+    autoSaveHint: "Configuration saves automatically. Use Preview for readiness checks and Run for a real execution.",
     parameters: "Parameters",
     jsonObjectRequired: "Parameters must be a JSON object",
     invalidJson: "Invalid JSON",
@@ -670,6 +820,16 @@ function nodeParameterDisplayValue(value: unknown): string | undefined {
 }
 
 const UNBOUND_INPUT_VALUE = "__opencli_unbound__"
+const UNBOUND_SOURCE_BINDING_VALUE = "__opencli_source_binding_unbound__"
+const UNBOUND_SOURCE_BINDING_REVISION_VALUE = "__opencli_source_binding_revision_unbound__"
+
+type SourceFleetPreflightEntry = {
+  status: "ready" | "blocked" | "error"
+  match?: WorkflowFleetCapabilityMatchResponse
+  message?: string
+}
+
+const EMPTY_SOURCE_BINDING_REVISIONS: SourceBindingRevision[] = []
 
 function inputBindingValue(nodeId: string, portId: string | null): string {
   return JSON.stringify([nodeId, portId])
@@ -1934,7 +2094,12 @@ function OpenCLISourceEditor({
   onChange: (sources: OpenCLISourceSlot[]) => void
 }) {
   const copy = INSPECTOR_COPY[language]
+  const searchParams = useSearchParams()
+  const workspaceId = searchParams.get("workspace")
+  const projectId = searchParams.get("project")
   const sourceCatalog = useSources({ enabled: true, limit: 100 })
+  const sourceBindings = useProjectSourceBindings(workspaceId, projectId)
+  const bindings = sourceBindings.data ?? []
   const registeredSources = (sourceCatalog.data?.data ?? [])
     .map(openCLISlotFromDataSource)
     .filter((source): source is OpenCLISourceSlot => Boolean(source))
@@ -1943,6 +2108,31 @@ function OpenCLISourceEditor({
   const businessQuery = sourceBusinessQuery(sources)
   const market = sourceMarket(sources)
   const [removedSource, setRemovedSource] = useState<{ source: OpenCLISourceSlot; index: number } | null>(null)
+  const [sourceSearch, setSourceSearch] = useState("")
+  const [preflightStatus, setPreflightStatus] = useState<"idle" | "running" | "ready">("idle")
+  const [preflightResults, setPreflightResults] = useState<Record<string, SourceFleetPreflightEntry>>({})
+  const normalizedSearch = sourceSearch.trim().toLowerCase()
+  const visibleSources = sources
+    .map((source, index) => ({ source, index }))
+    .filter(({ source }) => (
+      !normalizedSearch ||
+      [source.label, source.site, source.command, source.sourceGroup]
+        .some((value) => value.toLowerCase().includes(normalizedSearch))
+    ))
+  const groupedSources = Array.from(
+    visibleSources.reduce((groups, entry) => {
+      const group = entry.source.sourceGroup || entry.source.site || "other"
+      groups.set(group, [...(groups.get(group) ?? []), entry])
+      return groups
+    }, new Map<string, typeof visibleSources>()),
+  )
+  const runnableCount = Object.values(preflightResults).filter((result) => result.status === "ready").length
+  const blockedCount = Object.values(preflightResults).filter((result) => result.status !== "ready").length
+
+  useEffect(() => {
+    setPreflightStatus("idle")
+    setPreflightResults({})
+  }, [sources])
 
   const updateSource = (index: number, patch: Partial<OpenCLISourceSlot>) => {
     onChange(sources.map((source, sourceIndex) => (
@@ -1984,8 +2174,77 @@ function OpenCLISourceEditor({
     setRemovedSource(null)
   }
 
+  const runFleetPreflight = async () => {
+    setPreflightStatus("running")
+    const entries = await Promise.all(sources.map(async (source): Promise<[string, SourceFleetPreflightEntry]> => {
+      if (workspaceId && projectId) {
+        const binding = bindings.find((candidate) => candidate.id === source.sourceBindingId)
+        if (!binding) {
+          return [
+            source.id,
+            {
+              status: "blocked",
+              message: language === "zh-CN"
+                ? "请先选择当前项目的 Source Binding。"
+                : "Select a Source Binding from this project first.",
+            },
+          ]
+        }
+        if (binding.status !== "active") {
+          return [
+            source.id,
+            {
+              status: "blocked",
+              message: language === "zh-CN"
+                ? `Source Binding 当前为 ${binding.status}，不能运行。`
+                : `The Source Binding is ${binding.status} and cannot run.`,
+            },
+          ]
+        }
+        if (!source.sourceBindingRevisionId || !source.sourceBindingRevisionNumber) {
+          return [
+            source.id,
+            {
+              status: "blocked",
+              message: language === "zh-CN"
+                ? "请显式固定一个 Binding Revision。"
+                : "Pin an explicit Binding Revision first.",
+            },
+          ]
+        }
+      }
+      try {
+        const match = await matchWorkflowFleetCapability({
+          adapterNodeId: source.adapterId,
+          site: source.site,
+          command: source.command,
+        })
+        return [
+          source.id,
+          {
+            status: match.matched ? "ready" : "blocked",
+            match,
+          },
+        ]
+      } catch (error) {
+        return [
+          source.id,
+          {
+            status: "error",
+            message: error instanceof Error ? error.message : "Fleet preflight failed",
+          },
+        ]
+      }
+    }))
+    setPreflightResults(Object.fromEntries(entries))
+    setPreflightStatus("ready")
+  }
+
   return (
-    <section className="overflow-hidden rounded-[3px] border border-[#20242a] bg-[#101216]/84">
+    <section
+      data-testid="source-pool-editor"
+      className="overflow-hidden rounded-[3px] border border-[#20242a] bg-[#101216]/84"
+    >
       <div className="space-y-3 border-b border-[#24282f] bg-[#171a1f] p-3">
         <div className="flex items-start justify-between gap-3">
           <div>
@@ -1994,13 +2253,16 @@ function OpenCLISourceEditor({
               {copy.sourceHelp}
             </p>
           </div>
-          <Link
-            href="/sources"
-            className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-[2px] border border-[#343a43] px-2 text-[10px] text-muted-foreground transition-colors hover:border-[#5f6976] hover:text-foreground"
-          >
-            {copy.manageSources}
-            <ExternalLink className="size-3" />
-          </Link>
+          <div className="flex shrink-0 items-center gap-1.5">
+            <SourcePoolTour language={language} />
+            <Link
+              href="/providers"
+              className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-[2px] border border-[#343a43] px-2 text-[10px] text-muted-foreground transition-colors hover:border-[#5f6976] hover:text-foreground"
+            >
+              {copy.manageSources}
+              <ExternalLink className="size-3" />
+            </Link>
+          </div>
         </div>
         <div className="flex items-center justify-between gap-3 rounded-[3px] border border-[#2a2f36] bg-[#0b0d10] px-2.5 py-2">
           <div className="flex min-w-0 items-center gap-2">
@@ -2029,6 +2291,52 @@ function OpenCLISourceEditor({
             </SelectContent>
           </Select>
         </div>
+        <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
+          <div className="relative">
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-zinc-500" />
+            <Input
+              data-testid="source-pool-search"
+              value={sourceSearch}
+              onChange={(event) => setSourceSearch(event.target.value)}
+              placeholder={language === "zh-CN" ? "搜索名称、站点、命令或分组" : "Search name, site, command, or group"}
+              className="h-8 rounded-xs border-ops-line bg-ops-black pl-8 text-2xs focus-visible:ring-0"
+            />
+          </div>
+          <Ripple
+            amplitude={0.2}
+            speed={0.8}
+            wavelength={48}
+            rings={2}
+            decay={2.5}
+            refraction={12}
+            dispersion={0}
+            shine={0.2}
+            trigger="click"
+            className="min-h-8 w-32 rounded-xs"
+          >
+            <button
+              type="button"
+              data-testid="source-pool-preflight"
+              disabled={preflightStatus === "running" || sources.length === 0}
+              onClick={() => void runFleetPreflight()}
+              className="inline-flex min-h-8 w-full items-center justify-center gap-1.5 whitespace-nowrap rounded-xs border border-ops-line bg-ops-raised px-3 text-2xs text-zinc-300 transition-colors hover:border-ops-line-strong hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <PlugZap className="size-3.5" />
+              {preflightStatus === "running"
+                ? (language === "zh-CN" ? "预检中" : "Checking")
+                : (language === "zh-CN" ? "Fleet 预检" : "Fleet preflight")}
+            </button>
+          </Ripple>
+        </div>
+        <p role="status" className="font-mono text-3xs text-zinc-500">
+          {preflightStatus === "ready"
+            ? (language === "zh-CN"
+                ? `可运行 ${runnableCount} · 受阻 ${blockedCount}`
+                : `${runnableCount} runnable · ${blockedCount} blocked`)
+            : (language === "zh-CN"
+                ? "预检只检查 Worker、site binding 与命令能力，不执行来源。"
+                : "Preflight checks Workers, site bindings, and command capability without executing sources.")}
+        </p>
         <div className="space-y-1.5">
           <Label className="text-[11px] font-medium text-foreground">{copy.contentType}</Label>
           <Select onValueChange={addContentSources}>
@@ -2118,71 +2426,142 @@ function OpenCLISourceEditor({
             </button>
           </div>
         ) : null}
-        {sources.map((source, index) => {
-          const businessArguments = sourceBusinessArguments(source)
-          const optionCount = businessArguments.length + (source.positionalArgs?.length ? 1 : 0)
-          const contentType = source.sourceGroup?.startsWith("video-") ? "video" : source.sourceGroup
-          const contentLabel = contentType && contentType in copy.contentTypes
-            ? copy.contentTypes[contentType as keyof typeof copy.contentTypes]
-            : (language === "zh-CN" ? "数据采集" : "Data collection")
+        {visibleSources.length === 0 ? (
+          <p className="rounded-xs border border-dashed border-ops-line p-3 text-center text-2xs text-zinc-500">
+            {language === "zh-CN" ? "没有匹配的来源。" : "No matching sources."}
+          </p>
+        ) : null}
+        {groupedSources.map(([sourceGroup, entries]) => {
+          const groupType = sourceGroup.startsWith("video-") ? "video" : sourceGroup
+          const groupLabel = groupType in copy.contentTypes
+            ? copy.contentTypes[groupType as keyof typeof copy.contentTypes]
+            : sourceGroup
           return (
-            <details key={source.id} className="group rounded-[3px] border border-[#252a31] bg-[#090a0c]/70 open:border-[#3a414c]">
-              <summary className="flex cursor-pointer list-none items-center gap-2 p-2.5">
-                <span className="flex size-7 shrink-0 items-center justify-center rounded-[3px] border border-[#343a43] bg-[#15181d] font-mono text-[11px] font-semibold uppercase text-[#ff9a4a]">
-                  {source.site.slice(0, 1)}
-                </span>
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-xs font-medium text-foreground">{sourceCardLabel(source, language)}</p>
-                  <p className="truncate text-[10px] text-muted-foreground">
-                    {source.site} · {contentLabel}
-                  </p>
-                </div>
-                <span className="shrink-0 text-[10px] text-muted-foreground">{copy.configureSource}</span>
-                <ChevronRight className="size-3.5 shrink-0 text-muted-foreground transition-transform group-open:rotate-90" />
+            <details
+              key={sourceGroup}
+              open={normalizedSearch ? true : undefined}
+              className="rounded-xs border border-ops-line bg-ops-black"
+            >
+              <summary
+                data-testid="source-pool-group"
+                className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2 font-mono text-3xs uppercase tracking-wider text-zinc-400"
+              >
+                <span>{groupLabel}</span>
+                <span>{entries.length}</span>
               </summary>
-              <div className="grid gap-2 border-t border-[#20242a] p-2.5">
-                {optionCount > 0 ? (
-                  <>
-                    <p className="font-mono text-[9px] uppercase tracking-wider text-muted-foreground">
-                      {copy.collectionOptions} · {optionCount} {copy.items}
-                    </p>
-                    {source.positionalArgs?.length ? (
-                      <div className="space-y-1">
-                        <Label className="text-[10px] text-muted-foreground">{copy.positionalArgument}</Label>
-                        <Input
-                          value={source.positionalArgs[0] ?? ""}
-                          onChange={(event) => updateSource(index, { positionalArgs: [event.target.value] })}
-                          className={houdiniInputClass}
+              <div className="space-y-2 border-t border-ops-line p-2">
+                {entries.map(({ source, index }) => {
+                  const businessArguments = sourceBusinessArguments(source)
+                  const optionCount = businessArguments.length + (source.positionalArgs?.length ? 1 : 0)
+                  const contentType = source.sourceGroup?.startsWith("video-") ? "video" : source.sourceGroup
+                  const contentLabel = contentType && contentType in copy.contentTypes
+                    ? copy.contentTypes[contentType as keyof typeof copy.contentTypes]
+                    : (language === "zh-CN" ? "数据采集" : "Data collection")
+                  const fleetResult = preflightResults[source.id]
+                  const fleetLabel = fleetResult?.status === "ready"
+                    ? "READY"
+                    : fleetResult?.status === "blocked"
+                      ? "BLOCKED"
+                      : fleetResult?.status === "error"
+                        ? "ERROR"
+                        : null
+                  return (
+                    <details
+                      key={source.id}
+                      data-testid="source-pool-source-card"
+                      className="group rounded-[3px] border border-[#252a31] bg-[#090a0c]/70 open:border-[#3a414c]"
+                    >
+                      <summary className="flex cursor-pointer list-none items-center gap-2 p-2.5">
+                        <span className="flex size-7 shrink-0 items-center justify-center rounded-[3px] border border-[#343a43] bg-[#15181d] font-mono text-[11px] font-semibold uppercase text-[#ff9a4a]">
+                          {source.site.slice(0, 1)}
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-xs font-medium text-foreground">{sourceCardLabel(source, language)}</p>
+                          <p className="truncate text-[10px] text-muted-foreground">
+                            {source.site} · {contentLabel}
+                          </p>
+                        </div>
+                        {fleetLabel ? (
+                          <span
+                            className={cn(
+                              "shrink-0 font-mono text-3xs",
+                              fleetResult?.status === "ready" ? "text-signal-success" : "text-signal-danger",
+                            )}
+                          >
+                            {fleetLabel}
+                          </span>
+                        ) : null}
+                        <span className="shrink-0 text-[10px] text-muted-foreground">{copy.configureSource}</span>
+                        <ChevronRight className="size-3.5 shrink-0 text-muted-foreground transition-transform group-open:rotate-90" />
+                      </summary>
+                      <div className="grid gap-2 border-t border-[#20242a] p-2.5">
+                        <SourceBindingRevisionControls
+                          source={source}
+                          bindings={bindings}
+                          workspaceId={workspaceId}
+                          projectId={projectId}
+                          loading={sourceBindings.isLoading}
+                          failed={sourceBindings.isError}
+                          language={language}
+                          onChange={(patch) => updateSource(index, patch)}
                         />
+                        {fleetResult && fleetResult.status !== "ready" ? (
+                          <p className="rounded-xs border border-signal-danger/30 bg-signal-danger/10 p-2 text-2xs leading-relaxed text-signal-danger">
+                            {fleetResult.message ||
+                              fleetResult.match?.missing.join(" · ") ||
+                              (language === "zh-CN" ? "没有匹配的可用 Worker。" : "No available Worker matched.")}
+                          </p>
+                        ) : fleetResult?.match?.selected ? (
+                          <p className="font-mono text-3xs text-signal-success">
+                            {fleetResult.match.selected.label} · {fleetResult.match.selected.endpoint}
+                          </p>
+                        ) : null}
+                        {optionCount > 0 ? (
+                          <>
+                            <p className="font-mono text-[9px] uppercase tracking-wider text-muted-foreground">
+                              {copy.collectionOptions} · {optionCount} {copy.items}
+                            </p>
+                            {source.positionalArgs?.length ? (
+                              <div className="space-y-1">
+                                <Label className="text-[10px] text-muted-foreground">{copy.positionalArgument}</Label>
+                                <Input
+                                  value={source.positionalArgs[0] ?? ""}
+                                  onChange={(event) => updateSource(index, { positionalArgs: [event.target.value] })}
+                                  className={houdiniInputClass}
+                                />
+                              </div>
+                            ) : null}
+                            {businessArguments.map(([key, value]) => (
+                              <SourceBusinessArgument
+                                key={key}
+                                argumentKey={key}
+                                value={value}
+                                language={language}
+                                onChange={(nextValue) => updateSource(index, { args: { ...source.args, [key]: nextValue } })}
+                              />
+                            ))}
+                          </>
+                        ) : (
+                          <p className="text-[10px] text-muted-foreground">
+                            {language === "zh-CN" ? "此来源没有必须填写的业务参数。" : "This source has no required business parameters."}
+                          </p>
+                        )}
+                        <div className="flex justify-end border-t border-[#20242a] pt-2">
+                          <button
+                            type="button"
+                            aria-label={`${copy.removeSource} ${source.label}`}
+                            disabled={sources.length <= 1}
+                            onClick={() => removeSource(index)}
+                            className="inline-flex h-7 items-center gap-1.5 rounded-[2px] border border-[#4a2525] px-2 text-[10px] text-[#f87171] transition-colors hover:border-[#f87171] disabled:cursor-not-allowed disabled:opacity-30"
+                          >
+                            <Trash2 className="size-3" />
+                            {copy.removeSource}
+                          </button>
+                        </div>
                       </div>
-                    ) : null}
-                    {businessArguments.map(([key, value]) => (
-                      <SourceBusinessArgument
-                        key={key}
-                        argumentKey={key}
-                        value={value}
-                        language={language}
-                        onChange={(nextValue) => updateSource(index, { args: { ...source.args, [key]: nextValue } })}
-                      />
-                    ))}
-                  </>
-                ) : (
-                  <p className="text-[10px] text-muted-foreground">
-                    {language === "zh-CN" ? "此来源没有必须填写的业务参数。" : "This source has no required business parameters."}
-                  </p>
-                )}
-                <div className="flex justify-end border-t border-[#20242a] pt-2">
-                  <button
-                    type="button"
-                    aria-label={`${copy.removeSource} ${source.label}`}
-                    disabled={sources.length <= 1}
-                    onClick={() => removeSource(index)}
-                    className="inline-flex h-7 items-center gap-1.5 rounded-[2px] border border-[#4a2525] px-2 text-[10px] text-[#f87171] transition-colors hover:border-[#f87171] disabled:cursor-not-allowed disabled:opacity-30"
-                  >
-                    <Trash2 className="size-3" />
-                    {copy.removeSource}
-                  </button>
-                </div>
+                    </details>
+                  )
+                })}
               </div>
             </details>
           )
@@ -2239,6 +2618,165 @@ function OpenCLISourceEditor({
         </p>
       </div>
     </section>
+  )
+}
+
+function SourceBindingRevisionControls({
+  source,
+  bindings,
+  workspaceId,
+  projectId,
+  loading,
+  failed,
+  language,
+  onChange,
+}: {
+  source: OpenCLISourceSlot
+  bindings: SourceBinding[]
+  workspaceId: string | null
+  projectId: string | null
+  loading: boolean
+  failed: boolean
+  language: WorkflowLanguage
+  onChange: (patch: Partial<OpenCLISourceSlot>) => void
+}) {
+  const selectedBinding = bindings.find((binding) => binding.id === source.sourceBindingId)
+  const revisionsQuery = useProjectSourceBindingRevisions(
+    workspaceId,
+    projectId,
+    source.sourceBindingId ?? null,
+  )
+  const revisions = revisionsQuery.data ?? EMPTY_SOURCE_BINDING_REVISIONS
+
+  useEffect(() => {
+    if (!selectedBinding || source.sourceBindingRevisionId || revisions.length === 0) return
+    const currentRevision = revisions.find(
+      (revision) => revision.revision_number === selectedBinding.current_revision_number,
+    )
+    if (!currentRevision) return
+    onChange({
+      sourceBindingRevisionId: currentRevision.id,
+      sourceBindingRevisionNumber: currentRevision.revision_number,
+    })
+  }, [onChange, revisions, selectedBinding, source.sourceBindingRevisionId])
+
+  if (!workspaceId || !projectId) {
+    return (
+      <p className="rounded-xs border border-dashed border-ops-line p-2 text-2xs text-zinc-500">
+        {language === "zh-CN"
+          ? "独立画布没有项目上下文，当前来源保持为未绑定草稿槽位。"
+          : "Standalone canvas has no project context; this source remains an unbound draft slot."}
+      </p>
+    )
+  }
+
+  const selectedRevision = revisions.find((revision) => revision.id === source.sourceBindingRevisionId)
+  const bindingState = selectedBinding
+    ? `${selectedBinding.status.toUpperCase()} · R${source.sourceBindingRevisionNumber ?? selectedBinding.current_revision_number}`
+    : (language === "zh-CN" ? "未绑定草稿" : "Unbound draft")
+
+  return (
+    <div className="space-y-2 rounded-xs border border-ops-line bg-ops-panel p-2">
+      <div className="flex items-center justify-between gap-3">
+        <p className="font-mono text-3xs uppercase tracking-wider text-zinc-500">Binding Revision</p>
+        <span className={cn(
+          "font-mono text-3xs",
+          selectedBinding?.status === "active" ? "text-signal-success" : "text-zinc-500",
+        )}>
+          {bindingState}
+        </span>
+      </div>
+      {failed ? (
+        <p className="text-2xs text-signal-danger">
+          {language === "zh-CN" ? "Project Source Bindings 加载失败。" : "Project Source Bindings failed to load."}
+        </p>
+      ) : (
+        <div className="grid grid-cols-2 gap-2">
+          <Select
+            value={source.sourceBindingId ?? UNBOUND_SOURCE_BINDING_VALUE}
+            disabled={loading}
+            onValueChange={(value) => {
+              if (!value || value === UNBOUND_SOURCE_BINDING_VALUE) {
+                onChange({
+                  sourceBindingId: undefined,
+                  sourceBindingRevisionId: undefined,
+                  sourceBindingRevisionNumber: undefined,
+                })
+                return
+              }
+              onChange({
+                sourceBindingId: value,
+                sourceBindingRevisionId: undefined,
+                sourceBindingRevisionNumber: undefined,
+              })
+            }}
+          >
+            <SelectTrigger
+              aria-label={language === "zh-CN" ? "Project Source Binding" : "Project Source Binding"}
+              className="h-8 rounded-xs border-ops-line bg-ops-black text-2xs shadow-none focus:ring-0"
+            >
+              <SelectValue>
+                {selectedBinding?.name ??
+                  (source.sourceBindingId
+                    ? (language === "zh-CN" ? "Binding 不可用" : "Binding unavailable")
+                    : (language === "zh-CN" ? "未绑定草稿" : "Unbound draft"))}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={UNBOUND_SOURCE_BINDING_VALUE}>
+                {language === "zh-CN" ? "未绑定草稿" : "Unbound draft"}
+              </SelectItem>
+              {bindings.map((binding) => (
+                <SelectItem key={binding.id} value={binding.id}>
+                  {binding.name} · {binding.status}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select
+            value={source.sourceBindingRevisionId ?? UNBOUND_SOURCE_BINDING_REVISION_VALUE}
+            disabled={!selectedBinding || revisionsQuery.isLoading || revisions.length === 0}
+            onValueChange={(value) => {
+              const revision = revisions.find((candidate) => candidate.id === value)
+              if (!revision) return
+              onChange({
+                sourceBindingRevisionId: revision.id,
+                sourceBindingRevisionNumber: revision.revision_number,
+              })
+            }}
+          >
+            <SelectTrigger
+              aria-label="Source Binding Revision"
+              className="h-8 rounded-xs border-ops-line bg-ops-black text-2xs shadow-none focus:ring-0"
+            >
+              <SelectValue>
+                {source.sourceBindingRevisionNumber
+                  ? `R${source.sourceBindingRevisionNumber}`
+                  : (language === "zh-CN" ? "选择 Revision" : "Select revision")}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              {!selectedRevision && source.sourceBindingRevisionId ? (
+                <SelectItem value={source.sourceBindingRevisionId}>
+                  {language === "zh-CN" ? "已固定的 Revision 不可用" : "Pinned revision unavailable"}
+                </SelectItem>
+              ) : null}
+              <SelectItem value={UNBOUND_SOURCE_BINDING_REVISION_VALUE} disabled>
+                {language === "zh-CN" ? "选择 Revision" : "Select revision"}
+              </SelectItem>
+              {revisions.map((revision) => (
+                <SelectItem key={revision.id} value={revision.id}>
+                  R{revision.revision_number}
+                  {revision.revision_number === selectedBinding?.current_revision_number
+                    ? (language === "zh-CN" ? " · 当前" : " · current")
+                    : ""}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      )}
+    </div>
   )
 }
 

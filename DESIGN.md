@@ -3,7 +3,7 @@
 ## Source of truth
 
 - Status: Active
-- Last refreshed: 2026-07-27
+- Last refreshed: 2026-07-29
 - Primary product surfaces: 概览、任务与通知、项目、工作流编排、项目数据工作台、3D 逻辑与证据、插件中心、自动化与 Agent、成果与数据、执行资源、模型与连接。
 - Authority order:
   1. 本文档定义产品体验、信息架构和交互决策。
@@ -19,6 +19,9 @@
   - `docs/adr/0017-only-executable-flow-steps-are-workflow-nodes.md`
   - `docs/adr/0018-expandable-business-nodes-without-a-fixed-depth-hierarchy.md`
   - `docs/adr/0019-locked-plugin-node-definitions-and-project-owned-derivatives.md`
+  - `docs/adr/0041-separate-workspace-sources-from-project-bindings.md`
+  - `docs/workflow-hda-demand-runtime-PRD.md`
+  - `docs/workflow-hda-demand-runtime-issues/09-canvas-runtime-binding-result-workbench.md`
   - `frontend/app/globals.css`
   - `frontend/lib/navigation.ts`
   - `frontend/components/shell/app-shell.tsx`
@@ -31,8 +34,14 @@
   - `frontend/components/flow/inspector.tsx`
   - `frontend/components/flow/inspector-shell.tsx`
   - `frontend/components/flow/workflow-workbench-panel.tsx`
+  - `frontend/components/flow/run-trace-panel.tsx`
   - `frontend/lib/workflow/node-catalog.ts`
   - `frontend/lib/workflow/node-contracts.ts`
+  - `frontend/lib/workflow/opencli-business-workflows.ts`
+  - `frontend/lib/workflow/backend-fleet.ts`
+  - `frontend/lib/api/hooks.ts`
+  - `backend/models/source_binding.py`
+  - `backend/workflow/opencli_hda_tracer.py`
   - `backend/plugins/capability_catalog.py`
   - Dify official node documentation for Question Classifier, If-Else, Iteration, Agent, Tool, single-node testing, orchestration logic, and hotkeys.
   - User-supplied Dify Learn screenshots for the node picker, Question Classifier inspector, branch “next step” actions, and provider-grouped tool picker.
@@ -210,6 +219,25 @@
   - 桌面使用右侧停靠面板，与画布共享可用宽度；不再以多个 `absolute` 浮层堆叠覆盖。
   - 窄屏转为互斥 Sheet，保留四个模式和选中同步；打开 Sheet 时不重置画布 viewport。
   - 首版使用现有图数据生成稳定投影；超过 200 个可见 outline rows 时再启用虚拟化，未达到阈值不新增依赖。
+
+### Source Pool Bar and real run chain
+
+- Source Pool Bar:
+  - 含有 `opencli-multi-source` 包时，右侧 Dock 在“大纲”旁提供上下文型“来源池”模式。Bar 的列表首先从当前工作流 canonical `params.sources[]` 槽位规格派生；这些槽位不是 Project Source Binding，也不能被命名或保存为 Binding 投影。
+  - Workspace Source、Project Source Binding 与工作流来源槽位保持三层边界：Workspace Source 管理可复用端点和连接；Project Source Binding 管理项目授权、范围和 immutable revision；来源槽位声明本次工作流的 `site + command + args`。Bar 只有在槽位 schema 提供显式 `sourceBindingId`/`sourceBindingRevisionId` 引用后才联结 `useProjectSourceBindings`，当前未绑定槽位必须显示“草稿槽位 / 未绑定”，不得按名称或 site 猜测关联。
+  - 顶部固定显示搜索、来源组筛选、已启用/阻塞/可运行计数和“预检”动作；列表按 `sourceGroup` 分组并默认折叠。少于 200 个可见来源时使用现有列表和原生折叠语义，超过阈值才启用窗口化。
+  - 每行显示业务名、`site + command`、槽位配置状态、可选的 Project Binding/revision、Fleet 可运行性、最近一次真实运行的时间、记录数和错误摘要。配置状态、能力状态与执行状态分别呈现，不以一个 Running/Blocked 徽标混合表达。
+  - 单击来源行时，若当前画布 scope 包含对应 `source-*` 内部节点，则选中并居中该节点；若来源节点被组或 Package 折叠，则定位到所属组/Package，并保留来源行选中态。Bar 与画布只通过 canonical node/source ID 同步，不维护平行选择状态。
+  - 对已绑定来源的批量启用/停用复用 Project Source Binding 的 lifecycle `status=active/disabled`，明确提示它影响同一项目内复用该 Binding 的工作流；不得新增平行 `enabled` 字段。未绑定草稿槽位只能保留或可撤销地删除，不能伪装成已停用 Binding。采集频率属于 Schedule 节点，不复制到每条来源。
+  - 来源行不承载明文凭证；缺少 Worker 时链接 `/workers`，缺少连接/profile 时链接 `/providers`，缺少 Project Binding 时在 Bar 内提供显式绑定动作。在独立的 Workspace Source/Project Binding 管理页面上线前，不链接已重定向到 `/records` 的兼容 `/sources` 路由。
+- Preview/preflight:
+  - “预检”只执行 compile、OpenCLI dispatch trace 和 Fleet capability match，返回 runnable、blocked、missing Worker、missing site binding 与参数缺失；它不发起来源调用、不生成 EvidenceBatch、不写 Record Sink。
+  - Preview 只更新 `runtimePreview`/诊断投影，不得修改节点执行 `status`、`runArtifact` 或把 dispatch-ready 节点显示为 Running。重试 Preview 也不能覆盖最近一次真实 Run 的状态与证据。
+- Real Run:
+  - 顶部主运行按钮必须直接打开运行面板并提交真实 Run；“运行面板/运行记录与结果”作为独立菜单动作，只开关面板，不暗示已执行。
+  - 真实链路固定为 `preflight → source dispatch → EvidenceBatch → hygiene/acceptance → Record Sink → project data workbench`。只有 backend run 事件可以驱动画布 `queued/running/succeeded/failed/cancelled` 状态。
+  - Run 成功的业务验收要求至少存在持久化 Record、来源引用和 lineage；只有 dispatch trace 或零记录的 success 不算完整成功。来源池行的“最近运行”也只能读取该真实运行投影。
+  - 未发布草稿可以人工 Run；Schedule 仅对已发布且固定 immutable binding revision 的工作流生效。Worker/Fleet 或 site binding 缺失时在 dispatch 前失败，并保留可恢复诊断，不降级为模拟数据。
 
 ## Visual language
 

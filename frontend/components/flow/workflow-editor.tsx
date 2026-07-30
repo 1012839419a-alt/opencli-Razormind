@@ -335,11 +335,11 @@ function EditorCanvas({
     showToast("已添加注释")
   }, [addNodeFromPalette, nodeMenu, screenToFlowPosition, showToast])
 
-  const testRunFromMenu = useCallback(() => {
+  const runWorkflow = useCallback(() => {
     setNodeMenu(null)
     setRunTraceOpen(true)
     setRunRequestId((current) => current + 1)
-    showToast("已启动测试运行")
+    showToast("正在提交真实运行")
   }, [showToast])
 
   const importAppFromMenu = useCallback(() => {
@@ -504,6 +504,7 @@ function EditorCanvas({
         onToggleSettings={() => setSettingsOpen((v) => !v)}
         projectSettingsOpen={projectSettingsOpen}
         onToggleProjectSettings={() => setProjectSettingsOpen((v) => !v)}
+        onRunWorkflow={runWorkflow}
         runTraceOpen={runTraceOpen}
         onToggleRunTrace={() => setRunTraceOpen((v) => !v)}
         nodeManagementOpen={nodeManagementOpen}
@@ -538,7 +539,7 @@ function EditorCanvas({
           onAddNoteFromMenu={addNoteFromMenu}
           onConnectPortFromMenu={connectPortFromMenu}
           onImportApp={importAppFromMenu}
-          onTestRun={testRunFromMenu}
+          onTestRun={runWorkflow}
           onCanvasMouseDownCapture={onCanvasMouseDownCapture}
           onCanvasMouseMoveCapture={onCanvasMouseMoveCapture}
           onCanvasMouseUpCapture={onCanvasMouseUpCapture}

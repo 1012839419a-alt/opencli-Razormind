@@ -478,6 +478,9 @@ export type OpenCLISourceSlot = {
   sessionPolicy?: string
   workerTags?: string[]
   resourceTags?: string[]
+  sourceBindingId?: string
+  sourceBindingRevisionId?: string
+  sourceBindingRevisionNumber?: number
 }
 
 export function isOpenCLISourceSlotArray(value: unknown): value is OpenCLISourceSlot[] {
@@ -495,7 +498,17 @@ export function isOpenCLISourceSlotArray(value: unknown): value is OpenCLISource
       slot.command.trim().length > 0 &&
       !!slot.args &&
       typeof slot.args === "object" &&
-      !Array.isArray(slot.args)
+      !Array.isArray(slot.args) &&
+      (slot.sourceBindingId === undefined || typeof slot.sourceBindingId === "string") &&
+      (slot.sourceBindingRevisionId === undefined || typeof slot.sourceBindingRevisionId === "string") &&
+      (
+        slot.sourceBindingRevisionNumber === undefined ||
+        (
+          typeof slot.sourceBindingRevisionNumber === "number" &&
+          Number.isInteger(slot.sourceBindingRevisionNumber) &&
+          slot.sourceBindingRevisionNumber >= 1
+        )
+      )
     )
   })
 }
@@ -585,6 +598,11 @@ export function buildOpenCLIMultiSourceHDAInternals(
       ...(source.sessionPolicy ? { sessionPolicy: source.sessionPolicy } : {}),
       ...(source.workerTags ? { workerTags: source.workerTags } : {}),
       ...(source.resourceTags ? { resourceTags: source.resourceTags } : {}),
+      ...(source.sourceBindingId ? { sourceBindingId: source.sourceBindingId } : {}),
+      ...(source.sourceBindingRevisionId ? { sourceBindingRevisionId: source.sourceBindingRevisionId } : {}),
+      ...(source.sourceBindingRevisionNumber
+        ? { sourceBindingRevisionNumber: source.sourceBindingRevisionNumber }
+        : {}),
     },
     ui: {
       label: source.label,

@@ -13,7 +13,7 @@ def test_alembic_has_one_head():
     config = Config()
     config.set_main_option("script_location", "backend/migrations")
 
-    assert ScriptDirectory.from_config(config).get_heads() == ["i6j7k8l9m0n1"]
+    assert ScriptDirectory.from_config(config).get_heads() == ["k8l9m0n1o2p3"]
 
 
 def test_upgrade_head_creates_identity_and_operations_tables(monkeypatch):
@@ -80,6 +80,14 @@ def test_workflow_run_version_foreign_key_is_restrict(monkeypatch):
     assert any(
         row[2] == "workflow_versions"
         and row[3] == "workflow_version_id"
+        and row[4] == "id"
+        and row[6] == "RESTRICT"
+        for row in foreign_keys
+    )
+    assert "studio_workflow_version_id" in columns
+    assert any(
+        row[2] == "studio_workflow_versions"
+        and row[3] == "studio_workflow_version_id"
         and row[4] == "id"
         and row[6] == "RESTRICT"
         for row in foreign_keys

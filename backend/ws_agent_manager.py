@@ -32,6 +32,8 @@ Wire protocol — every reverse-channel message type, one-line field shapes:
   agent_result  agent→center  {"type": "agent_result", "request_id": uuid,
                                 "result": dict}
                                 # terminal done/error RuntimeEvent; exactly 1
+  cancel        center→agent  {"type": "cancel", "request_id": uuid}
+                                # stops collect or agent_task with the same id
 
 Protocol (collect/result path):
   1. Agent connects to  ws(s)://{center}/api/v1/browsers/agents/ws
@@ -219,10 +221,21 @@ async def send_agent_task(
                      agent_url, request_id, task.get("runtime"))
         return await asyncio.wait_for(fut, timeout=timeout)
     except TimeoutError:
+        await _cancel_agent_task(ws, request_id)
         raise TimeoutError(f"WS agent {agent_url!r} did not complete agent_task in {timeout}s")
+    except asyncio.CancelledError:
+        await _cancel_agent_task(ws, request_id)
+        raise
     finally:
         _pending_agent_tasks.pop(request_id, None)
         _agent_task_callbacks.pop(request_id, None)
+
+
+async def _cancel_agent_task(ws: WebSocket, request_id: str) -> None:
+    try:
+        await ws.send_json({"type": "cancel", "request_id": request_id})
+    except Exception:
+        logger.warning("WS: failed to cancel agent_task request_id=%s", request_id, exc_info=True)
 
 
 async def _invoke_on_event(

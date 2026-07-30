@@ -45,6 +45,10 @@ const nextConfig = {
         source: '/health',
         destination: `${BACKEND_URL}/health`,
       },
+      {
+        source: '/mcp',
+        destination: `${BACKEND_URL}/mcp`,
+      },
     ]
   },
 }

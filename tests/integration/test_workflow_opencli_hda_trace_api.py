@@ -62,6 +62,9 @@ def _multi_source_opencli_hda_project() -> dict:
                                 "command": "search",
                                 "args": {"keyword": "ai"},
                                 "sourceGroup": "video",
+                                "sourceBindingId": "binding-video",
+                                "sourceBindingRevisionId": "binding-video-r3",
+                                "sourceBindingRevisionNumber": 3,
                             },
                         },
                         {
@@ -924,6 +927,9 @@ async def test_opencli_hda_trace_builds_iii_fanout_payloads(client):
         "multi-source-opencli::source-xiaohongshu",
     ]
     first = dispatches[0]
+    assert first["sourceBindingId"] == "binding-video"
+    assert first["sourceBindingRevisionId"] == "binding-video-r3"
+    assert first["sourceBindingRevisionNumber"] == 3
     assert first["nodePath"] == ["multi-source-opencli", "source-bilibili"]
     assert first["packageNodeId"] == "multi-source-opencli"
     assert first["internalNodeId"] == "source-bilibili"
@@ -941,6 +947,9 @@ async def test_opencli_hda_trace_builds_iii_fanout_payloads(client):
             "node_path": ["multi-source-opencli", "source-bilibili"],
             "internal_node_id": "source-bilibili",
             "source_group": "video",
+            "source_binding_id": "binding-video",
+            "source_binding_revision_id": "binding-video-r3",
+            "source_binding_revision_number": 3,
             "site": "bilibili",
             "command": "search",
             "args": {"keyword": "ai"},
@@ -994,6 +1003,9 @@ async def test_opencli_hda_trace_accepts_ai_source_slots_without_static_internal
                 "site": "bilibili",
                 "command": "search",
                 "args": {"keyword": "ai"},
+                "sourceBindingId": "binding-video",
+                "sourceBindingRevisionId": "binding-video-r3",
+                "sourceBindingRevisionNumber": 3,
             },
             {
                 "id": "xhs",
@@ -1025,6 +1037,13 @@ async def test_opencli_hda_trace_accepts_ai_source_slots_without_static_internal
         "multi-source-opencli::source-xhs",
     ]
     assert data["dispatches"][0]["iii"]["payload"]["source_group"] == "video"
+    assert data["dispatches"][0]["sourceBindingId"] == "binding-video"
+    assert data["dispatches"][0]["sourceBindingRevisionId"] == "binding-video-r3"
+    assert data["dispatches"][0]["sourceBindingRevisionNumber"] == 3
+    assert (
+        data["dispatches"][0]["iii"]["payload"]["source_binding_revision_id"]
+        == "binding-video-r3"
+    )
     assert data["dispatches"][1]["site"] == "xiaohongshu"
 
 
@@ -1039,6 +1058,11 @@ async def test_opencli_hda_collects_per_source_failures_without_blocking_package
     }
 
     async def fake_dispatch(dispatch, fleet_match, *, node):
+        if dispatch.sourceGroup == "video":
+            assert dispatch.sourceBindingId == "binding-video"
+            assert dispatch.sourceBindingRevisionId == "binding-video-r3"
+            assert dispatch.sourceBindingRevisionNumber == 3
+            assert dispatch.iii["payload"]["source_binding_revision_id"] == "binding-video-r3"
         if dispatch.sourceGroup == "social":
             return [], {
                 "attempted": True,

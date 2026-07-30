@@ -6,6 +6,7 @@ httpx POST calls, and the `additional_headers` -> `extra_headers` fallback in
 `_register_via_ws`'s connect call.
 """
 
+import asyncio
 import json
 
 import pytest
@@ -232,9 +233,14 @@ class _StubAdapter:
         self,
         events: list[dict] | None = None,
         raise_exc: Exception | None = None,
+        config_errors: list[str] | None = None,
     ) -> None:
         self._events = events or []
         self._raise_exc = raise_exc
+        self._config_errors = config_errors or []
+
+    def validate_config(self, config):
+        return self._config_errors
 
     async def invoke(self, task):
         if self._raise_exc is not None:
@@ -312,6 +318,31 @@ async def test_handle_ws_agent_task_adapter_raises_sends_error_result(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_handle_ws_agent_task_rejects_invalid_config_before_invoke(monkeypatch):
+    adapter = _StubAdapter(
+        events=[{"type": "done", "task_id": "req-1", "result": {}}],
+        config_errors=["read-only permission modes cannot load explicit extensions"],
+    )
+    monkeypatch.setattr(agent_server, "get_runtime", lambda rt: adapter)
+
+    ws = _FakeWs()
+    await agent_server._handle_ws_agent_task(
+        ws,
+        _agent_task_msg(
+            config={
+                "permission_mode": "observe_only",
+                "args": ["--extension=unsafe.ts"],
+            }
+        ),
+    )
+
+    assert len(ws.sent) == 1
+    assert ws.sent[0]["result"]["type"] == "error"
+    assert ws.sent[0]["result"]["error_type"] == "ConfigError"
+    assert "explicit extensions" in ws.sent[0]["result"]["message"]
+
+
+@pytest.mark.asyncio
 async def test_handle_ws_agent_task_runtime_invocation_error_preserves_error_type(monkeypatch):
     adapter = _StubAdapter(raise_exc=RuntimeInvocationError("bad config", error_type="ConfigError"))
     monkeypatch.setattr(agent_server, "get_runtime", lambda rt: adapter)
@@ -361,3 +392,23 @@ async def test_handle_ws_agent_task_one_task_crash_does_not_raise(monkeypatch):
     await agent_server._handle_ws_agent_task(ws, _agent_task_msg())
     assert len(ws.sent) == 1
     assert ws.sent[0]["result"]["error_type"] == "KeyError"
+
+
+@pytest.mark.asyncio
+async def test_tracked_ws_agent_task_can_be_cancelled(monkeypatch):
+    started = asyncio.Event()
+    blocked = asyncio.Event()
+
+    async def handle(ws, msg):
+        started.set()
+        await blocked.wait()
+
+    monkeypatch.setattr(agent_server, "_handle_ws_agent_task", handle)
+    agent_server._start_ws_agent_task(_FakeWs(), _agent_task_msg())
+    await started.wait()
+    task = agent_server._ACTIVE_AGENT_TASKS["req-1"]
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert "req-1" not in agent_server._ACTIVE_AGENT_TASKS

@@ -120,3 +120,48 @@ class ValidationRunRead(workflow_schemas.WorkflowRunProjection):
     draft_revision: int = Field(alias="draftRevision")
     compile_version: str = Field(alias="compileVersion")
     warnings: list[workflow_schemas.WorkflowCompileError] = Field(default_factory=list)
+
+
+class ProjectRuntimeLogRead(UTCModel):
+    run_id: str
+    workflow_id: str
+    workflow_name: str
+    workflow_version: int | None
+    trace_id: str
+    status: workflow_schemas.WorkflowRunStatus
+    trigger: str
+    response_mode: workflow_schemas.WorkflowRunResponseMode
+    event_count: int
+    node_count: int
+    error_count: int
+    duration_ms: int
+    started_at: datetime
+    updated_at: datetime
+
+
+class ProjectRuntimeSummaryRead(BaseModel):
+    total_runs: int
+    successful_runs: int
+    failed_runs: int
+    blocked_runs: int
+    running_runs: int
+    total_events: int
+    recent_logs: list[ProjectRuntimeLogRead] = Field(default_factory=list)
+
+
+class ProjectRuntimeTraceRead(BaseModel):
+    workflow_version: int | None
+    inputs: dict = Field(default_factory=dict)
+    user: str | None = None
+    response_mode: workflow_schemas.WorkflowRunResponseMode
+    trace: workflow_schemas.WorkflowRunTraceResponse
+
+
+class PublishedWorkflowRunStart(BaseModel):
+    """Public project-run input without allowing callers to replace the graph."""
+
+    inputs: dict = Field(default_factory=dict)
+    response_mode: Literal["async"] = "async"
+    user: str = Field(min_length=1, max_length=255)
+    request_id: str | None = Field(default=None, max_length=255)
+    idempotency_key: str | None = Field(default=None, max_length=255)

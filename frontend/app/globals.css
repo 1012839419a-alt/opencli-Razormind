@@ -370,6 +370,69 @@
   transition: stroke var(--m3-duration-short) var(--m3-ease-standard);
 }
 
+.opencli-source-tour.driver-popover {
+  max-width: 20rem;
+  border: 1px solid var(--oc-line);
+  border-radius: 6px;
+  background: var(--oc-surface-raised);
+  color: var(--foreground);
+  font-family: var(--font-ui);
+}
+
+.opencli-source-tour .driver-popover-title {
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.opencli-source-tour .driver-popover-description {
+  color: var(--muted-foreground);
+  font-size: 0.75rem;
+  line-height: 1.6;
+}
+
+.opencli-source-tour .driver-popover-progress-text {
+  color: var(--muted-foreground);
+  font-family: var(--font-code);
+  font-size: 0.625rem;
+}
+
+.opencli-source-tour .driver-popover-prev-btn,
+.opencli-source-tour .driver-popover-next-btn {
+  min-height: 2rem;
+  border: 1px solid var(--oc-line);
+  border-radius: 2px;
+  background: var(--oc-surface);
+  color: var(--foreground);
+  font-size: 0.6875rem;
+  text-shadow: none;
+}
+
+.opencli-source-tour .driver-popover-next-btn {
+  border-color: var(--primary);
+  background: var(--primary);
+  color: var(--primary-foreground);
+}
+
+.opencli-source-tour .driver-popover-close-btn {
+  color: var(--muted-foreground);
+}
+
+.opencli-source-tour .driver-popover-arrow-side-left {
+  border-left-color: var(--oc-surface-raised);
+}
+
+.opencli-source-tour .driver-popover-arrow-side-right {
+  border-right-color: var(--oc-surface-raised);
+}
+
+.opencli-source-tour .driver-popover-arrow-side-top {
+  border-top-color: var(--oc-surface-raised);
+}
+
+.opencli-source-tour .driver-popover-arrow-side-bottom {
+  border-bottom-color: var(--oc-surface-raised);
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

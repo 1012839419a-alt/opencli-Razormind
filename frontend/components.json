@@ -22,6 +22,7 @@
     "@react-bits": "https://reactbits.dev/r/{name}.json",
     "@smoothui": "https://smoothui.dev/r/{name}.json",
     "@unlumen-ui": "https://ui.unlumen.com/r/{name}.json",
-    "@animate-ui": "https://animate-ui.com/r/{name}.json"
+    "@animate-ui": "https://animate-ui.com/r/{name}.json",
+    "@canvas-ui": "https://canvasui.dev/r/{name}.json"
   }
 }

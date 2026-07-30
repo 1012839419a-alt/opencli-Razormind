@@ -1,8 +1,13 @@
+from functools import partial
+
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import ValidationError
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.database import get_db
+from backend import ws_agent_manager
+from backend.database import get_db, queue_after_commit
+from backend.models.edge_node import EdgeNode
 from backend.models.identity import Team, WorkspaceRole
 from backend.models.operations_agent import (
     AgentPermissionProfile,
@@ -25,12 +30,20 @@ from backend.schemas.operations_agent import (
     OperationsAgentRunCreate,
     OperationsAgentRunRead,
     PublishedOperationsAgentVersionRead,
+    agent_contract_from_model_configuration,
+    agent_runtime_binding_from_model_configuration,
+    validate_agent_contract_payload,
+    validated_agent_model_configuration,
 )
 from backend.security.identity import RequestIdentity, get_request_identity
 from backend.security.workspace_rbac import (
     WorkspacePermission,
     get_workspace_access,
     require_permission,
+)
+from backend.services.operations_agent_runtime_service import (
+    cancel_operations_agent_run,
+    schedule_operations_agent_run,
 )
 
 router = APIRouter(
@@ -99,6 +112,7 @@ def _read_agent(
         name=agent.name,
         description=agent.description,
         disabled=agent.disabled,
+        current_published_version=agent.current_published_version,
         current_profile=current,
         effective_profile=None if agent.disabled else current,
         created_at=agent.created_at,
@@ -195,6 +209,14 @@ async def patch_operations_agent(
         )
     agent.disabled = body.disabled
     if body.disabled:
+        active_run_ids = list(
+            await db.scalars(
+                select(OperationsAgentRun.id)
+                .where(OperationsAgentRun.workspace_id == workspace_id)
+                .where(OperationsAgentRun.operations_agent_id == agent.id)
+                .where(OperationsAgentRun.status.in_(("queued", "running", "paused")))
+            )
+        )
         await db.execute(
             update(OperationsAgentRun)
             .where(OperationsAgentRun.workspace_id == workspace_id)
@@ -202,8 +224,42 @@ async def patch_operations_agent(
             .where(OperationsAgentRun.status.in_(("queued", "running", "paused")))
             .values(status="cancelled")
         )
+        for run_id in active_run_ids:
+            queue_after_commit(db, partial(cancel_operations_agent_run, run_id))
     await db.flush()
     return ApiResponse.ok(_read_agent(agent, profile))
+
+
+async def _get_agent_draft(
+    db: AsyncSession,
+    agent: OperationsAgentIdentity,
+    *,
+    lock: bool = False,
+) -> OperationsAgentDraft:
+    query = select(OperationsAgentDraft).where(OperationsAgentDraft.operations_agent_id == agent.id)
+    if lock:
+        query = query.with_for_update()
+    draft = await db.scalar(query)
+    if draft is None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "Operations Agent draft is missing")
+    return draft
+
+
+@router.get(
+    "/{agent_id}/draft",
+    response_model=ApiResponse[OperationsAgentDraftRead],
+)
+async def get_agent_draft(
+    workspace_id: str,
+    agent_id: str,
+    identity: RequestIdentity = Depends(get_request_identity),
+    db: AsyncSession = Depends(get_db),
+) -> ApiResponse:
+    access = await get_workspace_access(db, workspace_id, identity)
+    require_permission(access, WorkspacePermission.READ)
+    agent = await _get_agent(db, workspace_id, agent_id)
+    draft = await _get_agent_draft(db, agent)
+    return ApiResponse.ok(OperationsAgentDraftRead.model_validate(draft))
 
 
 @router.put(
@@ -222,20 +278,87 @@ async def update_agent_draft(
     agent = await _get_agent(db, workspace_id, agent_id, lock=True)
     if agent.disabled:
         raise HTTPException(status.HTTP_409_CONFLICT, "Disabled Operations Agent cannot be edited")
-    draft = await db.scalar(
-        select(OperationsAgentDraft)
-        .where(OperationsAgentDraft.operations_agent_id == agent.id)
-        .with_for_update()
+    draft = await _get_agent_draft(db, agent)
+    updated = await db.execute(
+        update(OperationsAgentDraft)
+        .where(OperationsAgentDraft.id == draft.id)
+        .where(OperationsAgentDraft.revision == body.revision)
+        .values(
+            revision=body.revision + 1,
+            instructions=body.instructions,
+            model_configuration=body.model_configuration,
+            tool_configuration=body.tool_configuration,
+            updated_by_user_id=access.user_id,
+        )
     )
-    if draft is None:
-        raise HTTPException(status.HTTP_409_CONFLICT, "Operations Agent draft is missing")
-    draft.revision += 1
-    draft.instructions = body.instructions
-    draft.model_configuration = body.model_configuration
-    draft.tool_configuration = body.tool_configuration
-    draft.updated_by_user_id = access.user_id
-    await db.flush()
+    if getattr(updated, "rowcount", 0) != 1:
+        actual_revision = await db.scalar(
+            select(OperationsAgentDraft.revision).where(OperationsAgentDraft.id == draft.id)
+        )
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            detail={
+                "code": "operations_agent_draft_revision_conflict",
+                "expected_revision": body.revision,
+                "actual_revision": actual_revision,
+            },
+        )
+    await db.refresh(draft)
     return ApiResponse.ok(OperationsAgentDraftRead.model_validate(draft))
+
+
+@router.get(
+    "/{agent_id}/versions",
+    response_model=ApiResponse[list[PublishedOperationsAgentVersionRead]],
+)
+async def list_agent_versions(
+    workspace_id: str,
+    agent_id: str,
+    identity: RequestIdentity = Depends(get_request_identity),
+    db: AsyncSession = Depends(get_db),
+) -> ApiResponse:
+    access = await get_workspace_access(db, workspace_id, identity)
+    require_permission(access, WorkspacePermission.READ)
+    agent = await _get_agent(db, workspace_id, agent_id)
+    versions = (
+        (
+            await db.execute(
+                select(PublishedOperationsAgentVersion)
+                .where(PublishedOperationsAgentVersion.operations_agent_id == agent.id)
+                .order_by(PublishedOperationsAgentVersion.version.desc())
+                .limit(100)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return ApiResponse.ok(
+        [PublishedOperationsAgentVersionRead.model_validate(version) for version in versions]
+    )
+
+
+@router.get(
+    "/{agent_id}/versions/{version_number}",
+    response_model=ApiResponse[PublishedOperationsAgentVersionRead],
+)
+async def get_agent_version(
+    workspace_id: str,
+    agent_id: str,
+    version_number: int,
+    identity: RequestIdentity = Depends(get_request_identity),
+    db: AsyncSession = Depends(get_db),
+) -> ApiResponse:
+    access = await get_workspace_access(db, workspace_id, identity)
+    require_permission(access, WorkspacePermission.READ)
+    agent = await _get_agent(db, workspace_id, agent_id)
+    version = await db.scalar(
+        select(PublishedOperationsAgentVersion)
+        .where(PublishedOperationsAgentVersion.operations_agent_id == agent.id)
+        .where(PublishedOperationsAgentVersion.version == version_number)
+    )
+    if version is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Published Agent Version not found")
+    return ApiResponse.ok(PublishedOperationsAgentVersionRead.model_validate(version))
 
 
 @router.post(
@@ -261,18 +384,23 @@ async def publish_agent_version(
             status.HTTP_403_FORBIDDEN,
             "Automatic Operations Agent releases require Workspace Admin approval",
         )
-    draft = await db.scalar(
-        select(OperationsAgentDraft).where(OperationsAgentDraft.operations_agent_id == agent.id)
-    )
-    if draft is None or not draft.instructions.strip():
+    draft = await _get_agent_draft(db, agent)
+    if not draft.instructions.strip():
         raise HTTPException(status.HTTP_409_CONFLICT, "A non-empty Agent Draft is required")
+    try:
+        model_configuration = validated_agent_model_configuration(draft.model_configuration)
+    except (ValidationError, ValueError) as exc:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "Agent Draft contains invalid versioned configuration",
+        ) from exc
     version_number = (agent.current_published_version or 0) + 1
     version = PublishedOperationsAgentVersion(
         operations_agent_id=agent.id,
         version=version_number,
         draft_revision=draft.revision,
         instructions=draft.instructions,
-        model_configuration=draft.model_configuration,
+        model_configuration=model_configuration,
         tool_configuration=draft.tool_configuration,
         published_by_user_id=access.user_id,
         reason=body.reason,
@@ -302,7 +430,57 @@ async def start_agent_run(
         raise HTTPException(status.HTTP_409_CONFLICT, "Disabled Operations Agent cannot run")
     if agent.current_published_version is None:
         raise HTTPException(status.HTTP_409_CONFLICT, "Published Agent Version required")
-    await _get_profile(db, agent)
+    published_version = await db.scalar(
+        select(PublishedOperationsAgentVersion)
+        .where(PublishedOperationsAgentVersion.operations_agent_id == agent.id)
+        .where(PublishedOperationsAgentVersion.version == agent.current_published_version)
+    )
+    if published_version is None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "Published Agent Version is missing")
+    try:
+        contract = agent_contract_from_model_configuration(published_version.model_configuration)
+        runtime_binding = agent_runtime_binding_from_model_configuration(
+            published_version.model_configuration
+        )
+    except ValidationError as exc:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "Published Agent Version contains an invalid AgentContractV1",
+        ) from exc
+    if runtime_binding is None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "Published Agent Version requires an AgentRuntimeBindingV1",
+        )
+    runtime_node = await db.scalar(
+        select(EdgeNode).where(EdgeNode.url == runtime_binding.agent_url)
+    )
+    if (
+        runtime_node is None
+        or runtime_node.status != "online"
+        or runtime_node.protocol != "ws"
+        or runtime_binding.runtime not in (runtime_node.runtimes or [])
+        or not ws_agent_manager.is_connected(runtime_binding.agent_url)
+    ):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "Agent Runtime Fleet precheck failed",
+        )
+    if contract is not None:
+        try:
+            validate_agent_contract_payload(contract, "input_schema", body.input_payload)
+            validate_agent_contract_payload(contract, "state_schema", body.state_payload)
+        except ValueError as exc:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                f"Operations Agent run payload violates AgentContractV1: {exc}",
+            ) from exc
+    profile = await _get_profile(db, agent)
+    if profile.mode == AgentProfileMode.LOW_RISK_AUTOMATIC:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "Automatic Operations Agent runs require the governed action gateway",
+        )
     run = OperationsAgentRun(
         workspace_id=workspace_id,
         operations_agent_id=agent.id,
@@ -311,11 +489,14 @@ async def start_agent_run(
         trigger_type="manual",
         target_resource_type=body.target_resource_type,
         target_resource_id=body.target_resource_id,
+        input_payload=body.input_payload,
+        state_payload=body.state_payload,
         status="queued",
         started_by_user_id=access.user_id,
     )
     db.add(run)
     await db.flush()
+    queue_after_commit(db, lambda: schedule_operations_agent_run(run.id))
     return ApiResponse.ok(OperationsAgentRunRead.model_validate(run))
 
 
@@ -341,10 +522,16 @@ async def pause_agent_run(
     )
     if run is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Operations Agent Run not found")
-    if run.status not in {"queued", "running"}:
+    paused = await db.execute(
+        update(OperationsAgentRun)
+        .where(OperationsAgentRun.id == run.id)
+        .where(OperationsAgentRun.status.in_(("queued", "running")))
+        .values(status="paused")
+    )
+    if getattr(paused, "rowcount", 0) != 1:
         raise HTTPException(status.HTTP_409_CONFLICT, "Operations Agent Run cannot be paused")
-    run.status = "paused"
-    await db.flush()
+    await db.refresh(run)
+    queue_after_commit(db, partial(cancel_operations_agent_run, run.id))
     return ApiResponse.ok(OperationsAgentRunRead.model_validate(run))
 
 

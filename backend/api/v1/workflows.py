@@ -58,7 +58,9 @@ router = APIRouter(prefix="/workflows", tags=["workflows"])
 
 async def _reject_workspace_scoped_run(db: AsyncSession, run_id: str) -> None:
     run = await db.get(WorkflowRunRow, run_id)
-    if run is not None and run.workflow_version_id is not None:
+    if run is not None and (
+        run.workflow_version_id is not None or run.studio_workflow_version_id is not None
+    ):
         raise HTTPException(status_code=404, detail="Workflow run not found")
 
 
@@ -289,7 +291,7 @@ async def start_run(
         session=db,
         graphon_client=graphon_client,
     )
-    await _dispatch_materialized_image_jobs(db, projection.runId)
+    await dispatch_materialized_image_jobs(db, projection.runId)
     return ApiResponse.ok(projection)
 
 
@@ -412,7 +414,7 @@ async def start_run_from_webhook(
         session=db,
         graphon_client=get_dify_graphon_client(),
     )
-    await _dispatch_materialized_image_jobs(db, projection.runId)
+    await dispatch_materialized_image_jobs(db, projection.runId)
     return ApiResponse.ok(
         _webhook_ingress_response(
             projection,
@@ -424,7 +426,7 @@ async def start_run_from_webhook(
     )
 
 
-async def _dispatch_materialized_image_jobs(db: AsyncSession, run_id: str) -> None:
+async def dispatch_materialized_image_jobs(db: AsyncSession, run_id: str) -> None:
     """Commit durable job intent before handing it to Celery.
 
     With no attested runtime or durable worker, jobs are persisted as blocked
@@ -511,6 +513,7 @@ async def get_run_evidence_batches(
 ) -> ApiResponse[workflow_schemas.WorkflowEvidenceBatchListResponse]:
     """List compact EvidenceBatch metadata without returning raw records."""
 
+    await _reject_workspace_scoped_run(db, run_id)
     projection = await get_workflow_run_projection(run_id, session=db)
     if projection is None:
         raise HTTPException(status_code=404, detail="Workflow run not found")
@@ -538,6 +541,7 @@ async def get_run_evidence_batch(
 ) -> ApiResponse[workflow_schemas.WorkflowEvidenceBatchDetail]:
     """Return one compact EvidenceBatch manifest and source coverage projection."""
 
+    await _reject_workspace_scoped_run(db, run_id)
     projection = await get_workflow_run_projection(run_id, session=db)
     if projection is None:
         raise HTTPException(status_code=404, detail="Workflow run not found")
@@ -560,6 +564,7 @@ async def get_run_evidence_projection(
 ) -> ApiResponse[workflow_schemas.WorkflowEvidenceProjection]:
     """Project run results for Canvas and AI consumers from replayable metadata."""
 
+    await _reject_workspace_scoped_run(db, run_id)
     projection = await get_workflow_run_projection(run_id, session=db)
     if projection is None:
         raise HTTPException(status_code=404, detail="Workflow run not found")
@@ -622,6 +627,7 @@ async def get_run_research_ledger(
 ) -> ApiResponse[workflow_schemas.WorkflowResearchLedgerResponse]:
     """Return the immutable parent/child revision chain for one research run."""
 
+    await _reject_workspace_scoped_run(db, run_id)
     ledger = await get_research_ledger(run_id, session=db)
     if ledger is None:
         raise HTTPException(status_code=404, detail="Workflow run not found")
@@ -640,6 +646,7 @@ async def continue_research_run(
 ) -> ApiResponse[workflow_schemas.WorkflowResearchContinuationResponse]:
     """Start one bounded child Run from an accepted collect_more proposal."""
 
+    await _reject_workspace_scoped_run(db, run_id)
     try:
         result = await continue_research_workflow_run(run_id, body, session=db)
     except ResearchContinuationError as exc:

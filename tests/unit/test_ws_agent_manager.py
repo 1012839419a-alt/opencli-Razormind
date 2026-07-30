@@ -241,6 +241,9 @@ async def test_send_agent_task_timeout():
     with pytest.raises(TimeoutError, match="did not complete agent_task"):
         await mgr.send_agent_task("http://agent:19823", {"runtime": "pi"}, lambda e: None, timeout=0.05)
 
+    sent_frames = [call.args[0] for call in ws.send_json.await_args_list]
+    assert [frame["type"] for frame in sent_frames] == ["agent_task", "cancel"]
+    assert sent_frames[1]["request_id"] == sent_frames[0]["request_id"]
     # Bookkeeping cleaned up after timeout.
     assert len(mgr._pending_agent_tasks) == 0
     assert len(mgr._agent_task_callbacks) == 0

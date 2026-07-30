@@ -167,6 +167,7 @@ class _StoredWorkflowRun:
     projection: WorkflowRunProjection
     events: list[WorkflowNodeRunEvent]
     workflow_version_id: str | None = None
+    studio_workflow_version_id: str | None = None
 
 
 _RUNS: dict[str, _StoredWorkflowRun] = {}
@@ -289,6 +290,7 @@ async def start_workflow_run(
     session: AsyncSession | None = None,
     existing_events: list[WorkflowNodeRunEvent] | None = None,
     workflow_version_id: str | None = None,
+    studio_workflow_version_id: str | None = None,
     graphon_client: DifyGraphonClient | None = None,
 ) -> WorkflowRunProjection:
     """Create a replayable workflow run projection from a compiled WorkflowProject."""
@@ -344,6 +346,7 @@ async def start_workflow_run(
             events=stored_events,
             session=session,
             workflow_version_id=workflow_version_id,
+            studio_workflow_version_id=studio_workflow_version_id,
         )
         return projection
 
@@ -388,6 +391,7 @@ async def start_workflow_run(
             events=stored_events,
             session=session,
             workflow_version_id=workflow_version_id,
+            studio_workflow_version_id=studio_workflow_version_id,
         )
         return projection
 
@@ -411,6 +415,7 @@ async def start_workflow_run(
             events=prior_events,
             session=session,
             workflow_version_id=workflow_version_id,
+            studio_workflow_version_id=studio_workflow_version_id,
         )
     should_trace_opencli = any(
         _binding_id(node) == OPENCLI_BINDING_ID for node in runtime_nodes
@@ -1560,6 +1565,7 @@ async def start_workflow_run(
         events=events,
         session=session,
         workflow_version_id=workflow_version_id,
+        studio_workflow_version_id=studio_workflow_version_id,
     )
     if session is not None:
         stored = await _load_workflow_run(run_id, session=session, cache=False)
@@ -1583,6 +1589,7 @@ async def start_workflow_run(
                 events=stored.events,
                 session=session,
                 workflow_version_id=workflow_version_id,
+                studio_workflow_version_id=studio_workflow_version_id,
             )
     await _materialize_waiting_image_jobs(
         body,
@@ -1667,11 +1674,29 @@ async def list_workflow_run_events(
     event_type: WorkflowNodeRunEventType | None = None,
     limit: int | None = None,
 ) -> list[WorkflowNodeRunEvent] | None:
-    stored = (
-        await _load_workflow_run(run_id, session=session)
-        if session is not None
-        else _RUNS.get(run_id)
-    )
+    if session is not None:
+        if await session.get(WorkflowRunRow, run_id) is None:
+            return None
+        statement = (
+            select(WorkflowRunEventRow)
+            .where(WorkflowRunEventRow.run_id == run_id)
+            .order_by(WorkflowRunEventRow.sequence)
+        )
+        if after_sequence is not None:
+            statement = statement.where(WorkflowRunEventRow.sequence > after_sequence)
+        if node_id is not None:
+            statement = statement.where(WorkflowRunEventRow.node_id == node_id)
+        if event_type is not None:
+            statement = statement.where(WorkflowRunEventRow.event_type == event_type)
+        if limit is not None:
+            statement = statement.limit(limit)
+        rows = (await session.execute(statement)).scalars().all()
+        return [
+            WorkflowNodeRunEvent.model_validate(event_row.payload)
+            for event_row in rows
+        ]
+
+    stored = _RUNS.get(run_id)
     if not stored:
         return None
     events = _filter_workflow_run_events(
@@ -1754,6 +1779,7 @@ async def continue_workflow_run_with_source_outputs(
             session=session,
             existing_events=stored.events,
             workflow_version_id=stored.workflow_version_id,
+            studio_workflow_version_id=stored.studio_workflow_version_id,
         )
 
 
@@ -1765,6 +1791,7 @@ async def _store_workflow_run(
     events: list[WorkflowNodeRunEvent],
     session: AsyncSession | None,
     workflow_version_id: str | None = None,
+    studio_workflow_version_id: str | None = None,
 ) -> None:
     events_to_mirror = list(events)
     stored_events = list(events)
@@ -1780,6 +1807,7 @@ async def _store_workflow_run(
         row.valid = projection.valid
         row.package_node_id = projection.packageNodeId
         row.workflow_version_id = workflow_version_id
+        row.studio_workflow_version_id = studio_workflow_version_id
         row.request = request.model_dump(mode="json")
         row.projection = projection.model_dump(mode="json")
 
@@ -1791,7 +1819,13 @@ async def _store_workflow_run(
         stored_events = append_result.events
         events_to_mirror = append_result.appended_events
 
-    stored = _StoredWorkflowRun(request, projection, stored_events, workflow_version_id)
+    stored = _StoredWorkflowRun(
+        request,
+        projection,
+        stored_events,
+        workflow_version_id,
+        studio_workflow_version_id,
+    )
     if session is None:
         _RUNS[run_id] = stored
         await publish_workflow_run_event_mirror(events_to_mirror)
@@ -1855,6 +1889,7 @@ async def _load_workflow_run(
         projection=WorkflowRunProjection.model_validate(row.projection),
         events=[WorkflowNodeRunEvent.model_validate(event_row.payload) for event_row in event_rows],
         workflow_version_id=row.workflow_version_id,
+        studio_workflow_version_id=row.studio_workflow_version_id,
     )
     if cache:
         _RUNS[run_id] = stored
@@ -4563,6 +4598,29 @@ def _to_dispatch(
     mode = _read_string(node.params.get("mode"))
     if mode:
         payload["mode"] = mode
+    source_binding_id = _read_string(
+        node.params.get("sourceBindingId", node.params.get("source_binding_id"))
+    )
+    source_binding_revision_id = _read_string(
+        node.params.get(
+            "sourceBindingRevisionId",
+            node.params.get("source_binding_revision_id"),
+        )
+    )
+    source_binding_revision_number = node.params.get(
+        "sourceBindingRevisionNumber",
+        node.params.get("source_binding_revision_number"),
+    )
+    if source_binding_id:
+        payload["source_binding_id"] = source_binding_id
+    if source_binding_revision_id:
+        payload["source_binding_revision_id"] = source_binding_revision_id
+    if (
+        isinstance(source_binding_revision_number, int)
+        and not isinstance(source_binding_revision_number, bool)
+        and source_binding_revision_number >= 1
+    ):
+        payload["source_binding_revision_number"] = source_binding_revision_number
     dispatch_policy = _read_string(
         node.params.get("dispatchPolicy", node.params.get("dispatch_policy"))
     )
@@ -4579,6 +4637,17 @@ def _to_dispatch(
         site=site,
         command=command,
         args=args,
+        sourceBindingId=source_binding_id,
+        sourceBindingRevisionId=source_binding_revision_id,
+        sourceBindingRevisionNumber=(
+            source_binding_revision_number
+            if (
+                isinstance(source_binding_revision_number, int)
+                and not isinstance(source_binding_revision_number, bool)
+                and source_binding_revision_number >= 1
+            )
+            else None
+        ),
         iii={"function_id": OPENCLI_FUNCTION_ID, "payload": payload},
     )
 

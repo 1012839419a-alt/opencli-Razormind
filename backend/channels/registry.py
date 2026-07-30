@@ -33,6 +33,8 @@ def _load_all_channels() -> None:
         browser_act_channel,
         cli_channel,
         crawl4ai_channel,
+        doubao_research_channel,
+        douyin_detail_channel,
         opencli_channel,
         rss_channel,
         skill_channel,

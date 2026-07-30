@@ -1,6 +1,6 @@
 'use client'
 
-import { AlertTriangle, ArrowLeft, ArrowRight, CheckCircle2, Clock3, GitBranch, Layers3, Plus, Rocket, Workflow } from 'lucide-react'
+import { Activity, AlertTriangle, ArrowLeft, ArrowRight, CheckCircle2, Clock3, Copy, GitBranch, Layers3, Plus, Rocket, Waypoints, Workflow } from 'lucide-react'
 import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { use } from 'react'
@@ -12,7 +12,7 @@ import { ProjectNavigation } from '@/components/studio/project-navigation'
 import { Badge } from '@/components/ui/badge'
 import { Button, buttonVariants } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { useCreateProjectWorkflow, useMyWorkspaces, useProjectWorkflows, useWorkspaceProjects } from '@/lib/api/hooks'
+import { useCreateProjectWorkflow, useMyWorkspaces, useProjectRuntimeSummary, useProjectWorkflows, useWorkspaceProjects } from '@/lib/api/hooks'
 import { formatRelative } from '@/lib/format'
 import { projectAppTypeLabel } from '@/lib/studio/app-types'
 import { cn } from '@/lib/utils'
@@ -26,6 +26,7 @@ export default function ProjectOverviewPage({ params }: { params: Promise<{ proj
   const workspaceId = searchParams.get('workspace') ?? workspaces.data?.[0]?.id ?? null
   const projects = useWorkspaceProjects(workspaceId)
   const projectWorkflows = useProjectWorkflows(workspaceId, projectId)
+  const runtimeSummary = useProjectRuntimeSummary(workspaceId, projectId)
   const createWorkflow = useCreateProjectWorkflow()
   const project = projects.data?.find((candidate) => candidate.id === projectId)
   const workspace = workspaces.data?.find((candidate) => candidate.id === workspaceId)
@@ -33,6 +34,15 @@ export default function ProjectOverviewPage({ params }: { params: Promise<{ proj
     ?? projectWorkflows.data?.[0]
   const workflowHref = workspaceId && primaryWorkflow
     ? `/studio/workflow?workspace=${workspaceId}&project=${projectId}&workflow=${primaryWorkflow.id}`
+    : null
+  const apiEndpoint = workspaceId && primaryWorkflow
+    ? `/api/v1/workspaces/${workspaceId}/projects/${projectId}/workflows/${primaryWorkflow.id}/runs`
+    : null
+  const apiHref = workspaceId
+    ? `/studio/projects/${projectId}/api?workspace=${workspaceId}${primaryWorkflow ? `&workflow=${primaryWorkflow.id}` : ''}`
+    : null
+  const operationsHref = workspaceId
+    ? `/studio/projects/${projectId}/operations?workspace=${workspaceId}${primaryWorkflow ? `&workflow=${primaryWorkflow.id}` : ''}`
     : null
   const returnHref = workspaceId ? `/studio?workspace=${workspaceId}` : '/studio'
 
@@ -52,6 +62,24 @@ export default function ProjectOverviewPage({ params }: { params: Promise<{ proj
       router.push(`/studio/workflow?workspace=${workspaceId}&project=${projectId}&workflow=${workflow.id}&guide=blank`)
     } catch (reason) {
       toast.error(reason instanceof Error ? reason.message : '工作流创建失败')
+    }
+  }
+
+  async function copyApiExample() {
+    if (!apiEndpoint) return
+    const absoluteEndpoint = new URL(apiEndpoint, window.location.origin).toString()
+    const example = [
+      `curl -X POST "${absoluteEndpoint}"`,
+      '  -H "Content-Type: application/json"',
+      '  -H "Authorization: Bearer $API_AUTH_TOKEN"',
+      '  -H "Idempotency-Key: project-job-001"',
+      "  -d '{\"inputs\":{\"topic\":\"OpenCLI\"},\"response_mode\":\"async\",\"user\":\"server-worker\"}'",
+    ].join(" \\\n")
+    try {
+      await navigator.clipboard.writeText(example)
+      toast.success('API 调用模板已复制')
+    } catch {
+      toast.error('复制失败，请手动复制 API 模板')
     }
   }
 
@@ -181,6 +209,94 @@ export default function ProjectOverviewPage({ params }: { params: Promise<{ proj
         </div>
       </section>
 
+      <section className="grid gap-4 xl:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]" aria-labelledby="runtime-title">
+        <Card>
+          <CardHeader>
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="eyebrow-mono">API & MCP Access</p>
+                <CardTitle id="runtime-title" className="mt-1 text-base">API / MCP</CardTitle>
+              </div>
+              <Waypoints className="size-4 text-muted-foreground" />
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-4 text-sm">
+            <p className="text-xs leading-5 text-muted-foreground">
+              通过 REST 提交业务输入，或让 Agent 通过内置 MCP 发现并调用项目工具；两者进入同一条运行与 Trace 链路。
+            </p>
+            <div className="rounded-md border bg-muted/35 p-3 font-mono text-xs">
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-muted-foreground">POST</span>
+                <span className="truncate">{apiEndpoint ?? '发布并选择工作流后生成端点'}</span>
+              </div>
+              <div className="mt-2 text-muted-foreground">workflow={primaryWorkflow?.id ?? '未创建'} · version={publishedVersion ?? 'draft'}</div>
+              <div className="mt-3 flex items-center justify-between gap-3 border-t pt-3">
+                <span className="text-primary">MCP</span>
+                <span className="truncate">/mcp · 2026-07-28</span>
+              </div>
+            </div>
+            <div className="grid gap-2 text-xs text-muted-foreground sm:grid-cols-2">
+              <ApiAccessItem label="调用位置" value="后端服务 / 自动化 Worker" />
+              <ApiAccessItem label="身份字段" value="Authorization: Bearer" />
+              <ApiAccessItem label="用户区分" value="user + X-Request-ID" />
+              <ApiAccessItem label="安全重试" value="Idempotency-Key" />
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button type="button" variant="outline" size="sm" onClick={() => void copyApiExample()} disabled={!apiEndpoint}>
+                <Copy className="size-4" />复制调用模板
+              </Button>
+              {apiHref ? <Link href={apiHref} className={cn(buttonVariants({ variant: 'ghost', size: 'sm' }))}>打开 API / MCP</Link> : null}
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="eyebrow-mono">Logs & monitoring</p>
+                <CardTitle className="mt-1 text-base">日志监测</CardTitle>
+              </div>
+              <Activity className="size-4 text-muted-foreground" />
+            </div>
+          </CardHeader>
+          <CardContent>
+            {runtimeSummary.isError ? (
+              <ErrorState message={runtimeSummary.error?.message ?? '运行摘要加载失败'} hint="日志监测不会阻塞项目编辑；后端恢复后会自动刷新。" />
+            ) : (
+              <div className="space-y-4">
+                <div className="grid gap-2 sm:grid-cols-4">
+                  <RuntimeMetric label="全部运行" value={runtimeSummary.data?.total_runs ?? 0} />
+                  <RuntimeMetric label="成功" value={runtimeSummary.data?.successful_runs ?? 0} />
+                  <RuntimeMetric label="失败/阻塞" value={(runtimeSummary.data?.failed_runs ?? 0) + (runtimeSummary.data?.blocked_runs ?? 0)} />
+                  <RuntimeMetric label="事件" value={runtimeSummary.data?.total_events ?? 0} />
+                </div>
+                {(runtimeSummary.data?.recent_logs.length ?? 0) > 0 ? (
+                  <div className="space-y-2">
+                    {runtimeSummary.data?.recent_logs.map((log) => (
+                      <div key={log.run_id} className="grid gap-3 rounded-md border p-3 text-xs sm:grid-cols-[minmax(0,1fr)_6rem_5rem_7rem]">
+                        <div className="min-w-0">
+                          <div className="truncate font-medium">{log.workflow_name}</div>
+                          <div className="mt-1 truncate font-mono text-muted-foreground">{log.run_id}</div>
+                        </div>
+                        <span className={cn('font-mono', statusClass(log.status))}>{log.status}</span>
+                        <span className="font-mono text-muted-foreground">{log.event_count} events</span>
+                        <span className="text-muted-foreground">{formatRelative(log.updated_at)}</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">
+                    暂无运行日志。发布或手动 Run 后，这里会显示每次运行的状态、事件数和更新时间。
+                  </div>
+                )}
+                {operationsHref ? <Link href={operationsHref} className={cn(buttonVariants({ variant: 'outline', size: 'sm' }))}>查看全部运行与 Trace<ArrowRight className="size-4" /></Link> : null}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      </section>
+
       <section className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_20rem]" aria-labelledby="path-title">
         <Card>
           <CardHeader>
@@ -244,4 +360,29 @@ function ProjectStep({ number, title, description, done }: { number: string; tit
       <p className="mt-2 text-xs leading-5 text-muted-foreground">{description}</p>
     </div>
   )
+}
+
+function ApiAccessItem({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-md border p-3">
+      <div className="text-muted-foreground">{label}</div>
+      <div className="mt-1 font-medium text-foreground">{value}</div>
+    </div>
+  )
+}
+
+function RuntimeMetric({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="rounded-md border p-3">
+      <div className="text-xs text-muted-foreground">{label}</div>
+      <div className="mt-1 font-mono text-lg font-semibold">{value}</div>
+    </div>
+  )
+}
+
+function statusClass(status: string) {
+  if (status === 'completed' || status === 'partial_success') return 'text-success'
+  if (status === 'failed') return 'text-destructive'
+  if (status === 'blocked') return 'text-warning'
+  return 'text-muted-foreground'
 }

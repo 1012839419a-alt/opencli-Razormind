@@ -124,6 +124,8 @@ services:
       DEBUG: ${DEBUG:-false}
       SECRET_KEY: ${SECRET_KEY:-change-me-in-production}
       API_AUTH_TOKEN: ${API_AUTH_TOKEN:-}
+      OPENCLI_MCP_ALLOWED_HOSTS: ${OPENCLI_MCP_ALLOWED_HOSTS:-}
+      OPENCLI_MCP_ALLOWED_ORIGINS: ${OPENCLI_MCP_ALLOWED_ORIGINS:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       # Built-in sidecar agent URL (Chrome + agent_server in one container).

@@ -47,6 +47,7 @@ import type {
   SourceControlState,
   SourceBinding,
   SourceBindingInput,
+  SourceBindingRevision,
   SourceMeasurementRecord,
   SystemConfig,
   TaskRun,
@@ -57,6 +58,9 @@ import type {
   ProjectRecordGraphPreview,
   ProjectBootstrapResult,
   ProjectAppType,
+  ProjectRuntimeLogPage,
+  ProjectRuntimeSummary,
+  ProjectRuntimeTrace,
   WorkflowAssetSummary,
   WorkflowDraftRead,
   WorkflowVersionSummary,
@@ -64,9 +68,11 @@ import type {
   ApprovalDecision,
   ApprovalDecisionResult,
   OperationsAgent,
+  OperationsAgentDraft,
   OperationsAgentMode,
   OperationsAgentProfile,
   OperationsAgentRun,
+  PublishedOperationsAgentVersion,
   Automation,
   WorkspaceSettingsRead,
   WorkspaceSettingsValues,
@@ -121,6 +127,17 @@ export const createProjectSourceBinding = (
     )
     .then((r) => r.data.data)
 
+export const listProjectSourceBindingRevisions = (
+  workspaceId: string,
+  projectId: string,
+  bindingId: string,
+) =>
+  apiClient
+    .get<ApiResponse<SourceBindingRevision[]>>(
+      `/workspaces/${workspaceId}/projects/${projectId}/source-bindings/${bindingId}/revisions`,
+    )
+    .then((r) => r.data.data)
+
 export const deleteWorkspaceProject = (workspaceId: string, projectId: string) =>
   apiClient.delete<ApiResponse<null>>(`/workspaces/${workspaceId}/projects/${projectId}`).then((r) => r.data)
 
@@ -137,6 +154,47 @@ export const bootstrapWorkspaceProject = (
 
 export const listProjectWorkflows = (workspaceId: string, projectId: string) =>
   apiClient.get<ApiResponse<WorkflowAssetSummary[]>>(`/workspaces/${workspaceId}/projects/${projectId}/workflows`).then((r) => r.data.data)
+
+export const getProjectRuntimeSummary = (workspaceId: string, projectId: string) =>
+  apiClient
+    .get<ApiResponse<ProjectRuntimeSummary>>(
+      `/workspaces/${workspaceId}/projects/${projectId}/runtime-summary`,
+    )
+    .then((r) => r.data.data)
+
+export const listProjectRuntimeLogs = (
+  workspaceId: string,
+  projectId: string,
+  params: { status?: string; search?: string; page?: number; limit?: number },
+) =>
+  apiClient
+    .get<ApiResponse<import('./types').ProjectRuntimeLog[]>>(
+      `/workspaces/${workspaceId}/projects/${projectId}/runtime-logs`,
+      { params },
+    )
+    .then((r): ProjectRuntimeLogPage => ({
+      logs: r.data.data,
+      meta: r.data.meta ?? {
+        total: r.data.data.length,
+        page: params.page ?? 1,
+        limit: params.limit ?? 20,
+        pages: 1,
+      },
+    }))
+
+export const getProjectRuntimeTrace = (
+  workspaceId: string,
+  projectId: string,
+  workflowId: string,
+  runId: string,
+  params?: { afterSequence?: number; limit?: number },
+) =>
+  apiClient
+    .get<ApiResponse<ProjectRuntimeTrace>>(
+      `/workspaces/${workspaceId}/projects/${projectId}/workflows/${workflowId}/runs/${runId}/trace`,
+      { params },
+    )
+    .then((r) => r.data.data)
 
 export const getProjectRecordGraph = (
   workspaceId: string,
@@ -200,6 +258,42 @@ export const listOperationsAgents = (workspaceId: string) =>
 
 export const listOperationsAgentActivity = (workspaceId: string) =>
   apiClient.get<ApiResponse<OperationsAgentRun[]>>(`/workspaces/${workspaceId}/operations-agents/activity`).then((r) => r.data.data)
+
+export const getOperationsAgentDraft = (workspaceId: string, agentId: string) =>
+  apiClient.get<ApiResponse<OperationsAgentDraft>>(`/workspaces/${workspaceId}/operations-agents/${agentId}/draft`).then((r) => r.data.data)
+
+export const updateOperationsAgentDraft = (
+  workspaceId: string,
+  agentId: string,
+  data: Pick<OperationsAgentDraft, 'revision' | 'instructions' | 'model_configuration' | 'tool_configuration'>,
+) =>
+  apiClient.put<ApiResponse<OperationsAgentDraft>>(`/workspaces/${workspaceId}/operations-agents/${agentId}/draft`, data).then((r) => r.data.data)
+
+export const listOperationsAgentVersions = (workspaceId: string, agentId: string) =>
+  apiClient.get<ApiResponse<PublishedOperationsAgentVersion[]>>(`/workspaces/${workspaceId}/operations-agents/${agentId}/versions`).then((r) => r.data.data)
+
+export const getOperationsAgentVersion = (workspaceId: string, agentId: string, version: number) =>
+  apiClient.get<ApiResponse<PublishedOperationsAgentVersion>>(`/workspaces/${workspaceId}/operations-agents/${agentId}/versions/${version}`).then((r) => r.data.data)
+
+export const publishOperationsAgentVersion = (workspaceId: string, agentId: string, reason: string) =>
+  apiClient.post<ApiResponse<PublishedOperationsAgentVersion>>(`/workspaces/${workspaceId}/operations-agents/${agentId}/versions`, { reason }).then((r) => r.data.data)
+
+export const startOperationsAgentRun = (
+  workspaceId: string,
+  agentId: string,
+  data: {
+    target_resource_type: string
+    target_resource_id: string
+    input_payload: Record<string, unknown>
+    state_payload: Record<string, unknown>
+  },
+) =>
+  apiClient
+    .post<ApiResponse<OperationsAgentRun>>(
+      `/workspaces/${workspaceId}/operations-agents/${agentId}/runs`,
+      data,
+    )
+    .then((r) => r.data.data)
 
 export const listAutomations = (workspaceId: string) =>
   apiClient.get<ApiResponse<Automation[]>>(`/workspaces/${workspaceId}/automations`).then((r) => r.data.data)
