@@ -19,7 +19,8 @@ import { formatRelative } from '@/lib/format'
 import { PROJECT_APP_CATEGORY_LABELS, projectAppCategoryLabel, projectAppTypeForDifyMode, projectAppTypeLabel, projectMatchesAppType, type ProjectAppTypeFilter } from '@/lib/studio/app-types'
 import type { ProjectSummary } from '@/lib/api/types'
 import { translateWorkflowDslManaged, type WorkflowImportResult } from '@/lib/workflow/codec'
-import { studioAppTypeForTemplate, studioGraphForTemplate, studioSlug, type StudioTemplateId } from '@/lib/workflow/studio-templates'
+import { businessProjectName } from '@/lib/workflow/business-node-experience'
+import { STUDIO_TEMPLATES, studioAppTypeForTemplate, studioGraphForTemplate, studioSlug, type StudioTemplateId } from '@/lib/workflow/studio-templates'
 
 const PROJECT_TYPE_FILTERS = [
   { value: 'all', label: '全部', icon: FolderKanban },
@@ -27,6 +28,14 @@ const PROJECT_TYPE_FILTERS = [
   { value: 'orchestration', label: PROJECT_APP_CATEGORY_LABELS.orchestration, icon: Workflow },
   { value: 'generation', label: PROJECT_APP_CATEGORY_LABELS.generation, icon: FileText },
 ] as const satisfies ReadonlyArray<{ value: ProjectAppTypeFilter; label: string; icon: typeof FolderKanban }>
+
+const FEATURED_COLLECTION_TEMPLATE_IDS = new Set<StudioTemplateId>([
+  'opencli-live-pipeline',
+  'financial-rss-intelligence',
+  'ashare-market-intelligence',
+  'native-intelligence-lifecycle',
+])
+const FEATURED_COLLECTION_TEMPLATES = STUDIO_TEMPLATES.filter((template) => FEATURED_COLLECTION_TEMPLATE_IDS.has(template.id))
 
 export default function StudioPage() {
   const router = useRouter()
@@ -71,11 +80,11 @@ export default function StudioPage() {
   const visibleProjects = useMemo(() => {
     const query = search.trim().toLowerCase()
     const result = (projects.data ?? []).filter((project) => {
-      const haystack = `${project.name} ${project.description ?? ''} ${project.slug}`.toLowerCase()
+      const haystack = `${businessProjectName(project.name)} ${project.description ?? ''} ${project.slug}`.toLowerCase()
       return (!query || haystack.includes(query)) && projectMatchesAppType(project, type)
     })
     return result.sort((left, right) => {
-      if (sort === 'name') return left.name.localeCompare(right.name, 'zh-CN')
+      if (sort === 'name') return businessProjectName(left.name).localeCompare(businessProjectName(right.name), 'zh-CN')
       const field = sort === 'created-asc' ? 'created_at' : 'updated_at'
       const direction = sort === 'created-asc' ? 1 : -1
       return left[field].localeCompare(right[field]) * direction
@@ -159,7 +168,7 @@ export default function StudioPage() {
     if (!workspaceId || !deleteTarget) return
     try {
       await deleteProject.mutateAsync({ workspaceId, projectId: deleteTarget.id })
-      toast.success(`已删除项目“${deleteTarget.name}”`)
+      toast.success(`已删除项目“${businessProjectName(deleteTarget.name)}”`)
       setDeleteTarget(null)
     } catch (reason) {
       toast.error(reason instanceof Error ? reason.message : '删除失败')
@@ -219,6 +228,37 @@ export default function StudioPage() {
         </div>
       </div>
 
+      <section className="rounded-xl border border-border/80 bg-card/20 p-4" aria-labelledby="collection-template-title">
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <div className="eyebrow-mono">Collection starters</div>
+            <h2 id="collection-template-title" className="mt-1 text-sm font-semibold">从采集项目开始</h2>
+            <p className="mt-1 text-xs text-muted-foreground">选择一条现成链路，创建后直接进入工作流配置与运行。</p>
+          </div>
+          <Link href={workspaceId ? `/studio/templates?workspace=${workspaceId}` : '/studio/templates'} className="min-h-11 rounded-lg px-3 py-3 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground">
+            查看全部 {STUDIO_TEMPLATES.length} 个模板
+          </Link>
+        </div>
+        <div className="mt-3 grid gap-2 md:grid-cols-2 xl:grid-cols-4">
+          {FEATURED_COLLECTION_TEMPLATES.map((template) => (
+            <button
+              key={template.id}
+              type="button"
+              disabled={!workspaceId}
+              onClick={() => { setCreateTemplate(template.id); setProjectName(template.title) }}
+              className="group min-h-32 rounded-xl border border-border/70 bg-background/40 p-3 text-left transition-[border-color,background-color,transform] hover:-translate-y-0.5 hover:border-foreground/25 hover:bg-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50"
+            >
+              <div className="flex items-center justify-between gap-2">
+                <Sparkles className="size-4 text-muted-foreground transition-colors group-hover:text-foreground" aria-hidden />
+                <Badge variant="outline">{template.category}</Badge>
+              </div>
+              <h3 className="mt-3 text-sm font-medium">{template.title}</h3>
+              <p className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground">{template.description}</p>
+            </button>
+          ))}
+        </div>
+      </section>
+
       {workspaces.isError || projects.isError ? (
         <div className="space-y-3">
           <ErrorState
@@ -245,7 +285,7 @@ export default function StudioPage() {
             >
               <div className="flex items-start justify-between gap-3"><div className="grid size-9 place-items-center rounded-lg bg-muted text-muted-foreground transition-colors group-hover:text-foreground"><FolderKanban className="size-4" aria-hidden /></div><Badge variant={project.archived ? 'secondary' : 'outline'}>{project.archived ? '已归档' : project.slug}</Badge></div>
               <div className="mt-4 flex items-center gap-2"><span className="eyebrow-mono">{projectAppCategoryLabel(project.app_type)} · {projectAppTypeLabel(project.app_type)}</span><span className="truncate font-mono text-3xs text-muted-foreground">{project.slug}</span></div>
-              <h2 className="mt-1 truncate text-sm font-semibold">{project.name}</h2>
+              <h2 className="mt-1 truncate text-sm font-semibold">{businessProjectName(project.name)}</h2>
               <p className="mt-1 line-clamp-2 min-h-10 text-xs leading-5 text-muted-foreground">{project.description || '数据节点项目'}</p>
               <div className="mt-3 flex items-center justify-between border-t border-border/70 pt-2.5 text-3xs text-muted-foreground"><span>创建者 我</span><span>{formatRelative(project.updated_at)}</span></div>
             </Link>
@@ -271,7 +311,7 @@ export default function StudioPage() {
       {contextMenu ? (
         <>
           <button type="button" aria-label="关闭项目右键菜单" className="fixed inset-0 z-40 cursor-default" onClick={() => setContextMenu(null)} onContextMenu={(event) => { event.preventDefault(); setContextMenu(null) }} />
-          <div role="menu" aria-label={`${contextMenu.project.name} 项目操作`} className="fixed z-50 min-w-44 rounded-lg border bg-popover p-1 shadow-xl" style={{ left: Math.min(contextMenu.x, window.innerWidth - 190), top: Math.min(contextMenu.y, window.innerHeight - 70) }}>
+          <div role="menu" aria-label={`${businessProjectName(contextMenu.project.name)} 项目操作`} className="fixed z-50 min-w-44 rounded-lg border bg-popover p-1 shadow-xl" style={{ left: Math.min(contextMenu.x, window.innerWidth - 190), top: Math.min(contextMenu.y, window.innerHeight - 70) }}>
             <button type="button" role="menuitem" className="flex min-h-10 w-full items-center gap-2 rounded-md px-3 text-left text-xs text-destructive hover:bg-destructive/10" onClick={() => { setDeleteTarget(contextMenu.project); setContextMenu(null) }}>
               <Trash2 className="size-3.5" aria-hidden />删除项目
             </button>
@@ -281,14 +321,14 @@ export default function StudioPage() {
 
       <Dialog open={deleteTarget !== null} onOpenChange={(open) => !open && !deleteProject.isPending && setDeleteTarget(null)}>
         <DialogContent>
-          <DialogHeader><DialogTitle>删除项目“{deleteTarget?.name}”？</DialogTitle><DialogDescription>项目下的工作流、草稿、版本和运行记录都会一并删除，此操作无法撤销。</DialogDescription></DialogHeader>
+          <DialogHeader><DialogTitle>删除项目“{deleteTarget ? businessProjectName(deleteTarget.name) : ''}”？</DialogTitle><DialogDescription>项目下的工作流、草稿、版本和运行记录都会一并删除，此操作无法撤销。</DialogDescription></DialogHeader>
           <DialogFooter><Button variant="outline" onClick={() => setDeleteTarget(null)} disabled={deleteProject.isPending}>取消</Button><Button variant="destructive" onClick={() => void confirmDeleteProject()} disabled={deleteProject.isPending}>{deleteProject.isPending ? '正在删除…' : '确认删除'}</Button></DialogFooter>
         </DialogContent>
       </Dialog>
 
       <Dialog open={createTemplate !== null} onOpenChange={(open) => !open && setCreateTemplate(null)}>
         <DialogContent>
-          <DialogHeader><DialogTitle>创建数据节点项目</DialogTitle><DialogDescription>项目和第一份 WorkflowDraft 会同时保存到当前工作区。</DialogDescription></DialogHeader>
+          <DialogHeader><DialogTitle>创建项目</DialogTitle><DialogDescription>项目和第一条工作流会同时保存到当前工作区。</DialogDescription></DialogHeader>
           <label className="space-y-2 text-sm"><span>项目名称</span><Input value={projectName} onChange={(event) => setProjectName(event.target.value)} autoFocus /></label>
           <DialogFooter><Button variant="outline" onClick={() => setCreateTemplate(null)}>取消</Button><Button onClick={submitCreate} disabled={!projectName.trim() || bootstrapProject.isPending}>创建并打开</Button></DialogFooter>
         </DialogContent>
@@ -305,7 +345,7 @@ export default function StudioPage() {
             <Select value={importProjectId} onValueChange={(value) => setImportProjectId(value ?? '')}>
               <SelectTrigger className="w-full"><SelectValue placeholder="选择 Project" /></SelectTrigger>
               <SelectContent>
-                {(projects.data ?? []).map((project) => <SelectItem key={project.id} value={project.id}>{project.name}</SelectItem>)}
+                {(projects.data ?? []).map((project) => <SelectItem key={project.id} value={project.id}>{businessProjectName(project.name)}</SelectItem>)}
                 <SelectItem value="__new__">＋ 新建 Project</SelectItem>
               </SelectContent>
             </Select>

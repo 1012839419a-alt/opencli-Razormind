@@ -82,6 +82,12 @@ from backend.workflow.joyai_vl_executor import (
     JoyAIVLExecutionError,
     execute_joyai_vl_interaction,
 )
+from backend.workflow.kats_runtime import (
+    KATS_EXECUTOR_MODE,
+    KATS_TOOL_IDS,
+    KatsRuntimeError,
+    execute_kats_operation,
+)
 from backend.workflow.last30days_provider import Last30DaysProviderError
 from backend.workflow.native_intelligence_executor import (
     NATIVE_INTELLIGENCE_ACTION_BY_TOOL_ID,
@@ -3583,6 +3589,26 @@ async def _execute_external_tool_capability(
         output = _execute_swarm_simulation_tool(input_items, binding_input)
         return [_external_tool_output(node, output, input_items, run_id, 0, binding_input)]
 
+    if (
+        binding_input.get("executorMode") == KATS_EXECUTOR_MODE
+        and binding_input.get("toolCapabilityId") in KATS_TOOL_IDS
+    ):
+        operation, params = _resolved_kats_params(binding_input)
+        try:
+            output = await execute_kats_operation(operation, input_items, params)
+        except KatsRuntimeError as exc:
+            output = {
+                "schema": "kats.error.v1",
+                "source": "facebookresearch/kats",
+                "eventType": "kats.operation.error",
+                "status": "error",
+                "operation": operation,
+                "code": exc.code,
+                "message": exc.message,
+                "details": exc.details,
+            }
+        return [_external_tool_output(node, output, input_items, run_id, 0, binding_input)]
+
     fixture_outputs = _read_dict_list(binding_input.get("fixtureOutputs"))
     fixture_output = _read_dict(binding_input.get("fixtureOutput"))
     if not fixture_outputs and fixture_output:
@@ -3665,6 +3691,17 @@ def _merged_tool_params(binding_input: dict[str, Any]) -> dict[str, Any]:
         **_read_dict(binding_input.get("executorParams")),
         **_read_dict(binding_input.get("toolParams")),
     }
+
+
+def _resolved_kats_params(
+    binding_input: dict[str, Any],
+) -> tuple[str, dict[str, Any]]:
+    params = _merged_tool_params(binding_input)
+    operation = _read_string(
+        _read_dict(binding_input.get("executorParams")).get("operation")
+    )
+    params["operation"] = operation
+    return operation, params
 
 
 def _external_tool_output(

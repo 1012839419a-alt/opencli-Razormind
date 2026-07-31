@@ -1134,7 +1134,10 @@ export function Inspector({ compact = false, onClose }: { compact?: boolean; onC
     nodes,
     allowedParamIds: implementationNode
       ? undefined
-      : nodeViewContract.params.map((param) => param.id),
+      : [
+          ...nodeViewContract.params.map((param) => param.id),
+          ...(configurationNode?.parameterInterface?.fields.map((field) => field.id) ?? []),
+        ],
     runtimeCapability: data.runtimeCapability,
   })
   const nodeInternals = nodeViewContract.internals
@@ -1580,6 +1583,39 @@ export function Inspector({ compact = false, onClose }: { compact?: boolean; onC
   const openCLISources = isOpenCLISourceSlotArray(configurationNode?.params.sources)
     ? configurationNode.params.sources
     : undefined
+  const publicParameterPanel = parameterInterfaceView ? (
+    <section className="space-y-2 rounded-[3px] border border-[#35404b] bg-[#101216]/84 p-3">
+      <div>
+        <SectionCaption>{language === "zh-CN" ? "公开参数 / PARAMETERS" : "PUBLIC PARAMETERS"}</SectionCaption>
+        <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+          {parameterInterfaceView.summary}
+        </p>
+      </div>
+      <div className="overflow-hidden rounded-[3px] border border-[#20242a] bg-[#101216]/84">
+        <div className="flex flex-wrap gap-0 border-b border-[#24282f] bg-[#1d2025] p-0 font-mono text-[10px] uppercase">
+          {parameterGroups.map((group) => (
+            <button
+              key={group.id}
+              type="button"
+              onClick={() => setParameterGroupTab(group.id)}
+              className={cn(
+                "border-r border-[#2b3037] px-3 py-1.5 transition-colors",
+                activeParameterGroupId === group.id
+                  ? "bg-[#07080a] text-foreground"
+                  : "text-muted-foreground hover:bg-[#252a31] hover:text-foreground",
+              )}
+            >
+              {PARAMETER_GROUP_TEXT[group.label]?.[language] ?? group.label}
+            </button>
+          ))}
+        </div>
+        <div className="px-2 py-1">{regularParameterFields.map((field) => renderParameterField(field))}</div>
+        {activeParameterFields.length === 0 ? (
+          <p className="px-3 py-4 text-[11px] text-muted-foreground">{copy.noPublicParameters}</p>
+        ) : null}
+      </div>
+    </section>
+  ) : null
   return (
     <PanelShell
       compact={compact}
@@ -1629,6 +1665,7 @@ export function Inspector({ compact = false, onClose }: { compact?: boolean; onC
           </div>
         ) : (
           <>
+        {publicParameterPanel}
         <section className="space-y-3 rounded-[3px] border border-[#20242a] bg-[#101216]/84 p-3">
           <div>
             <SectionCaption>{copy.businessConfig}</SectionCaption>
@@ -1841,32 +1878,6 @@ export function Inspector({ compact = false, onClose }: { compact?: boolean; onC
             ) : null}
           </div>
         </details>
-
-        {parameterInterfaceView ? (
-          <div className="overflow-hidden rounded-[3px] border border-[#20242a] bg-[#101216]/84">
-            <div className="flex flex-wrap gap-0 border-b border-[#24282f] bg-[#1d2025] p-0 font-mono text-[10px] uppercase">
-              {parameterGroups.map((group) => (
-                <button
-                  key={group.id}
-                  type="button"
-                  onClick={() => setParameterGroupTab(group.id)}
-                  className={cn(
-                    "border-r border-[#2b3037] px-3 py-1.5 transition-colors",
-                    activeParameterGroupId === group.id
-                      ? "bg-[#07080a] text-foreground"
-                      : "text-muted-foreground hover:bg-[#252a31] hover:text-foreground",
-                  )}
-                >
-                  {PARAMETER_GROUP_TEXT[group.label]?.[language] ?? group.label}
-                </button>
-              ))}
-            </div>
-            <div className="px-2 py-1">{regularParameterFields.map((field) => renderParameterField(field))}</div>
-            {activeParameterFields.length === 0 ? (
-              <p className="px-3 py-4 text-[11px] text-muted-foreground">{copy.noPublicParameters}</p>
-            ) : null}
-          </div>
-        ) : null}
 
         {advancedParameterFields.length > 0 ? (
           <details className={houdiniDetailsClass} data-testid="advanced-parameter-fields">

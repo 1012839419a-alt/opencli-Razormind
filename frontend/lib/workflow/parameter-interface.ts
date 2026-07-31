@@ -1,4 +1,5 @@
 import type {
+  ParameterFieldType,
   ParameterInterface,
   ParameterInterfaceField,
   ParameterInterfaceGroup,
@@ -119,6 +120,68 @@ export function createDataOperatorParameterInterface(
       ...configFields,
     ],
   }
+}
+
+export function createBackendParameterInterface(
+  parentNodeId: string,
+  manifest?: Record<string, unknown>,
+): ParameterInterface | undefined {
+  const presentation = isJsonRecord(manifest?.presentation) ? manifest.presentation : undefined
+  const parameters = Array.isArray(presentation?.parameters) ? presentation.parameters : []
+  const fields = parameters.flatMap((entry, order): ParameterInterfaceField[] => {
+    const parameter = isJsonRecord(entry) ? entry : undefined
+    const name = typeof parameter?.name === "string" ? parameter.name : undefined
+    if (!parameter || !name) return []
+    return [{
+      id: name,
+      label: typeof parameter.label === "string" ? parameter.label : name,
+      groupId: "parameters",
+      type: backendParameterFieldType(name, parameter),
+      binding: { nodeId: parentNodeId, source: "params", fieldId: name },
+      description: typeof parameter.description === "string" ? parameter.description : undefined,
+      order,
+      optional: parameter.required !== true,
+      value: backendParameterDefault(parameter),
+      placeholder: typeof parameter.placeholder === "string" ? parameter.placeholder : undefined,
+      min: typeof parameter.minimum === "number" ? parameter.minimum : undefined,
+      max: typeof parameter.maximum === "number" ? parameter.maximum : undefined,
+      step: typeof parameter.step === "number" ? parameter.step : parameter.type === "integer" ? 1 : undefined,
+      options: backendParameterOptions(parameter.options),
+    }]
+  })
+  return fields.length > 0
+    ? { groups: [{ id: "parameters", label: "参数", order: 1 }], fields }
+    : undefined
+}
+
+function backendParameterFieldType(name: string, parameter: Record<string, unknown>): ParameterFieldType {
+  const type = typeof parameter.type === "string" ? parameter.type : "string"
+  if (type === "boolean") return "boolean"
+  if (type === "number" || type === "integer") return "number"
+  if (type === "select" && backendParameterOptions(parameter.options).length > 0) return "select"
+  if (type === "array") return backendParameterOptions(parameter.options).length > 0 ? "tokens" : "json"
+  if (type === "object") return "json"
+  if (type === "code" || /prompt|template|instruction|body|schema|question|requirement/i.test(name)) return "textarea"
+  return "text"
+}
+
+export function backendParameterDefault(parameter: Record<string, unknown>): unknown {
+  if (parameter.default !== null && parameter.default !== undefined) return parameter.default
+  if (parameter.type === "array") return []
+  if (parameter.type === "object") return {}
+  return undefined
+}
+
+function backendParameterOptions(value: unknown): Array<{ value: string; label: string }> {
+  if (!Array.isArray(value)) return []
+  return value.flatMap((entry) => {
+    if (typeof entry === "string") return [{ value: entry, label: entry }]
+    const option = isJsonRecord(entry) ? entry : undefined
+    const optionValue = typeof option?.value === "string" ? option.value : null
+    return optionValue
+      ? [{ value: optionValue, label: typeof option?.label === "string" ? option.label : optionValue }]
+      : []
+  })
 }
 
 function dataOperatorConfigFields(

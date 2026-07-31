@@ -124,7 +124,7 @@ test('logic and evidence defaults to the 3D Galaxy while keeping the 2D relation
   assert.match(explorer, /useProjectRecordGraph/)
   assert.match(explorer, /ProjectGalaxyForceGraph/)
   assert.match(explorer, /ProjectRelationshipForceGraph/)
-  assert.match(explorer, /active=\{mode\}/)
+  assert.match(explorer, /active=\{isGalaxy \? 'relationships' : mode\}/)
   assert.match(explorer, /证据关系/)
   assert.match(explorer, /Galaxy/)
   assert.match(galaxy, /postProcessingComposer/)

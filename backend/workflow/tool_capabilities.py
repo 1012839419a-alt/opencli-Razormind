@@ -19,6 +19,7 @@ from backend.workflow.joyai_vl_executor import (
     JOYAI_VL_INTERACTION_EXECUTOR,
     JOYAI_VL_TOOL_CAPABILITY_ID,
 )
+from backend.workflow.kats_runtime import kats_tool_capabilities
 from backend.workflow.native_intelligence_executor import (
     NATIVE_INTELLIGENCE_ACTIONS,
     NATIVE_INTELLIGENCE_EXECUTOR,
@@ -423,6 +424,7 @@ def _tool_capabilities() -> list[WorkflowToolCapability]:
             },
         ),
         *[_native_intelligence_tool(action) for action in NATIVE_INTELLIGENCE_ACTIONS],
+        *kats_tool_capabilities(),
     ]
 
 

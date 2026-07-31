@@ -118,7 +118,7 @@ def _materialize_node(node: WorkflowProjectNode) -> WorkflowProjectNode:
         template=NATIVE_INTELLIGENCE_LIFECYCLE_TEMPLATE,
         catalog_id=NATIVE_INTELLIGENCE_LIFECYCLE_CATALOG_ID,
     ):
-        internals = _native_intelligence_lifecycle_internals()
+        internals = _native_intelligence_lifecycle_internals(node.params)
         materialized = node.model_copy(
             update={
                 "params": {
@@ -288,34 +288,75 @@ def _tool_package_internals(
     )
 
 
-def _native_intelligence_lifecycle_internals() -> WorkflowPackageInternals:
+def _native_intelligence_lifecycle_internals(
+    package_params: dict[str, Any] | None = None,
+) -> WorkflowPackageInternals:
+    package_params = package_params or {}
+    seed = package_params.get("seed")
+    seed = seed if isinstance(seed, int) and not isinstance(seed, bool) else 0
+    persona_count = package_params.get("personaCount")
+    persona_count = (
+        persona_count
+        if isinstance(persona_count, int) and not isinstance(persona_count, bool)
+        else 5
+    )
+    max_rounds = package_params.get("maxRounds")
+    max_rounds = (
+        max_rounds
+        if isinstance(max_rounds, int) and not isinstance(max_rounds, bool)
+        else 3
+    )
+    agent_count = package_params.get("agentCount")
+    agent_count = (
+        agent_count
+        if isinstance(agent_count, int) and not isinstance(agent_count, bool)
+        else None
+    )
+    requirement = _read_string(package_params.get("requirement")) or (
+        "Explore evidence-grounded reactions."
+    )
+    platforms = package_params.get("platforms")
+    platforms = (
+        [item for item in platforms if isinstance(item, str) and item]
+        if isinstance(platforms, list)
+        else ["twitter", "reddit"]
+    )
+    question = _read_string(package_params.get("question")) or (
+        "What is the most likely evidence-grounded outcome?"
+    )
     actions = [
-        ("research", "Research", {"seed": 0}),
-        ("ontology", "Ontology", {"seed": 0}),
-        ("graph", "Evidence Graph", {"seed": 0}),
-        ("personas", "Personas", {"seed": 0, "personaCount": 5}),
+        ("research", "Research", {"seed": seed}),
+        ("ontology", "Ontology", {"seed": seed}),
+        ("graph", "Evidence Graph", {"seed": seed}),
+        ("personas", "Personas", {"seed": seed, "personaCount": persona_count}),
         (
             "simulation.start",
             "Simulation Start",
-            {"seed": 0, "maxRounds": 3},
+            {
+                "seed": seed,
+                "maxRounds": max_rounds,
+                **({"agentCount": agent_count} if agent_count is not None else {}),
+                "platforms": platforms,
+                "requirement": requirement,
+            },
         ),
         ("simulation.run", "Simulation Run", {}),
         ("simulation.timeline", "Simulation Timeline", {"limit": 100}),
         ("simulation.stats", "Simulation Stats", {}),
-        ("interviews.all", "Interviews Start", {"seed": 0}),
+        ("interviews.all", "Interviews Start", {"seed": seed}),
         ("interviews.run", "Interviews Run", {}),
         ("interviews.history", "Interview History", {"limit": 20}),
-        ("report.start", "Report Start", {"seed": 0}),
+        ("report.start", "Report Start", {"seed": seed}),
         ("report.progress", "Report Progress", {}),
         ("report.run", "Report Run", {}),
         ("report.read", "Report Sections", {}),
         (
             "report.ask",
             "Report Q&A",
-            {"seed": 0, "question": "What is the most likely evidence-grounded outcome?"},
+            {"seed": seed, "question": question},
         ),
         ("report.answers", "Report Answers", {"limit": 20}),
-        ("close", "Close Session", {"seed": 0}),
+        ("close", "Close Session", {"seed": seed}),
     ]
     action_nodes = [
         WorkflowProjectNode(

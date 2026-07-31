@@ -28,6 +28,9 @@ export type WorkflowToolCapability = {
       | "situation_awareness"
       | "swarm_simulation"
       | "native_intelligence"
+      | "opentabs"
+      | "bbx"
+      | "kats_runtime"
     description?: string | null
     params?: Record<string, unknown>
   }

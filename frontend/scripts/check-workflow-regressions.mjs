@@ -730,10 +730,14 @@ test('studio blank and packaged template drafts retain canonical adapters and co
   const { STUDIO_TEMPLATES, studioGraphForTemplate } = await importTypeScript('lib/workflow/studio-templates.ts')
   const blank = studioGraphForTemplate('blank', '空白项目')
   const packaged = STUDIO_TEMPLATES.map((template) => studioGraphForTemplate(template.id, template.title))
+  const collectionResearchTemplate = STUDIO_TEMPLATES.find((template) => template.id === 'native-intelligence-lifecycle')
 
   assert.equal(blank.nodes.length, 1)
   assert.equal(blank.nodes[0].ui?.catalogId, 'intelligence.input.collection-need')
   assert.equal(blank.nodes[0].internals?.nodes?.length ?? 0, 0)
+  assert.equal(collectionResearchTemplate?.title, '多平台采集研究项目')
+  assert.doesNotMatch(STUDIO_TEMPLATES.map((template) => `${template.title} ${template.description}`).join(' '), /原生智能|Native Intelligence Lifecycle/i)
+  assert.equal(studioGraphForTemplate('native-intelligence-lifecycle', collectionResearchTemplate.title).nodes[0].ui?.label, '采集研究与报告')
 
   for (const project of [blank, ...packaged]) {
     const visit = (node) => {
@@ -745,6 +749,13 @@ test('studio blank and packaged template drafts retain canonical adapters and co
     assert.equal(compiled.status, 0, `${project.name}\n${compiled.stdout}\n${compiled.stderr}`)
     assert.equal(compiled.report.valid, true)
   }
+})
+
+test('legacy intelligence project names are translated only for display', async () => {
+  const { businessProjectName } = await importTypeScript('lib/workflow/business-node-experience.ts')
+  assert.equal(businessProjectName('原生智能完整生命周期'), '多平台采集研究项目')
+  assert.equal(businessProjectName('原生智能完整生命周期 主工作流'), '多平台采集研究项目 主工作流')
+  assert.equal(businessProjectName('网站变化监控'), '网站变化监控')
 })
 
 test('studio templates persist template-specific source, cadence, and delivery intent', async () => {
@@ -914,11 +925,11 @@ test('the production studio adopts the selected project-workspace concept with a
   assert.doesNotMatch(projectOverview, /title="检查草稿"[\s\S]*done=\{Boolean\(primaryWorkflow\)\}/)
   assert.match(projectNavigation, /概览/)
   assert.match(projectNavigation, /编排/)
-  assert.match(projectNavigation, /日志监测/)
+  assert.match(projectNavigation, /运行记录/)
   assert.match(projectNavigation, /数据/)
   assert.match(projectNavigation, /逻辑与证据/)
   assert.match(projectNavigation, /设置/)
-  assert.match(projectNavigation, /\{ id: 'operations', label: '日志监测'/)
+  assert.match(projectNavigation, /\{ id: 'operations', label: '运行记录'/)
   assert.match(projectNavigation, /: null/)
   assert.match(projectNavigation, /aria-disabled="true"/)
   assert.match(workflowPage, /<WorkflowProjectHeader\s*\/>/)
@@ -1030,6 +1041,8 @@ test('workflow separates lightweight canvas actions from the guided node picker'
     assert.match(palette, new RegExp(`label: ["']${tab}["']`))
   }
   assert.match(palette, /role="tablist"/)
+  assert.match(palette, /createPortal/)
+  assert.match(palette, /document\.body/)
   assert.match(palette, /OpenCLI 能力预设/)
   assert.match(palette, /插件与后端工具/)
   assert.match(palette, /href="\/plugins"/)

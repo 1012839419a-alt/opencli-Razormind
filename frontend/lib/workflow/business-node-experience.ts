@@ -9,6 +9,13 @@ export type BusinessNodeNamingInput = {
   language?: WorkflowLanguage
 }
 
+export function businessProjectName(name: string): string {
+  return name.replace(
+    /^(原生智能完整生命周期|原生情报生命周期|Native Intelligence Lifecycle)/i,
+    "多平台采集研究项目",
+  )
+}
+
 /**
  * Names at L1 state the business action and object.  The persisted label is
  * never changed here: this is a display-only translation for older templates

@@ -137,7 +137,7 @@ export function ProjectGraphExplorer({
     >
       <div className="border-b pb-3">
         <ProjectNavigation
-          active={mode}
+          active={isGalaxy ? 'relationships' : mode}
           workspaceId={workspaceId}
           projectId={projectId}
           workflowId={workflowId}

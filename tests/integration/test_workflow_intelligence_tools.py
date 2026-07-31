@@ -72,6 +72,55 @@ def test_two_independent_packages_materialize_to_distinct_tool_capabilities():
     assert "swarm::tool" in compiled.plan.runtime.node_ids
 
 
+def test_native_lifecycle_package_parameters_materialize_into_actions():
+    project = WorkflowProject.model_validate(
+        {
+            "id": "wf-native-lifecycle-parameters",
+            "name": "Native lifecycle parameters",
+            "profile": "intelligence",
+            "version": 1,
+            "nodes": [
+                {
+                    "id": "native",
+                    "kind": "agent",
+                    "capability": "normalize",
+                    "params": {
+                        "template": "native-intelligence-lifecycle",
+                        "seed": 17,
+                        "personaCount": 8,
+                        "maxRounds": 4,
+                        "agentCount": 6,
+                        "requirement": "Track the likely outcome.",
+                        "platforms": ["reddit"],
+                        "question": "What changed?",
+                    },
+                    "ui": {"catalogId": "package.intelligence.native-lifecycle"},
+                }
+            ],
+            "edges": [],
+            "adapters": [],
+        }
+    )
+
+    native = materialize_hda_templates(project).nodes[0]
+    assert native.internals is not None
+    actions = {
+        node.id: node.params["toolParams"]
+        for node in native.internals.nodes
+        if node.kind == "action"
+    }
+    assert actions["research"]["seed"] == 17
+    assert actions["personas"]["personaCount"] == 8
+    assert actions["simulation-start"] == {
+        "seed": 17,
+        "maxRounds": 4,
+        "agentCount": 6,
+        "platforms": ["reddit"],
+        "requirement": "Track the likely outcome.",
+    }
+    assert actions["report-ask"]["question"] == "What changed?"
+
+
 def test_two_independent_tool_capabilities_are_registered():
     situation = resolve_workflow_tool_capability(SITUATION_AWARENESS_TOOL_CAPABILITY_ID)
     swarm = resolve_workflow_tool_capability(SWARM_SIMULATION_TOOL_CAPABILITY_ID)
@@ -92,6 +141,16 @@ async def test_two_package_catalog_capabilities_are_projected_runnable(client):
     assert catalog["package.intelligence.situation-awareness"]["backendAvailable"] is True
     assert catalog["package.simulation.swarm-forecast"]["status"] == "runnable"
     assert catalog["package.simulation.swarm-forecast"]["backendAvailable"] is True
+    native_parameters = catalog["package.intelligence.native-lifecycle"]["manifest"]["presentation"]["parameters"]
+    assert [parameter["name"] for parameter in native_parameters] == [
+        "seed",
+        "personaCount",
+        "maxRounds",
+        "agentCount",
+        "requirement",
+        "platforms",
+        "question",
+    ]
 
 
 @pytest.mark.asyncio

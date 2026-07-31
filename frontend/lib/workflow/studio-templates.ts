@@ -35,7 +35,7 @@ export const STUDIO_TEMPLATES = [
   { id: 'research-agent', variant: 'collection-to-consumption', appType: 'agent', title: '专题研究 Agent', description: '围绕一个问题检索证据、交叉验证并输出研究结论。', category: 'Agent 分析', steps: ['任务拆解', '证据研判', '结论生成'] },
   { id: 'last30days-research', variant: 'collection-to-consumption', appType: 'agent', title: '近 30 天事态感知', description: '从抖音、小红书、B站和 Twitter 采集证据，形成严格时间窗研究简报。', category: 'Agent 分析', steps: ['多平台采集', '30 天窗口研判', '证据简报'] },
   { id: 'situation-to-simulation', variant: 'collection-to-consumption', appType: 'workflow', title: '事态感知到群体推演', description: '把两个独立能力按模板连接：先形成事态报告，再作为群体推演种子。', category: '完整链路', steps: ['多平台采集', '事态感知', '群体智能推演'] },
-  { id: 'native-intelligence-lifecycle', variant: 'collection-to-consumption', appType: 'workflow', title: '原生智能完整生命周期', description: '零凭据离线运行研究、知识图谱、群体推演、访谈、报告、问答与关闭，并保留完整运行溯源。', category: '完整链路', steps: ['研究与图谱', '推演与访谈', '报告问答与关闭'] },
+  { id: 'native-intelligence-lifecycle', variant: 'collection-to-consumption', appType: 'workflow', title: '多平台采集研究项目', description: '从多平台证据采集开始，完成整理、关系构建、推演、访谈和研究报告；默认离线数据可直接跑通。', category: '完整链路', steps: ['证据采集', '整理与研判', '研究报告'] },
   { id: 'signal-triage', variant: 'collection-to-consumption', appType: 'agent', title: '信号研判助手', description: '对新信号进行分级、补充背景并给出处置建议。', category: 'Agent 分析', steps: ['信号接入', 'Agent 研判', '建议输出'] },
   { id: 'quality-review', variant: 'process', appType: 'agent', title: '内容质量审查', description: '按规则和样例检查内容质量，标记需要人工确认的部分。', category: 'Agent 分析', steps: ['规则读取', '质量检查', '人工复核'] },
   { id: 'webhook-delivery', variant: 'deliver', appType: 'workflow', title: 'Webhook 结果分发', description: '把工作流产物转换为稳定负载并投递到业务系统。', category: '分发与集成', steps: ['结果接收', '负载组装', 'Webhook'] },
@@ -412,7 +412,7 @@ function nativeIntelligenceLifecycleGraph(name: string) {
         },
         ui: {
           catalogId: 'package.intelligence.native-lifecycle',
-          label: '原生智能完整生命周期',
+          label: '采集研究与报告',
           position: { x: 120, y: 160 },
         },
       },

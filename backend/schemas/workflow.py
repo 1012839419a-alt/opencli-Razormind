@@ -420,6 +420,7 @@ class WorkflowToolCapabilityExecutor(BaseModel):
         "native_intelligence",
         "opentabs",
         "bbx",
+        "kats_runtime",
     ]
     description: Optional[str] = None
     params: dict[str, Any] = Field(default_factory=dict)

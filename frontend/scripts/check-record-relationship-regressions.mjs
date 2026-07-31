@@ -227,7 +227,7 @@ test('project evidence opens the recovered 3D Galaxy and keeps a 2D relationship
   assert.match(galaxyControls, /恢复全部默认值/)
   assert.match(navigation, /label: '逻辑与证据'/)
   assert.match(navigation, /label: '证据关系'/)
-  assert.match(navigation, /label: 'Galaxy'/)
+  assert.doesNotMatch(navigation, /label: 'Galaxy'/)
 })
 
 test('Galaxy freezes a deterministic relationship-driven 3D layout', async () => {

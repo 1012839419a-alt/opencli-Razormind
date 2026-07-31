@@ -110,6 +110,38 @@ services:
       start_period: 20s
     restart: unless-stopped
 
+  # ── Kats time-series compatibility runtime ───────────────────────────────
+  # Kats pins a legacy NumPy/Pandas/Statsmodels stack, so it stays isolated
+  # from the Python 3.13 API process while retaining its complete optional set.
+  kats-runtime:
+    profiles: ["kats", "nas"]
+    build:
+      context: ./compat/kats_runtime
+      dockerfile: Dockerfile
+    ports:
+      - "127.0.0.1:${KATS_RUNTIME_PORT:-8096}:8096"
+    networks:
+      - kats_runtime
+    read_only: true
+    tmpfs:
+      - /tmp:size=${KATS_RUNTIME_TMPFS_SIZE:-256m},mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 512
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:8096/health', timeout=3)"
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+    restart: unless-stopped
+
   # ── Backend API ───────────────────────────────────────────────────────────
   api:
     <<: *backend-common
@@ -145,6 +177,7 @@ services:
       ODP_INGEST_URL: ${ODP_INGEST_URL:-}
       III_URL: ${III_URL:-}
       DIFY_GRAPHON_RUNTIME_URL: ${DIFY_GRAPHON_RUNTIME_URL:-http://dify-graphon-runtime:8095}
+      KATS_RUNTIME_URL: ${KATS_RUNTIME_URL:-http://kats-runtime:8096}
       INVOKEAI_ENABLED: ${INVOKEAI_ENABLED:-false}
       INVOKEAI_BASE_URL: http://invokeai:9090
       INVOKEAI_API_TOKEN: ${INVOKEAI_API_TOKEN:-}
@@ -161,6 +194,7 @@ services:
     networks:
       - default
       - dify_runtime
+      - kats_runtime
       - invokeai-private
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
@@ -186,6 +220,7 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENCLI_CDP_ENDPOINT: ${OPENCLI_CDP_ENDPOINT:-http://agent-1:19823}
       AGENT_POOL_ENDPOINTS: ${AGENT_POOL_ENDPOINTS:-}
+      KATS_RUNTIME_URL: ${KATS_RUNTIME_URL:-http://kats-runtime:8096}
       INVOKEAI_ENABLED: ${INVOKEAI_ENABLED:-false}
       INVOKEAI_BASE_URL: http://invokeai:9090
       INVOKEAI_API_TOKEN: ${INVOKEAI_API_TOKEN:-}
@@ -197,6 +232,7 @@ services:
         condition: service_healthy
     networks:
       - default
+      - kats_runtime
       - invokeai-private
 
   # ── Private image-generation data plane ─────────────────────────────────
@@ -456,6 +492,8 @@ services:
 
 networks:
   dify_runtime:
+    internal: true
+  kats_runtime:
     internal: true
   # Dedicated outbound network: the Graphon sidecar can reach server-owned
   # sandbox/model endpoints without becoming reachable from sibling services.

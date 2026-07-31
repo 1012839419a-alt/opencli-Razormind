@@ -16,6 +16,7 @@ import { useCreateProjectWorkflow, useMyWorkspaces, useProjectRuntimeSummary, us
 import { formatRelative } from '@/lib/format'
 import { projectAppTypeLabel } from '@/lib/studio/app-types'
 import { cn } from '@/lib/utils'
+import { businessProjectName } from '@/lib/workflow/business-node-experience'
 import { studioGraphForTemplate } from '@/lib/workflow/studio-templates'
 
 export default function ProjectOverviewPage({ params }: { params: Promise<{ projectId: string }> }) {
@@ -48,14 +49,15 @@ export default function ProjectOverviewPage({ params }: { params: Promise<{ proj
 
   async function createPrimaryWorkflow() {
     if (!workspaceId || !project || createWorkflow.isPending) return
+    const projectName = businessProjectName(project.name)
     try {
       const workflow = await createWorkflow.mutateAsync({
         workspaceId,
         projectId,
         data: {
-          name: `${project.name} 主工作流`,
+          name: `${projectName} 主工作流`,
           description: '从项目概览创建的主工作流草稿',
-          graph: studioGraphForTemplate('blank', project.name),
+          graph: studioGraphForTemplate('blank', projectName),
         },
       })
       toast.success('主工作流已创建')
@@ -111,7 +113,7 @@ export default function ProjectOverviewPage({ params }: { params: Promise<{ proj
     return (
       <PageContainer
         eyebrow={`Project · ${projectAppTypeLabel(project.app_type)}`}
-        title={project.name}
+        title={businessProjectName(project.name)}
         description="项目身份已加载，但工作流状态暂时不可用。"
         actions={<Link href={returnHref} className={cn(buttonVariants({ variant: 'outline' }), 'min-h-11')}>返回项目列表</Link>}
       >
@@ -146,7 +148,7 @@ export default function ProjectOverviewPage({ params }: { params: Promise<{ proj
   return (
     <PageContainer
       eyebrow={`Project · ${projectAppTypeLabel(project.app_type)}`}
-      title={project.name}
+      title={businessProjectName(project.name)}
       description={project.description || '从项目概览判断当前状态，并进入正确的下一步。'}
       className="max-w-none"
       actions={(

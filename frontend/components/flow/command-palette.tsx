@@ -1,6 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { createPortal } from "react-dom"
 import { useReactFlow } from "@xyflow/react"
 import {
   ArrowLeft,
@@ -768,12 +769,12 @@ export function CommandPalette({
   )
   const firstPluginTool = filteredPluginTools.find((item) => !catalogItemUnavailable(item))
 
-  if (!open) return null
+  if (!open || typeof document === "undefined") return null
 
   if (selectedOpenCLI) {
     const missingRequired = selectedOpenCLI.requiredArgs.filter((name) => !requiredValues[name]?.trim())
     const selectedPresentation = openCLIAdapterNodePresentation(selectedOpenCLI, language)
-    return (
+    return createPortal(
       <div className="fixed inset-0 z-50 flex items-start justify-center bg-background/80 px-4 pt-[10vh]" role="dialog" aria-modal="true" aria-label={copy.configureSource}>
         <form className="w-[34rem] overflow-hidden rounded-lg border bg-popover shadow-2xl" onSubmit={(event) => { event.preventDefault(); addOpenCLIAdapter(selectedOpenCLI, requiredValues) }}>
           <div className="flex items-center gap-3 border-b px-4 py-3">
@@ -801,11 +802,12 @@ export function CommandPalette({
           </div>
           <div className="flex justify-end gap-2 border-t p-4"><button type="button" className="min-h-10 rounded-md border px-4 text-xs" onClick={() => setSelectedOpenCLI(null)}>{copy.cancel}</button><button type="submit" className="min-h-10 rounded-md bg-primary px-4 text-xs text-primary-foreground disabled:opacity-50" disabled={missingRequired.length > 0}>{copy.addSource}</button></div>
         </form>
-      </div>
+      </div>,
+      document.body,
     )
   }
 
-  return (
+  return createPortal(
     <div className="fixed inset-0 z-50 flex items-start justify-center bg-background/80 px-4 pt-[7vh]" onClick={close} onKeyDown={(event) => { if (event.key === "Escape") close() }} role="dialog" aria-modal="true" aria-label={copy.search}>
       <div
         className={cn(
@@ -1206,6 +1208,7 @@ export function CommandPalette({
           </>
         )}
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }

@@ -78,6 +78,7 @@ SUPPORTED_TOOL_EXECUTOR_MODES = {
     "native_intelligence",
     "opentabs",
     "bbx",
+    "kats_runtime",
 }
 _LEGACY_DATA_OPERATOR_PACK_VERSION = "1.0.0"
 
@@ -844,6 +845,15 @@ def _resolve_external_tool_capability(node: WorkflowProjectNode, *, node_id: str
     tool_runtime = _read_dict(tool.manifest.get("runtime"))
     action_binding_id = _read_string(tool_runtime.get("actionBinding"))
     resolved_binding_id = action_binding_id or EXTERNAL_TOOL_BINDING_ID
+    presentation = _read_dict(tool.manifest.get("presentation"))
+    presentation_parameters = presentation.get("parameters")
+    exposed_param_names = {
+        _read_string(parameter.get("name"))
+        for parameter in (
+            presentation_parameters if isinstance(presentation_parameters, list) else []
+        )
+        if isinstance(parameter, dict)
+    } - {"toolCapability", "toolCapabilityId", "toolParams", "externalWorkflow", ""}
     return {
         "binding": {
             "status": "bound",
@@ -852,7 +862,9 @@ def _resolve_external_tool_capability(node: WorkflowProjectNode, *, node_id: str
             "channel": "tool-capability",
             "input": {
                 "toolCapabilityId": capability_id,
-                "toolCapabilityVersionPin": tool.versionPin.model_dump() if tool.versionPin else None,
+                "toolCapabilityVersionPin": (
+                    tool.versionPin.model_dump() if tool.versionPin else None
+                ),
                 "executorMode": executor_mode,
                 "toolLabel": tool.label,
                 "inputPort": (
@@ -869,7 +881,14 @@ def _resolve_external_tool_capability(node: WorkflowProjectNode, *, node_id: str
                     **tool.executor.params,
                     **_read_dict(executor.get("params")),
                 },
-                "toolParams": _read_dict(node.params.get("toolParams")),
+                "toolParams": {
+                    **{
+                        key: value
+                        for key, value in node.params.items()
+                        if key in exposed_param_names
+                    },
+                    **_read_dict(node.params.get("toolParams")),
+                },
                 "externalWorkflow": _read_dict(node.params.get("externalWorkflow")),
             },
         },

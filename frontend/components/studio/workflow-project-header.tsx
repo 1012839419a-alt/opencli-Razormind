@@ -8,6 +8,7 @@ import { Badge } from '@/components/ui/badge'
 import { ProjectNavigation } from '@/components/studio/project-navigation'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useProjectWorkflows, useWorkspaceProjects } from '@/lib/api/hooks'
+import { businessProjectName } from '@/lib/workflow/business-node-experience'
 
 export function WorkflowProjectHeader() {
   const params = useSearchParams()
@@ -20,6 +21,7 @@ export function WorkflowProjectHeader() {
   const project = projects.data?.find((candidate) => candidate.id === projectId)
   const selectedWorkflowId = workflowId ?? project?.primary_workflow_id ?? ''
   const selectedWorkflow = workflows.data?.find((candidate) => candidate.id === selectedWorkflowId)
+  const selectedWorkflowName = selectedWorkflow?.name
   const returnHref = workspaceId && projectId ? `/studio/projects/${projectId}?workspace=${workspaceId}` : '/studio'
   const projectError = projects.error instanceof Error ? projects.error.message : '项目资料加载失败'
   const workflowError = workflows.error instanceof Error ? workflows.error.message : '工作流列表加载失败'
@@ -39,7 +41,7 @@ export function WorkflowProjectHeader() {
         <span className="h-5 w-px bg-border" aria-hidden />
         <div className="min-w-0">
           <div className="flex min-w-0 items-center gap-2">
-            <h1 className="truncate text-sm font-semibold">{project?.name ?? (projects.isLoading ? '正在加载项目…' : projects.isError ? '项目资料加载失败' : '节点工作流')}</h1>
+            <h1 className="truncate text-sm font-semibold">{project ? businessProjectName(project.name) : (projects.isLoading ? '正在加载项目…' : projects.isError ? '项目资料加载失败' : '节点工作流')}</h1>
             {project?.archived ? <Badge variant="secondary">已归档</Badge> : null}
           </div>
           {projects.isError ? (
@@ -55,8 +57,8 @@ export function WorkflowProjectHeader() {
           <p className="max-w-sm break-words text-xs text-destructive" role="alert">工作流列表加载失败：{workflowError}</p>
         ) : (
           <Select value={selectedWorkflowId} onValueChange={selectWorkflow} disabled={workflows.isLoading || !workflows.data?.length}>
-            <SelectTrigger className="min-h-11 min-w-40 rounded-xs" aria-label="选择工作流"><Workflow className="size-3.5" aria-hidden /><SelectValue>{selectedWorkflow?.name ?? (workflows.isLoading ? '加载工作流…' : selectedWorkflowId ? '工作流不可用' : '暂无工作流')}</SelectValue></SelectTrigger>
-            <SelectContent>{(workflows.data ?? []).map((workflow) => <SelectItem className="min-h-11" key={workflow.id} value={workflow.id}>{workflow.name}</SelectItem>)}</SelectContent>
+            <SelectTrigger className="min-h-11 min-w-40 rounded-xs" aria-label="选择工作流"><Workflow className="size-3.5" aria-hidden /><SelectValue>{selectedWorkflowName ? businessProjectName(selectedWorkflowName) : (workflows.isLoading ? '加载工作流…' : selectedWorkflowId ? '工作流不可用' : '暂无工作流')}</SelectValue></SelectTrigger>
+            <SelectContent>{(workflows.data ?? []).map((workflow) => <SelectItem className="min-h-11" key={workflow.id} value={workflow.id}>{businessProjectName(workflow.name)}</SelectItem>)}</SelectContent>
           </Select>
         )}
         <Badge variant="outline" className="gap-1.5"><Workflow className="size-3" aria-hidden />正式节点系统</Badge>

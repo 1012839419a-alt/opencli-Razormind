@@ -343,6 +343,30 @@ test('backend primitive nodes preserve typed parameters and runtime port identit
   )
 })
 
+test('backend presentation parameters build a reusable public node form', async () => {
+  const { createBackendParameterInterface } = await importTypeScript('lib/workflow/parameter-interface.ts')
+  const parameterInterface = createBackendParameterInterface('native-1', {
+    presentation: {
+      parameters: [
+        { name: 'maxRounds', label: 'Simulation rounds', type: 'integer', default: 3, minimum: 1 },
+        { name: 'requirement', label: 'Requirement', type: 'string', default: 'Explore evidence.' },
+        { name: 'platforms', label: 'Platforms', type: 'array', default: ['twitter'] },
+      ],
+    },
+  })
+
+  assert.ok(parameterInterface)
+  assert.deepEqual(
+    parameterInterface.fields.map((field) => [field.id, field.type, field.value]),
+    [
+      ['maxRounds', 'number', 3],
+      ['requirement', 'textarea', 'Explore evidence.'],
+      ['platforms', 'json', ['twitter']],
+    ],
+  )
+  assert.equal(parameterInterface.fields[0].binding.nodeId, 'native-1')
+})
+
 test('Plugin Center and Studio consume the same backend catalog projection', async () => {
   const [client, hook, page, palette] = await Promise.all([
     readFrontendSource('lib/plugins/backend-node-capabilities.ts'),

@@ -1,9 +1,4 @@
 import type {
-  ParameterFieldType,
-  ParameterInterface,
-  ParameterInterfaceField,
-} from "@/lib/flow/types"
-import type {
   AgentPermissions,
   AdapterBinding,
   WorkflowCapability,
@@ -15,6 +10,8 @@ import type {
 import { adapterBindingSchema, parseWorkflowProject } from "./schema"
 import { getNodeInternals } from "./node-internals"
 import {
+  backendParameterDefault,
+  createBackendParameterInterface,
   createDataOperatorParameterInterface,
   createParameterInterfaceFromInternals,
 } from "./parameter-interface"
@@ -1365,8 +1362,8 @@ export const WORKFLOW_NODE_CATALOG: WorkflowNodeCatalogItem[] = [
   {
     id: "package.intelligence.native-lifecycle",
     idPrefix: "pkg-native-intelligence",
-    label: "Native Intelligence Lifecycle",
-    description: "零凭据离线研究、知识图谱、推演、访谈、报告、问答与关闭；内部节点由后端能力注册表物化",
+    label: "采集研究与报告",
+    description: "采集多平台证据，完成关系构建、推演、访谈、报告与问答；默认离线数据可直接运行",
     category: "package",
     profile: "intelligence",
     kind: "agent",
@@ -1811,70 +1808,9 @@ function catalogParameterDefaults(value: unknown): Record<string, unknown> {
   return Object.fromEntries(value.flatMap((entry) => {
     const parameter = readCatalogRecord(entry)
     const name = typeof parameter?.name === "string" ? parameter.name : null
-    const defaultValue = backendParameterDefault(parameter)
+    const defaultValue = parameter ? backendParameterDefault(parameter) : undefined
     return name && defaultValue !== undefined ? [[name, defaultValue]] : []
   }))
-}
-
-function backendCatalogParameterInterface(
-  nodeId: string,
-  item: WorkflowNodeCatalogItem,
-): ParameterInterface | undefined {
-  if (!workflowCatalogIsBackendNode(item)) return undefined
-  const manifest = readCatalogRecord(item.runtimeCapability?.manifest)
-  const presentation = readCatalogRecord(manifest?.presentation)
-  const parameters = presentation?.parameters
-  if (!Array.isArray(parameters)) return undefined
-  const fields = parameters.flatMap((entry, order): ParameterInterfaceField[] => {
-    const parameter = readCatalogRecord(entry)
-    const name = typeof parameter?.name === "string" ? parameter.name : null
-    if (!parameter || !name) return []
-    const value = backendParameterDefault(parameter)
-    return [{
-      id: name,
-      label: typeof parameter.label === "string" ? parameter.label : name,
-      groupId: "parameters",
-      type: backendParameterFieldType(name, parameter),
-      binding: { nodeId, source: "params", fieldId: name },
-      order,
-      optional: parameter.required !== true,
-      value,
-      options: backendParameterOptions(parameter.options),
-    }]
-  })
-  return fields.length > 0
-    ? { groups: [{ id: "parameters", label: "参数", order: 1 }], fields }
-    : undefined
-}
-
-function backendParameterFieldType(name: string, parameter: Record<string, unknown>): ParameterFieldType {
-  const type = typeof parameter.type === "string" ? parameter.type : "string"
-  if (type === "boolean") return "boolean"
-  if (type === "number" || type === "integer") return "number"
-  if (type === "select" && backendParameterOptions(parameter.options).length > 0) return "select"
-  if (type === "array") return backendParameterOptions(parameter.options).length > 0 ? "tokens" : "json"
-  if (type === "object") return "json"
-  if (type === "code" || /prompt|template|instruction|body|schema/i.test(name)) return "textarea"
-  return "text"
-}
-
-function backendParameterDefault(parameter: Record<string, unknown> | null): unknown {
-  if (!parameter) return undefined
-  if (parameter.default !== null && parameter.default !== undefined) return parameter.default
-  if (parameter.type === "array") return []
-  if (parameter.type === "object") return {}
-  return undefined
-}
-
-function backendParameterOptions(value: unknown): Array<{ value: string; label: string }> {
-  if (!Array.isArray(value)) return []
-  return value.flatMap((entry) => {
-    if (typeof entry === "string") return [{ value: entry, label: entry }]
-    const option = readCatalogRecord(entry)
-    const optionValue = typeof option?.value === "string" ? option.value : null
-    if (!option || !optionValue) return []
-    return [{ value: optionValue, label: typeof option.label === "string" ? option.label : optionValue }]
-  })
 }
 
 function readCatalogRecord(value: unknown): Record<string, unknown> | null {
@@ -1921,7 +1857,7 @@ export function createWorkflowNodeFromCatalog(
     item.id,
     item.params,
     item.runtimeCapability,
-  ) ?? backendCatalogParameterInterface(id, item)
+  ) ?? createBackendParameterInterface(id, item.runtimeCapability?.manifest)
     ?? (item.category === "package" && !item.internals
       ? undefined
       : createParameterInterfaceFromInternals(

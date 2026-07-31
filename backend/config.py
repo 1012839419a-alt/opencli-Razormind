@@ -136,6 +136,10 @@ class Settings(BaseSettings):
     # Pinned Graphon compatibility sidecar used for Dify DSL inspection/runs.
     dify_graphon_runtime_url: str = "http://localhost:8095"
     dify_graphon_timeout_seconds: float = 15.0
+    # Kats keeps a legacy scientific-Python dependency stack, so it runs in a
+    # pinned Python 3.10 sidecar instead of the Python 3.13 API process.
+    kats_runtime_url: str = "http://localhost:8096"
+    kats_runtime_timeout_seconds: float = 120.0
     # Managed acquisition runtime. The commit/version are code-owned pins;
     # this path merely locates the installed checkout on every platform.
     ohmyopencli_root: str = "/opt/ohmyopencli"

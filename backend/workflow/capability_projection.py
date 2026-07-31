@@ -995,7 +995,7 @@ def _catalog_capabilities(
         ),
         _capability(
             id="package.intelligence.native-lifecycle",
-            label="Native Intelligence Lifecycle",
+            label="采集研究与报告",
             surface="catalog",
             status=native_package_status,
             backend_available=native_package_status == "runnable",
@@ -1011,6 +1011,58 @@ def _catalog_capabilities(
             tags=["package", "hda", "intelligence", "native", "offline"],
             source="backend.workflow.hda_templates",
             manifest={
+                "presentation": {
+                    "parameters": [
+                        {
+                            "name": "seed",
+                            "label": "随机种子 / Seed",
+                            "type": "integer",
+                            "default": 0,
+                            "minimum": 0,
+                        },
+                        {
+                            "name": "personaCount",
+                            "label": "人物数量 / Persona count",
+                            "type": "integer",
+                            "default": 5,
+                            "minimum": 1,
+                            "maximum": 100,
+                        },
+                        {
+                            "name": "maxRounds",
+                            "label": "推演轮数 / Simulation rounds",
+                            "type": "integer",
+                            "default": 3,
+                            "minimum": 1,
+                            "maximum": 100,
+                        },
+                        {
+                            "name": "agentCount",
+                            "label": "推演 Agent 数 / Agent count",
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 100,
+                        },
+                        {
+                            "name": "requirement",
+                            "label": "推演要求 / Simulation requirement",
+                            "type": "string",
+                            "default": "Explore evidence-grounded reactions.",
+                        },
+                        {
+                            "name": "platforms",
+                            "label": "模拟平台 / Platforms",
+                            "type": "array",
+                            "default": ["twitter", "reddit"],
+                        },
+                        {
+                            "name": "question",
+                            "label": "报告问题 / Report question",
+                            "type": "string",
+                            "default": "What is the most likely evidence-grounded outcome?",
+                        },
+                    ]
+                },
                 "readiness": {
                     "status": native_package_status,
                     "childCount": len(native_tools),

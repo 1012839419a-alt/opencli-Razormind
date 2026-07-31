@@ -47,6 +47,7 @@ import {
 import { getNodeInternals, type NodeInternals, type NodeInternalStep } from "../workflow/node-internals"
 import { getPrimitiveByStepCapability, primitiveToNodeData, type WorkflowPrimitive } from "../workflow/node-primitives"
 import {
+  createBackendParameterInterface,
   createDataOperatorParameterInterface,
   createParameterInterfaceFromInternals,
   parseDataOperatorSelectionValue,
@@ -1458,7 +1459,7 @@ export const useFlowStore = create<FlowState>((set, get) => ({
           catalogId,
           node.params,
           runtimeCapability,
-        ) ?? node.parameterInterface
+        ) ?? createBackendParameterInterface(node.id, runtimeCapability.manifest) ?? node.parameterInterface
         const selectedOperator = parameterInterface?.fields
           .find((field) => field.id === "operator.operatorId")
         const defaultSelection = parseDataOperatorSelectionValue(selectedOperator?.value)

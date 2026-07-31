@@ -661,8 +661,8 @@ const NODE_TEXT: Record<string, Record<WorkflowLanguage, LocalizedNodeText>> = {
     "en-US": { label: "Swarm Intelligence Simulation", description: "Run reproducible local or MiroFish swarm simulations and produce trajectories and reports" },
   },
   "package.intelligence.native-lifecycle": {
-    "zh-CN": { label: "原生情报生命周期", description: "从研究、知识图谱和推演一路生成访谈、报告与问答结果" },
-    "en-US": { label: "Native Intelligence Lifecycle", description: "Run research, knowledge graph, simulation, interviews, reporting, and Q&A as one governed lifecycle" },
+    "zh-CN": { label: "采集研究与报告", description: "采集多平台证据，完成关系构建、推演、访谈、报告与问答" },
+    "en-US": { label: "Collection Research & Report", description: "Collect multi-platform evidence and produce relationships, simulations, interviews, reports, and Q&A" },
   },
   "package.dispatch.fanout": {
     "zh-CN": { label: "分发扇出", description: "按规则把结果分发到多个通道；正式运行适配器仍待接线" },
