@@ -6,7 +6,7 @@ Create Date: 2026-07-29
 """
 
 import sqlalchemy as sa
-from alembic import op
+from alembic import context, op
 
 revision = "k8l9m0n1o2p3"
 down_revision = "j7k8l9m0n1o2"
@@ -15,6 +15,12 @@ depends_on = None
 
 
 def upgrade() -> None:
+    if (
+        not context.is_offline_mode()
+        and "operations_agent_runs" not in sa.inspect(op.get_bind()).get_table_names()
+    ):
+        return
+
     with op.batch_alter_table("operations_agent_runs") as batch:
         batch.add_column(
             sa.Column(
@@ -37,6 +43,12 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    if (
+        not context.is_offline_mode()
+        and "operations_agent_runs" not in sa.inspect(op.get_bind()).get_table_names()
+    ):
+        return
+
     with op.batch_alter_table("operations_agent_runs") as batch:
         batch.drop_column("error_message")
         batch.drop_column("output_payload")

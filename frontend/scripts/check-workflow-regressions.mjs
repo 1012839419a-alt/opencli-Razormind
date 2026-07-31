@@ -11,9 +11,10 @@ const frontendRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 
 const repositoryRoot = path.resolve(frontendRoot, '..')
 const windowsRepositoryPython = path.join(repositoryRoot, '.venv', 'Scripts', 'python.exe')
 const unixRepositoryPython = path.join(repositoryRoot, '.venv', 'bin', 'python')
-const pythonExecutable = existsSync(windowsRepositoryPython)
-  ? windowsRepositoryPython
-  : (process.env.PYTHON ?? (existsSync(unixRepositoryPython) ? unixRepositoryPython : 'python'))
+const pythonExecutable = process.env.PYTHON
+  ?? (existsSync(windowsRepositoryPython)
+    ? windowsRepositoryPython
+    : (existsSync(unixRepositoryPython) ? unixRepositoryPython : 'python'))
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -90,6 +91,13 @@ function sourceSection(source, start, end) {
   assert.notEqual(endIndex, -1, `missing source section terminator: ${end}`)
   return source.slice(startIndex, endIndex)
 }
+
+test('generated workflow node ids avoid reserved path separators', async () => {
+  const { workflowNodeId } = await importTypeScript('lib/flow/store-utils.ts')
+  for (let index = 0; index < 1_000; index += 1) {
+    assert.doesNotMatch(workflowNodeId(), /::|__/)
+  }
+})
 
 test('right workflow dock derives its outline from graph structure and opens without a selection', async () => {
   const [{ buildWorkflowOutlineRows }, shortcuts, inspector, shell, effects] = await Promise.all([
