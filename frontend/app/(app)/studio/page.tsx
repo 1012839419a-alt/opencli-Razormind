@@ -20,7 +20,7 @@ import { PROJECT_APP_CATEGORY_LABELS, projectAppCategoryLabel, projectAppTypeFor
 import type { ProjectSummary } from '@/lib/api/types'
 import { translateWorkflowDslManaged, type WorkflowImportResult } from '@/lib/workflow/codec'
 import { businessProjectName } from '@/lib/workflow/business-node-experience'
-import { STUDIO_TEMPLATES, studioAppTypeForTemplate, studioGraphForTemplate, studioSlug, type StudioTemplateId } from '@/lib/workflow/studio-templates'
+import { studioAppTypeForTemplate, studioGraphForTemplate, studioSlug, type StudioTemplateId } from '@/lib/workflow/studio-templates'
 
 const PROJECT_TYPE_FILTERS = [
   { value: 'all', label: '全部', icon: FolderKanban },
@@ -28,14 +28,6 @@ const PROJECT_TYPE_FILTERS = [
   { value: 'orchestration', label: PROJECT_APP_CATEGORY_LABELS.orchestration, icon: Workflow },
   { value: 'generation', label: PROJECT_APP_CATEGORY_LABELS.generation, icon: FileText },
 ] as const satisfies ReadonlyArray<{ value: ProjectAppTypeFilter; label: string; icon: typeof FolderKanban }>
-
-const FEATURED_COLLECTION_TEMPLATE_IDS = new Set<StudioTemplateId>([
-  'opencli-live-pipeline',
-  'financial-rss-intelligence',
-  'ashare-market-intelligence',
-  'native-intelligence-lifecycle',
-])
-const FEATURED_COLLECTION_TEMPLATES = STUDIO_TEMPLATES.filter((template) => FEATURED_COLLECTION_TEMPLATE_IDS.has(template.id))
 
 export default function StudioPage() {
   const router = useRouter()
@@ -227,37 +219,6 @@ export default function StudioPage() {
           </Select>
         </div>
       </div>
-
-      <section className="rounded-xl border border-border/80 bg-card/20 p-4" aria-labelledby="collection-template-title">
-        <div className="flex flex-wrap items-end justify-between gap-3">
-          <div>
-            <div className="eyebrow-mono">Collection starters</div>
-            <h2 id="collection-template-title" className="mt-1 text-sm font-semibold">从采集项目开始</h2>
-            <p className="mt-1 text-xs text-muted-foreground">选择一条现成链路，创建后直接进入工作流配置与运行。</p>
-          </div>
-          <Link href={workspaceId ? `/studio/templates?workspace=${workspaceId}` : '/studio/templates'} className="min-h-11 rounded-lg px-3 py-3 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground">
-            查看全部 {STUDIO_TEMPLATES.length} 个模板
-          </Link>
-        </div>
-        <div className="mt-3 grid gap-2 md:grid-cols-2 xl:grid-cols-4">
-          {FEATURED_COLLECTION_TEMPLATES.map((template) => (
-            <button
-              key={template.id}
-              type="button"
-              disabled={!workspaceId}
-              onClick={() => { setCreateTemplate(template.id); setProjectName(template.title) }}
-              className="group min-h-32 rounded-xl border border-border/70 bg-background/40 p-3 text-left transition-[border-color,background-color,transform] hover:-translate-y-0.5 hover:border-foreground/25 hover:bg-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50"
-            >
-              <div className="flex items-center justify-between gap-2">
-                <Sparkles className="size-4 text-muted-foreground transition-colors group-hover:text-foreground" aria-hidden />
-                <Badge variant="outline">{template.category}</Badge>
-              </div>
-              <h3 className="mt-3 text-sm font-medium">{template.title}</h3>
-              <p className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground">{template.description}</p>
-            </button>
-          ))}
-        </div>
-      </section>
 
       {workspaces.isError || projects.isError ? (
         <div className="space-y-3">
