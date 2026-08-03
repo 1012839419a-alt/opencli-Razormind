@@ -1,8 +1,8 @@
 #!/usr/bin/env sh
 set -eu
 
-VERSION="${OPENCLI_ADMIN_VERSION:-0.4.0}"
-REPOSITORY="${OPENCLI_ADMIN_REPOSITORY:-2233admin/opencli-admin}"
+VERSION="${OPENCLI_ADMIN_VERSION:-0.4.1}"
+REPOSITORY="${OPENCLI_ADMIN_REPOSITORY:-2233admin/opencli-Razormind}"
 INSTALL_DIR="${OPENCLI_ADMIN_DIR:-$PWD/opencli-admin}"
 
 for command_name in docker curl tar; do
