@@ -167,7 +167,7 @@ flowchart LR
 
 ## 从源码开发
 
-前置要求：Python 3.13+、Node.js 26.3.1（见 `.nvmrc`）、uv、pnpm。
+前置要求：Python 3.13+、Node.js 26.5.1（见 `.nvmrc`）、uv、pnpm。
 
 ~~~bash
 git clone https://github.com/2233admin/opencli-Razormind.git

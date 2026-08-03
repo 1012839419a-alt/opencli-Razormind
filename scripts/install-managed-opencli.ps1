@@ -8,7 +8,8 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$OpenCliVersion = "1.8.5"
+$OpenCliVersion = "1.8.6"
+$PiVersion = "0.83.0"
 $OhMyOpenCliCommit = "73cc60c83586ef2c95469b3b70d6cfc80fa5bc53"
 $CapabilitySourceCommit = "73cc60c83586ef2c95469b3b70d6cfc80fa5bc53"
 $requestHeaders = @{}
@@ -22,7 +23,9 @@ foreach ($command in @("node", "npm", "git")) {
     }
 }
 
-npm install -g "@jackwener/opencli@$OpenCliVersion"
+npm install -g `
+    "@jackwener/opencli@$OpenCliVersion" `
+    "@earendil-works/pi-coding-agent@$PiVersion"
 $patchPath = Join-Path $env:TEMP "opencli-admin-patch-opencli.js"
 Invoke-WebRequest `
     -UseBasicParsing `

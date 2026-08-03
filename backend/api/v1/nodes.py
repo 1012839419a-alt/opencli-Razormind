@@ -381,7 +381,7 @@ async def delete_node(node_id: str, db: AsyncSession = Depends(get_db)) -> ApiRe
 
 @router.get("/install/patch-opencli.js", response_class=PlainTextResponse)
 async def get_opencli_runtime_patch() -> PlainTextResponse:
-    """Serve the pinned OpenCLI 1.8.5 managed-CDP routing patch."""
+    """Serve the pinned OpenCLI 1.8.6 managed-CDP routing patch."""
     candidates = [
         Path(__file__).parent.parent.parent.parent / "scripts" / "patch-opencli.js",
         Path("/app/scripts/patch-opencli.js"),
