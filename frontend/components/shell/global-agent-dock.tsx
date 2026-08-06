@@ -98,6 +98,8 @@ export function GlobalAgentDock({
   const [activities, setActivities] = useState<Activity[]>([])
   const [lastFailedProposal, setLastFailedProposal] = useState<AgentProposal | null>(null)
   const [showLiveSurface, setShowLiveSurface] = useState(false)
+  const [agentSessionId, setAgentSessionId] = useState<string | null>(null)
+  const [agentRunId, setAgentRunId] = useState<string | null>(null)
 
   async function sendMessage(event?: FormEvent) {
     event?.preventDefault()
@@ -114,6 +116,7 @@ export function GlobalAgentDock({
       { label: '理解你的目标', detail: '正在结合当前页面和选中对象梳理任务。', state: 'complete' },
       { label: '检查可用信息', detail: '正在判断是否需要读取数据或准备操作。', state: 'active' },
     ])
+    let activeRunId: string | null = null
     try {
       const searchParams = new URLSearchParams(window.location.search)
       const workspaceId = searchParams.get('workspace')
@@ -129,6 +132,7 @@ export function GlobalAgentDock({
         headers: { 'Content-Type': 'application/json', ...getApiAuthHeaders() },
         body: JSON.stringify({
         messages: nextMessages,
+        session_id: agentSessionId,
         context: {
           surface: ROUTE_LABELS[pathname] ?? pathname,
           pathname,
@@ -142,6 +146,13 @@ export function GlobalAgentDock({
       })
       if (!response.ok || !response.body) throw new Error(`Agent 请求失败（${response.status}）`)
 
+      const receivedRunId = response.headers.get('X-Agent-Run-Id')
+      const receivedSessionId = response.headers.get('X-Agent-Session-Id')
+      if (receivedRunId) {
+        activeRunId = receivedRunId
+        setAgentRunId(receivedRunId)
+      }
+      if (receivedSessionId) setAgentSessionId(receivedSessionId)
       const reader = response.body.getReader()
       const decoder = new TextDecoder()
       let buffer = ''
@@ -179,6 +190,20 @@ export function GlobalAgentDock({
       }
       setActivities((current) => [...current.filter((item) => item.state !== 'active'), ...activityForReply(reply)].slice(-8))
     } catch (reason) {
+      const recoverableRunId = activeRunId ?? agentRunId
+      if (recoverableRunId) {
+        try {
+          const recovery = await apiClient.get<AgentRunEvent[]>(`/chat/runs/${recoverableRunId}/events`)
+          for (const replayed of recovery.data ?? []) {
+            if (replayed.type === 'reply' && replayed.reply) {
+              if (replayed.reply.type === 'proposal' && replayed.reply.proposal) setProposal(replayed.reply.proposal)
+              else setMessages((current) => [...current, { role: 'assistant', content: replayed.reply?.content?.trim() || '' }])
+            }
+          }
+        } catch {
+          // Keep the stream error as the primary recovery signal.
+        }
+      }
       const message = reason instanceof Error ? reason.message : 'Agent 暂时不可用'
       setError(message)
       setActivities([
