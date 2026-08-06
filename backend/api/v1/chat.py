@@ -25,7 +25,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.control.agent_control import ACTION_REGISTRY, agent_control_service
-from backend.database import get_db
+from backend.database import AsyncSessionLocal, get_db
+from backend.models.agent_run import AgentRun, AgentRunEvent, AgentSession
 from backend.models.provider import ModelProvider
 from backend.schemas.common import ApiResponse
 from backend.security.identity import RequestIdentity, get_request_identity
@@ -40,6 +41,7 @@ MAX_TOOL_STEPS = 5
 
 ActivitySink = Callable[[dict[str, Any]], Awaitable[None]]
 _activity_sink: ContextVar[ActivitySink | None] = ContextVar("chat_activity_sink", default=None)
+_background_runs: set[asyncio.Task] = set()
 
 _PUBLIC_TOOL_LABELS = {
     "list_sources": ("检查数据源", "数据源"),
@@ -208,6 +210,7 @@ class ChatRequest(BaseModel):
     provider_id: Optional[str] = None
     # 当前页面、项目或选中对象上下文，注入给 agent 当指代背景
     context: Optional[dict[str, Any]] = None
+    session_id: Optional[str] = None
 
 
 class Proposal(BaseModel):
@@ -228,6 +231,58 @@ class ChatReply(BaseModel):
 
 class ConfirmRequest(BaseModel):
     proposal: Proposal
+
+
+async def _create_durable_run(body: ChatRequest, identity: RequestIdentity | None) -> AgentRun:
+    """Create a durable run before work begins so clients can reconnect immediately."""
+    async with AsyncSessionLocal() as session:
+        agent_session: AgentSession | None = None
+        if body.session_id:
+            agent_session = await session.get(AgentSession, body.session_id)
+        if agent_session is None:
+            agent_session = AgentSession(
+                workspace_id=_workspace_id(body.context),
+                actor_subject=identity.subject if identity else None,
+                context=body.context or {},
+            )
+            session.add(agent_session)
+            await session.flush()
+        goal = next((message.content for message in reversed(body.messages) if message.role == "user"), "")
+        run = AgentRun(
+            session_id=agent_session.id,
+            status="queued",
+            goal=goal,
+            request_payload={"messages": [message.model_dump() for message in body.messages], "context": body.context or {}},
+        )
+        session.add(run)
+        await session.commit()
+        await session.refresh(run)
+        return run
+
+
+async def _record_durable_event(run_id: str, event: dict[str, Any]) -> dict[str, Any]:
+    """Append one public event atomically. Event payloads are deliberately already redacted."""
+    async with AsyncSessionLocal() as session:
+        run = await session.get(AgentRun, run_id, with_for_update=True)
+        if run is None:
+            raise RuntimeError("Agent run disappeared")
+        sequence = run.next_event_sequence
+        run.next_event_sequence += 1
+        payload = {"sequence": sequence, **event}
+        session.add(AgentRunEvent(run_id=run.id, sequence=sequence, event_type=event["type"], payload=payload))
+        await session.commit()
+        return payload
+
+
+async def _finish_durable_run(run_id: str, *, reply: dict[str, Any] | None = None, error: str | None = None) -> None:
+    async with AsyncSessionLocal() as session:
+        run = await session.get(AgentRun, run_id)
+        if run is None:
+            return
+        run.status = "failed" if error else "completed"
+        run.reply_payload = reply
+        run.error_message = error
+        await session.commit()
 
 
 # ── provider → AsyncOpenAI client ───────────────────────────────────────────
@@ -518,18 +573,22 @@ async def chat_stream(
     contract so confirmation continues through the governed endpoint.
     """
 
+    durable_run = await _create_durable_run(body, identity)
+
     async def event_source():
         queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
-        sequence = 0
 
         async def emit(event: dict[str, Any]) -> None:
-            nonlocal sequence
-            sequence += 1
-            await queue.put({"sequence": sequence, **event})
+            await queue.put(await _record_durable_event(durable_run.id, event))
 
         async def produce() -> None:
             token = _activity_sink.set(emit)
             try:
+                async with AsyncSessionLocal() as run_db:
+                    run = await run_db.get(AgentRun, durable_run.id)
+                    if run:
+                        run.status = "running"
+                        await run_db.commit()
                 await emit(
                     {
                         "type": "run.started",
@@ -538,7 +597,8 @@ async def chat_stream(
                         "state": "active",
                     }
                 )
-                response = await chat(body, identity, db)
+                async with AsyncSessionLocal() as run_db:
+                    response = await chat(body, identity, run_db)
                 await emit(
                     {
                         "type": "reply",
@@ -548,6 +608,7 @@ async def chat_stream(
                         "reply": response.data.model_dump(mode="json"),
                     }
                 )
+                await _finish_durable_run(durable_run.id, reply=response.data.model_dump(mode="json"))
             except HTTPException as exc:
                 await emit(
                     {
@@ -559,6 +620,7 @@ async def chat_stream(
                         "recovery": "检查连接或目标状态后重试。",
                     }
                 )
+                await _finish_durable_run(durable_run.id, error=str(exc.detail))
             except Exception:
                 logger.exception("chat stream failed")
                 await emit(
@@ -571,11 +633,14 @@ async def chat_stream(
                         "recovery": "稍后重试，或调整请求后继续。",
                     }
                 )
+                await _finish_durable_run(durable_run.id, error="Agent run failed")
             finally:
                 _activity_sink.reset(token)
                 await queue.put(None)
 
         task = asyncio.create_task(produce())
+        _background_runs.add(task)
+        task.add_done_callback(_background_runs.discard)
         try:
             while True:
                 event = await queue.get()
@@ -583,14 +648,30 @@ async def chat_stream(
                     break
                 yield json.dumps(event, ensure_ascii=False) + "\n"
         finally:
-            if not task.done():
-                task.cancel()
+            # A disconnected client can replay the persisted events; do not cancel work.
+            pass
 
     return StreamingResponse(
         event_source(),
         media_type="application/x-ndjson",
-        headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"},
+        headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no", "X-Agent-Run-Id": durable_run.id, "X-Agent-Session-Id": durable_run.session_id},
     )
+
+
+@router.get("/runs/{run_id}", response_model=ApiResponse[dict[str, Any]])
+async def get_chat_run(run_id: str, db: AsyncSession = Depends(get_db)) -> ApiResponse:
+    run = await db.get(AgentRun, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Agent run not found")
+    return ApiResponse.ok({"id": run.id, "session_id": run.session_id, "status": run.status, "goal": run.goal, "reply": run.reply_payload, "error": run.error_message, "created_at": run.created_at, "updated_at": run.updated_at})
+
+
+@router.get("/runs/{run_id}/events", response_model=ApiResponse[list[dict[str, Any]]])
+async def get_chat_run_events(run_id: str, after_sequence: int = 0, db: AsyncSession = Depends(get_db)) -> ApiResponse:
+    if await db.get(AgentRun, run_id) is None:
+        raise HTTPException(status_code=404, detail="Agent run not found")
+    events = (await db.scalars(select(AgentRunEvent).where(AgentRunEvent.run_id == run_id).where(AgentRunEvent.sequence > after_sequence).order_by(AgentRunEvent.sequence))).all()
+    return ApiResponse.ok([event.payload for event in events])
 
 
 @router.post("/confirm", response_model=ApiResponse[dict])
