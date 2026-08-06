@@ -11,12 +11,15 @@ provider/模型网关 + OpenAI tool-calling) 决定调工具:
 v1 薄闭环: 唯一写动作 = 启停 source。验证通后按同模式扩 trigger_task / update_schedule。
 """
 
+import asyncio
 import json
 import logging
 import re
-from typing import Any, Literal, Optional
+from contextvars import ContextVar
+from typing import Any, Awaitable, Callable, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -34,6 +37,40 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 MAX_TOOL_STEPS = 5
+
+ActivitySink = Callable[[dict[str, Any]], Awaitable[None]]
+_activity_sink: ContextVar[ActivitySink | None] = ContextVar("chat_activity_sink", default=None)
+
+_PUBLIC_TOOL_LABELS = {
+    "list_sources": ("检查数据源", "数据源"),
+    "list_schedules": ("检查调度计划", "调度计划"),
+    "list_tasks": ("检查最近任务", "采集任务"),
+    "list_providers": ("检查模型连接", "模型提供商"),
+    "toggle_source": ("变更数据源状态", "数据源"),
+    "trigger_task": ("启动采集任务", "数据源"),
+    "update_schedule": ("更新调度计划", "调度计划"),
+    "update_provider": ("更新模型配置", "模型提供商"),
+}
+
+
+async def _emit_activity(event_type: str, label: str, detail: str, **extra: Any) -> None:
+    sink = _activity_sink.get()
+    if sink is not None:
+        await sink({"type": event_type, "label": label, "detail": detail, **extra})
+
+
+def _tool_public_description(name: str, args: dict[str, Any]) -> tuple[str, str, str | None]:
+    label, target_type = _PUBLIC_TOOL_LABELS.get(name, ("执行操作", "系统对象"))
+    target_id = next((str(args[key]) for key in ("source_id", "schedule_id", "provider_id") if args.get(key)), None)
+    return label, target_type, target_id
+
+
+def _result_public_summary(result: Any) -> str:
+    if isinstance(result, list):
+        return f"找到 {len(result)} 项可用信息"
+    if isinstance(result, dict) and result.get("error"):
+        return "未能读取目标信息"
+    return "已读取目标信息"
 
 SYSTEM_PROMPT = """你是 opencli-admin 的全局操作助手。用户可能位于任意产品页面。\
 你的职责: 根据当前页面和对象上下文解释系统状态，并在已有工具覆盖范围内按用户意图查询或修改后端配置。
@@ -347,9 +384,21 @@ async def chat(
     identity: RequestIdentity | None = Depends(_optional_request_identity),
     db: AsyncSession = Depends(get_db),
 ) -> ApiResponse:
+    await _emit_activity(
+        "phase.changed",
+        "理解目标",
+        "正在结合当前页面、工作区和选中对象理解请求。",
+        state="completed",
+    )
     provider = await _pick_provider(db, body.provider_id)
     client = await _build_client(provider)
     model = provider.default_model or "gpt-4o-mini"
+    await _emit_activity(
+        "phase.changed",
+        "制定执行路径",
+        "已选择可用模型，正在判断需要读取的信息和可能的操作。",
+        state="active",
+    )
 
     system = SYSTEM_PROMPT
     if body.context:
@@ -362,6 +411,12 @@ async def chat(
     messages += [{"role": m.role, "content": m.content} for m in body.messages]
 
     for _step in range(MAX_TOOL_STEPS):
+        await _emit_activity(
+            "phase.changed",
+            "分析当前状态",
+            "正在根据已获得的信息决定下一步。",
+            state="active",
+        )
         try:
             response = await client.chat.completions.create(
                 model=model, messages=messages, tools=TOOLS, tool_choice="auto"
@@ -374,18 +429,39 @@ async def chat(
         tool_calls = msg.tool_calls or []
 
         if not tool_calls:
+            await _emit_activity(
+                "run.completed",
+                "处理完成",
+                "已生成基于本次执行信息的结果摘要。",
+                state="completed",
+            )
             return ApiResponse.ok(ChatReply(type="message", content=msg.content or ""))
 
         # 写工具命中 → 立即返回 proposal (不执行, 不继续推理)
         for tc in tool_calls:
             if tc.function.name in WRITE_TOOLS:
                 args = _safe_json(tc.function.arguments)
+                label, target_type, target_id = _tool_public_description(tc.function.name, args)
+                await _emit_activity(
+                    "tool.completed",
+                    label,
+                    "已定位目标并准备变更方案。",
+                    state="completed",
+                    target={"type": target_type, "id": target_id},
+                )
                 proposal = await _build_proposal(
                     db,
                     tc.function.name,
                     args,
                     identity=_require_write_identity(identity),
                     workspace_id=_workspace_id(body.context),
+                )
+                await _emit_activity(
+                    "approval.required",
+                    "等待确认",
+                    proposal.summary,
+                    state="attention",
+                    target={"type": target_type, "id": target_id},
                 )
                 return ApiResponse.ok(ChatReply(type="proposal", proposal=proposal))
 
@@ -405,12 +481,116 @@ async def chat(
             }
         )
         for tc in tool_calls:
-            result = await _run_read_tool(db, tc.function.name, _safe_json(tc.function.arguments))
+            args = _safe_json(tc.function.arguments)
+            label, target_type, target_id = _tool_public_description(tc.function.name, args)
+            await _emit_activity(
+                "tool.started",
+                label,
+                f"正在读取{target_type}的当前状态。",
+                state="active",
+                target={"type": target_type, "id": target_id},
+            )
+            result = await _run_read_tool(db, tc.function.name, args)
+            await _emit_activity(
+                "tool.completed",
+                label,
+                _result_public_summary(result),
+                state="completed",
+                target={"type": target_type, "id": target_id},
+            )
             messages.append(
                 {"role": "tool", "tool_call_id": tc.id, "content": json.dumps(result, ensure_ascii=False)}
             )
 
     return ApiResponse.ok(ChatReply(type="message", content="(达到工具调用步数上限, 请换个说法再试)"))
+
+
+@router.post("/stream")
+async def chat_stream(
+    body: ChatRequest,
+    identity: RequestIdentity | None = Depends(_optional_request_identity),
+    db: AsyncSession = Depends(get_db),
+) -> StreamingResponse:
+    """Stream public execution facts as NDJSON while the existing chat run executes.
+
+    Events deliberately contain no model reasoning, raw tool arguments, credentials, or
+    unbounded tool results. The terminal ``reply`` event preserves the established ChatReply
+    contract so confirmation continues through the governed endpoint.
+    """
+
+    async def event_source():
+        queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
+        sequence = 0
+
+        async def emit(event: dict[str, Any]) -> None:
+            nonlocal sequence
+            sequence += 1
+            await queue.put({"sequence": sequence, **event})
+
+        async def produce() -> None:
+            token = _activity_sink.set(emit)
+            try:
+                await emit(
+                    {
+                        "type": "run.started",
+                        "label": "开始处理",
+                        "detail": "已接收请求，正在建立执行上下文。",
+                        "state": "active",
+                    }
+                )
+                response = await chat(body, identity, db)
+                await emit(
+                    {
+                        "type": "reply",
+                        "label": "结果已就绪",
+                        "detail": "本次处理已返回结果。",
+                        "state": "completed",
+                        "reply": response.data.model_dump(mode="json"),
+                    }
+                )
+            except HTTPException as exc:
+                await emit(
+                    {
+                        "type": "run.failed",
+                        "label": "处理未完成",
+                        "detail": str(exc.detail),
+                        "state": "failed",
+                        "status": exc.status_code,
+                        "recovery": "检查连接或目标状态后重试。",
+                    }
+                )
+            except Exception:
+                logger.exception("chat stream failed")
+                await emit(
+                    {
+                        "type": "run.failed",
+                        "label": "处理未完成",
+                        "detail": "Agent 暂时无法完成这项任务。",
+                        "state": "failed",
+                        "status": 500,
+                        "recovery": "稍后重试，或调整请求后继续。",
+                    }
+                )
+            finally:
+                _activity_sink.reset(token)
+                await queue.put(None)
+
+        task = asyncio.create_task(produce())
+        try:
+            while True:
+                event = await queue.get()
+                if event is None:
+                    break
+                yield json.dumps(event, ensure_ascii=False) + "\n"
+        finally:
+            if not task.done():
+                task.cancel()
+
+    return StreamingResponse(
+        event_source(),
+        media_type="application/x-ndjson",
+        headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.post("/confirm", response_model=ApiResponse[dict])
