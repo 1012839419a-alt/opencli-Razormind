@@ -16,7 +16,8 @@ import json
 import logging
 import re
 from contextvars import ContextVar
-from typing import Any, Awaitable, Callable, Literal, Optional
+from collections.abc import Awaitable, Callable
+from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -63,7 +64,10 @@ async def _emit_activity(event_type: str, label: str, detail: str, **extra: Any)
 
 def _tool_public_description(name: str, args: dict[str, Any]) -> tuple[str, str, str | None]:
     label, target_type = _PUBLIC_TOOL_LABELS.get(name, ("执行操作", "系统对象"))
-    target_id = next((str(args[key]) for key in ("source_id", "schedule_id", "provider_id") if args.get(key)), None)
+    target_id = next(
+        (str(args[key]) for key in ("source_id", "schedule_id", "provider_id") if args.get(key)),
+        None,
+    )
     return label, target_type, target_id
 
 
@@ -210,7 +214,7 @@ class ChatRequest(BaseModel):
     provider_id: Optional[str] = None
     # 当前页面、项目或选中对象上下文，注入给 agent 当指代背景
     context: Optional[dict[str, Any]] = None
-    session_id: Optional[str] = None
+    session_id: str | None = None
 
 
 class Proposal(BaseModel):
@@ -247,12 +251,18 @@ async def _create_durable_run(body: ChatRequest, identity: RequestIdentity | Non
             )
             session.add(agent_session)
             await session.flush()
-        goal = next((message.content for message in reversed(body.messages) if message.role == "user"), "")
+        goal = next(
+            (message.content for message in reversed(body.messages) if message.role == "user"),
+            "",
+        )
         run = AgentRun(
             session_id=agent_session.id,
             status="queued",
             goal=goal,
-            request_payload={"messages": [message.model_dump() for message in body.messages], "context": body.context or {}},
+            request_payload={
+                "messages": [message.model_dump() for message in body.messages],
+                "context": body.context or {},
+            },
         )
         session.add(run)
         await session.commit()
@@ -269,12 +279,21 @@ async def _record_durable_event(run_id: str, event: dict[str, Any]) -> dict[str,
         sequence = run.next_event_sequence
         run.next_event_sequence += 1
         payload = {"sequence": sequence, **event}
-        session.add(AgentRunEvent(run_id=run.id, sequence=sequence, event_type=event["type"], payload=payload))
+        session.add(
+            AgentRunEvent(
+                run_id=run.id,
+                sequence=sequence,
+                event_type=event["type"],
+                payload=payload,
+            )
+        )
         await session.commit()
         return payload
 
 
-async def _finish_durable_run(run_id: str, *, reply: dict[str, Any] | None = None, error: str | None = None) -> None:
+async def _finish_durable_run(
+    run_id: str, *, reply: dict[str, Any] | None = None, error: str | None = None
+) -> None:
     async with AsyncSessionLocal() as session:
         run = await session.get(AgentRun, run_id)
         if run is None:
@@ -608,7 +627,9 @@ async def chat_stream(
                         "reply": response.data.model_dump(mode="json"),
                     }
                 )
-                await _finish_durable_run(durable_run.id, reply=response.data.model_dump(mode="json"))
+                await _finish_durable_run(
+                    durable_run.id, reply=response.data.model_dump(mode="json")
+                )
             except HTTPException as exc:
                 await emit(
                     {
@@ -654,7 +675,12 @@ async def chat_stream(
     return StreamingResponse(
         event_source(),
         media_type="application/x-ndjson",
-        headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no", "X-Agent-Run-Id": durable_run.id, "X-Agent-Session-Id": durable_run.session_id},
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+            "X-Agent-Run-Id": durable_run.id,
+            "X-Agent-Session-Id": durable_run.session_id,
+        },
     )
 
 
@@ -663,14 +689,34 @@ async def get_chat_run(run_id: str, db: AsyncSession = Depends(get_db)) -> ApiRe
     run = await db.get(AgentRun, run_id)
     if run is None:
         raise HTTPException(status_code=404, detail="Agent run not found")
-    return ApiResponse.ok({"id": run.id, "session_id": run.session_id, "status": run.status, "goal": run.goal, "reply": run.reply_payload, "error": run.error_message, "created_at": run.created_at, "updated_at": run.updated_at})
+    return ApiResponse.ok(
+        {
+            "id": run.id,
+            "session_id": run.session_id,
+            "status": run.status,
+            "goal": run.goal,
+            "reply": run.reply_payload,
+            "error": run.error_message,
+            "created_at": run.created_at,
+            "updated_at": run.updated_at,
+        }
+    )
 
 
 @router.get("/runs/{run_id}/events", response_model=ApiResponse[list[dict[str, Any]]])
-async def get_chat_run_events(run_id: str, after_sequence: int = 0, db: AsyncSession = Depends(get_db)) -> ApiResponse:
+async def get_chat_run_events(
+    run_id: str, after_sequence: int = 0, db: AsyncSession = Depends(get_db)
+) -> ApiResponse:
     if await db.get(AgentRun, run_id) is None:
         raise HTTPException(status_code=404, detail="Agent run not found")
-    events = (await db.scalars(select(AgentRunEvent).where(AgentRunEvent.run_id == run_id).where(AgentRunEvent.sequence > after_sequence).order_by(AgentRunEvent.sequence))).all()
+    events = (
+        await db.scalars(
+            select(AgentRunEvent)
+            .where(AgentRunEvent.run_id == run_id)
+            .where(AgentRunEvent.sequence > after_sequence)
+            .order_by(AgentRunEvent.sequence)
+        )
+    ).all()
     return ApiResponse.ok([event.payload for event in events])
 
 
