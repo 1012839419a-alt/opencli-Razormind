@@ -81,6 +81,26 @@ credential management via the existing source wrappers.
 The `/plans` page SHALL support create/edit/delete and run actions, plus a
 health indicator via `getPlanHealth`.
 
+#### Scenario: Run a plan
+- **WHEN** the operator clicks "运行" on a plan row
+- **THEN** `runPlan` is called with the plan id
+- **AND** the row reflects a running state until the run completes.
+
+#### Scenario: Plan health is visible
+- **WHEN** the plans page loads
+- **THEN** `getPlanHealth` is called and each plan row shows a healthy/degraded
+  indicator.
+
 ### Requirement: Node detail and delete
 The `/nodes` page SHALL support a detail view (events + stats) and delete via
 `getNodeEvents`/`getNodeStats`/`deleteNode`.
+
+#### Scenario: View node detail
+- **WHEN** the operator clicks a node row
+- **THEN** a detail view loads `getNodeEvents` and `getNodeStats` for that node
+  and shows recent events and stats.
+
+#### Scenario: Delete a node
+- **WHEN** the operator confirms delete on a node
+- **THEN** `deleteNode` is called and the node disappears from the list after
+  refresh.
