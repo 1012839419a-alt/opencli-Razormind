@@ -143,3 +143,27 @@ test('OpenCLI is one provider with a full live website adapter directory', async
   assert.match(adapterClient, /params\.set\("refresh"/)
   assert.match(adapterClient, /signal: options\.signal/)
 })
+
+test('control center wires kill switch, advisory report, and ODP state into one panel', async () => {
+  const [page, navigation, hooks] = await Promise.all([
+    read('app/(app)/control/page.tsx'),
+    read('lib/navigation.ts'),
+    read('lib/api/hooks.ts'),
+  ])
+
+  assert.match(page, /useKillSwitch\(\)/)
+  assert.match(page, /useSetKillSwitch\(\)/)
+  assert.match(page, /useAdvisoryReport\(\)/)
+  assert.match(page, /useOdpState\(\)/)
+  assert.match(page, /执行熔断开关/)
+  assert.match(page, /咨询报告/)
+  assert.match(page, /ODP 数据面状态/)
+  assert.match(page, /setKill\.mutate\(v\)/)
+  assert.match(page, /recovery_rate/)
+  assert.match(page, /oldest_pending_idle_ms/)
+  assert.match(navigation, /'\/control'/)
+  assert.match(navigation, /控制中心/)
+  assert.match(hooks, /queryKey: \['kill-switch'\]/)
+  assert.match(hooks, /queryKey: \['advisory-report'\]/)
+  assert.match(hooks, /queryKey: \['odp-state'\]/)
+})

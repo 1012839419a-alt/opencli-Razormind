@@ -740,6 +740,35 @@ export function useControlActions(params?: {
   })
 }
 
+export function useKillSwitch() {
+  return useQuery({
+    queryKey: ['kill-switch'],
+    queryFn: api.getKillSwitch,
+  })
+}
+
+export function useSetKillSwitch() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (engaged: boolean) => api.setKillSwitch(engaged),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['kill-switch'] }),
+  })
+}
+
+export function useAdvisoryReport() {
+  return useQuery({
+    queryKey: ['advisory-report'],
+    queryFn: api.getAdvisoryReport,
+  })
+}
+
+export function useOdpState() {
+  return useQuery({
+    queryKey: ['odp-state'],
+    queryFn: api.getOdpState,
+  })
+}
+
 export function useInfiniteControlActions(params?: {
   source_id?: string
   mode?: string
