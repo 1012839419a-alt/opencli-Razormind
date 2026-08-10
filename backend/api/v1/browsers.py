@@ -184,10 +184,10 @@ async def add_chrome_instance(
         except Exception:
             # 高吉星任务：动态实例同样挂载 chrome-extra（自定义 entrypoint：noVNC 画质优化
             # + Tampermonkey 油猴脚本），保持与 agent-1 行为一致
+            # CHROME_EXTRA_DIR 需为宿主机绝对路径（docker bind mount 源由 daemon 解析）；
+            # 未设置时回退相对路径（相对 compose 文件所在目录），由 docker 解析。
             extra_volumes: dict[str, dict] = {}
-            chrome_extra = os.environ.get(
-                "CHROME_EXTRA_DIR", "D:/projects/opencli-Razormind/chrome-extra"
-            )
+            chrome_extra = os.environ.get("CHROME_EXTRA_DIR") or "./chrome-extra"
             try:
                 extra_volumes = {
                     f"{chrome_extra}/entrypoint.sh": {

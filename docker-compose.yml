@@ -198,10 +198,10 @@ services:
       # Docker socket: lets the API start/stop agent pool containers
       - /var/run/docker.sock:/var/run/docker.sock
       # 高吉星任务：验证码看门狗（CDP 轮询 doubao captcha，出现时写 /tmp/CAPTCHA_ALERT + 激活 tab）
-      - D:/projects/opencli-Razormind/chrome-extra/captcha_alert.py:/opt/captcha_alert.py:ro
+      - ./chrome-extra/captcha_alert.py:/opt/captcha_alert.py:ro
       # 高吉星任务：油猴脚本分发（deploy_userscripts.py 读取 .user.js 并导入各 agent Tampermonkey）
-      - D:/projects/opencli-Razormind/chrome-extra/scripts:/opt/scripts:ro
-      - D:/projects/opencli-Razormind/chrome-extra/deploy_userscripts.py:/opt/deploy_userscripts.py:ro
+      - ./chrome-extra/scripts:/opt/scripts:ro
+      - ./chrome-extra/deploy_userscripts.py:/opt/deploy_userscripts.py:ro
     entrypoint: ["/bin/sh", "-c", "nohup python3 -u /opt/captcha_alert.py >/tmp/captcha_alert.log 2>&1 & exec uvicorn backend.main:app --host 0.0.0.0 --port 8000 --access-log --log-level info"]
     ports:
       - "${API_PORT:-8031}:8000"
@@ -331,10 +331,10 @@ services:
     volumes:
       - agent_profile_1:/home/chrome/.config/chromium
       # 高吉星任务：覆盖 entrypoint 加载 Tampermonkey（油猴打底）+ 扩展目录
-      - D:/projects/opencli-Razormind/chrome-extra/entrypoint.sh:/entrypoint.sh:ro
-      - D:/projects/opencli-Razormind/chrome-extra/tampermonkey:/home/chrome/tampermonkey:ro
+      - ./chrome-extra/entrypoint.sh:/entrypoint.sh:ro
+      - ./chrome-extra/tampermonkey:/home/chrome/tampermonkey:ro
       # 高吉星任务：油猴脚本源（.user.js），entrypoint 启动时自动导入 Tampermonkey
-      - D:/projects/opencli-Razormind/chrome-extra/scripts:/home/chrome/scripts:ro
+      - ./chrome-extra/scripts:/home/chrome/scripts:ro
     ports:
       - "127.0.0.1:${NOVNC_PORT:-6080}:6080"
     healthcheck:
