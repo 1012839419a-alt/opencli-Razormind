@@ -146,7 +146,7 @@ services:
     <<: *backend-common
     # 0.4.1 上游镜像缺 2 个 alembic 迁移文件(a8b9c0d1e2f3/z7a8b9c0d1e2)导致旧库无法升级
     # 用本地补全文件重建的修复版镜像,其余服务仍用官方 0.4.1
-    image: ${DOCKER_REGISTRY:-ghcr.io/}${DOCKER_IMAGE_NAMESPACE:-2233admin}/opencli-admin-api:0.4.1-fixed
+    image: opencli-admin-api:0.4.1-gjx  # gjx 叠加页面模块提取
     # Run as root so the API can manage Docker containers (agent pool) via
     # the mounted socket. Acceptable for a self-hosted admin panel.
     user: root
@@ -159,6 +159,12 @@ services:
       SECRET_KEY: ${SECRET_KEY:-change-me-in-production}
       API_AUTH_TOKEN: ${API_AUTH_TOKEN:?Set API_AUTH_TOKEN in .env or run scripts/install.sh}
       BOOTSTRAP_ADMIN_TOKEN: ${BOOTSTRAP_ADMIN_TOKEN:?Set BOOTSTRAP_ADMIN_TOKEN in .env or run scripts/install.sh}
+      # 高吉星任务：CapSolver 打码 key（可选，无则验证码走人工流程）
+      CAPSOLVER_API_KEY: ${CAPSOLVER_API_KEY:-}
+      # VLM 自动解验证码（本地 Ollama；api 容器经 host.docker.internal 访问宿主）
+      OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
+      VLM_MODEL: ${VLM_MODEL:-qwen2.5vl:7b}
+      CAPTCHA_VLM_AUTO: ${CAPTCHA_VLM_AUTO:-0}
       OPENCLI_MCP_ALLOWED_HOSTS: ${OPENCLI_MCP_ALLOWED_HOSTS:-}
       OPENCLI_MCP_ALLOWED_ORIGINS: ${OPENCLI_MCP_ALLOWED_ORIGINS:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
@@ -191,6 +197,12 @@ services:
       - db_data:/data
       # Docker socket: lets the API start/stop agent pool containers
       - /var/run/docker.sock:/var/run/docker.sock
+      # 高吉星任务：验证码看门狗（CDP 轮询 doubao captcha，出现时写 /tmp/CAPTCHA_ALERT + 激活 tab）
+      - D:/projects/opencli-Razormind/chrome-extra/captcha_alert.py:/opt/captcha_alert.py:ro
+      # 高吉星任务：油猴脚本分发（deploy_userscripts.py 读取 .user.js 并导入各 agent Tampermonkey）
+      - D:/projects/opencli-Razormind/chrome-extra/scripts:/opt/scripts:ro
+      - D:/projects/opencli-Razormind/chrome-extra/deploy_userscripts.py:/opt/deploy_userscripts.py:ro
+    entrypoint: ["/bin/sh", "-c", "nohup python3 -u /opt/captcha_alert.py >/tmp/captcha_alert.log 2>&1 & exec uvicorn backend.main:app --host 0.0.0.0 --port 8000 --access-log --log-level info"]
     ports:
       - "${API_PORT:-8031}:8000"
     networks:
@@ -318,6 +330,11 @@ services:
       CHROME_HOSTNAME: agent-1
     volumes:
       - agent_profile_1:/home/chrome/.config/chromium
+      # 高吉星任务：覆盖 entrypoint 加载 Tampermonkey（油猴打底）+ 扩展目录
+      - D:/projects/opencli-Razormind/chrome-extra/entrypoint.sh:/entrypoint.sh:ro
+      - D:/projects/opencli-Razormind/chrome-extra/tampermonkey:/home/chrome/tampermonkey:ro
+      # 高吉星任务：油猴脚本源（.user.js），entrypoint 启动时自动导入 Tampermonkey
+      - D:/projects/opencli-Razormind/chrome-extra/scripts:/home/chrome/scripts:ro
     ports:
       - "127.0.0.1:${NOVNC_PORT:-6080}:6080"
     healthcheck:

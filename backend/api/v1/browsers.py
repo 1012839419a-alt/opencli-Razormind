@@ -182,6 +182,56 @@ async def add_chrome_instance(
             else:
                 logger.info("agent-pool: %s already running", name)
         except Exception:
+            # 高吉星任务：动态实例同样挂载 chrome-extra（自定义 entrypoint：noVNC 画质优化
+            # + Tampermonkey 油猴脚本），保持与 agent-1 行为一致
+            extra_volumes: dict[str, dict] = {}
+            chrome_extra = os.environ.get(
+                "CHROME_EXTRA_DIR", "D:/projects/opencli-Razormind/chrome-extra"
+            )
+            try:
+                extra_volumes = {
+                    f"{chrome_extra}/entrypoint.sh": {
+                        "bind": "/entrypoint.sh",
+                        "mode": "ro",
+                    },
+                    f"{chrome_extra}/tampermonkey": {
+                        "bind": "/home/chrome/tampermonkey",
+                        "mode": "ro",
+                    },
+                    f"{chrome_extra}/scripts": {
+                        "bind": "/home/chrome/scripts",
+                        "mode": "ro",
+                    },
+                }
+            except Exception:
+                logger.warning("agent-pool: chrome-extra mounts skipped (dir not found?)")
+            # 高吉星任务：预置 Tampermonkey 脚本（复制 agent-1 profile 的 TM LevelDB 到新 volume，
+            # 让新 agent 自动带上已装油猴脚本，绕开 CDP 导入）
+            try:
+                tm_dir_src = (
+                    f"{project}_agent_profile_1"
+                )
+                tm_dir_dst = volume
+                client.containers.run(
+                    "alpine:3.19",
+                    detach=False,
+                    remove=True,
+                    network="none",
+                    command=[
+                        "sh", "-c",
+                        "mkdir -p '/dst/Default-gjx2/Local Extension Settings' && "
+                        "cp -r '/src/Default-gjx2/Local Extension Settings/"
+                        "aoikodbkdkiloggabbnccakhjdjgmmip' "
+                        "'/dst/Default-gjx2/Local Extension Settings/' 2>/dev/null || true",
+                    ],
+                    volumes={
+                        tm_dir_src: {"bind": "/src", "mode": "ro"},
+                        tm_dir_dst: {"bind": "/dst", "mode": "rw"},
+                    },
+                )
+                logger.info("agent-pool: seeded TM scripts from agent-1 profile into %s", volume)
+            except Exception as exc:
+                logger.warning("agent-pool: TM seed failed for %s: %s", volume, exc)
             try:
                 client.containers.run(
                     image,
@@ -190,10 +240,18 @@ async def add_chrome_instance(
                     network=network,
                     labels={"agent.pool.extra": "true", "agent.pool.index": str(N)},
                     ports={"6080/tcp": ("127.0.0.1", novnc_port)},
-                    volumes={volume: {"bind": "/home/chrome/.config/chromium", "mode": "rw"}},
+                    volumes={
+                        volume: {"bind": "/home/chrome/.config/chromium", "mode": "rw"},
+                        **extra_volumes,
+                    },
                     restart_policy={"Name": "unless-stopped"},
                 )
-                logger.info("agent-pool: started new container %s on noVNC :%d", name, novnc_port)
+                logger.info(
+                    "agent-pool: started new container %s on noVNC :%d "
+                    "(chrome-extra mounted)",
+                    name,
+                    novnc_port,
+                )
             except Exception as exc:
                 logger.exception("agent-pool: failed to start %s", name)
                 raise HTTPException(status_code=500, detail=str(exc))
