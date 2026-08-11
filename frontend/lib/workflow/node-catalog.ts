@@ -682,11 +682,16 @@ export function buildOpenCLIMultiSourceHDAInternals(
 
 function buildToolPackageInternals(
   toolId: string,
-  executorMode: "situation_awareness" | "swarm_simulation",
+  executorMode:
+    | "situation_awareness"
+    | "swarm_simulation"
+    | "gaojixing_doubao_batch"
+    | "gaojixing_batch_certify",
   label: string,
   toolParams: Record<string, unknown>,
+  options: { includeOutput?: boolean } = {},
 ): WorkflowProjectNode["internals"] {
-  return {
+  const internals: NonNullable<WorkflowProjectNode["internals"]> = {
     locked: true,
     nodes: [
       {
@@ -734,6 +739,10 @@ function buildToolPackageInternals(
       },
     ],
   }
+
+  return options.includeOutput === false
+    ? { ...internals, nodes: [internals.nodes[0]], edges: [] }
+    : internals
 }
 
 function opencliAdapterId(site: string): string {
@@ -1358,6 +1367,90 @@ export const WORKFLOW_NODE_CATALOG: WorkflowNodeCatalogItem[] = [
       },
     ),
     keywords: ["last30days", "research", "situation", "awareness", "事态感知", "近30天", "研究"],
+  },
+  {
+    id: "package.gaojixing.doubao-batch",
+    idPrefix: "pkg-gaojixing-doubao",
+    label: "豆包证据批次采集",
+    description: "按题库顺序审计离线夹具或现有规范 2.2 归档，执行一题一审与 446→32 阶段门禁；live_preflight 是独立的只读就绪检查，不产生批次结果，也不进入本模板终审；验证异常恢复通知仅在通知权限与 feishuWebhookEnv 同时满足时发送",
+    category: "package",
+    profile: "intelligence",
+    kind: "agent",
+    capability: "normalize",
+    icon: "SearchCheck",
+    color: "var(--chart-2)",
+    params: {
+      template: "gaojixing-doubao-batch",
+      runtime: "iii",
+      lockedInternals: true,
+      sourceMode: "offline_fixture",
+      fixtureId: "gaojixing-doubao-offline-v1",
+      phase1Expected: 1,
+      phase2Expected: 1,
+      requirePhase1BeforePhase2: true,
+      feishuWebhookEnv: "GAOJIXING_FEISHU_WEBHOOK_URL",
+    },
+    topicCollapse: {
+      groupId: "gaojixing-doubao-batch-package",
+      nodeCount: 1,
+      mode: "locked",
+      packageInternal: true,
+    },
+    internals: buildToolPackageInternals(
+      "tool.gaojixing.doubao-batch.run",
+      "gaojixing_doubao_batch",
+      "豆包证据批次采集",
+      {
+        sourceMode: "offline_fixture",
+        fixtureId: "gaojixing-doubao-offline-v1",
+        phase1Expected: 1,
+        phase2Expected: 1,
+        requirePhase1BeforePhase2: true,
+        feishuWebhookEnv: "GAOJIXING_FEISHU_WEBHOOK_URL",
+      },
+      { includeOutput: false },
+    ),
+    keywords: ["高吉星", "豆包", "evidence", "batch", "一题一审", "checkpoint", "HDA"],
+  },
+  {
+    id: "package.gaojixing.batch-certification",
+    idPrefix: "pkg-gaojixing-certify",
+    label: "批次证据结构终审与交付",
+    description: "对 raw、Markdown、进度日志和证据文件执行证据结构终审，核对截图等文件存在、命名及引用一致性，并核对参考资料数量、视频记录和高吉星观察字段，输出可审计交付报告；不执行截图视觉或 OCR 内容判定",
+    category: "package",
+    profile: "intelligence",
+    kind: "agent",
+    capability: "normalize",
+    icon: "BadgeCheck",
+    color: "var(--chart-3)",
+    params: {
+      template: "gaojixing-batch-certification",
+      runtime: "iii",
+      lockedInternals: true,
+      sourceMode: "offline_fixture",
+      fixtureId: "gaojixing-doubao-offline-v1",
+      phase1Expected: 1,
+      phase2Expected: 1,
+    },
+    topicCollapse: {
+      groupId: "gaojixing-batch-certification-package",
+      nodeCount: 1,
+      mode: "locked",
+      packageInternal: true,
+    },
+    internals: buildToolPackageInternals(
+      "tool.gaojixing.batch-certify",
+      "gaojixing_batch_certify",
+      "批次证据结构终审与交付",
+      {
+        sourceMode: "offline_fixture",
+        fixtureId: "gaojixing-doubao-offline-v1",
+        phase1Expected: 1,
+        phase2Expected: 1,
+      },
+      { includeOutput: false },
+    ),
+    keywords: ["高吉星", "证据结构终审", "certification", "raw", "Markdown", "截图", "HDA"],
   },
   {
     id: "package.intelligence.native-lifecycle",

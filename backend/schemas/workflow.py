@@ -421,6 +421,8 @@ class WorkflowToolCapabilityExecutor(BaseModel):
         "opentabs",
         "bbx",
         "kats_runtime",
+        "gaojixing_doubao_batch",
+        "gaojixing_batch_certify",
     ]
     description: Optional[str] = None
     params: dict[str, Any] = Field(default_factory=dict)

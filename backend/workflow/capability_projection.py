@@ -964,6 +964,43 @@ def _catalog_capabilities(
             source="backend.workflow.opencli_hda_tracer",
         ),
         _capability(
+            id="package.gaojixing.doubao-batch",
+            label="豆包证据批次采集",
+            surface="catalog",
+            status="runnable",
+            backend_available=True,
+            kind="agent",
+            capability="normalize",
+            provider="opencli-admin",
+            runtime_binding=EXTERNAL_TOOL_BINDING_ID,
+            reason=(
+                "Materializes to the registered governed Gaojixing Doubao batch Tool Capability. "
+                "offline_fixture and project_archive are executable evidence audits; "
+                "live_preflight is a non-mutating readiness check. New live search is not enabled."
+            ),
+            missing=[],
+            tags=["package", "gaojixing", "doubao", "evidence", "batch"],
+            source="backend.workflow.hda_templates",
+        ),
+        _capability(
+            id="package.gaojixing.batch-certification",
+            label="批次终审与交付",
+            surface="catalog",
+            status="runnable",
+            backend_available=True,
+            kind="agent",
+            capability="normalize",
+            provider="opencli-admin",
+            runtime_binding=EXTERNAL_TOOL_BINDING_ID,
+            reason=(
+                "Materializes to the registered规范2.2 structural certification Tool "
+                "Capability; screenshot pixels and OCR content are not authenticated."
+            ),
+            missing=[],
+            tags=["package", "gaojixing", "certification", "evidence"],
+            source="backend.workflow.hda_templates",
+        ),
+        _capability(
             id="package.intelligence.situation-awareness",
             label="近 30 天事态感知",
             surface="catalog",

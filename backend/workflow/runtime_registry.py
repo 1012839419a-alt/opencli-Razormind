@@ -79,6 +79,8 @@ SUPPORTED_TOOL_EXECUTOR_MODES = {
     "opentabs",
     "bbx",
     "kats_runtime",
+    "gaojixing_doubao_batch",
+    "gaojixing_batch_certify",
 }
 _LEGACY_DATA_OPERATOR_PACK_VERSION = "1.0.0"
 

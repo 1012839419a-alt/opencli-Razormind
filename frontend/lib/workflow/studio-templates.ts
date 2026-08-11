@@ -1,6 +1,7 @@
 import type { ProjectAppType } from '@/lib/api/types'
 
 import { PACKAGED_WORKFLOW_PROJECT, buildPackagedWorkflowProject } from './collection-pipeline'
+import { buildGaojixingDoubaoWorkflow } from './gaojixing-doubao-workflow'
 import {
   buildAshareDisclosureRiskWorkflow,
   buildAshareMarketWorkflow,
@@ -18,6 +19,7 @@ import {
 import { parseWorkflowProject, workflowNodeSchema, type WorkflowProjectNode } from './schema'
 
 export const STUDIO_TEMPLATES = [
+  { id: 'gaojixing-doubao-evidence', variant: 'collection-to-consumption', appType: 'workflow', title: '高吉星豆包证据审计', description: '用两个深 HDA 完成逐题证据结构审计、446→32 阶段门禁、验证恢复及证据文件存在与引用一致性终审；默认离线夹具可直接运行，也可只读接入现有规范 2.2 归档，当前不发起新豆包搜索。', category: '真实业务测试', steps: ['豆包证据批次审计', '批次证据结构终审与交付'] },
   { id: 'ashare-market-intelligence', variant: 'collection-to-consumption', appType: 'workflow', title: 'A 股全市场数据采集', description: '并行采集国内行情、公告财报、宏观监管、财经媒体与社区热度，形成全市场基础数据池。', category: '真实业务测试', steps: ['32 个国内来源', '清洗与准入', '数据工作台'] },
   { id: 'ashare-stock-research', variant: 'collection-to-consumption', appType: 'workflow', title: 'A 股个股全景采集', description: '围绕一只股票采集行情、K 线、资金、财务、公告、研报、持仓和社区讨论；默认 600519，股吧与雪球需登录。', category: '真实业务测试', steps: ['个股参数', '13 类证据', '个股数据集'] },
   { id: 'ashare-theme-radar', variant: 'collection-to-consumption', appType: 'workflow', title: 'A 股题材与资金雷达', description: '汇集概念板块、行业资金、强势股归因、热度排行和实时快讯；通达信热榜需登录。', category: '真实业务测试', steps: ['板块与资金', '题材信号', '主题数据集'] },
@@ -53,6 +55,7 @@ type TemplateIntent = {
 }
 
 const TEMPLATE_INTENTS: Record<(typeof STUDIO_TEMPLATES)[number]['id'], TemplateIntent> = {
+  'gaojixing-doubao-evidence': { cadence: 'on-demand', source: 'doubao-evidence-hda', objective: 'collect-audit-certify', delivery: 'certification-report' },
   'ashare-market-intelligence': { cadence: '5m', source: 'opencli-ashare-live', objective: 'collect-normalize-store-financial-evidence', delivery: 'records' },
   'ashare-stock-research': { cadence: '15m', source: 'opencli-ashare-stock', objective: 'collect-single-stock-evidence', delivery: 'records' },
   'ashare-theme-radar': { cadence: '5m', source: 'opencli-ashare-theme', objective: 'collect-theme-and-capital-signals', delivery: 'records' },
@@ -84,6 +87,7 @@ export function studioAppTypeForTemplate(template: StudioTemplateId): ProjectApp
 }
 
 export function studioGraphForTemplate(template: StudioTemplateId, name: string) {
+  if (template === 'gaojixing-doubao-evidence') return buildGaojixingDoubaoWorkflow(name)
   if (template === 'native-intelligence-lifecycle') return nativeIntelligenceLifecycleGraph(name)
   if (template === 'last30days-research' || template === 'situation-to-simulation') {
     return researchSimulationGraph(template, name)

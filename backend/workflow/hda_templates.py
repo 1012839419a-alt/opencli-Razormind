@@ -16,6 +16,15 @@ from backend.schemas.workflow import (
     WorkflowProjectNode,
     WorkflowTopicCollapse,
 )
+from backend.workflow.gaojixing_certification import (
+    GAOJIXING_BATCH_CERTIFY_EXECUTOR,
+    GAOJIXING_BATCH_CERTIFY_TOOL_ID,
+)
+from backend.workflow.gaojixing_doubao import (
+    GAOJIXING_DOUBAO_BATCH_EXECUTOR,
+    GAOJIXING_DOUBAO_BATCH_TOOL_ID,
+    GAOJIXING_FEISHU_WEBHOOK_ENV,
+)
 from backend.workflow.tool_capabilities import resolve_workflow_tool_capability
 
 OPENCLI_MULTI_SOURCE_TEMPLATE = "opencli-multi-source"
@@ -33,6 +42,10 @@ NATIVE_INTELLIGENCE_FIXTURE_ID = "native-intelligence-offline-v1"
 NATIVE_INTELLIGENCE_FIXTURE_PATH = (
     Path(__file__).parent / "fixtures" / "native_intelligence_offline.json"
 )
+GAOJIXING_DOUBAO_BATCH_TEMPLATE = "gaojixing-doubao-batch"
+GAOJIXING_DOUBAO_BATCH_CATALOG_ID = "package.gaojixing.doubao-batch"
+GAOJIXING_BATCH_CERTIFICATION_TEMPLATE = "gaojixing-batch-certification"
+GAOJIXING_BATCH_CERTIFICATION_CATALOG_ID = "package.gaojixing.batch-certification"
 
 
 
@@ -93,6 +106,50 @@ def _materialize_node(node: WorkflowProjectNode) -> WorkflowProjectNode:
                     "ui": ui,
                 }
             )
+    elif _is_tool_package(
+        node,
+        template=GAOJIXING_DOUBAO_BATCH_TEMPLATE,
+        catalog_id=GAOJIXING_DOUBAO_BATCH_CATALOG_ID,
+    ):
+        materialized = _materialize_tool_package(
+            node,
+            template=GAOJIXING_DOUBAO_BATCH_TEMPLATE,
+            catalog_id=GAOJIXING_DOUBAO_BATCH_CATALOG_ID,
+            tool_id=GAOJIXING_DOUBAO_BATCH_TOOL_ID,
+            executor_mode=GAOJIXING_DOUBAO_BATCH_EXECUTOR,
+            label="豆包证据批次采集",
+            defaults={
+                "sourceMode": "offline_fixture",
+                "fixtureId": "gaojixing-doubao-offline-v1",
+                "phase1Expected": 1,
+                "phase2Expected": 1,
+                "requirePhase1BeforePhase2": True,
+                "feishuWebhookEnv": GAOJIXING_FEISHU_WEBHOOK_ENV,
+            },
+            include_output=False,
+            clear_parameter_interface=True,
+        )
+    elif _is_tool_package(
+        node,
+        template=GAOJIXING_BATCH_CERTIFICATION_TEMPLATE,
+        catalog_id=GAOJIXING_BATCH_CERTIFICATION_CATALOG_ID,
+    ):
+        materialized = _materialize_tool_package(
+            node,
+            template=GAOJIXING_BATCH_CERTIFICATION_TEMPLATE,
+            catalog_id=GAOJIXING_BATCH_CERTIFICATION_CATALOG_ID,
+            tool_id=GAOJIXING_BATCH_CERTIFY_TOOL_ID,
+            executor_mode=GAOJIXING_BATCH_CERTIFY_EXECUTOR,
+            label="批次终审与交付",
+            defaults={
+                "sourceMode": "offline_fixture",
+                "fixtureId": "gaojixing-doubao-offline-v1",
+                "phase1Expected": 1,
+                "phase2Expected": 1,
+            },
+            include_output=False,
+            clear_parameter_interface=True,
+        )
     elif _is_tool_package(
         node,
         template=SITUATION_AWARENESS_TEMPLATE,
@@ -199,6 +256,8 @@ def _materialize_tool_package(
     executor_mode: str,
     label: str,
     defaults: dict[str, Any],
+    include_output: bool = True,
+    clear_parameter_interface: bool = False,
 ) -> WorkflowProjectNode:
     explicit_tool_params = _read_dict(node.params.get("toolParams"))
     public_params = {
@@ -212,6 +271,7 @@ def _materialize_tool_package(
         executor_mode=executor_mode,
         label=label,
         tool_params=tool_params,
+        include_output=include_output,
     )
     return node.model_copy(
         update={
@@ -231,6 +291,7 @@ def _materialize_tool_package(
             ),
             "internals": internals,
             "ui": {**(node.ui or {}), "catalogId": catalog_id},
+            **({"parameterInterface": None} if clear_parameter_interface else {}),
         }
     )
 
@@ -241,6 +302,7 @@ def _tool_package_internals(
     executor_mode: str,
     label: str,
     tool_params: dict[str, Any],
+    include_output: bool = True,
 ) -> WorkflowPackageInternals:
     tool_node = WorkflowProjectNode(
         id="tool",
@@ -262,6 +324,9 @@ def _tool_package_internals(
             "position": {"x": 0, "y": 0},
         },
     )
+    if not include_output:
+        return WorkflowPackageInternals(locked=True, nodes=[tool_node], edges=[])
+
     output_node = WorkflowProjectNode(
         id="output",
         kind="inbox",
