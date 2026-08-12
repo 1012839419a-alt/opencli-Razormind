@@ -1,5 +1,6 @@
 from backend.models.acquisition import AcquisitionExecution, AcquisitionExecutionStatus
 from backend.models.agent import AIAgent
+from backend.models.agent_run import AgentRun, AgentRunEvent, AgentSession
 from backend.models.automation import Automation
 from backend.models.base import TimestampMixin
 from backend.models.browser import BrowserBinding, BrowserInstance
@@ -7,6 +8,14 @@ from backend.models.consumer_grant import ConsumerGrant
 from backend.models.control_action import ControlActionRecord
 from backend.models.cookie_jar import CookieJarEntry
 from backend.models.edge_node import EdgeNode, EdgeNodeEvent
+from backend.models.feed_provider import FeedProvider
+from backend.models.gaojixing_collection import (
+    GaojixingCollectionRun,
+    GaojixingCollectionRunStatus,
+    GaojixingQuestionCheckpoint,
+    GaojixingQuestionStatus,
+    GaojixingRuntimeLease,
+)
 from backend.models.identity import (
     LocalAdmin,
     ServiceIdentity,
@@ -17,7 +26,13 @@ from backend.models.identity import (
     WorkspaceMembership,
     WorkspaceRole,
 )
-from backend.models.feed_provider import FeedProvider
+from backend.models.image_studio import (
+    CanvasDocument,
+    CanvasSnapshot,
+    ImageGenerationJob,
+    ImageGenerationJobStatus,
+    MediaAsset,
+)
 from backend.models.intelligence import (
     IntelligenceArtifact,
     IntelligenceArtifactReference,
@@ -25,13 +40,6 @@ from backend.models.intelligence import (
     IntelligenceOutbox,
     IntelligenceSession,
     IntelligenceTransition,
-)
-from backend.models.image_studio import (
-    CanvasDocument,
-    CanvasSnapshot,
-    ImageGenerationJob,
-    ImageGenerationJobStatus,
-    MediaAsset,
 )
 from backend.models.model_default import ModelDefault
 from backend.models.notification import NotificationLog, NotificationRule
@@ -76,7 +84,6 @@ from backend.models.task import CollectionTask, TaskRun, TaskRunEvent
 from backend.models.worker import WorkerNode
 from backend.models.workflow import Project, Workflow, WorkflowDraft, WorkflowVersion
 from backend.models.workflow_run import WorkflowRun, WorkflowRunEvent
-from backend.models.agent_run import AgentRun, AgentRunEvent, AgentSession
 
 __all__ = [
     "TimestampMixin",
@@ -116,6 +123,11 @@ __all__ = [
     "MediaAsset",
     "ImageGenerationJob",
     "ImageGenerationJobStatus",
+    "GaojixingCollectionRun",
+    "GaojixingCollectionRunStatus",
+    "GaojixingQuestionCheckpoint",
+    "GaojixingQuestionStatus",
+    "GaojixingRuntimeLease",
     "ModelProvider",
     "ProviderModel",
     "ModelDefault",

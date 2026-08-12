@@ -423,6 +423,8 @@ def _visible_verification_recovery_case(
     resolved_screenshot = _resolve_project_artifact(project_root, screenshot_path)
     if resolved_screenshot is None:
         return None
+    artifact_path = resolved_screenshot.relative_to(project_root.resolve()).as_posix()
+    artifact_ref = f"run-artifact:{artifact_path}"
     question_id = str(capture.get("id") or capture.get("questionId") or "")
     question = str(capture.get("question") or capture.get("originalQuestion") or "")
     return {
@@ -437,7 +439,7 @@ def _visible_verification_recovery_case(
             "batchId": batch_id,
             "snapshotDigest": snapshot_digest,
         },
-        "evidence": [{"type": "screenshot", "path": str(resolved_screenshot)}],
+        "evidence": [{"type": "screenshot", "artifactRef": artifact_ref}],
         "allowedActions": ["restart_same_batch"],
     }
 
@@ -470,7 +472,7 @@ async def _notify_recovery_case(
             "summary": recovery_case["reason"],
             "questionId": recovery_case["questionId"],
             "question": recovery_case["question"],
-            "url": recovery_case["evidence"][0]["path"],
+            "url": recovery_case["evidence"][0]["artifactRef"],
         },
     )
     delivered = bool(

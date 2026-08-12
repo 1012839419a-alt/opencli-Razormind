@@ -436,8 +436,8 @@ def _tool_capabilities() -> list[WorkflowToolCapability]:
             id=GAOJIXING_DOUBAO_BATCH_TOOL_ID,
             label="豆包证据批次采集",
             description=(
-                "按规范2.2审计离线夹具或现有项目归档，并提供不提交问句的"
-                "Hermes只读预检。"
+                "接收托管题包，并按规范2.2审计离线夹具或现有项目证据归档；"
+                "实时新搜索 Worker 尚未绑定。"
             ),
             input_type="batchRequest[]",
             output_type="gaojixingBatchResult[]",
@@ -448,7 +448,8 @@ def _tool_capabilities() -> list[WorkflowToolCapability]:
                 mode=GAOJIXING_DOUBAO_BATCH_EXECUTOR,
                 description=(
                     "Runs offline_fixture, project_archive, or the non-mutating "
-                    "live_preflight; it does not perform a new Doubao search."
+                    "live_preflight; uploaded packages are archive audits and a new "
+                    "Doubao-search worker is not bound."
                 ),
                 params={
                     "sourceMode": "offline_fixture",

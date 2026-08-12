@@ -34,8 +34,35 @@ export type WorkflowRunInput = {
 
 type ManualInputSchema = {
   required: string[]
-  properties: Record<string, { type?: string }>
+  properties: Record<string, {
+    type?: string
+    format?: string
+    title?: string
+    accept?: string
+  }>
   additionalProperties: boolean
+}
+
+export type WorkflowRunFileInput = {
+  name: string
+  title: string
+  accept: string
+}
+
+export type WorkflowRunScope = {
+  workspaceId: string
+  projectId: string
+  workflowId: string
+}
+
+function withWorkflowRunScope(endpoint: string, scope?: WorkflowRunScope): string {
+  if (!scope) return endpoint
+  const search = new URLSearchParams({
+    workspace: scope.workspaceId,
+    project: scope.projectId,
+    workflow: scope.workflowId,
+  })
+  return `${endpoint}?${search.toString()}`
 }
 
 function manualInputSchema(project: WorkflowProject): ManualInputSchema | null {
@@ -52,7 +79,7 @@ function manualInputSchema(project: WorkflowProject): ManualInputSchema | null {
       ? schema.required.filter((item): item is string => typeof item === "string")
       : [],
     properties: Object.fromEntries(
-      Object.entries(properties).filter((entry): entry is [string, { type?: string }] => (
+      Object.entries(properties).filter((entry): entry is [string, ManualInputSchema["properties"][string]] => (
         Boolean(entry[1]) && typeof entry[1] === "object" && !Array.isArray(entry[1])
       )),
     ),
@@ -64,8 +91,23 @@ export function buildWorkflowRunInputTemplate(project: WorkflowProject): Record<
   const schema = manualInputSchema(project)
   if (!schema) return {}
   return Object.fromEntries(
-    schema.required.map((name) => [name, schema.properties[name]?.type === "string" ? "" : null]),
+    schema.required
+      .filter((name) => schema.properties[name]?.format !== "binary")
+      .map((name) => [name, schema.properties[name]?.type === "string" ? "" : null]),
   )
+}
+
+export function getWorkflowRunFileInput(project: WorkflowProject): WorkflowRunFileInput | null {
+  const schema = manualInputSchema(project)
+  if (!schema) return null
+  const name = schema.required.find((candidate) => schema.properties[candidate]?.format === "binary")
+  if (!name) return null
+  const property = schema.properties[name]
+  return {
+    name,
+    title: property?.title?.trim() || name,
+    accept: property?.accept?.trim() || "",
+  }
 }
 
 export function parseWorkflowRunInput(project: WorkflowProject, text: string): WorkflowRunInput {
@@ -77,6 +119,7 @@ export function parseWorkflowRunInput(project: WorkflowProject, text: string): W
   const schema = manualInputSchema(project)
   if (schema) {
     for (const name of schema.required) {
+      if (schema.properties[name]?.format === "binary") continue
       const value = payload[name]
       if (value === undefined || value === null || (typeof value === "string" && !value.trim())) {
         throw new Error(`${name} is required`)
@@ -357,23 +400,45 @@ export async function startWorkflowRun(
     sourceOutputs?: Record<string, Array<Record<string, unknown>>>
     trigger?: WorkflowRunTrigger
     input?: WorkflowRunInput
+    questionBankFile?: File
+    scope?: WorkflowRunScope
   } = {},
 ): Promise<WorkflowRunProjection> {
-  const response = await fetch("/api/workflow/run", {
+  if (options.questionBankFile && options.sourceOutputs) {
+    throw new Error("Question bank file Runs do not accept sourceOutputs")
+  }
+  const trigger = options.trigger ?? inferWorkflowRunTrigger(project)
+  const draftRequest = {
+    project,
+    ...(options.runId ? { runId: options.runId } : {}),
+    ...(options.traceId ? { traceId: options.traceId } : {}),
+    ...(options.packageNodeId ? { packageNodeId: options.packageNodeId } : {}),
+    ...(options.sourceOutputs ? { sourceOutputs: options.sourceOutputs } : {}),
+    ...(options.input ? { input: options.input } : {}),
+    trigger,
+  }
+  const request = options.scope
+    ? {
+        inputs: options.input?.payload ?? {},
+        response_mode: "async",
+        user: options.input?.sourceId?.trim() || "studio-operator",
+        ...(trigger.requestId ? { request_id: trigger.requestId } : {}),
+        ...(trigger.idempotencyKey ? { idempotency_key: trigger.idempotencyKey } : {}),
+      }
+    : draftRequest
+  const questionBankBody = options.questionBankFile ? new FormData() : null
+  if (questionBankBody && options.questionBankFile) {
+    questionBankBody.set("questionBank", options.questionBankFile)
+    questionBankBody.set("request", JSON.stringify(request))
+  }
+  const questionBankEndpoint = withWorkflowRunScope("/api/workflow/run/question-bank", options.scope)
+  const response = await fetch(questionBankBody ? questionBankEndpoint : "/api/workflow/run", {
     method: "POST",
     headers: {
-      "Content-Type": "application/json",
+      ...(!questionBankBody ? { "Content-Type": "application/json" } : {}),
       ...(options.authorization ? { Authorization: options.authorization } : {}),
     },
-    body: JSON.stringify({
-      project,
-      ...(options.runId ? { runId: options.runId } : {}),
-      ...(options.traceId ? { traceId: options.traceId } : {}),
-      ...(options.packageNodeId ? { packageNodeId: options.packageNodeId } : {}),
-      ...(options.sourceOutputs ? { sourceOutputs: options.sourceOutputs } : {}),
-      ...(options.input ? { input: options.input } : {}),
-      trigger: options.trigger ?? inferWorkflowRunTrigger(project),
-    }),
+    body: questionBankBody ?? JSON.stringify(request),
   })
   return readApiResponse(response, "Workflow run failed")
 }
@@ -408,6 +473,8 @@ export async function queryWorkflowRunTrace(
   runId: string,
   options: {
     authorization?: string | null
+    scope?: WorkflowRunScope
+    signal?: AbortSignal
     afterSequence?: number
     nodeId?: string
     eventType?: WorkflowNodeRunEventType
@@ -419,14 +486,33 @@ export async function queryWorkflowRunTrace(
   if (options.nodeId) search.set("nodeId", options.nodeId)
   if (options.eventType) search.set("eventType", options.eventType)
   if (typeof options.limit === "number") search.set("limit", String(options.limit))
-  const suffix = search.size > 0 ? `?${search.toString()}` : ""
-  const response = await fetch(`${workflowRunEndpoint(runId)}/trace${suffix}`, {
+  const endpoint = withWorkflowRunScope(`${workflowRunEndpoint(runId)}/trace`, options.scope)
+  const separator = endpoint.includes("?") ? "&" : "?"
+  const suffix = search.size > 0 ? `${separator}${search.toString()}` : ""
+  const response = await fetch(`${endpoint}${suffix}`, {
     headers: {
       ...(options.authorization ? { Authorization: options.authorization } : {}),
     },
     cache: "no-store",
+    signal: options.signal,
   })
   return readApiResponse(response, "Workflow run trace query failed")
+}
+
+export async function resumeGaojixingWorkflowRun(
+  runId: string,
+  options: { authorization?: string | null; scope?: WorkflowRunScope } = {},
+): Promise<WorkflowRunProjection> {
+  const response = await fetch(
+    withWorkflowRunScope(`${workflowRunEndpoint(runId)}/gaojixing/resume`, options.scope),
+    {
+      method: "POST",
+      headers: {
+        ...(options.authorization ? { Authorization: options.authorization } : {}),
+      },
+    },
+  )
+  return readApiResponse(response, "Gaojixing Run resume failed")
 }
 
 export async function fetchWorkflowRunEvents(

@@ -467,7 +467,12 @@ async def test_visible_captcha_returns_recovery_case_and_uses_configured_feishu(
             "batchId": result["batchId"],
             "snapshotDigest": result["snapshotDigest"],
         },
-        "evidence": [{"type": "screenshot", "path": str(screenshot)}],
+        "evidence": [
+            {
+                "type": "screenshot",
+                "artifactRef": "run-artifact:G0002-captcha.png",
+            }
+        ],
         "allowedActions": ["restart_same_batch"],
     }
     assert result["notification"] == {
@@ -478,6 +483,9 @@ async def test_visible_captcha_returns_recovery_case_and_uses_configured_feishu(
     assert result["blockedByPermission"] is False
     assert notifier.payload.event == "workflow.recovery_case.opened"
     assert notifier.payload.data["questionId"] == "G0002"
+    assert notifier.payload.data["url"] == "run-artifact:G0002-captcha.png"
+    assert str(tmp_path) not in json.dumps(result, ensure_ascii=False)
+    assert str(tmp_path) not in json.dumps(notifier.payload.data, ensure_ascii=False)
 
 
 @pytest.mark.asyncio

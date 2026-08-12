@@ -179,6 +179,7 @@ class Settings(BaseSettings):
     invokeai_api_token: str = ""
     invokeai_request_timeout_seconds: int = 30
     image_asset_storage_path: str = "/data/image-studio/assets"
+    gaojixing_run_storage_path: str = "/data/gaojixing"
 
     # Timezone
     default_timezone: str = "UTC"

@@ -1,22 +1,18 @@
-import { backendWorkflowRunsRoot, readWorkflowProxyScope } from "../../../run-scope"
+import { backendWorkflowRunsRoot, readWorkflowProxyScope } from "../../../../run-scope"
 import { forwardedRequestAuthHeaders } from "@/lib/workflow/request-auth"
 
 export const dynamic = "force-dynamic"
 
 const BACKEND_URL = process.env.BACKEND_URL ?? "http://127.0.0.1:8031"
 
-export async function GET(req: Request, context: { params: Promise<{ runId: string }> }) {
+export async function POST(req: Request, context: { params: Promise<{ runId: string }> }) {
   const { runId } = await context.params
   try {
-    const url = new URL(req.url)
-    const scope = readWorkflowProxyScope(url)
-    url.searchParams.delete("workspace")
-    url.searchParams.delete("project")
-    url.searchParams.delete("workflow")
-    const search = url.searchParams.toString()
+    const scope = readWorkflowProxyScope(new URL(req.url))
     const response = await fetch(
-      `${BACKEND_URL}${backendWorkflowRunsRoot(scope)}/${encodeURIComponent(runId)}/trace${search ? `?${search}` : ""}`,
+      `${BACKEND_URL}${backendWorkflowRunsRoot(scope)}/${encodeURIComponent(runId)}/gaojixing/resume`,
       {
+        method: "POST",
         headers: {
           ...forwardedRequestAuthHeaders(req),
         },
@@ -32,8 +28,8 @@ export async function GET(req: Request, context: { params: Promise<{ runId: stri
     return Response.json(
       {
         success: false,
-        error: "WORKFLOW_RUN_TRACE_FAILED",
-        message: error instanceof Error ? error.message : "Unknown workflow run trace error",
+        error: "GAOJIXING_RUN_RESUME_FAILED",
+        message: error instanceof Error ? error.message : "Unknown Gaojixing Run resume error",
       },
       { status: 502 },
     )

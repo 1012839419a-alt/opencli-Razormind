@@ -99,6 +99,9 @@ from backend.workflow.kats_runtime import (
     execute_kats_operation,
 )
 from backend.workflow.last30days_provider import Last30DaysProviderError
+from backend.workflow.managed_gaojixing_question_batches import (
+    resolve_managed_question_batch,
+)
 from backend.workflow.native_intelligence_executor import (
     NATIVE_INTELLIGENCE_ACTION_BY_TOOL_ID,
     NATIVE_INTELLIGENCE_EXECUTOR,
@@ -1970,6 +1973,117 @@ async def continue_workflow_run_with_source_outputs(
         )
 
 
+async def resume_gaojixing_workflow_run(
+    run_id: str,
+    *,
+    session: AsyncSession | None = None,
+) -> WorkflowRunProjection | None:
+    """Resume governed collection from its durable REVIEWING state only.
+
+    This is intentionally separate from the public ``sourceOutputs``
+    continuation. It replays the immutable stored request and acknowledges
+    success in the same transaction that stores the HDA audit/certification.
+    """
+
+    if session is None:
+        from backend.database import AsyncSessionLocal, commit_session
+
+        async with AsyncSessionLocal() as owned_session:
+            projection = await resume_gaojixing_workflow_run(
+                run_id,
+                session=owned_session,
+            )
+            await commit_session(owned_session)
+            return projection
+
+    from backend.models.gaojixing_collection import (
+        GaojixingCollectionRun,
+        GaojixingCollectionRunStatus,
+    )
+    from backend.services.gaojixing_collection_service import (
+        mark_collection_review_failed,
+        mark_collection_succeeded,
+    )
+
+    lock = await _get_run_lock(run_id)
+    async with lock:
+        stored = await _load_workflow_run(run_id, session=session, cache=False)
+        if stored is None or not _project_has_governed_gaojixing(stored.request.project):
+            return None
+        job = await session.scalar(
+            select(GaojixingCollectionRun)
+            .where(GaojixingCollectionRun.workflow_run_id == run_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if job is None:
+            return None
+        if job.status == GaojixingCollectionRunStatus.SUCCEEDED.value:
+            return stored.projection
+        if job.status != GaojixingCollectionRunStatus.REVIEWING.value:
+            return stored.projection
+        request = stored.request.model_copy(
+            update={
+                "runId": run_id,
+                "traceId": stored.projection.traceId,
+                # Governed worker output is read from the managed archive;
+                # public/generic continuation data is never introduced here.
+                "sourceOutputs": stored.request.sourceOutputs,
+            },
+            deep=True,
+        )
+        projection = await start_workflow_run(
+            request,
+            session=session,
+            existing_events=stored.events,
+            workflow_version_id=stored.workflow_version_id,
+            studio_workflow_version_id=stored.studio_workflow_version_id,
+        )
+        if projection.status == "completed":
+            await mark_collection_succeeded(session, workflow_run_id=run_id)
+        elif projection.status in {"failed", "blocked", "cancelled"}:
+            await mark_collection_review_failed(
+                session,
+                workflow_run_id=run_id,
+                code=f"hda-review-{projection.status}",
+            )
+        return projection
+
+
+async def refresh_gaojixing_workflow_run(
+    run_id: str,
+    *,
+    session: AsyncSession | None = None,
+) -> WorkflowRunProjection | None:
+    """Project durable worker waiting/failure state without accepting inputs."""
+
+    if session is None:
+        from backend.database import AsyncSessionLocal, commit_session
+
+        async with AsyncSessionLocal() as owned_session:
+            projection = await refresh_gaojixing_workflow_run(
+                run_id,
+                session=owned_session,
+            )
+            await commit_session(owned_session)
+            return projection
+    lock = await _get_run_lock(run_id)
+    async with lock:
+        stored = await _load_workflow_run(run_id, session=session, cache=False)
+        if stored is None or not _project_has_governed_gaojixing(stored.request.project):
+            return None
+        return await start_workflow_run(
+            stored.request.model_copy(
+                update={"runId": run_id, "traceId": stored.projection.traceId},
+                deep=True,
+            ),
+            session=session,
+            existing_events=stored.events,
+            workflow_version_id=stored.workflow_version_id,
+            studio_workflow_version_id=stored.studio_workflow_version_id,
+        )
+
+
 async def _store_workflow_run(
     run_id: str,
     *,
@@ -3707,9 +3821,85 @@ async def _execute_external_tool_capability(
         binding_input.get("executorMode") == GAOJIXING_DOUBAO_BATCH_EXECUTOR
         and binding_input.get("toolCapabilityId") == GAOJIXING_DOUBAO_BATCH_TOOL_ID
     ):
+        question_batch_ref = workflow_input.get("questionBatchRef")
+        if isinstance(question_batch_ref, str) and question_batch_ref:
+            if session is None:
+                raise ValueError("gaojixing_durable_session_required")
+            from backend.models.gaojixing_collection import (
+                GaojixingCollectionRun,
+                GaojixingCollectionRunStatus,
+                GaojixingQuestionCheckpoint,
+                GaojixingQuestionStatus,
+            )
+            from backend.services.gaojixing_collection_service import ensure_collection
+
+            job = await session.scalar(
+                select(GaojixingCollectionRun).where(
+                    GaojixingCollectionRun.workflow_run_id == run_id
+                )
+            )
+            if job is None:
+                job = await ensure_collection(
+                    session,
+                    workflow_run_id=run_id,
+                    node_id=node.id,
+                    question_batch_ref=question_batch_ref,
+                )
+            if job.status not in {
+                GaojixingCollectionRunStatus.REVIEWING.value,
+                GaojixingCollectionRunStatus.SUCCEEDED.value,
+            }:
+                checkpoints = list(
+                    (
+                        await session.execute(
+                            select(GaojixingQuestionCheckpoint).where(
+                                GaojixingQuestionCheckpoint.collection_run_id == job.id
+                            )
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                output = {
+                    "schema": "gaojixing.collection-run.v1",
+                    "status": job.status,
+                    "jobId": job.id,
+                    "questionCount": len(checkpoints),
+                    "completedCount": sum(
+                        checkpoint.status == GaojixingQuestionStatus.PASSED.value
+                        for checkpoint in checkpoints
+                    ),
+                    "currentQuestionId": job.current_question_id,
+                    "waitingKind": job.waiting_kind,
+                    "artifactRef": job.waiting_artifact_ref,
+                }
+                output_items = [
+                    _external_tool_output(node, output, input_items, run_id, 0, binding_input)
+                ]
+                if job.status in {
+                    GaojixingCollectionRunStatus.FAILED.value,
+                    GaojixingCollectionRunStatus.BLOCKED.value,
+                    GaojixingCollectionRunStatus.CANCELLED.value,
+                }:
+                    raise _GaojixingToolTerminalError(
+                        event_type=(
+                            "blocked"
+                            if job.status == GaojixingCollectionRunStatus.BLOCKED.value
+                            else "failed"
+                        ),
+                        code="gaojixing_collection_terminal",
+                        message="Gaojixing durable collection did not complete.",
+                        output_items=output_items,
+                    )
+                raise _GaojixingToolTerminalError(
+                    event_type="waiting",
+                    code="gaojixing_collection_waiting",
+                    message="Gaojixing durable collection is waiting for worker progress.",
+                    output_items=output_items,
+                )
         output = await execute_gaojixing_doubao_batch(
             input_items,
-            _gaojixing_tool_params(binding_input, workflow_input),
+            _gaojixing_tool_params(binding_input, workflow_input, run_id=run_id),
             notification_permission_granted=agent_can_send_notifications,
         )
         output_items = [
@@ -3747,7 +3937,7 @@ async def _execute_external_tool_capability(
     ):
         output = await execute_gaojixing_batch_certification(
             input_items,
-            _gaojixing_tool_params(binding_input, workflow_input),
+            _gaojixing_tool_params(binding_input, workflow_input, run_id=run_id),
         )
         output_items = [
             _external_tool_output(node, output, input_items, run_id, 0, binding_input)
@@ -3973,23 +4163,21 @@ def _merged_tool_params(binding_input: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-_GAOJIXING_RUN_INPUT_FIELDS = {
-    "projectRoot",
-    "questionBankPath",
-}
-
-
 def _gaojixing_tool_params(
-    binding_input: dict[str, Any], workflow_input: dict[str, Any]
+    binding_input: dict[str, Any], workflow_input: dict[str, Any], *, run_id: str
 ) -> dict[str, Any]:
-    return {
-        **_merged_tool_params(binding_input),
-        **{
-            key: value
-            for key, value in workflow_input.items()
-            if key in _GAOJIXING_RUN_INPUT_FIELDS
-        },
-    }
+    params = _merged_tool_params(binding_input)
+    question_batch_ref = workflow_input.get("questionBatchRef")
+    if not isinstance(question_batch_ref, str) or not question_batch_ref:
+        return params
+    resolved = resolve_managed_question_batch(
+        question_batch_ref,
+        expected_run_id=run_id,
+    )
+    params["sourceMode"] = "project_archive"
+    params["projectRoot"] = str(resolved.project_root)
+    params["questionBankPath"] = str(resolved.question_bank_path)
+    return params
 
 
 def _resolved_kats_params(
@@ -4056,6 +4244,12 @@ def _trace_sample_output(item: dict[str, Any]) -> dict[str, Any]:
             "recoveryCase",
             "notification",
             "blockedByPermission",
+            "jobId",
+            "questionCount",
+            "completedCount",
+            "currentQuestionId",
+            "waitingKind",
+            "artifactRef",
             "violations",
             "certificationScope",
             "evidenceDigest",

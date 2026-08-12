@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react"
 import { Activity, Boxes, FileInput, Loader2, Play, RotateCcw } from "lucide-react"
+import { useSearchParams } from "next/navigation"
 import { getApiAuthToken } from "@/lib/api/auth-token"
 import { useFlowStore } from "@/lib/flow/store"
 import { fetchWorkflowCapabilities } from "@/lib/workflow/backend-capabilities"
@@ -18,8 +19,10 @@ import {
   fetchWorkflowResearchLedger,
   buildWorkflowRunInputTemplate,
   continueWorkflowResearch,
+  getWorkflowRunFileInput,
   parseWorkflowRunInput,
   replayWorkflowRunEventStream,
+  resumeGaojixingWorkflowRun,
   startWorkflowRun,
   type WorkflowEvidenceBatchDetail,
   type WorkflowEvidenceBatchProjection,
@@ -30,6 +33,10 @@ import {
   type WorkflowRunStatus,
 } from "@/lib/workflow/backend-runs"
 import { fetchWorkflowToolCapabilities } from "@/lib/workflow/backend-tool-capabilities"
+import {
+  extractGaojixingRecoveryCase,
+  monitorWorkflowRun,
+} from "@/lib/workflow/live-run-monitor"
 import {
   buildNativeIntelligencePreviewEvidence,
   findNativeIntelligenceWorkflowPackageNodeId,
@@ -95,6 +102,9 @@ const RUN_STATUS_LABELS: Record<WorkflowRunStatus, string> = {
 
 export function RunTracePanel({ runRequestId = 0 }: { runRequestId?: number }) {
   const runButtonRef = useRef<HTMLButtonElement>(null)
+  const questionBankInputRef = useRef<HTMLInputElement>(null)
+  const runMonitorAbortRef = useRef<AbortController | null>(null)
+  const searchParams = useSearchParams()
   const workflowProject = useFlowStore((state) => state.workflowProject)
   const selectedNodeId = useFlowStore((state) => state.nodes.find((node) => node.selected)?.id ?? null)
   const nodeCount = useFlowStore((state) => state.nodes.length)
@@ -120,13 +130,31 @@ export function RunTracePanel({ runRequestId = 0 }: { runRequestId?: number }) {
     () => JSON.stringify(buildWorkflowRunInputTemplate(workflowProject), null, 2),
     [workflowProject],
   )
+  const runFileInput = useMemo(() => getWorkflowRunFileInput(workflowProject), [workflowProject])
   const [runInputText, setRunInputText] = useState(runInputTemplateText)
   const [runInputError, setRunInputError] = useState<string | null>(null)
+  const [questionBankFile, setQuestionBankFile] = useState<File | null>(null)
+  const [isResumingGaojixing, setIsResumingGaojixing] = useState(false)
+
+  const workflowRunScope = useMemo(() => {
+    const workspaceId = searchParams.get("workspace")?.trim() ?? ""
+    const projectId = searchParams.get("project")?.trim() ?? ""
+    const workflowId = searchParams.get("workflow")?.trim() ?? ""
+    return workspaceId && projectId && workflowId
+      ? { workspaceId, projectId, workflowId }
+      : undefined
+  }, [searchParams])
 
   useEffect(() => {
     setRunInputText(runInputTemplateText)
     setRunInputError(null)
-  }, [runInputTemplateText])
+    setQuestionBankFile(null)
+    if (questionBankInputRef.current) questionBankInputRef.current.value = ""
+  }, [runInputTemplateText, runFileInput])
+
+  useEffect(() => () => {
+    runMonitorAbortRef.current?.abort()
+  }, [workflowProject.id])
 
   const outputInputNodes = useMemo(() => collectOutputInputNodes(workflowProject), [workflowProject])
   const selectedSourceId = outputInputNodes.some((node) => node.id === selectedNodeId) ? selectedNodeId : null
@@ -148,10 +176,60 @@ export function RunTracePanel({ runRequestId = 0 }: { runRequestId?: number }) {
     0,
   ) ?? 0
   const latestEvents = useMemo(() => runState.events.slice(-8).reverse(), [runState.events])
+  const gaojixingRecoveryCase = useMemo(
+    () => extractGaojixingRecoveryCase(runState.events),
+    [runState.events],
+  )
   const isRunning = runState.status === "running"
   const isBackendRunning = backendState.status === "running"
 
+  const monitorActiveRun = async (started: WorkflowRunProjection, authorization: string | null) => {
+    runMonitorAbortRef.current?.abort()
+    const controller = new AbortController()
+    runMonitorAbortRef.current = controller
+    const scope = runFileInput ? workflowRunScope : undefined
+    try {
+      const finalSnapshot = await monitorWorkflowRun(started.runId, {
+        authorization,
+        scope,
+        signal: controller.signal,
+        onSnapshot: (snapshot) => {
+          for (const event of snapshot.newEvents) applyWorkflowNodeRunEvent(event)
+          applyWorkflowRunProjection(snapshot.projection)
+          setRunState({
+            status: ["queued", "running", "waiting", "partial"].includes(snapshot.projection.status)
+              ? "running"
+              : "ready",
+            projection: snapshot.projection,
+            events: snapshot.events,
+            error: null,
+          })
+        },
+      })
+      applyWorkflowRunProjection(finalSnapshot.projection)
+      setRunState({
+        status: "ready",
+        projection: finalSnapshot.projection,
+        events: finalSnapshot.events,
+        error: null,
+      })
+      await Promise.all([
+        loadEvidenceBatchResults(finalSnapshot.projection.runId, authorization),
+        loadResearchLedger(finalSnapshot.projection.runId, authorization),
+      ])
+    } catch (error) {
+      if (controller.signal.aborted) return
+      throw error
+    } finally {
+      if (runMonitorAbortRef.current === controller) runMonitorAbortRef.current = null
+    }
+  }
+
   const runBackendWorkflow = async (sourceOutputs?: Record<string, Array<Record<string, unknown>>>) => {
+    if (runFileInput && !questionBankFile) {
+      setRunInputError("请选择本次题库")
+      return
+    }
     let input
     try {
       input = parseWorkflowRunInput(workflowProject, runInputText)
@@ -160,25 +238,25 @@ export function RunTracePanel({ runRequestId = 0 }: { runRequestId?: number }) {
       setRunInputError(error instanceof Error ? error.message : "运行输入格式无效")
       return
     }
+    const submittedQuestionBankFile = questionBankFile
     setRunState((current) => ({ status: "running", projection: current.projection, events: current.events, error: null }))
     try {
       const token = getApiAuthToken()
       const authorization = token ? `Bearer ${token}` : null
-      const started = await startWorkflowRun(workflowProject, { authorization, sourceOutputs, input })
+      const started = await startWorkflowRun(workflowProject, {
+        authorization,
+        sourceOutputs,
+        input,
+        ...(runFileInput && workflowRunScope ? { scope: workflowRunScope } : {}),
+        ...(submittedQuestionBankFile ? { questionBankFile: submittedQuestionBankFile } : {}),
+      })
+      setQuestionBankFile((current) => current === submittedQuestionBankFile ? null : current)
+      if (questionBankInputRef.current?.files?.[0] === submittedQuestionBankFile) {
+        questionBankInputRef.current.value = ""
+      }
       applyWorkflowRunProjection(started)
       setRunState({ status: "running", projection: started, events: [], error: null })
-
-      const replay = await replayWorkflowRunEventStream(started.runId, { authorization })
-      for (const event of replay.events) {
-        applyWorkflowNodeRunEvent(event)
-      }
-      const finalProjection = replay.projection ?? started
-      applyWorkflowRunProjection(finalProjection)
-      setRunState({ status: "ready", projection: finalProjection, events: replay.events, error: null })
-      await Promise.all([
-        loadEvidenceBatchResults(finalProjection.runId, authorization),
-        loadResearchLedger(finalProjection.runId, authorization),
-      ])
+      await monitorActiveRun(started, authorization)
     } catch (error) {
       setRunState((current) => ({
         status: "error",
@@ -190,6 +268,10 @@ export function RunTracePanel({ runRequestId = 0 }: { runRequestId?: number }) {
   }
 
   const runImportedOutput = async () => {
+    if (runFileInput) {
+      setImportError("题库文件 Run 不支持导入节点输出。")
+      return
+    }
     if (!effectiveImportNodeId) {
       setImportError("当前工作流没有可接收导入输出的输入节点。")
       return
@@ -208,6 +290,36 @@ export function RunTracePanel({ runRequestId = 0 }: { runRequestId?: number }) {
       await runBackendWorkflow({ [effectiveImportNodeId]: items as Array<Record<string, unknown>> })
     } catch (error) {
       setImportError(error instanceof Error ? error.message : "导入输出格式无效")
+    }
+  }
+
+  const resumeGaojixingRun = async () => {
+    if (!projection || !gaojixingRecoveryCase || !workflowRunScope) return
+    setIsResumingGaojixing(true)
+    setRunState((current) => ({ ...current, status: "running", error: null }))
+    try {
+      const token = getApiAuthToken()
+      const authorization = token ? `Bearer ${token}` : null
+      const resumed = await resumeGaojixingWorkflowRun(projection.runId, {
+        authorization,
+        scope: workflowRunScope,
+      })
+      applyWorkflowRunProjection(resumed)
+      setRunState((current) => ({
+        status: "running",
+        projection: resumed,
+        events: current.events,
+        error: null,
+      }))
+      await monitorActiveRun(resumed, authorization)
+    } catch (error) {
+      setRunState((current) => ({
+        ...current,
+        status: "error",
+        error: error instanceof Error ? error.message : "Gaojixing Run resume failed",
+      }))
+    } finally {
+      setIsResumingGaojixing(false)
     }
   }
 
@@ -270,6 +382,10 @@ export function RunTracePanel({ runRequestId = 0 }: { runRequestId?: number }) {
   }
 
   const continueResearchRun = async () => {
+    if (runFileInput) {
+      setContinuationError("题库文件 Run 不支持 sourceOutputs continuation。")
+      return
+    }
     const latest = researchLedger?.entries.at(-1)
     if (!projection || !latest?.revisionId || !latest.proposal?.proposalId) return
     setIsContinuing(true)
@@ -402,6 +518,8 @@ export function RunTracePanel({ runRequestId = 0 }: { runRequestId?: number }) {
     setContinuationKey("")
     setContinuationError(null)
     setRunInputError(null)
+    setQuestionBankFile(null)
+    if (questionBankInputRef.current) questionBankInputRef.current.value = ""
   }
 
   return (
@@ -438,13 +556,13 @@ export function RunTracePanel({ runRequestId = 0 }: { runRequestId?: number }) {
             size="icon-sm"
             variant="outline"
             onClick={resetRun}
-            disabled={isRunning || isBackendRunning || (runState.status === "idle" && backendState.status === "idle")}
+            disabled={isRunning || isBackendRunning || (runState.status === "idle" && backendState.status === "idle" && !questionBankFile)}
           >
             <RotateCcw className="size-3.5" />
             <span className="sr-only">Reset run trace</span>
           </Button>
         </div>
-        <details className="mt-3 rounded-md border bg-card/50 p-2.5" open={runInputTemplateText !== "{}"}>
+        <details className="mt-3 rounded-md border bg-card/50 p-2.5" open={Boolean(runFileInput) || runInputTemplateText !== "{}"}>
           <summary className="flex cursor-pointer items-center gap-2 font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
             <FileInput className="size-3.5" />本次运行输入
           </summary>
@@ -452,30 +570,78 @@ export function RunTracePanel({ runRequestId = 0 }: { runRequestId?: number }) {
             <p className="text-[11px] leading-relaxed text-muted-foreground">
               仅属于本次 Run，不会写回工作流节点；新题包会创建新的批次快照。
             </p>
-            <Textarea
-              value={runInputText}
-              onChange={(event) => setRunInputText(event.target.value)}
-              rows={5}
-              className="font-mono text-[10px]"
-              aria-label="本次运行输入 JSON"
-            />
+            {runFileInput ? (
+              <>
+                <input
+                  ref={questionBankInputRef}
+                  type="file"
+                  disabled={isRunning}
+                  accept={runFileInput.accept}
+                  className="sr-only"
+                  aria-label={`选择${runFileInput.title}`}
+                  onChange={(event) => {
+                    if (isRunning) {
+                      event.target.value = ""
+                      return
+                    }
+                    const file = event.target.files?.[0]
+                    if (!file) return
+                    if (!/\.(?:json|xls|xlsx)$/i.test(file.name)) {
+                      setQuestionBankFile(null)
+                      setRunInputError("请选择 JSON 或 Excel 题库文件")
+                      event.target.value = ""
+                      return
+                    }
+                    setQuestionBankFile(file)
+                    setRunInputError(null)
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={() => questionBankInputRef.current?.click()}
+                  disabled={isRunning}
+                  className="flex min-h-20 w-full flex-col items-center justify-center rounded-md border border-dashed px-3 py-2 text-center outline-none transition-colors hover:bg-muted/30 focus-visible:ring-2 focus-visible:ring-ring/50"
+                >
+                  <FileInput className="size-5 text-muted-foreground" />
+                  <span className="mt-1.5 max-w-full truncate text-xs font-medium">
+                    {questionBankFile?.name ?? `选择${runFileInput.title}`}
+                  </span>
+                  <span className="mt-0.5 text-[10px] text-muted-foreground">
+                    {questionBankFile
+                      ? `${(questionBankFile.size / 1024).toFixed(1)} KiB · 点击重新选择`
+                      : "题库文件（JSON / Excel） · 每次 Run 重新选择"}
+                  </span>
+                </button>
+              </>
+            ) : null}
+            {runInputTemplateText !== "{}" ? (
+              <Textarea
+                value={runInputText}
+                onChange={(event) => setRunInputText(event.target.value)}
+                rows={5}
+                className="font-mono text-[10px]"
+                aria-label="本次运行参数 JSON"
+              />
+            ) : null}
             {runInputError ? <p className="text-[11px] text-destructive">{runInputError}</p> : null}
           </div>
         </details>
-        <details className="mt-3 rounded-md border bg-card/50 p-2.5" open={Boolean(selectedSourceId)}>
-          <summary className="flex cursor-pointer items-center gap-2 font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
-            <FileInput className="size-3.5" />导入节点输出
-          </summary>
-          <div className="mt-2.5 space-y-2">
-            <p className="text-[11px] leading-relaxed text-muted-foreground">把真实或测试 JSON 输出注入一个源节点，再启动同一条原生运行链路；不会改写节点配置。</p>
-            {outputInputNodes.length ? <Select value={effectiveImportNodeId} onValueChange={(value) => setImportNodeId(value ?? "")}><SelectTrigger className="h-8 text-xs"><SelectValue placeholder="选择输入节点" /></SelectTrigger><SelectContent>{outputInputNodes.map((node) => <SelectItem key={node.id} value={node.id}>{node.label}</SelectItem>)}</SelectContent></Select> : null}
-            <Textarea value={importOutputText} onChange={(event) => setImportOutputText(event.target.value)} rows={5} className="font-mono text-[10px]" aria-label="导入节点输出 JSON" />
-            {importError ? <p className="text-[11px] text-destructive">{importError}</p> : null}
-            <Button size="sm" variant="outline" className="w-full" onClick={() => void runImportedOutput()} disabled={!outputInputNodes.length || isRunning || isBackendRunning}>
-              <FileInput className="size-3.5" />导入输出并运行
-            </Button>
-          </div>
-        </details>
+        {!runFileInput ? (
+          <details className="mt-3 rounded-md border bg-card/50 p-2.5" open={Boolean(selectedSourceId)}>
+            <summary className="flex cursor-pointer items-center gap-2 font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
+              <FileInput className="size-3.5" />导入节点输出
+            </summary>
+            <div className="mt-2.5 space-y-2">
+              <p className="text-[11px] leading-relaxed text-muted-foreground">把真实或测试 JSON 输出注入一个源节点，再启动同一条原生运行链路；不会改写节点配置。</p>
+              {outputInputNodes.length ? <Select value={effectiveImportNodeId} onValueChange={(value) => setImportNodeId(value ?? "")}><SelectTrigger className="h-8 text-xs"><SelectValue placeholder="选择输入节点" /></SelectTrigger><SelectContent>{outputInputNodes.map((node) => <SelectItem key={node.id} value={node.id}>{node.label}</SelectItem>)}</SelectContent></Select> : null}
+              <Textarea value={importOutputText} onChange={(event) => setImportOutputText(event.target.value)} rows={5} className="font-mono text-[10px]" aria-label="导入节点输出 JSON" />
+              {importError ? <p className="text-[11px] text-destructive">{importError}</p> : null}
+              <Button size="sm" variant="outline" className="w-full" onClick={() => void runImportedOutput()} disabled={!outputInputNodes.length || isRunning || isBackendRunning}>
+                <FileInput className="size-3.5" />导入输出并运行
+              </Button>
+            </div>
+          </details>
+        ) : null}
       </div>
 
       <ScrollArea className="min-h-0 flex-1">
@@ -491,13 +657,32 @@ export function RunTracePanel({ runRequestId = 0 }: { runRequestId?: number }) {
             </div>
           ) : null}
           {projection ? (
-            <RealRunProjection
-              projection={projection}
-              eventCount={runState.events.length}
-              blockedCount={blockedCount}
-              batchCount={batchCount}
-              itemCount={itemCount}
-            />
+            <>
+              <RealRunProjection
+                projection={projection}
+                eventCount={runState.events.length}
+                blockedCount={blockedCount}
+                batchCount={batchCount}
+                itemCount={itemCount}
+              />
+              {gaojixingRecoveryCase ? (
+                <div className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/10 p-3">
+                  <p className="text-xs font-medium">需要完成页面验证</p>
+                  <p className="mt-1 break-all font-mono text-[10px] text-muted-foreground">
+                    {gaojixingRecoveryCase.artifactRef}
+                  </p>
+                  <Button
+                    size="sm"
+                    className="mt-2 w-full"
+                    onClick={() => void resumeGaojixingRun()}
+                    disabled={isResumingGaojixing || !workflowRunScope}
+                  >
+                    {isResumingGaojixing ? <Loader2 className="size-3.5 animate-spin" /> : <Play className="size-3.5" />}
+                    已完成验证，继续
+                  </Button>
+                </div>
+              ) : null}
+            </>
           ) : (
             <div className="rounded-md border border-dashed p-4 text-center text-xs leading-relaxed text-muted-foreground">
               no backend run yet
@@ -523,6 +708,7 @@ export function RunTracePanel({ runRequestId = 0 }: { runRequestId?: number }) {
               <Separator />
               <ResearchLedgerWorkbench
                 ledger={researchLedger}
+                allowSourceOutputs={!runFileInput}
                 sourceOutputs={continuationInput}
                 onSourceOutputsChange={setContinuationInput}
                 onContinue={continueResearchRun}
@@ -599,6 +785,7 @@ function nodeLabel(node: WorkflowProject["nodes"][number]): string {
 
 function ResearchLedgerWorkbench({
   ledger,
+  allowSourceOutputs,
   sourceOutputs,
   onSourceOutputsChange,
   onContinue,
@@ -606,6 +793,7 @@ function ResearchLedgerWorkbench({
   error,
 }: {
   ledger: WorkflowResearchLedgerResponse
+  allowSourceOutputs: boolean
   sourceOutputs: string
   onSourceOutputsChange: (value: string) => void
   onContinue: () => void
@@ -613,7 +801,7 @@ function ResearchLedgerWorkbench({
   error: string | null
 }) {
   const latest = ledger.entries.at(-1)
-  const canContinue = latest?.researchStatus === "needs_evidence"
+  const canContinue = allowSourceOutputs && latest?.researchStatus === "needs_evidence"
     && Boolean(latest.revisionId && latest.proposal?.proposalId)
   return (
     <div className="space-y-3" aria-label="Research revision ledger">

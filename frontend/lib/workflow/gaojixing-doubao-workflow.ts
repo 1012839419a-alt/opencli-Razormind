@@ -53,10 +53,14 @@ export function buildGaojixingDoubaoWorkflow(
     ? {
         type: 'object',
         additionalProperties: false,
-        required: ['questionBankPath', 'projectRoot'],
+        required: ['questionBank'],
         properties: {
-          questionBankPath: { type: 'string', minLength: 1, title: '本次题包路径' },
-          projectRoot: { type: 'string', minLength: 1, title: '本次批次目录' },
+          questionBank: {
+            type: 'string',
+            format: 'binary',
+            title: '本次题库',
+            accept: '.json,.xls,.xlsx,application/json,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          },
         },
       }
     : {
