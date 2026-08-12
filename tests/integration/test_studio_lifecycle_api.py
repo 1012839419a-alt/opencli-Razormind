@@ -224,9 +224,25 @@ async def test_studio_api_run_is_version_bound_idempotent_and_visible_in_logs(
     created = await _create_studio_workflow(client)
     published = await _publish_studio_workflow(client, created)
     request = {
-        "inputs": {"topic": "OpenCLI ecosystem"},
+        "inputs": {
+            "topic": "OpenCLI ecosystem",
+            "batch": {
+                "questions": ["first question", "second question"],
+                "options": {"language": "zh-CN", "evidence": True},
+            },
+        },
         "response_mode": "async",
         "user": "server-worker",
+    }
+    reordered_request = {
+        **request,
+        "inputs": {
+            "batch": {
+                "options": {"evidence": True, "language": "zh-CN"},
+                "questions": ["first question", "second question"],
+            },
+            "topic": "OpenCLI ecosystem",
+        },
     }
     headers = {
         "Idempotency-Key": "nightly-project-job",
@@ -234,7 +250,11 @@ async def test_studio_api_run_is_version_bound_idempotent_and_visible_in_logs(
     }
 
     first = await client.post(f"{created['base_url']}/runs", json=request, headers=headers)
-    replay = await client.post(f"{created['base_url']}/runs", json=request, headers=headers)
+    replay = await client.post(
+        f"{created['base_url']}/runs",
+        json=reordered_request,
+        headers=headers,
+    )
 
     assert first.status_code == 202, first.text
     assert replay.status_code == 202, replay.text
@@ -318,6 +338,76 @@ async def test_studio_api_run_is_version_bound_idempotent_and_visible_in_logs(
 
     deleted = await client.delete(project_url)
     assert deleted.status_code == 200, deleted.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("first_request", "conflicting_request"),
+    [
+        pytest.param(
+            {
+                "inputs": {"batch": {"questions": ["first question"]}},
+                "response_mode": "async",
+                "user": "server-worker",
+            },
+            {
+                "inputs": {"batch": {"questions": ["different question"]}},
+                "response_mode": "async",
+                "user": "server-worker",
+            },
+            id="different-inputs",
+        ),
+        pytest.param(
+            {
+                "inputs": {"batch": {"reviewed": True}},
+                "response_mode": "async",
+                "user": "server-worker",
+            },
+            {
+                "inputs": {"batch": {"reviewed": 1}},
+                "response_mode": "async",
+                "user": "server-worker",
+            },
+            id="different-json-types",
+        ),
+        pytest.param(
+            {
+                "inputs": {"batch": {"questions": ["same question"]}},
+                "response_mode": "async",
+                "user": "first-worker",
+            },
+            {
+                "inputs": {"batch": {"questions": ["same question"]}},
+                "response_mode": "async",
+                "user": "different-worker",
+            },
+            id="different-user",
+        ),
+    ],
+)
+async def test_studio_api_run_rejects_idempotency_key_reused_for_different_work(
+    client,
+    first_request,
+    conflicting_request,
+):
+    created = await _create_studio_workflow(client)
+    await _publish_studio_workflow(client, created)
+    headers = {"Idempotency-Key": "dynamic-batch"}
+
+    first = await client.post(
+        f"{created['base_url']}/runs",
+        json=first_request,
+        headers=headers,
+    )
+    conflicting = await client.post(
+        f"{created['base_url']}/runs",
+        json=conflicting_request,
+        headers=headers,
+    )
+
+    assert first.status_code == 202, first.text
+    assert conflicting.status_code == 409, conflicting.text
+    assert "idempotency" in str(conflicting.json()["detail"]).lower()
 
 
 @pytest.mark.asyncio

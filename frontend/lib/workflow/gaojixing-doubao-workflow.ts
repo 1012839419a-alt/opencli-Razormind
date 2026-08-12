@@ -3,11 +3,7 @@ import { parseWorkflowProject, type WorkflowProjectNode } from './schema'
 
 export type GaojixingDoubaoWorkflowOptions = {
   sourceMode?: 'offline_fixture' | 'project_archive'
-  projectRoot?: string
-  questionBankPath?: string
   fixtureId?: string
-  phase1Expected?: number
-  phase2Expected?: number
   feishuWebhookEnv?: string
 }
 
@@ -39,7 +35,7 @@ export function buildGaojixingDoubaoWorkflow(
   name: string,
   options: GaojixingDoubaoWorkflowOptions = {},
 ) {
-  const requestedSourceMode = String(options.sourceMode ?? 'offline_fixture')
+  const requestedSourceMode = String(options.sourceMode ?? 'project_archive')
   if (requestedSourceMode !== 'offline_fixture' && requestedSourceMode !== 'project_archive') {
     throw new Error(
       `Source mode "${requestedSourceMode}" does not produce a certifiable batch; live_preflight is an independent read-only readiness check.`,
@@ -47,23 +43,37 @@ export function buildGaojixingDoubaoWorkflow(
   }
   const sourceMode = requestedSourceMode
   const fixtureId = options.fixtureId ?? DEFAULT_FIXTURE_ID
-  const usesProductionCounts = sourceMode !== 'offline_fixture'
-  const phase1Expected = options.phase1Expected ?? (usesProductionCounts ? 446 : 1)
-  const phase2Expected = options.phase2Expected ?? (usesProductionCounts ? 32 : 1)
   const sharedParams = {
     sourceMode,
-    fixtureId,
-    phase1Expected,
-    phase2Expected,
+    ...(sourceMode === 'offline_fixture' ? { fixtureId } : {}),
     requirePhase1BeforePhase2: true,
-    ...(options.projectRoot ? { projectRoot: options.projectRoot } : {}),
-    ...(options.questionBankPath ? { questionBankPath: options.questionBankPath } : {}),
     feishuWebhookEnv: options.feishuWebhookEnv ?? DEFAULT_FEISHU_WEBHOOK_ENV,
   }
+  const runInputSchema = sourceMode === 'project_archive'
+    ? {
+        type: 'object',
+        additionalProperties: false,
+        required: ['questionBankPath', 'projectRoot'],
+        properties: {
+          questionBankPath: { type: 'string', minLength: 1, title: '本次题包路径' },
+          projectRoot: { type: 'string', minLength: 1, title: '本次批次目录' },
+        },
+      }
+    : {
+        type: 'object',
+        additionalProperties: false,
+        required: [],
+        properties: {},
+      }
 
   const trigger = withParams(
     createWorkflowNodeFromCatalog(catalog('intelligence.schedule.cron'), 'trigger', { x: 80, y: 180 }),
-    { interval: 'manual', timezone: 'Asia/Shanghai', mode: 'manual' },
+    {
+      interval: 'manual',
+      timezone: 'Asia/Shanghai',
+      mode: 'manual',
+      inputSchema: runInputSchema,
+    },
   )
   const collection = withParams(
     createWorkflowNodeFromCatalog(

@@ -27,6 +27,9 @@ export async function POST(req: Request) {
         ...(body?.trigger && typeof body.trigger === "object"
           ? { trigger: body.trigger }
           : {}),
+        ...(body?.input && typeof body.input === "object"
+          ? { input: body.input }
+          : {}),
       }),
     })
     const payload = await response.json().catch(() => null)

@@ -779,7 +779,11 @@ async def start_workflow_run(
             emitter.emit(node, "completed", message="Image generation node completed")
             continue
 
-        request_items = _request_source_items(node, body.sourceOutputs)
+        request_items = (
+            []
+            if _is_governed_gaojixing_tool_node(node)
+            else _request_source_items(node, body.sourceOutputs)
+        )
         if request_items:
             outputs_by_node[node.id] = request_items
             emitter.emit(node, "started", message="Runtime source output started")
@@ -1175,6 +1179,7 @@ async def start_workflow_run(
                     agent_can_send_notifications=(
                         body.project.agentPermissions.canSendNotifications
                     ),
+                    workflow_input=body.input.payload,
                 )
             except _GaojixingToolTerminalError as exc:
                 output_items = exc.output_items
@@ -1930,6 +1935,9 @@ async def continue_workflow_run_with_source_outputs(
         if stored is None:
             return None
 
+        if _project_has_governed_gaojixing(stored.request.project):
+            return stored.projection
+
         incoming_node_ids = set(body.sourceOutputs)
         duplicate_image_node_ids = {
             node_id
@@ -2145,7 +2153,7 @@ def _build_checkpoint(
         sourceOutputItemCount=source_output_item_count,
         waitingNodeIds=waiting_node_ids,
         pendingJobs=pending_jobs,
-        canContinueWithSourceOutputs=True,
+        canContinueWithSourceOutputs=not _project_has_governed_gaojixing(request.project),
         continuationPath=f"/api/v1/workflows/runs/{projection.runId}/source-outputs",
         tracePath=f"/api/v1/workflows/runs/{projection.runId}/trace",
     )
@@ -2857,6 +2865,19 @@ def _is_image_generation_project_node(project: WorkflowProject, node_id: str) ->
     )
 
 
+def _project_has_governed_gaojixing(project: WorkflowProject) -> bool:
+    return any(
+        str(node.params.get("template") or "")
+        in {"gaojixing-doubao-batch", "gaojixing-batch-certification"}
+        or str((node.ui or {}).get("catalogId") or "")
+        in {
+            "package.gaojixing.doubao-batch",
+            "package.gaojixing.batch-certification",
+        }
+        for node in project.nodes
+    )
+
+
 def _projection_node_status(
     projection: WorkflowRunProjection,
     node_id: str,
@@ -3326,6 +3347,7 @@ async def _execute_native_node(
     runtime_nodes_by_id: dict[str, CompiledWorkflowNode] | None = None,
     materialized_source_tasks: dict[str, tuple[str, str]] | None = None,
     agent_can_send_notifications: bool = False,
+    workflow_input: dict[str, Any] | None = None,
 ) -> tuple[dict[str, object], list[dict[str, Any]]]:
     binding_id = _binding_id(node)
     input_items = _upstream_outputs(node, outputs_by_node)
@@ -3591,6 +3613,7 @@ async def _execute_native_node(
             session=session,
             binding_input=binding_input,
             agent_can_send_notifications=agent_can_send_notifications,
+            workflow_input=workflow_input or {},
         )
         return (
             {
@@ -3678,6 +3701,7 @@ async def _execute_external_tool_capability(
     session: AsyncSession | None,
     binding_input: dict[str, Any],
     agent_can_send_notifications: bool,
+    workflow_input: dict[str, Any],
 ) -> list[dict[str, Any]]:
     if (
         binding_input.get("executorMode") == GAOJIXING_DOUBAO_BATCH_EXECUTOR
@@ -3685,7 +3709,7 @@ async def _execute_external_tool_capability(
     ):
         output = await execute_gaojixing_doubao_batch(
             input_items,
-            _merged_tool_params(binding_input),
+            _gaojixing_tool_params(binding_input, workflow_input),
             notification_permission_granted=agent_can_send_notifications,
         )
         output_items = [
@@ -3723,7 +3747,7 @@ async def _execute_external_tool_capability(
     ):
         output = await execute_gaojixing_batch_certification(
             input_items,
-            _merged_tool_params(binding_input),
+            _gaojixing_tool_params(binding_input, workflow_input),
         )
         output_items = [
             _external_tool_output(node, output, input_items, run_id, 0, binding_input)
@@ -3949,6 +3973,25 @@ def _merged_tool_params(binding_input: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+_GAOJIXING_RUN_INPUT_FIELDS = {
+    "projectRoot",
+    "questionBankPath",
+}
+
+
+def _gaojixing_tool_params(
+    binding_input: dict[str, Any], workflow_input: dict[str, Any]
+) -> dict[str, Any]:
+    return {
+        **_merged_tool_params(binding_input),
+        **{
+            key: value
+            for key, value in workflow_input.items()
+            if key in _GAOJIXING_RUN_INPUT_FIELDS
+        },
+    }
+
+
 def _resolved_kats_params(
     binding_input: dict[str, Any],
 ) -> tuple[str, dict[str, Any]]:
@@ -4003,6 +4046,8 @@ def _trace_sample_output(item: dict[str, Any]) -> dict[str, Any]:
             "message",
             "sourceMode",
             "searchTriggered",
+            "batchId",
+            "snapshotDigest",
             "acceptedQuestionIds",
             "phaseCounts",
             "audits",
@@ -4083,6 +4128,17 @@ def _external_tool_call_details(
 
 def _is_native_intelligence_node(node: CompiledWorkflowNode) -> bool:
     return _binding_input(node).get("executorMode") == NATIVE_INTELLIGENCE_EXECUTOR
+
+
+def _is_governed_gaojixing_tool_node(node: CompiledWorkflowNode) -> bool:
+    binding_input = _binding_input(node)
+    return (
+        binding_input.get("executorMode"),
+        binding_input.get("toolCapabilityId"),
+    ) in {
+        (GAOJIXING_DOUBAO_BATCH_EXECUTOR, GAOJIXING_DOUBAO_BATCH_TOOL_ID),
+        (GAOJIXING_BATCH_CERTIFY_EXECUTOR, GAOJIXING_BATCH_CERTIFY_TOOL_ID),
+    }
 
 
 def _is_external_tool_node(node: CompiledWorkflowNode) -> bool:

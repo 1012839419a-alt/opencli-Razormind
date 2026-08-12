@@ -121,13 +121,13 @@ def _materialize_node(node: WorkflowProjectNode) -> WorkflowProjectNode:
             defaults={
                 "sourceMode": "offline_fixture",
                 "fixtureId": "gaojixing-doubao-offline-v1",
-                "phase1Expected": 1,
-                "phase2Expected": 1,
                 "requirePhase1BeforePhase2": True,
                 "feishuWebhookEnv": GAOJIXING_FEISHU_WEBHOOK_ENV,
             },
             include_output=False,
             clear_parameter_interface=True,
+            public_params_override_tool_params=True,
+            discarded_params={"phase1Expected", "phase2Expected"},
         )
     elif _is_tool_package(
         node,
@@ -144,11 +144,11 @@ def _materialize_node(node: WorkflowProjectNode) -> WorkflowProjectNode:
             defaults={
                 "sourceMode": "offline_fixture",
                 "fixtureId": "gaojixing-doubao-offline-v1",
-                "phase1Expected": 1,
-                "phase2Expected": 1,
             },
             include_output=False,
             clear_parameter_interface=True,
+            public_params_override_tool_params=True,
+            discarded_params={"phase1Expected", "phase2Expected"},
         )
     elif _is_tool_package(
         node,
@@ -258,6 +258,8 @@ def _materialize_tool_package(
     defaults: dict[str, Any],
     include_output: bool = True,
     clear_parameter_interface: bool = False,
+    public_params_override_tool_params: bool = False,
+    discarded_params: set[str] | None = None,
 ) -> WorkflowProjectNode:
     explicit_tool_params = _read_dict(node.params.get("toolParams"))
     public_params = {
@@ -265,7 +267,12 @@ def _materialize_tool_package(
         for key, value in node.params.items()
         if key not in {"template", "runtime", "lockedInternals", "toolParams", "execution"}
     }
-    tool_params = {**defaults, **public_params, **explicit_tool_params}
+    if public_params_override_tool_params:
+        tool_params = {**defaults, **explicit_tool_params, **public_params}
+    else:
+        tool_params = {**defaults, **public_params, **explicit_tool_params}
+    for key in discarded_params or set():
+        tool_params.pop(key, None)
     internals = _tool_package_internals(
         tool_id=tool_id,
         executor_mode=executor_mode,
@@ -276,7 +283,11 @@ def _materialize_tool_package(
     return node.model_copy(
         update={
             "params": {
-                **node.params,
+                **{
+                    key: value
+                    for key, value in node.params.items()
+                    if key not in (discarded_params or set())
+                },
                 "template": template,
                 "runtime": node.params.get("runtime", "iii"),
                 "lockedInternals": node.params.get("lockedInternals", True),

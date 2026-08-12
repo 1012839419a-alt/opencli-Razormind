@@ -54,6 +54,8 @@ const importTypeScript = (relativePath) => import(pathToFileURL(path.join(fronte
 const catalogSource = await readFile(new URL('../lib/workflow/node-catalog.ts', import.meta.url), 'utf8')
 const workflowSource = await readFile(new URL('../lib/workflow/gaojixing-doubao-workflow.ts', import.meta.url), 'utf8')
 const templateSource = await readFile(new URL('../lib/workflow/studio-templates.ts', import.meta.url), 'utf8')
+const runProxySource = await readFile(new URL('../app/api/workflow/run/route.ts', import.meta.url), 'utf8')
+const runPanelSource = await readFile(new URL('../components/flow/run-trace-panel.tsx', import.meta.url), 'utf8')
 
 test('Gaojixing canvas uses two real deep capabilities instead of a bloated primitive graph', () => {
   assert.match(catalogSource, /id: "package\.gaojixing\.doubao-batch"/)
@@ -129,11 +131,9 @@ test('Gaojixing workflow has exactly four nodes and a backend-recognizable manua
   )
   const trigger = project.nodes[0]
   assert.equal(trigger.kind, 'schedule')
-  assert.deepEqual(trigger.params, {
-    interval: 'manual',
-    timezone: 'Asia/Shanghai',
-    mode: 'manual',
-  })
+  assert.equal(trigger.params.interval, 'manual')
+  assert.equal(trigger.params.timezone, 'Asia/Shanghai')
+  assert.equal(trigger.params.mode, 'manual')
   assert.equal(
     project.nodes[1].params.feishuWebhookEnv,
     'GAOJIXING_FEISHU_WEBHOOK_URL',
@@ -168,10 +168,10 @@ test('Gaojixing four-node template exposes only source modes that produce certif
 
   assert.match(templateSource, /id: 'gaojixing-doubao-evidence'/)
   assert.match(templateSource, /return buildGaojixingDoubaoWorkflow\(name\)/)
-  assert.match(workflowSource, /sourceMode \?\? 'offline_fixture'/)
+  assert.match(workflowSource, /sourceMode \?\? 'project_archive'/)
   assert.match(workflowSource, /sourceMode\?: 'offline_fixture' \| 'project_archive'/)
   assert.doesNotMatch(workflowSource, /sourceMode\?:[^\n]*live_preflight/)
-  assert.match(workflowSource, /sourceMode !== 'offline_fixture'/)
+  assert.match(workflowSource, /sourceMode === 'offline_fixture'/)
   assert.throws(
     () => buildGaojixingDoubaoWorkflow('Invalid preflight batch', { sourceMode: 'live_preflight' }),
     /live_preflight.*does not produce a certifiable batch/,
@@ -180,4 +180,110 @@ test('Gaojixing four-node template exposes only source modes that produce certif
   assert.match(workflowSource, /canSendNotifications: true/)
   assert.match(workflowSource, /questionBankPath/)
   assert.match(workflowSource, /feishuWebhookEnv/)
+})
+
+test('Gaojixing template requires a fresh question batch per run and never persists batch counts', async () => {
+  const { buildGaojixingDoubaoWorkflow } = await importTypeScript(
+    'lib/workflow/gaojixing-doubao-workflow.ts',
+  )
+  const project = buildGaojixingDoubaoWorkflow('Fresh questions every run')
+  const trigger = project.nodes.find((node) => node.id === 'trigger')
+  const collection = project.nodes.find((node) => node.id === 'gaojixing-doubao-batch')
+  const certification = project.nodes.find((node) => node.id === 'gaojixing-batch-certification')
+
+  assert.ok(trigger)
+  assert.deepEqual(trigger.params.inputSchema, {
+    type: 'object',
+    additionalProperties: false,
+    required: ['questionBankPath', 'projectRoot'],
+    properties: {
+      questionBankPath: { type: 'string', minLength: 1, title: '本次题包路径' },
+      projectRoot: { type: 'string', minLength: 1, title: '本次批次目录' },
+    },
+  })
+  assert.ok(collection)
+  assert.ok(certification)
+  assert.equal(collection.params.sourceMode, 'project_archive')
+  assert.equal(certification.params.sourceMode, 'project_archive')
+  for (const node of [collection, certification]) {
+    assert.equal('questionBankPath' in node.params, false)
+    assert.equal('projectRoot' in node.params, false)
+    assert.equal('phase1Expected' in node.params, false)
+    assert.equal('phase2Expected' in node.params, false)
+  }
+
+  assert.doesNotMatch(workflowSource, /phase1Expected|phase2Expected/)
+  assert.doesNotMatch(workflowSource, /questionBankPath\?:|projectRoot\?:/)
+  assert.match(catalogSource, /每次运行.*新题包/)
+  const templateCopy = templateSource.match(/id: 'gaojixing-doubao-evidence'[^\n]+/)?.[0] ?? ''
+  assert.match(templateCopy, /每次运行.*新题包/)
+  assert.doesNotMatch(templateCopy, /446|32|默认离线夹具/)
+})
+
+test('Workflow Run forwards the fresh batch input and recognizes the Gaojixing trigger as manual', async () => {
+  const [{ buildGaojixingDoubaoWorkflow }, { startWorkflowRun }] = await Promise.all([
+    importTypeScript('lib/workflow/gaojixing-doubao-workflow.ts'),
+    importTypeScript('lib/workflow/backend-runs.ts'),
+  ])
+  const project = buildGaojixingDoubaoWorkflow('Fresh run input')
+  const input = {
+    payload: {
+      questionBankPath: 'D:/batches/run-2026-08-12/questions.json',
+      projectRoot: 'D:/batches/run-2026-08-12',
+    },
+    source: 'operator',
+  }
+  const originalFetch = globalThis.fetch
+  let requestBody
+  globalThis.fetch = async (_url, init) => {
+    requestBody = JSON.parse(String(init?.body))
+    return Response.json({ success: true, data: { runId: 'run-fresh-batch' } })
+  }
+  try {
+    await startWorkflowRun(project, { input })
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+
+  assert.deepEqual(requestBody.input, input)
+  assert.deepEqual(requestBody.trigger, { kind: 'manual', triggerNodeId: 'trigger' })
+  assert.match(runProxySource, /body\?\.input[\s\S]*\{ input: body\.input \}/)
+})
+
+test('Studio Run input follows the trigger schema and refuses an empty Gaojixing batch', async () => {
+  const [{ buildGaojixingDoubaoWorkflow }, runClient] = await Promise.all([
+    importTypeScript('lib/workflow/gaojixing-doubao-workflow.ts'),
+    importTypeScript('lib/workflow/backend-runs.ts'),
+  ])
+  const project = buildGaojixingDoubaoWorkflow('Studio fresh batch')
+
+  assert.deepEqual(runClient.buildWorkflowRunInputTemplate(project), {
+    questionBankPath: '',
+    projectRoot: '',
+  })
+  assert.throws(
+    () => runClient.parseWorkflowRunInput(project, '{}'),
+    /questionBankPath.*required/,
+  )
+  assert.deepEqual(
+    runClient.parseWorkflowRunInput(
+      project,
+      JSON.stringify({ questionBankPath: 'D:/new/questions.json', projectRoot: 'D:/new' }),
+    ),
+    {
+      payload: { questionBankPath: 'D:/new/questions.json', projectRoot: 'D:/new' },
+      source: 'operator',
+    },
+  )
+  const fixtureProject = buildGaojixingDoubaoWorkflow('Offline fixture', {
+    sourceMode: 'offline_fixture',
+  })
+  assert.deepEqual(runClient.buildWorkflowRunInputTemplate(fixtureProject), {})
+  assert.deepEqual(runClient.parseWorkflowRunInput(fixtureProject, '{}'), {
+    payload: {},
+    source: 'operator',
+  })
+  assert.match(runPanelSource, /parseWorkflowRunInput\(workflowProject, runInputText\)/)
+  assert.match(runPanelSource, /startWorkflowRun\(workflowProject, \{ authorization, sourceOutputs, input \}\)/)
+  assert.match(runPanelSource, /aria-label="本次运行输入 JSON"/)
 })

@@ -11,6 +11,7 @@ from backend.workflow.gaojixing_certification import (
 )
 from backend.workflow.gaojixing_doubao import (
     audit_gaojixing_question_evidence,
+    build_gaojixing_batch_snapshot,
     execute_gaojixing_doubao_batch,
 )
 from backend.workflow.hda_templates import materialize_hda_templates
@@ -123,6 +124,27 @@ def _module_heading(label: str, value) -> str:
     return f"- {label}（{len(value)} 项，按页面顺序）："
 
 
+def _with_batch_snapshot(
+    batch: dict,
+    question_items: list[dict] | None = None,
+) -> dict:
+    items = question_items or [
+        {
+            "id": question_id,
+            "question": f"question:{question_id}",
+            "has_brand": question_id.startswith("B"),
+        }
+        for question_id in batch.get("acceptedQuestionIds", [])
+    ]
+    snapshot, digest, batch_id = build_gaojixing_batch_snapshot(items)
+    return {
+        **batch,
+        "batchId": batch_id,
+        "snapshot": snapshot,
+        "snapshotDigest": digest,
+    }
+
+
 @pytest.mark.asyncio
 async def test_registered_fixture_batch_accepts_both_phases_after_policy_audit():
     result = await execute_gaojixing_doubao_batch(
@@ -131,8 +153,8 @@ async def test_registered_fixture_batch_accepts_both_phases_after_policy_audit()
             "sourceMode": "offline_fixture",
             "fixtureId": "gaojixing-doubao-offline-v1",
             "policyVersion": "2.2",
-            "phase1Expected": 1,
-            "phase2Expected": 1,
+            "phase1Expected": 99,
+            "phase2Expected": 88,
         },
     )
 
@@ -141,10 +163,175 @@ async def test_registered_fixture_batch_accepts_both_phases_after_policy_audit()
     assert result["searchTriggered"] is False
     assert result["acceptedQuestionIds"] == ["G0001", "B001"]
     assert result["phaseCounts"] == {"stage1_non_brand": 1, "stage2_brand": 1}
+    assert result["recordCount"] == 2
+    assert result["snapshot"] == {
+        "schema": "gaojixing.question-batch-snapshot.v1",
+        "questions": [
+            {
+                "id": "G0001",
+                "question": "孕妇DHA排行榜第一品牌",
+                "phase": "stage1_non_brand",
+            },
+            {
+                "id": "B001",
+                "question": "高吉星DHA和爱乐维DHA哪个好？",
+                "phase": "stage2_brand",
+            },
+        ],
+        "phaseCounts": {"stage1_non_brand": 1, "stage2_brand": 1},
+        "recordCount": 2,
+    }
+    assert re.fullmatch(r"[0-9a-f]{64}", result["snapshotDigest"])
+    assert result["batchId"] == f"gaojixing-{result['snapshotDigest']}"
     assert result["audits"] == [
         {"questionId": "G0001", "policyVersion": "2.2", "status": "passed", "violations": []},
         {"questionId": "B001", "policyVersion": "2.2", "status": "passed", "violations": []},
     ]
+
+
+@pytest.mark.asyncio
+async def test_batch_id_is_stable_for_same_question_package_and_changes_with_content(
+    tmp_path,
+):
+    first_evidence = _valid_evidence(tmp_path, "G0001")
+    first = await execute_gaojixing_doubao_batch(
+        [{"raw": first_evidence}],
+        {"sourceMode": "offline_fixture", "projectRoot": str(tmp_path)},
+    )
+    repeated = await execute_gaojixing_doubao_batch(
+        [{"raw": first_evidence}],
+        {"sourceMode": "offline_fixture", "projectRoot": str(tmp_path)},
+    )
+    changed = await execute_gaojixing_doubao_batch(
+        [{"raw": {**first_evidence, "question": "孕妇DHA怎么选？"}}],
+        {"sourceMode": "offline_fixture", "projectRoot": str(tmp_path)},
+    )
+
+    assert repeated["batchId"] == first["batchId"]
+    assert repeated["snapshotDigest"] == first["snapshotDigest"]
+    assert changed["batchId"] != first["batchId"]
+    assert changed["snapshotDigest"] != first["snapshotDigest"]
+    assert first["snapshot"]["questions"] == [
+        {
+            "id": "G0001",
+            "question": "孕妇DHA排行榜第一品牌",
+            "phase": "stage1_non_brand",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_project_archive_rejects_a_question_bank_outside_project_root(tmp_path):
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    outside_bank = tmp_path / "outside.json"
+    outside_bank.write_text('{"phase1": [], "phase2": []}', encoding="utf-8")
+
+    with pytest.raises(ValueError, match="question_bank_path_outside_project_root"):
+        await execute_gaojixing_doubao_batch(
+            [],
+            {
+                "sourceMode": "project_archive",
+                "projectRoot": str(project_root),
+                "questionBankPath": str(outside_bank),
+            },
+        )
+
+
+@pytest.mark.asyncio
+async def test_project_archive_rejects_an_empty_question_batch(tmp_path):
+    (tmp_path / "raw").mkdir()
+    question_bank = tmp_path / "题库.json"
+    question_bank.write_text('{"phase1": [], "phase2": []}', encoding="utf-8")
+
+    result = await execute_gaojixing_doubao_batch(
+        [],
+        {
+            "sourceMode": "project_archive",
+            "projectRoot": str(tmp_path),
+            "questionBankPath": str(question_bank),
+        },
+    )
+
+    assert result["status"] == "failed"
+    assert result["recordCount"] == 0
+    assert "empty_question_batch" in result["batchViolations"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("question_bank_document", "violation"),
+    [
+        (
+            {"phase1": {}, "phase2": []},
+            "question_bank_phase_not_list:phase1",
+        ),
+        (
+            {"phase1": [None], "phase2": []},
+            "question_bank_row_not_object:phase1:0",
+        ),
+        (
+            {"phase1": [{"question": "孕妇DHA怎么选？"}], "phase2": []},
+            "question_bank_row_id_invalid:phase1:0",
+        ),
+        (
+            {"phase1": [{"id": "G0001"}], "phase2": []},
+            "question_bank_row_question_invalid:phase1:0",
+        ),
+    ],
+)
+async def test_malformed_question_bank_blocks_batch_and_certification(
+    tmp_path, question_bank_document, violation
+):
+    (tmp_path / "raw").mkdir()
+    question_bank = tmp_path / "题库.json"
+    question_bank.write_text(
+        json.dumps(question_bank_document, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    params = {
+        "sourceMode": "project_archive",
+        "projectRoot": str(tmp_path),
+        "questionBankPath": str(question_bank),
+    }
+
+    batch = await execute_gaojixing_doubao_batch([], params)
+    certification = await execute_gaojixing_batch_certification([], params)
+
+    assert batch["status"] == "failed"
+    assert violation in batch["batchViolations"]
+    assert certification["status"] == "rejected"
+    assert violation in certification["violations"]
+
+
+@pytest.mark.asyncio
+async def test_certification_uses_the_upstream_snapshot_instead_of_fixed_phase_inputs():
+    batch = await execute_gaojixing_doubao_batch(
+        [],
+        {
+            "sourceMode": "offline_fixture",
+            "fixtureId": "gaojixing-doubao-offline-v1",
+        },
+    )
+
+    result = await execute_gaojixing_batch_certification(
+        [{"raw": batch}],
+        {
+            "sourceMode": "offline_fixture",
+            "fixtureId": "gaojixing-doubao-offline-v1",
+            "phase1Expected": 99,
+            "phase2Expected": 88,
+        },
+    )
+
+    assert result["status"] == "certified"
+    assert result["counts"] == {
+        "stage1_non_brand": 1,
+        "stage2_brand": 1,
+        "total": 2,
+    }
+    assert result["batchId"] == batch["batchId"]
+    assert result["snapshotDigest"] == batch["snapshotDigest"]
 
 
 @pytest.mark.asyncio
@@ -275,9 +462,13 @@ async def test_visible_captcha_returns_recovery_case_and_uses_configured_feishu(
         "questionId": "G0002",
         "question": "孕妇什么时候开始补充DHA？",
         "reason": "captcha",
-        "checkpoint": {"resumeQuestionId": "G0002"},
+        "checkpoint": {
+            "resumeQuestionId": "G0002",
+            "batchId": result["batchId"],
+            "snapshotDigest": result["snapshotDigest"],
+        },
         "evidence": [{"type": "screenshot", "path": str(screenshot)}],
-        "allowedActions": ["resume_same_question"],
+        "allowedActions": ["restart_same_batch"],
     }
     assert result["notification"] == {
         "configured": True,
@@ -397,7 +588,7 @@ async def test_certification_rejects_forged_completed_batch_with_empty_audits():
     result = await execute_gaojixing_batch_certification(
         [
             {
-                "raw": {
+                "raw": _with_batch_snapshot({
                     "schema": "gaojixing.doubao-batch-result.v1",
                     "status": "completed",
                     "recordCount": 2,
@@ -406,7 +597,7 @@ async def test_certification_rejects_forged_completed_batch_with_empty_audits():
                     "audits": [],
                     "batchViolations": [],
                     "searchTriggered": False,
-                }
+                })
             }
         ],
         {
@@ -423,7 +614,7 @@ async def test_certification_rejects_forged_completed_batch_with_empty_audits():
 
 @pytest.mark.asyncio
 async def test_certification_rejects_self_reported_passes_without_evidence():
-    batch = {
+    batch = _with_batch_snapshot({
         "schema": "gaojixing.doubao-batch-result.v1",
         "status": "completed",
         "recordCount": 2,
@@ -435,7 +626,7 @@ async def test_certification_rejects_self_reported_passes_without_evidence():
         ],
         "batchViolations": [],
         "searchTriggered": False,
-    }
+    })
 
     result = await execute_gaojixing_batch_certification(
         [{"raw": batch}],
@@ -458,7 +649,7 @@ async def test_certification_reaudits_evidence_instead_of_trusting_passed_audits
     stage1 = _valid_evidence(tmp_path, "G0001")
     stage2 = _valid_evidence(tmp_path, "B001")
     stage1["answer"] = ""
-    batch = {
+    batch = _with_batch_snapshot({
         "schema": "gaojixing.doubao-batch-result.v1",
         "status": "completed",
         "recordCount": 2,
@@ -472,7 +663,7 @@ async def test_certification_reaudits_evidence_instead_of_trusting_passed_audits
         "searchTriggered": False,
         "evidence": [stage1, stage2],
         "evidenceRoot": str(tmp_path),
-    }
+    }, [stage1, stage2])
 
     result = await execute_gaojixing_batch_certification(
         [{"raw": batch}],
@@ -512,7 +703,7 @@ async def test_certification_requires_evidence_ids_to_match_accepted_ids(
         evidence = [stage1, stage1]
     elif mutation == "accepted_mismatch":
         evidence = [stage1, {**stage2, "id": "B999"}]
-    batch = {
+    batch = _with_batch_snapshot({
         "schema": "gaojixing.doubao-batch-result.v1",
         "status": "completed",
         "recordCount": 2,
@@ -526,7 +717,7 @@ async def test_certification_requires_evidence_ids_to_match_accepted_ids(
         "searchTriggered": False,
         "evidence": evidence,
         "evidenceRoot": str(tmp_path),
-    }
+    }, [stage1, stage2])
 
     result = await execute_gaojixing_batch_certification(
         [{"raw": batch}],
@@ -546,7 +737,7 @@ async def test_certification_requires_evidence_ids_to_match_accepted_ids(
 async def test_certification_rejects_non_governed_question_id_prefixes(tmp_path):
     stage1 = {**_valid_evidence(tmp_path, "G0001"), "id": "X001"}
     stage2 = {**_valid_evidence(tmp_path, "B001"), "id": "Y001"}
-    batch = {
+    batch = _with_batch_snapshot({
         "schema": "gaojixing.doubao-batch-result.v1",
         "status": "completed",
         "recordCount": 2,
@@ -560,7 +751,7 @@ async def test_certification_rejects_non_governed_question_id_prefixes(tmp_path)
         "searchTriggered": False,
         "evidence": [stage1, stage2],
         "evidenceRoot": str(tmp_path),
-    }
+    }, [stage1, stage2])
 
     result = await execute_gaojixing_batch_certification(
         [{"raw": batch}],
@@ -580,7 +771,7 @@ async def test_certification_rejects_non_governed_question_id_prefixes(tmp_path)
 async def test_certification_derives_phase_counts_from_evidence_id_prefixes(tmp_path):
     stage1 = _valid_evidence(tmp_path, "G0001")
     another_stage1 = _valid_evidence(tmp_path, "G0002")
-    batch = {
+    batch = _with_batch_snapshot({
         "schema": "gaojixing.doubao-batch-result.v1",
         "status": "completed",
         "recordCount": 2,
@@ -594,7 +785,7 @@ async def test_certification_derives_phase_counts_from_evidence_id_prefixes(tmp_
         "searchTriggered": False,
         "evidence": [stage1, another_stage1],
         "evidenceRoot": str(tmp_path),
-    }
+    }, [stage1, another_stage1])
 
     result = await execute_gaojixing_batch_certification(
         [{"raw": batch}],
@@ -626,7 +817,7 @@ async def test_certification_derives_phase_counts_from_evidence_id_prefixes(tmp_
 async def test_certification_rejects_each_forged_upstream_contract_field(
     mutation, violation
 ):
-    batch = {
+    batch = _with_batch_snapshot({
         "schema": "gaojixing.doubao-batch-result.v1",
         "status": "completed",
         "recordCount": 2,
@@ -638,7 +829,7 @@ async def test_certification_rejects_each_forged_upstream_contract_field(
         ],
         "batchViolations": [],
         "searchTriggered": False,
-    }
+    })
     if mutation == "schema":
         batch["schema"] = "forged.schema.v1"
     elif mutation == "record_count":
@@ -661,6 +852,49 @@ async def test_certification_rejects_each_forged_upstream_contract_field(
             "fixtureId": "gaojixing-doubao-offline-v1",
             "phase1Expected": 1,
             "phase2Expected": 1,
+        },
+    )
+
+    assert result["status"] == "rejected"
+    assert violation in result["violations"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("mutation", "violation"),
+    [
+        ("source_mode_missing", "upstream_source_mode_mismatch"),
+        ("source_mode_tampered", "upstream_source_mode_mismatch"),
+        ("audit_policy_missing", "upstream_audit_policy_version_mismatch"),
+        ("audit_policy_tampered", "upstream_audit_policy_version_mismatch"),
+    ],
+)
+async def test_certification_binds_upstream_source_mode_and_audit_policy(
+    mutation, violation
+):
+    batch = await execute_gaojixing_doubao_batch(
+        [],
+        {
+            "sourceMode": "offline_fixture",
+            "fixtureId": "gaojixing-doubao-offline-v1",
+            "policyVersion": "2.2",
+        },
+    )
+    if mutation == "source_mode_missing":
+        batch.pop("sourceMode")
+    elif mutation == "source_mode_tampered":
+        batch["sourceMode"] = "project_archive"
+    elif mutation == "audit_policy_missing":
+        batch["audits"][0].pop("policyVersion")
+    elif mutation == "audit_policy_tampered":
+        batch["audits"][0]["policyVersion"] = "2.1"
+
+    result = await execute_gaojixing_batch_certification(
+        [{"raw": batch}],
+        {
+            "sourceMode": "offline_fixture",
+            "fixtureId": "gaojixing-doubao-offline-v1",
+            "policyVersion": "2.2",
         },
     )
 
@@ -760,7 +994,17 @@ async def test_certification_reads_real_v22_project_layout_and_question_bank(tmp
     )
 
     evidence_digest = result.pop("evidenceDigest")
+    batch_id = result.pop("batchId")
+    snapshot_digest = result.pop("snapshotDigest")
+    snapshot = result.pop("snapshot")
     assert re.fullmatch(r"[0-9a-f]{64}", evidence_digest)
+    assert re.fullmatch(r"[0-9a-f]{64}", snapshot_digest)
+    assert batch_id == f"gaojixing-{snapshot_digest}"
+    assert snapshot["phaseCounts"] == {
+        "stage1_non_brand": 1,
+        "stage2_brand": 1,
+    }
+    assert snapshot["recordCount"] == 2
     assert result == {
         "schema": "gaojixing.batch-certification.v1",
         "status": "certified",
@@ -1099,6 +1343,12 @@ def test_two_gaojixing_packages_materialize_to_real_tools_and_compile():
                         "fixtureId": "gaojixing-doubao-offline-v1",
                         "phase1Expected": 1,
                         "phase2Expected": 1,
+                        "toolParams": {
+                            "sourceMode": "project_archive",
+                            "fixtureId": "stale-fixture",
+                            "phase1Expected": 446,
+                            "phase2Expected": 32,
+                        },
                     },
                     "parameterInterface": stale_interface,
                     "ui": {"catalogId": "package.gaojixing.doubao-batch"},
@@ -1113,6 +1363,12 @@ def test_two_gaojixing_packages_materialize_to_real_tools_and_compile():
                         "fixtureId": "gaojixing-doubao-offline-v1",
                         "phase1Expected": 1,
                         "phase2Expected": 1,
+                        "toolParams": {
+                            "sourceMode": "project_archive",
+                            "fixtureId": "stale-fixture",
+                            "phase1Expected": 446,
+                            "phase2Expected": 32,
+                        },
                     },
                     "parameterInterface": stale_interface,
                     "ui": {"catalogId": "package.gaojixing.batch-certification"},
@@ -1140,6 +1396,11 @@ def test_two_gaojixing_packages_materialize_to_real_tools_and_compile():
         batch.params["toolParams"]["feishuWebhookEnv"]
         == "GAOJIXING_FEISHU_WEBHOOK_URL"
     )
+    for package in (batch, certify):
+        assert package.params["toolParams"]["sourceMode"] == "offline_fixture"
+        assert package.params["toolParams"]["fixtureId"] == "gaojixing-doubao-offline-v1"
+        assert "phase1Expected" not in package.params["toolParams"]
+        assert "phase2Expected" not in package.params["toolParams"]
     tool_ids = [
         node.params["toolCapability"]["id"]
         for node in (batch.internals.nodes[0], certify.internals.nodes[0])

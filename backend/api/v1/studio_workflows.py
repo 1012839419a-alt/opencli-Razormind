@@ -1,5 +1,6 @@
 """Workflow asset and mutable Draft routes for Studio."""
 
+import json
 import uuid
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
@@ -42,6 +43,14 @@ from backend.workflow.opencli_hda_tracer import (
 )
 
 router = APIRouter()
+
+
+def _canonical_run_identity(*, inputs: dict, user: str) -> str:
+    return json.dumps(
+        {"inputs": inputs, "user": user},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
 def _runtime_log(
@@ -330,6 +339,15 @@ async def start_published_workflow_run(
 
     request_id = body.request_id or request_id_header or str(uuid.uuid4())
     idempotency_key = body.idempotency_key or idempotency_header
+    run_input = workflow_schemas.WorkflowRunInput(
+        payload=body.inputs,
+        source="external",
+        sourceId=body.user,
+    )
+    requested_identity = _canonical_run_identity(
+        inputs=run_input.payload,
+        user=body.user,
+    )
     run_id = None
     if idempotency_key:
         run_id = str(
@@ -343,9 +361,28 @@ async def start_published_workflow_run(
         )
         existing = await db.get(WorkflowRun, run_id)
         if existing is not None:
+            existing_input = (
+                existing.request.get("input") if isinstance(existing.request, dict) else None
+            )
+            existing_payload = (
+                existing_input.get("payload") if isinstance(existing_input, dict) else None
+            )
+            existing_user = (
+                existing_input.get("sourceId") if isinstance(existing_input, dict) else None
+            )
+            identity_matches = (
+                isinstance(existing_payload, dict)
+                and isinstance(existing_user, str)
+                and _canonical_run_identity(
+                    inputs=existing_payload,
+                    user=existing_user,
+                )
+                == requested_identity
+            )
             if (
                 existing.workflow_id != workflow_id
                 or existing.studio_workflow_version_id != version.id
+                or not identity_matches
             ):
                 raise HTTPException(
                     status.HTTP_409_CONFLICT,
@@ -365,11 +402,7 @@ async def start_published_workflow_run(
                 requestId=request_id,
                 idempotencyKey=idempotency_key,
             ),
-            input=workflow_schemas.WorkflowRunInput(
-                payload=body.inputs,
-                source="external",
-                sourceId=body.user,
-            ),
+            input=run_input,
             responseMode=body.response_mode,
         ),
         session=db,

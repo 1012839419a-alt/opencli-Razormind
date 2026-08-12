@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -115,29 +116,37 @@ async def execute_gaojixing_doubao_batch(
             **readiness,
             "searchTriggered": False,
         }
-    phase1_expected = _positive_expected_count(params, "phase1Expected")
-    phase2_expected = _positive_expected_count(params, "phase2Expected")
     if source_mode == "offline_fixture":
         captures, fixture_root = _resolve_fixture_captures(input_items, params)
         project_root = Path(str(params.get("projectRoot") or fixture_root))
         source_violations: list[str] = []
+        snapshot_questions = captures
     elif source_mode == "project_archive":
-        captures, project_root, source_violations = _resolve_project_archive_captures(
-            params,
-            phase1_expected=phase1_expected,
-            phase2_expected=phase2_expected,
-        )
+        (
+            captures,
+            project_root,
+            source_violations,
+            snapshot_questions,
+        ) = _resolve_project_archive_captures(params)
     else:
         raise ValueError(f"unsupported_gaojixing_source_mode:{source_mode}")
 
+    snapshot, snapshot_digest, batch_id = build_gaojixing_batch_snapshot(
+        snapshot_questions
+    )
+    expected_phase_counts = snapshot["phaseCounts"]
     audits: list[dict[str, Any]] = []
     accepted_ids: list[str] = []
-    phase_counts = {"stage1_non_brand": 0, "stage2_brand": 0}
+    accepted_phase_counts = {"stage1_non_brand": 0, "stage2_brand": 0}
     batch_violations = list(source_violations)
+    if snapshot["recordCount"] == 0:
+        batch_violations.append("empty_question_batch")
     for capture in captures:
         recovery_case = _visible_verification_recovery_case(
             capture,
             project_root=project_root,
+            batch_id=batch_id,
+            snapshot_digest=snapshot_digest,
         )
         if recovery_case is not None:
             notification = await _notify_recovery_case(
@@ -151,8 +160,12 @@ async def execute_gaojixing_doubao_batch(
                 "status": "verification_required",
                 "sourceMode": source_mode,
                 "searchTriggered": False,
+                "batchId": batch_id,
+                "snapshot": snapshot,
+                "snapshotDigest": snapshot_digest,
                 "acceptedQuestionIds": accepted_ids,
-                "phaseCounts": phase_counts,
+                "phaseCounts": expected_phase_counts,
+                "acceptedPhaseCounts": accepted_phase_counts,
                 "audits": audits,
                 "recoveryCase": recovery_case,
                 "notification": notification,
@@ -163,7 +176,8 @@ async def execute_gaojixing_doubao_batch(
         if (
             phase == "stage2_brand"
             and params.get("requirePhase1BeforePhase2") is not False
-            and phase_counts["stage1_non_brand"] != phase1_expected
+            and accepted_phase_counts["stage1_non_brand"]
+            != expected_phase_counts["stage1_non_brand"]
         ):
             violation = "phase2_started_before_phase1_complete"
             batch_violations.append(violation)
@@ -188,11 +202,17 @@ async def execute_gaojixing_doubao_batch(
         if violations:
             continue
         accepted_ids.append(question_id)
-        phase_counts[phase] += 1
+        accepted_phase_counts[phase] += 1
 
-    if phase_counts["stage1_non_brand"] != phase1_expected:
+    if (
+        accepted_phase_counts["stage1_non_brand"]
+        != expected_phase_counts["stage1_non_brand"]
+    ):
         batch_violations.append("phase1_count_mismatch")
-    if phase_counts["stage2_brand"] != phase2_expected:
+    if (
+        accepted_phase_counts["stage2_brand"]
+        != expected_phase_counts["stage2_brand"]
+    ):
         batch_violations.append("phase2_count_mismatch")
     result = {
         "schema": "gaojixing.doubao-batch-result.v1",
@@ -203,11 +223,15 @@ async def execute_gaojixing_doubao_batch(
         ),
         "sourceMode": source_mode,
         "searchTriggered": False,
+        "batchId": batch_id,
+        "snapshot": snapshot,
+        "snapshotDigest": snapshot_digest,
         "acceptedQuestionIds": accepted_ids,
-        "phaseCounts": phase_counts,
+        "phaseCounts": expected_phase_counts,
+        "acceptedPhaseCounts": accepted_phase_counts,
         "audits": audits,
         "batchViolations": sorted(set(batch_violations)),
-        "recordCount": len(captures),
+        "recordCount": snapshot["recordCount"],
     }
     if source_mode == "offline_fixture":
         result["evidence"] = captures
@@ -243,12 +267,25 @@ def _resolve_fixture_captures(
 
 def _resolve_project_archive_captures(
     params: dict[str, Any],
-    *,
-    phase1_expected: int,
-    phase2_expected: int,
-) -> tuple[list[dict[str, Any]], Path, list[str]]:
-    project_root = Path(str(params.get("projectRoot") or ""))
-    question_bank_path = Path(str(params.get("questionBankPath") or ""))
+) -> tuple[list[dict[str, Any]], Path, list[str], list[dict[str, str]]]:
+    project_root_value = str(params.get("projectRoot") or "").strip()
+    question_bank_value = str(params.get("questionBankPath") or "").strip()
+    if not project_root_value:
+        raise ValueError("project_root_required")
+    if not question_bank_value:
+        raise ValueError("question_bank_path_required")
+    project_root = Path(project_root_value)
+    question_bank_path = Path(question_bank_value)
+    if not project_root.is_absolute():
+        raise ValueError("project_root_must_be_absolute")
+    if not question_bank_path.is_absolute():
+        raise ValueError("question_bank_path_must_be_absolute")
+    project_root = project_root.resolve()
+    question_bank_path = question_bank_path.resolve()
+    try:
+        question_bank_path.relative_to(project_root)
+    except ValueError as exc:
+        raise ValueError("question_bank_path_outside_project_root") from exc
     if not project_root.is_dir():
         raise ValueError("project_root_missing")
     try:
@@ -258,11 +295,7 @@ def _resolve_project_archive_captures(
     if not isinstance(question_bank, dict):
         raise ValueError("question_bank_invalid")
 
-    phase_rows = {
-        phase: _project_question_rows(question_bank.get(phase))
-        for phase in ("phase1", "phase2")
-    }
-    violations: list[str] = []
+    phase_rows, violations = parse_gaojixing_question_bank(question_bank)
     all_rows = [*phase_rows["phase1"], *phase_rows["phase2"]]
     question_id_counts: dict[str, int] = {}
     for row in all_rows:
@@ -273,11 +306,6 @@ def _resolve_project_archive_captures(
         for question_id, count in sorted(question_id_counts.items())
         if count > 1
     )
-    if len(phase_rows["phase1"]) != phase1_expected:
-        violations.append("question_bank_phase1_count_mismatch")
-    if len(phase_rows["phase2"]) != phase2_expected:
-        violations.append("question_bank_phase2_count_mismatch")
-
     raw_dir = project_root / "raw"
     raw_paths = {path.stem: path for path in raw_dir.glob("*.json")} if raw_dir.is_dir() else {}
     expected_ids = {row["id"] for row in all_rows}
@@ -305,30 +333,83 @@ def _resolve_project_archive_captures(
         if record.get("question") != row["question"]:
             violations.append(f"original_question_mismatch:{question_id}")
         captures.append(record)
-    return captures, project_root, violations
+    return captures, project_root, violations, all_rows
 
 
-def _project_question_rows(value: Any) -> list[dict[str, str]]:
-    if not isinstance(value, list):
-        return []
-    return [
-        {"id": str(row["id"]), "question": str(row["question"])}
-        for row in value
-        if isinstance(row, dict) and row.get("id") and row.get("question")
+def parse_gaojixing_question_bank(
+    document: Any,
+) -> tuple[dict[str, list[dict[str, str]]], list[str]]:
+    """Parse both required phases without silently dropping malformed rows."""
+
+    phase_rows: dict[str, list[dict[str, str]]] = {"phase1": [], "phase2": []}
+    if not isinstance(document, dict):
+        return phase_rows, ["question_bank_invalid"]
+    violations: list[str] = []
+    for phase in phase_rows:
+        value = document.get(phase)
+        if not isinstance(value, list):
+            violations.append(f"question_bank_phase_not_list:{phase}")
+            continue
+        for index, row in enumerate(value):
+            if not isinstance(row, dict):
+                violations.append(f"question_bank_row_not_object:{phase}:{index}")
+                continue
+            question_id = row.get("id")
+            question = row.get("question")
+            valid_id = isinstance(question_id, str) and bool(question_id.strip())
+            valid_question = isinstance(question, str) and bool(question.strip())
+            if not valid_id:
+                violations.append(f"question_bank_row_id_invalid:{phase}:{index}")
+            if not valid_question:
+                violations.append(f"question_bank_row_question_invalid:{phase}:{index}")
+            if valid_id and valid_question:
+                phase_rows[phase].append({"id": question_id, "question": question})
+    return phase_rows, violations
+
+
+def build_gaojixing_batch_snapshot(
+    question_items: list[dict[str, Any]],
+) -> tuple[dict[str, Any], str, str]:
+    """Create the content-addressed immutable question package for one run."""
+
+    questions = [
+        {
+            "id": str(item.get("id") or ""),
+            "question": str(item.get("question") or ""),
+            "phase": _question_phase(item),
+        }
+        for item in question_items
     ]
-
-
-def _positive_expected_count(params: dict[str, Any], name: str) -> int:
-    value = params.get(name)
-    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
-        raise ValueError(f"{name}_must_be_positive")
-    return value
+    phase_counts = {
+        "stage1_non_brand": sum(
+            question["phase"] == "stage1_non_brand" for question in questions
+        ),
+        "stage2_brand": sum(
+            question["phase"] == "stage2_brand" for question in questions
+        ),
+    }
+    snapshot = {
+        "schema": "gaojixing.question-batch-snapshot.v1",
+        "questions": questions,
+        "phaseCounts": phase_counts,
+        "recordCount": len(questions),
+    }
+    canonical = json.dumps(
+        snapshot,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    snapshot_digest = hashlib.sha256(canonical).hexdigest()
+    return snapshot, snapshot_digest, f"gaojixing-{snapshot_digest}"
 
 
 def _visible_verification_recovery_case(
     capture: dict[str, Any],
     *,
     project_root: Path,
+    batch_id: str,
+    snapshot_digest: str,
 ) -> dict[str, Any] | None:
     verification = capture.get("verification")
     if (
@@ -351,9 +432,13 @@ def _visible_verification_recovery_case(
         "questionId": question_id,
         "question": question,
         "reason": verification["kind"],
-        "checkpoint": {"resumeQuestionId": question_id},
+        "checkpoint": {
+            "resumeQuestionId": question_id,
+            "batchId": batch_id,
+            "snapshotDigest": snapshot_digest,
+        },
         "evidence": [{"type": "screenshot", "path": str(resolved_screenshot)}],
-        "allowedActions": ["resume_same_question"],
+        "allowedActions": ["restart_same_batch"],
     }
 
 

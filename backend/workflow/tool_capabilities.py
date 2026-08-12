@@ -453,8 +453,6 @@ def _tool_capabilities() -> list[WorkflowToolCapability]:
                 params={
                     "sourceMode": "offline_fixture",
                     "fixtureId": "gaojixing-doubao-offline-v1",
-                    "phase1Expected": 1,
-                    "phase2Expected": 1,
                     "feishuWebhookEnv": GAOJIXING_FEISHU_WEBHOOK_ENV,
                 },
             ),
@@ -490,8 +488,6 @@ def _tool_capabilities() -> list[WorkflowToolCapability]:
                 params={
                     "sourceMode": "offline_fixture",
                     "fixtureId": "gaojixing-doubao-offline-v1",
-                    "phase1Expected": 1,
-                    "phase2Expected": 1,
                 },
             ),
         ),

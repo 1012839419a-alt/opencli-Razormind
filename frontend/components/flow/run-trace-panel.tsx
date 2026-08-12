@@ -16,7 +16,9 @@ import {
   fetchWorkflowEvidenceBatchProjection,
   fetchWorkflowEvidenceBatches,
   fetchWorkflowResearchLedger,
+  buildWorkflowRunInputTemplate,
   continueWorkflowResearch,
+  parseWorkflowRunInput,
   replayWorkflowRunEventStream,
   startWorkflowRun,
   type WorkflowEvidenceBatchDetail,
@@ -114,6 +116,17 @@ export function RunTracePanel({ runRequestId = 0 }: { runRequestId?: number }) {
   const [importNodeId, setImportNodeId] = useState("")
   const [importOutputText, setImportOutputText] = useState("[\n  {\n    \"title\": \"Imported example\",\n    \"url\": \"https://example.com/item\"\n  }\n]")
   const [importError, setImportError] = useState<string | null>(null)
+  const runInputTemplateText = useMemo(
+    () => JSON.stringify(buildWorkflowRunInputTemplate(workflowProject), null, 2),
+    [workflowProject],
+  )
+  const [runInputText, setRunInputText] = useState(runInputTemplateText)
+  const [runInputError, setRunInputError] = useState<string | null>(null)
+
+  useEffect(() => {
+    setRunInputText(runInputTemplateText)
+    setRunInputError(null)
+  }, [runInputTemplateText])
 
   const outputInputNodes = useMemo(() => collectOutputInputNodes(workflowProject), [workflowProject])
   const selectedSourceId = outputInputNodes.some((node) => node.id === selectedNodeId) ? selectedNodeId : null
@@ -139,11 +152,19 @@ export function RunTracePanel({ runRequestId = 0 }: { runRequestId?: number }) {
   const isBackendRunning = backendState.status === "running"
 
   const runBackendWorkflow = async (sourceOutputs?: Record<string, Array<Record<string, unknown>>>) => {
+    let input
+    try {
+      input = parseWorkflowRunInput(workflowProject, runInputText)
+      setRunInputError(null)
+    } catch (error) {
+      setRunInputError(error instanceof Error ? error.message : "运行输入格式无效")
+      return
+    }
     setRunState((current) => ({ status: "running", projection: current.projection, events: current.events, error: null }))
     try {
       const token = getApiAuthToken()
       const authorization = token ? `Bearer ${token}` : null
-      const started = await startWorkflowRun(workflowProject, { authorization, sourceOutputs })
+      const started = await startWorkflowRun(workflowProject, { authorization, sourceOutputs, input })
       applyWorkflowRunProjection(started)
       setRunState({ status: "running", projection: started, events: [], error: null })
 
@@ -380,6 +401,7 @@ export function RunTracePanel({ runRequestId = 0 }: { runRequestId?: number }) {
     setContinuationInput("{}")
     setContinuationKey("")
     setContinuationError(null)
+    setRunInputError(null)
   }
 
   return (
@@ -422,6 +444,24 @@ export function RunTracePanel({ runRequestId = 0 }: { runRequestId?: number }) {
             <span className="sr-only">Reset run trace</span>
           </Button>
         </div>
+        <details className="mt-3 rounded-md border bg-card/50 p-2.5" open={runInputTemplateText !== "{}"}>
+          <summary className="flex cursor-pointer items-center gap-2 font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
+            <FileInput className="size-3.5" />本次运行输入
+          </summary>
+          <div className="mt-2.5 space-y-2">
+            <p className="text-[11px] leading-relaxed text-muted-foreground">
+              仅属于本次 Run，不会写回工作流节点；新题包会创建新的批次快照。
+            </p>
+            <Textarea
+              value={runInputText}
+              onChange={(event) => setRunInputText(event.target.value)}
+              rows={5}
+              className="font-mono text-[10px]"
+              aria-label="本次运行输入 JSON"
+            />
+            {runInputError ? <p className="text-[11px] text-destructive">{runInputError}</p> : null}
+          </div>
+        </details>
         <details className="mt-3 rounded-md border bg-card/50 p-2.5" open={Boolean(selectedSourceId)}>
           <summary className="flex cursor-pointer items-center gap-2 font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
             <FileInput className="size-3.5" />导入节点输出

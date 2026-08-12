@@ -15,6 +15,8 @@ from typing import Any
 
 from backend.workflow.gaojixing_doubao import (
     audit_gaojixing_question_evidence,
+    build_gaojixing_batch_snapshot,
+    parse_gaojixing_question_bank,
     resolve_registered_fixture_root,
 )
 
@@ -29,30 +31,38 @@ async def execute_gaojixing_batch_certification(
     """Certify either an upstream fixture result or a real 2.2 project directory."""
 
     policy_version = str(params.get("policyVersion") or "2.2")
-    phase1_expected = _positive_count(params, "phase1Expected")
-    phase2_expected = _positive_count(params, "phase2Expected")
     source_mode = str(params.get("sourceMode") or "").strip()
-    project_root_value = str(params.get("projectRoot") or "").strip()
     evidence_digest: str | None = None
+    batch_identity: dict[str, Any] = {}
     if source_mode not in {"offline_fixture", "project_archive"}:
         counts, violations = _counts(0, 0), ["unsupported_source_mode"]
     elif source_mode == "project_archive":
-        project_root = Path(project_root_value)
-        question_bank_path = Path(str(params.get("questionBankPath") or ""))
-        counts, violations = _certify_project_root(
-            project_root,
-            question_bank_path=question_bank_path,
-            phase1_expected=phase1_expected,
-            phase2_expected=phase2_expected,
-        )
-        evidence_digest = _evidence_digest(project_root, question_bank_path)
+        paths, path_violations = _validated_project_paths(params)
+        if paths is None:
+            counts, violations = _counts(0, 0), path_violations
+        else:
+            project_root, question_bank_path = paths
+            counts, violations, batch_identity = _certify_project_root(
+                project_root,
+                question_bank_path=question_bank_path,
+            )
+            violations.extend(
+                _upstream_batch_identity_violations(
+                    input_items,
+                    batch_identity,
+                    expected_source_mode=source_mode,
+                    expected_policy_version=policy_version,
+                )
+            )
+            violations = sorted(set(violations))
+            evidence_digest = _evidence_digest(project_root, question_bank_path)
     else:
         evidence_root = _trusted_upstream_evidence_root(params)
-        counts, violations = _certify_upstream_batch(
+        counts, violations, batch_identity = _certify_upstream_batch(
             input_items,
-            phase1_expected=phase1_expected,
-            phase2_expected=phase2_expected,
             evidence_root=evidence_root,
+            expected_source_mode=source_mode,
+            expected_policy_version=policy_version,
         )
     result = {
         "schema": "gaojixing.batch-certification.v1",
@@ -76,16 +86,17 @@ async def execute_gaojixing_batch_certification(
     }
     if evidence_digest is not None:
         result["evidenceDigest"] = evidence_digest
+    result.update(batch_identity)
     return result
 
 
 def _certify_upstream_batch(
     input_items: list[dict[str, Any]],
     *,
-    phase1_expected: int,
-    phase2_expected: int,
     evidence_root: Path | None,
-) -> tuple[dict[str, int], list[str]]:
+    expected_source_mode: str,
+    expected_policy_version: str,
+) -> tuple[dict[str, int], list[str], dict[str, Any]]:
     batch = next(
         (
             candidate
@@ -101,16 +112,33 @@ def _certify_upstream_batch(
         None,
     )
     if batch is None:
-        return _counts(0, 0), ["upstream_batch_result_missing"]
+        return _counts(0, 0), ["upstream_batch_result_missing"], {}
+    snapshot, snapshot_violations, batch_identity = _validated_batch_snapshot(batch)
+    if snapshot is None:
+        return _counts(0, 0), snapshot_violations, batch_identity
+    expected_phase_counts = snapshot["phaseCounts"]
+    phase1_expected = expected_phase_counts["stage1_non_brand"]
+    phase2_expected = expected_phase_counts["stage2_brand"]
     phase_counts = batch.get("phaseCounts")
     if not isinstance(phase_counts, dict):
-        return _counts(0, 0), ["upstream_phase_counts_missing"]
+        return (
+            _counts(0, 0),
+            sorted(set([*snapshot_violations, "upstream_phase_counts_missing"])),
+            batch_identity,
+        )
     phase1_value = phase_counts.get("stage1_non_brand")
     phase2_value = phase_counts.get("stage2_brand")
     phase1 = phase1_value if isinstance(phase1_value, int) else 0
     phase2 = phase2_value if isinstance(phase2_value, int) else 0
     total_expected = phase1_expected + phase2_expected
-    violations: list[str] = []
+    violations: list[str] = [
+        *snapshot_violations,
+        *_upstream_context_violations(
+            batch,
+            expected_source_mode=expected_source_mode,
+            expected_policy_version=expected_policy_version,
+        ),
+    ]
     if batch.get("status") != "completed":
         violations.append("upstream_batch_not_completed")
     if phase1 != phase1_expected:
@@ -174,7 +202,7 @@ def _certify_upstream_batch(
     evidence = batch.get("evidence")
     if not isinstance(evidence, list) or not evidence:
         violations.append("upstream_evidence_missing")
-        return _counts(0, 0), sorted(set(violations))
+        return _counts(0, 0), sorted(set(violations)), batch_identity
     if len(evidence) != total_expected:
         violations.append("upstream_evidence_count_mismatch")
     evidence_ids = [
@@ -208,7 +236,11 @@ def _certify_upstream_batch(
 
     if evidence_root is None or not evidence_root.is_dir():
         violations.append("upstream_evidence_root_missing")
-        return _counts(evidence_phase1, evidence_phase2), sorted(set(violations))
+        return (
+            _counts(evidence_phase1, evidence_phase2),
+            sorted(set(violations)),
+            batch_identity,
+        )
     trusted_root = evidence_root.resolve()
     reported_root = batch.get("evidenceRoot")
     if isinstance(reported_root, str) and reported_root.strip():
@@ -220,6 +252,16 @@ def _certify_upstream_batch(
             violations.append(f"upstream_evidence_invalid:{index}")
             continue
         question_id = str(item.get("id") or index)
+        snapshot_question = next(
+            (
+                question
+                for question in snapshot["questions"]
+                if question["id"] == question_id
+            ),
+            None,
+        )
+        if snapshot_question is None or item.get("question") != snapshot_question["question"]:
+            violations.append(f"upstream_evidence_snapshot_mismatch:{question_id}")
         violations.extend(
             f"upstream_evidence_audit_failed:{question_id}:{violation}"
             for violation in audit_gaojixing_question_evidence(
@@ -227,7 +269,93 @@ def _certify_upstream_batch(
                 project_root=trusted_root,
             )
         )
-    return _counts(evidence_phase1, evidence_phase2), sorted(set(violations))
+    return (
+        _counts(evidence_phase1, evidence_phase2),
+        sorted(set(violations)),
+        batch_identity,
+    )
+
+
+def _validated_batch_snapshot(
+    batch: dict[str, Any],
+) -> tuple[dict[str, Any] | None, list[str], dict[str, Any]]:
+    snapshot = batch.get("snapshot")
+    if not isinstance(snapshot, dict):
+        return None, ["upstream_snapshot_missing"], {}
+    questions = snapshot.get("questions")
+    if (
+        snapshot.get("schema") != "gaojixing.question-batch-snapshot.v1"
+        or not isinstance(questions, list)
+        or not questions
+        or any(not isinstance(question, dict) for question in questions)
+    ):
+        return None, ["upstream_snapshot_invalid"], {}
+    rebuilt, digest, batch_id = build_gaojixing_batch_snapshot(questions)
+    violations: list[str] = []
+    if rebuilt != snapshot:
+        violations.append("upstream_snapshot_content_invalid")
+    if batch.get("snapshotDigest") != digest:
+        violations.append("upstream_snapshot_digest_mismatch")
+    if batch.get("batchId") != batch_id:
+        violations.append("upstream_batch_id_mismatch")
+    identity = {"batchId": batch_id, "snapshotDigest": digest, "snapshot": rebuilt}
+    return rebuilt, violations, identity
+
+
+def _upstream_batch_identity_violations(
+    input_items: list[dict[str, Any]],
+    expected_identity: dict[str, Any],
+    *,
+    expected_source_mode: str,
+    expected_policy_version: str,
+) -> list[str]:
+    batch = next(
+        (
+            candidate
+            for item in input_items
+            for candidate in (item.get("raw"), item.get("normalizedData"), item)
+            if isinstance(candidate, dict)
+            and candidate.get("schema") == "gaojixing.doubao-batch-result.v1"
+        ),
+        None,
+    )
+    if batch is None:
+        return []
+    _snapshot, violations, identity = _validated_batch_snapshot(batch)
+    violations.extend(
+        _upstream_context_violations(
+            batch,
+            expected_source_mode=expected_source_mode,
+            expected_policy_version=expected_policy_version,
+        )
+    )
+    if identity and any(
+        identity.get(field) != expected_identity.get(field)
+        for field in ("batchId", "snapshotDigest", "snapshot")
+    ):
+        violations.append("upstream_project_batch_snapshot_mismatch")
+    if batch.get("status") != "completed":
+        violations.append("upstream_batch_not_completed")
+    return sorted(set(violations))
+
+
+def _upstream_context_violations(
+    batch: dict[str, Any],
+    *,
+    expected_source_mode: str,
+    expected_policy_version: str,
+) -> list[str]:
+    violations: list[str] = []
+    if batch.get("sourceMode") != expected_source_mode:
+        violations.append("upstream_source_mode_mismatch")
+    audits = batch.get("audits")
+    if not isinstance(audits, list) or any(
+        not isinstance(audit, dict)
+        or audit.get("policyVersion") != expected_policy_version
+        for audit in audits
+    ):
+        violations.append("upstream_audit_policy_version_mismatch")
+    return violations
 
 
 def _trusted_upstream_evidence_root(params: dict[str, Any]) -> Path | None:
@@ -242,19 +370,25 @@ def _certify_project_root(
     project_root: Path,
     *,
     question_bank_path: Path,
-    phase1_expected: int,
-    phase2_expected: int,
-) -> tuple[dict[str, int], list[str]]:
+) -> tuple[dict[str, int], list[str], dict[str, Any]]:
     violations: list[str] = []
     if not project_root.is_dir():
-        return _counts(0, 0), ["project_root_missing"]
+        return _counts(0, 0), ["project_root_missing"], {}
     question_bank = _read_json(question_bank_path, "question_bank", violations)
-    phase1_bank = _question_rows(question_bank, "phase1")
-    phase2_bank = _question_rows(question_bank, "phase2")
-    if len(phase1_bank) != phase1_expected:
-        violations.append("question_bank_phase1_count_mismatch")
-    if len(phase2_bank) != phase2_expected:
-        violations.append("question_bank_phase2_count_mismatch")
+    phase_rows, question_bank_violations = parse_gaojixing_question_bank(question_bank)
+    violations.extend(question_bank_violations)
+    phase1_bank = phase_rows["phase1"]
+    phase2_bank = phase_rows["phase2"]
+    snapshot, snapshot_digest, batch_id = build_gaojixing_batch_snapshot(
+        [*phase1_bank, *phase2_bank]
+    )
+    batch_identity = {
+        "batchId": batch_id,
+        "snapshotDigest": snapshot_digest,
+        "snapshot": snapshot,
+    }
+    phase1_expected = snapshot["phaseCounts"]["stage1_non_brand"]
+    phase2_expected = snapshot["phaseCounts"]["stage2_brand"]
     question_id_counts = Counter(
         row["id"] for row in [*phase1_bank, *phase2_bank]
     )
@@ -333,7 +467,46 @@ def _certify_project_root(
         violations.append("raw_phase1_count_mismatch")
     if phase2_count != phase2_expected:
         violations.append("raw_phase2_count_mismatch")
-    return _counts(phase1_count, phase2_count), sorted(set(violations))
+    return (
+        _counts(phase1_count, phase2_count),
+        sorted(set(violations)),
+        batch_identity,
+    )
+
+
+def _validated_project_paths(
+    params: dict[str, Any],
+) -> tuple[tuple[Path, Path] | None, list[str]]:
+    project_root_value = str(params.get("projectRoot") or "").strip()
+    question_bank_value = str(params.get("questionBankPath") or "").strip()
+    violations: list[str] = []
+    if not project_root_value:
+        violations.append("project_root_required")
+    if not question_bank_value:
+        violations.append("question_bank_path_required")
+    if violations:
+        return None, violations
+    project_root = Path(project_root_value)
+    question_bank_path = Path(question_bank_value)
+    if not project_root.is_absolute():
+        violations.append("project_root_must_be_absolute")
+    if not question_bank_path.is_absolute():
+        violations.append("question_bank_path_must_be_absolute")
+    if violations:
+        return None, violations
+    project_root = project_root.resolve()
+    question_bank_path = question_bank_path.resolve()
+    try:
+        question_bank_path.relative_to(project_root)
+    except ValueError:
+        violations.append("question_bank_path_outside_project_root")
+    if not project_root.is_dir():
+        violations.append("project_root_missing")
+    if not question_bank_path.is_file():
+        violations.append("question_bank_missing")
+    if violations:
+        return None, sorted(set(violations))
+    return (project_root, question_bank_path), []
 
 
 def _read_json(path: Path, label: str, violations: list[str]) -> Any:
@@ -518,23 +691,6 @@ def _position_tokens(item: Any) -> list[str]:
         for key in ("module", "text")
         if str(item.get(key) or "")
     ]
-
-
-def _question_rows(document: Any, phase: str) -> list[dict[str, str]]:
-    if not isinstance(document, dict) or not isinstance(document.get(phase), list):
-        return []
-    return [
-        {"id": str(row["id"]), "question": str(row["question"])}
-        for row in document[phase]
-        if isinstance(row, dict) and row.get("id") and row.get("question")
-    ]
-
-
-def _positive_count(params: dict[str, Any], name: str) -> int:
-    value = params.get(name)
-    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
-        raise ValueError(f"{name}_must_be_positive")
-    return value
 
 
 def _counts(phase1: int, phase2: int) -> dict[str, int]:

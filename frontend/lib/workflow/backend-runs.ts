@@ -24,6 +24,75 @@ export type WorkflowRunTrigger = {
   idempotencyKey?: string
 }
 
+export type WorkflowRunInput = {
+  payload: Record<string, unknown>
+  headers?: Record<string, string>
+  query?: Record<string, string>
+  source?: "operator" | "external" | "automation" | "webhook"
+  sourceId?: string
+}
+
+type ManualInputSchema = {
+  required: string[]
+  properties: Record<string, { type?: string }>
+  additionalProperties: boolean
+}
+
+function manualInputSchema(project: WorkflowProject): ManualInputSchema | null {
+  const trigger = project.nodes.find(
+    (node) => node.kind === "schedule" && node.capability === "trigger" && node.params.mode === "manual",
+  )
+  const value = trigger?.params.inputSchema
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null
+  const schema = value as Record<string, unknown>
+  const properties = schema.properties
+  if (!properties || typeof properties !== "object" || Array.isArray(properties)) return null
+  return {
+    required: Array.isArray(schema.required)
+      ? schema.required.filter((item): item is string => typeof item === "string")
+      : [],
+    properties: Object.fromEntries(
+      Object.entries(properties).filter((entry): entry is [string, { type?: string }] => (
+        Boolean(entry[1]) && typeof entry[1] === "object" && !Array.isArray(entry[1])
+      )),
+    ),
+    additionalProperties: schema.additionalProperties !== false,
+  }
+}
+
+export function buildWorkflowRunInputTemplate(project: WorkflowProject): Record<string, unknown> {
+  const schema = manualInputSchema(project)
+  if (!schema) return {}
+  return Object.fromEntries(
+    schema.required.map((name) => [name, schema.properties[name]?.type === "string" ? "" : null]),
+  )
+}
+
+export function parseWorkflowRunInput(project: WorkflowProject, text: string): WorkflowRunInput {
+  const decoded: unknown = JSON.parse(text)
+  if (!decoded || typeof decoded !== "object" || Array.isArray(decoded)) {
+    throw new Error("Workflow Run input must be a JSON object")
+  }
+  const payload = decoded as Record<string, unknown>
+  const schema = manualInputSchema(project)
+  if (schema) {
+    for (const name of schema.required) {
+      const value = payload[name]
+      if (value === undefined || value === null || (typeof value === "string" && !value.trim())) {
+        throw new Error(`${name} is required`)
+      }
+      if (schema.properties[name]?.type === "string" && typeof value !== "string") {
+        throw new Error(`${name} must be a string`)
+      }
+    }
+    if (!schema.additionalProperties) {
+      const unexpected = Object.keys(payload).find((name) => !(name in schema.properties))
+      if (unexpected) throw new Error(`${unexpected} is not allowed`)
+    }
+  }
+  return { payload, source: "operator" }
+}
+
 export type WorkflowResearchStatus =
   | "running"
   | "needs_evidence"
@@ -272,9 +341,10 @@ export function inferWorkflowRunTrigger(project: WorkflowProject): WorkflowRunTr
   const scheduleNode = project.nodes.find(
     (node) => node.kind === "schedule" && node.capability === "trigger",
   )
-  return scheduleNode
-    ? { kind: "schedule", triggerNodeId: scheduleNode.id }
-    : { kind: "manual" }
+  if (!scheduleNode) return { kind: "manual" }
+  return scheduleNode.params.mode === "manual"
+    ? { kind: "manual", triggerNodeId: scheduleNode.id }
+    : { kind: "schedule", triggerNodeId: scheduleNode.id }
 }
 
 export async function startWorkflowRun(
@@ -286,6 +356,7 @@ export async function startWorkflowRun(
     packageNodeId?: string
     sourceOutputs?: Record<string, Array<Record<string, unknown>>>
     trigger?: WorkflowRunTrigger
+    input?: WorkflowRunInput
   } = {},
 ): Promise<WorkflowRunProjection> {
   const response = await fetch("/api/workflow/run", {
@@ -300,6 +371,7 @@ export async function startWorkflowRun(
       ...(options.traceId ? { traceId: options.traceId } : {}),
       ...(options.packageNodeId ? { packageNodeId: options.packageNodeId } : {}),
       ...(options.sourceOutputs ? { sourceOutputs: options.sourceOutputs } : {}),
+      ...(options.input ? { input: options.input } : {}),
       trigger: options.trigger ?? inferWorkflowRunTrigger(project),
     }),
   })
