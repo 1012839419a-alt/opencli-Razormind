@@ -230,6 +230,55 @@ async def test_local_executor_dispatches_committed_upload_into_the_real_runner(
 
 
 @pytest.mark.asyncio
+async def test_hermes_executor_leaves_new_collection_queued_for_hermes(
+    db_engine, tmp_path, monkeypatch
+):
+    """A Hermes-owned execution resource must not be claimed by the API process."""
+    import asyncio
+
+    from backend.config import get_settings
+    from backend.models.gaojixing_collection import GaojixingCollectionRun
+    from backend.services.gaojixing_collection_service import ensure_collection
+    from backend.workflow import gaojixing_worker_runtime
+
+    run_id = "run-gjx-hermes-dispatch"
+    staged = stage_managed_question_batch(
+        _question_bank(),
+        filename="questions.json",
+        run_id=run_id,
+        storage_root=tmp_path,
+        signing_key="test-signing-key",
+    )
+    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    started = asyncio.Event()
+
+    async def api_process_execute(_job_id: str) -> str:
+        started.set()
+        return "completed"
+
+    monkeypatch.setattr(get_settings(), "task_executor", "hermes")
+    monkeypatch.setattr(gaojixing_worker_runtime, "execute_collection_job", api_process_execute)
+    async with sessions() as db:
+        db.add(_workflow_run(run_id))
+        collection = await ensure_collection(
+            db,
+            workflow_run_id=run_id,
+            node_id="batch::tool",
+            question_batch_ref=staged.question_batch_ref,
+            storage_root=tmp_path,
+            signing_key="test-signing-key",
+        )
+        await commit_session(db)
+
+    await asyncio.sleep(0)
+    assert not started.is_set()
+    async with sessions() as db:
+        stored = await db.get(GaojixingCollectionRun, collection.id)
+        assert stored is not None
+        assert stored.status == "queued"
+
+
+@pytest.mark.asyncio
 async def test_fake_driver_collects_phase1_before_phase2_and_builds_certifiable_archive(
     db_engine, tmp_path
 ):

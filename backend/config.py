@@ -25,8 +25,9 @@ class Settings(BaseSettings):
     # Database
     database_url: str = "sqlite+aiosqlite:///./opencli_admin.db"
 
-    # Task execution mode: "local" (in-process asyncio) or "celery" (distributed)
-    task_executor: Literal["local", "celery"] = "local"
+    # Task execution mode: local (in-process), celery (distributed), or Hermes
+    # (the host-side Hermes scheduler owns durable Gaojixing collection claims).
+    task_executor: Literal["local", "celery", "hermes"] = "local"
 
     # AUDIT C6: process-wide cap on concurrently-RUNNING pipeline executions in
     # the local (in-process asyncio) executor — independent of the per-domain

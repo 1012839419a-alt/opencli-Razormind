@@ -19,7 +19,7 @@ _local_tasks: dict[str, asyncio.Task[Any]] = {}
 
 
 def dispatch_collection_job(job_id: str) -> None:
-    """Dispatch on the configured durable mode; local tasks remain strongly held."""
+    """Dispatch on the configured durable mode; Hermes claims queued jobs itself."""
 
     from backend.config import get_settings
 
@@ -29,6 +29,12 @@ def dispatch_collection_job(job_id: str) -> None:
         run_gaojixing_collection.apply_async(
             kwargs={"job_id": job_id},
             task_id=f"gaojixing-collection:{job_id}",
+        )
+        return
+    if get_settings().task_executor == "hermes":
+        logger.info(
+            "Gaojixing collection queued for Hermes",
+            extra={"jobId": job_id},
         )
         return
     current = _local_tasks.get(job_id)
