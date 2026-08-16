@@ -59,6 +59,19 @@ class Settings(BaseSettings):
     # guard only allows on a localhost bind. Env: API_AUTH_TOKEN.
     api_auth_token: str = ""
 
+    # OIDC identity verification + emergency bootstrap admin token
+    # (backend/security/identity.py). Read via Settings — not raw
+    # os.getenv() — so these are correctly populated under plain
+    # `uv run uvicorn ...` even when uv does not inject .env into the
+    # process environment (uv only does that for `uv run --env-file .env`;
+    # BaseSettings' own env_file=".env" parsing is what actually reads
+    # these today). Empty (default) = OIDC not configured / bootstrap
+    # token disabled.
+    oidc_issuer: str = ""
+    oidc_audience: str = ""
+    oidc_jwks_url: str = ""
+    bootstrap_admin_token: str = ""
+
     # CLI channel binary allowlist (ADR-0005, audit P0-4). The cli channel is
     # an arbitrary-binary-execution surface, so it only runs binaries the
     # operator explicitly listed here. Comma-separated binary paths/names,
