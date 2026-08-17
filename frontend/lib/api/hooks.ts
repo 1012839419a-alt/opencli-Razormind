@@ -507,6 +507,33 @@ export function useSkills(params?: { domain?: string; enabled?: boolean; page?: 
   })
 }
 
+export function useSkill(id: string | null) {
+  return useQuery({
+    queryKey: ['skills', id],
+    queryFn: () => api.getSkill(id as string),
+    enabled: !!id,
+  })
+}
+
+export function useDismissCorrection() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => api.dismissCorrection(id),
+    // The list query key carries a variable `params` object, so invalidate the
+    // whole 'skills' prefix — covers the list (any params) and this skill's
+    // own detail query (['skills', id]) in one call.
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['skills'] }),
+  })
+}
+
+export function useRollbackSkill() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => api.rollbackSkill(id),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['skills'] }),
+  })
+}
+
 export function useNotificationRules() {
   return useQuery({
     queryKey: ['notification-rules'],
