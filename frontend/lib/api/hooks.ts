@@ -4,6 +4,7 @@ import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tansta
 
 import * as api from './endpoints'
 import type {
+  AIAgent,
   ApprovalDecision,
   Automation,
   FeedProviderInput,
@@ -12,6 +13,7 @@ import type {
   ModelRole,
   OperationsAgentMode,
   ProviderModelDiscoveryInput,
+  WorkspaceSettingsValues,
 } from './types'
 
 export function useMyWorkspaces() {
@@ -574,6 +576,56 @@ export function useAgents(params?: { enabled?: boolean }) {
   return useQuery({
     queryKey: ['agents', params],
     queryFn: () => api.listAgents(params),
+  })
+}
+
+export function useCreateAgent() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (data: Partial<AIAgent>) => api.createAgent(data),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['agents'] }),
+  })
+}
+
+export function useUpdateAgent() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, data }: { id: string; data: Partial<AIAgent> }) => api.updateAgent(id, data),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['agents'] }),
+  })
+}
+
+export function useDeleteAgent() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => api.deleteAgent(id),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['agents'] }),
+  })
+}
+
+// Singleton workspace settings (GET/PATCH/DELETE /settings) — unlike every
+// other resource in this file, there's no list to invalidate; the query key
+// is a fixed singleton tuple and every mutation invalidates that same key.
+export function useWorkspaceSettings() {
+  return useQuery({
+    queryKey: ['workspace-settings'],
+    queryFn: () => api.getWorkspaceSettings(),
+  })
+}
+
+export function useUpdateWorkspaceSettings() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (data: Partial<WorkspaceSettingsValues>) => api.updateWorkspaceSettings(data),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['workspace-settings'] }),
+  })
+}
+
+export function useResetWorkspaceSettings() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: () => api.resetWorkspaceSettings(),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['workspace-settings'] }),
   })
 }
 

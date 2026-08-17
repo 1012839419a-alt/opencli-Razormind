@@ -4,6 +4,7 @@ import {
   Database,
   LayoutDashboard,
   PanelsTopLeft,
+  Settings,
   ShieldAlert,
   ShieldCheck,
   Workflow,
@@ -80,6 +81,12 @@ export const NAV_GROUPS: NavGroup[] = [
         icon: ShieldAlert,
         match: ['/control'],
       },
+      {
+        href: '/settings',
+        label: '工作区设置',
+        icon: Settings,
+        match: ['/settings'],
+      },
     ],
   },
 ]
@@ -107,4 +114,5 @@ export const ROUTE_LABELS: Record<string, string> = {
   '/control/kill-switch': '熔断开关',
   '/control/advisory-report': '建议报告',
   '/control/odp-state': 'ODP 状态',
+  '/settings': '工作区设置',
 }
