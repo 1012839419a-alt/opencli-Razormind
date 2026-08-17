@@ -540,6 +540,33 @@ export function useSourceMeasurements(id: string | null, params?: { page?: numbe
   })
 }
 
+// Encrypted credential store (backend.auth.AuthManager). The list endpoint
+// only ever returns key_name — see api.listSourceCredentials — so there is
+// nothing secret-shaped in this query's cache to worry about redisplaying.
+export function useSourceCredentials(id: string | null) {
+  return useQuery({
+    queryKey: ['sources', id, 'credentials'],
+    queryFn: () => api.listSourceCredentials(id as string),
+    enabled: !!id,
+  })
+}
+
+export function useStoreSourceCredential(id: string) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (data: { key_name: string; secret: string }) => api.storeSourceCredential(id, data),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['sources', id, 'credentials'] }),
+  })
+}
+
+export function useDeleteSourceCredential(id: string) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (keyName: string) => api.deleteSourceCredential(id, keyName),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['sources', id, 'credentials'] }),
+  })
+}
+
 export function useSchedules(params?: { source_id?: string; enabled?: boolean }) {
   return useQuery({
     queryKey: ['schedules', params],

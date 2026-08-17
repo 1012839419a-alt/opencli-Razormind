@@ -10,6 +10,7 @@ import { formatDateTime, formatDuration, formatNumber } from '@/lib/format'
 import { BACKEND_HINT, EmptyState, ErrorState, LoadingState } from '@/components/shell/data-states'
 import { PageContainer } from '@/components/shell/page-container'
 import { StatusBadge } from '@/components/shell/status-badge'
+import { SourceCredentialsPanel } from '@/components/sources/source-credentials-panel'
 import { Badge } from '@/components/ui/badge'
 import { buttonVariants } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -193,6 +194,8 @@ export default function SourceControlRoomPage({ params }: { params: Promise<{ id
           </Card>
         </>
       )}
+
+      <SourceCredentialsPanel sourceId={id} />
     </PageContainer>
   )
 }
