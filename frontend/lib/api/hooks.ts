@@ -460,6 +460,58 @@ export function usePlan(id: string | null) {
   })
 }
 
+export function useCreatePlan() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (data: Parameters<typeof api.createPlan>[0]) => api.createPlan(data),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['plans'] }),
+  })
+}
+
+export function useUpdatePlan() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, data }: { id: string; data: Parameters<typeof api.updatePlan>[1] }) =>
+      api.updatePlan(id, data),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['plans'] }),
+  })
+}
+
+export function useDeletePlan() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => api.deletePlan(id),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['plans'] }),
+  })
+}
+
+// Run is synchronous (the response already reflects the completed run — see
+// endpoints.ts's runPlan comment), so callers keep the PlanRunRead result in
+// local component state keyed by plan id, same non-caching rationale as
+// useTestProvider above. Success still invalidates Plan Health so the
+// per-plan health badge picks up the new run's rows.
+export function useRunPlan() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, parameters }: { id: string; parameters?: Record<string, unknown> }) =>
+      api.runPlan(id, parameters),
+    onSuccess: (_result, { id }) =>
+      queryClient.invalidateQueries({ queryKey: ['plans', id, 'health'] }),
+  })
+}
+
+export function usePlanHealth(
+  id: string | null,
+  params?: { run_key?: string; page?: number; limit?: number },
+) {
+  return useQuery({
+    queryKey: ['plans', id, 'health', params],
+    queryFn: () => api.getPlanHealth(id as string, params),
+    enabled: !!id,
+    staleTime: 30_000,
+  })
+}
+
 export function useSource(id: string | null) {
   return useQuery({
     queryKey: ['sources', id],
@@ -490,6 +542,31 @@ export function useSchedules(params?: { source_id?: string; enabled?: boolean })
     queryKey: ['schedules', params],
     queryFn: () => api.listSchedules(params),
     refetchInterval: 30_000,
+  })
+}
+
+export function useCreateSchedule() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (data: Parameters<typeof api.createSchedule>[0]) => api.createSchedule(data),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['schedules'] }),
+  })
+}
+
+export function useUpdateSchedule() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, data }: { id: string; data: Parameters<typeof api.updateSchedule>[1] }) =>
+      api.updateSchedule(id, data),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['schedules'] }),
+  })
+}
+
+export function useDeleteSchedule() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => api.deleteSchedule(id),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['schedules'] }),
   })
 }
 
