@@ -756,3 +756,49 @@ export function useInfiniteControlActions(params?: {
     },
   })
 }
+
+// ── Control plane (issue 03 / PR-Control-3.5 / C2) ──────────────────────────────
+// Global actuator kill switch — polled like other control-state surfaces so an
+// operator sees a runtime-side flip (e.g. from another tab) without a manual
+// refresh. The mutation writes the fresh server response straight into the
+// query cache instead of invalidating, since the POST response IS the new
+// canonical snapshot (KillSwitchRead) — no extra round trip needed.
+export function useKillSwitch() {
+  return useQuery({
+    queryKey: ['control', 'kill-switch'],
+    queryFn: () => api.getKillSwitch(),
+    refetchInterval: 15_000,
+  })
+}
+
+export function useSetKillSwitch() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (engaged: boolean) => api.setKillSwitch(engaged),
+    onSuccess: (result) => {
+      queryClient.setQueryData(['control', 'kill-switch'], result)
+    },
+  })
+}
+
+// Agreement/recovery report over the control_actions ledger — an on-demand
+// read like the actions table itself (no refetchInterval); the backend runs
+// its lazy outcome-evaluation pass on every read so refetching is how an
+// operator gets a newer verdict, not a background poll.
+export function useAdvisoryReport() {
+  return useQuery({
+    queryKey: ['control', 'advisory-report'],
+    queryFn: () => api.getAdvisoryReport(),
+  })
+}
+
+// System-level ODP data-plane snapshot — polled at the same cadence as
+// useNodes/useWorkers/useSourceControlState so the dashboard reflects a
+// down Redis or DLQ backlog without a manual refresh.
+export function useOdpState() {
+  return useQuery({
+    queryKey: ['control', 'odp-state'],
+    queryFn: () => api.getOdpState(),
+    refetchInterval: 15_000,
+  })
+}

@@ -21,6 +21,9 @@ const APP_ROUTES = [
   '/nodes',
   '/workers',
   '/control/actions',
+  '/control/kill-switch',
+  '/control/advisory-report',
+  '/control/odp-state',
   '/canvas',
 ] as const
 
