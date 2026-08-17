@@ -11,6 +11,7 @@ import type {
   ModelDefaultCandidate,
   ModelProviderInput,
   ModelRole,
+  NotificationRuleInput,
   OperationsAgentMode,
   ProviderModelDiscoveryInput,
   WorkspaceSettingsValues,
@@ -667,6 +668,31 @@ export function useNotificationRules() {
   return useQuery({
     queryKey: ['notification-rules'],
     queryFn: () => api.listNotificationRules(),
+  })
+}
+
+export function useCreateNotificationRule() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (data: NotificationRuleInput) => api.createNotificationRule(data),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['notification-rules'] }),
+  })
+}
+
+export function useUpdateNotificationRule() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, data }: { id: string; data: NotificationRuleInput }) =>
+      api.updateNotificationRule(id, data),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['notification-rules'] }),
+  })
+}
+
+export function useDeleteNotificationRule() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => api.deleteNotificationRule(id),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['notification-rules'] }),
   })
 }
 
