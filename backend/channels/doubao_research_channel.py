@@ -7,8 +7,18 @@ from typing import Any
 from backend.channels.base import AbstractChannel, Capabilities, ChannelResult
 from backend.channels.registry import register_channel
 
-_URL_RE = re.compile(r"https?://[^\s<>\]\[\](){}\"']+", re.IGNORECASE)
+_URL_RE = re.compile(r"https?://[^\s<>\[\](){}'\"]+", re.IGNORECASE)
 _TRAILING_URL_PUNCTUATION = ".,;:!?\uff0c\u3002\uff1b\uff1a\uff01\uff1f"
+#: OpenCLI adapter reports a captcha wall this way (verified on opencli 1.8.6).
+_CAPTCHA_MARKERS = (
+    "verification challenge",
+    "captcha",
+    "blocked the request",
+    "人机验证",
+    "验证码",
+)
+
+
 def _citations(text: str) -> list[dict[str, str]]:
     """Extract and de-duplicate URLs while preserving the answer's order."""
     seen: set[str] = set()
@@ -35,6 +45,25 @@ def _answer(rows: list[dict[str, Any]]) -> str:
         for row in candidates
         if row.get("Text", row.get("text"))
     ).strip()
+
+
+def _conversation_url(stdout: str) -> str:
+    """Extract https://www.doubao.com/chat/<id> from `doubao status -f json` output."""
+    try:
+        rows = _parse_opencli_rows(stdout)
+    except Exception:
+        return ""
+    for row in rows:
+        url = str(row.get("Url", row.get("url", "")) or "").strip()
+        if "/chat/" in url:
+            return url
+    return ""
+
+
+def _is_captcha_block(stderr: str, stdout: str) -> bool:
+    """True when the adapter reports a captcha/verification wall."""
+    text = f"{stderr} {stdout}".lower()
+    return any(marker in text for marker in _CAPTCHA_MARKERS)
 
 
 async def _run_doubao_command(command: list[str]) -> tuple[int, str, str]:
@@ -102,8 +131,12 @@ class DoubaoResearchChannel(AbstractChannel):
             )
 
         if returncode:
+            # Classify captcha walls so the runner can apply a human-in-the-loop
+            # or cooldown-retry policy instead of treating it as a permanent failure.
+            error_type = "captcha_challenge" if _is_captcha_block(stderr, stdout) else None
             return ChannelResult.fail(
-                f"opencli doubao ask exited with code {returncode}: {stderr[:500]}"
+                f"opencli doubao ask exited with code {returncode}: {stderr[:500]}",
+                error_type=error_type,
             )
         try:
             answer = _answer(_parse_opencli_rows(stdout))
@@ -114,6 +147,28 @@ class DoubaoResearchChannel(AbstractChannel):
         if not answer:
             return ChannelResult.fail("Doubao returned no assistant text")
 
+        # Best-effort conversation URL: `doubao status -f json` exposes the
+        # active chat id (https://www.doubao.com/chat/<id>).  This is a
+        # read-only query against the same browser session; a failure here
+        # must not fail the collect — the answer is already in hand.
+        conversation_url = ""
+        if config.get("capture_conversation_url", True):
+            status_command = [
+                _opencli_binary(),
+                "doubao",
+                "status",
+                "-f",
+                "json",
+                "--site-session",
+                str(config.get("site_session", "ephemeral")),
+            ]
+            try:
+                rc, so, se = await _run_doubao_command(status_command)
+                if rc == 0:
+                    conversation_url = _conversation_url(so)
+            except Exception:
+                conversation_url = ""
+
         citations = _citations(answer) if extract_citations else []
         return ChannelResult.ok(
             [
@@ -122,6 +177,7 @@ class DoubaoResearchChannel(AbstractChannel):
                     "content": answer,
                     "author": "doubao",
                     "question": question,
+                    "conversation_url": conversation_url,
                     "citations": citations,
                     "citation_count": len(citations),
                     "citation_capture": (
