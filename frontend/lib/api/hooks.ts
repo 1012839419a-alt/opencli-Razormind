@@ -14,6 +14,7 @@ import type {
   NotificationRuleInput,
   OperationsAgentMode,
   ProviderModelDiscoveryInput,
+  SystemConfig,
   WorkspaceSettingsValues,
 } from './types'
 
@@ -996,6 +997,51 @@ export function useWorkers() {
   return useQuery({
     queryKey: ['workers'],
     queryFn: () => api.listWorkers(),
+    refetchInterval: 20_000,
+  })
+}
+
+// ── System / ops (WIRING_GAP_LEDGER W5) ─────────────────────────────────────────
+export function useSystemConfig() {
+  return useQuery({
+    queryKey: ['system-config'],
+    queryFn: () => api.getSystemConfig(),
+  })
+}
+
+// PATCH /system/config only actually persists collection_mode (see
+// backend/api/v1/system.py ConfigPatch) — task_executor and image_tag are
+// deployment-time settings; sending them is a silent no-op. Callers should
+// only pass collection_mode.
+export function useUpdateSystemConfig() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (data: Partial<SystemConfig>) => api.updateSystemConfig(data),
+    onSuccess: (result) => queryClient.setQueryData(['system-config'], result),
+  })
+}
+
+// Restarts the whole backend API container (backend/api/v1/browsers.py
+// restart_api) — affects every connected user/agent, not just this session.
+// No query invalidation on success: the process is about to go down.
+export function useRestartApi() {
+  return useMutation({
+    mutationFn: () => api.restartApi(),
+  })
+}
+
+export function useCeleryStats() {
+  return useQuery({
+    queryKey: ['celery-stats'],
+    queryFn: () => api.getCeleryStats(),
+    refetchInterval: 20_000,
+  })
+}
+
+export function useChromePool() {
+  return useQuery({
+    queryKey: ['chrome-pool'],
+    queryFn: () => api.getChromePool(),
     refetchInterval: 20_000,
   })
 }

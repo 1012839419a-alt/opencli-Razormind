@@ -401,6 +401,10 @@ export interface ChromeEndpoint {
   mode: 'bridge' | 'cdp'
   agent_url?: string | null
   agent_protocol?: 'http' | 'ws' | null
+  /** Fail-closed default is 'authenticated' — 'anonymous' means the pool
+   *  operator explicitly registered this endpoint as a clean, no-session
+   *  profile (backend.browser_pool.BrowserPool.get_profile_kind). */
+  profile_kind?: 'anonymous' | 'authenticated'
 }
 
 export interface BrowserBinding {
