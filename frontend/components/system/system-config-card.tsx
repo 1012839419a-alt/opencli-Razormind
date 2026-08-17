@@ -95,7 +95,14 @@ export function SystemConfigCard() {
               onValueChange={(value) => setCollectionMode(value as SystemConfig['collection_mode'])}
             >
               <SelectTrigger id="collection-mode" className="w-full">
-                <SelectValue />
+                {/* Base UI's SelectValue shows the raw value string unless told how to
+                    format it — see the note on the provider-type Select in
+                    provider-form-dialog.tsx. */}
+                <SelectValue>
+                  {(value: SystemConfig['collection_mode'] | null) =>
+                    value ? COLLECTION_MODE_LABEL[value] : '选择采集模式'
+                  }
+                </SelectValue>
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="local">{COLLECTION_MODE_LABEL.local}</SelectItem>

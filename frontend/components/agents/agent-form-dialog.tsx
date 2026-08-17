@@ -201,7 +201,12 @@ export function AgentFormDialog({
                   }
                 >
                   <SelectTrigger id="agent-processor-type" className="w-full">
-                    <SelectValue />
+                    {/* Base UI's SelectValue shows the raw value string unless told how
+                        to format it — see the note on the schedule-agent Select in
+                        schedule-form-dialog.tsx. */}
+                    <SelectValue>
+                      {(value: ProcessorType | null) => (value ? PROCESSOR_LABEL[value] : '')}
+                    </SelectValue>
                   </SelectTrigger>
                   <SelectContent>
                     {PROCESSOR_TYPES.map((type) => (
@@ -222,7 +227,14 @@ export function AgentFormDialog({
                   }
                 >
                   <SelectTrigger id="agent-provider" className="w-full">
-                    <SelectValue placeholder={providersQuery.isLoading ? '加载中…' : '选择供应商'} />
+                    <SelectValue>
+                      {(value: string | null) =>
+                        !value || value === NO_PROVIDER
+                          ? '不关联供应商'
+                          : (providers.find((provider) => provider.id === value)?.name ??
+                              (providersQuery.isLoading ? '加载中…' : value))
+                      }
+                    </SelectValue>
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value={NO_PROVIDER}>不关联供应商</SelectItem>

@@ -114,7 +114,18 @@ function AddCredentialDialog({
               <FieldLabel htmlFor="credential-key-name">凭证名称</FieldLabel>
               <Select value={preset} onValueChange={(value) => setPreset(value as string)}>
                 <SelectTrigger id="credential-key-name" className="w-full">
-                  <SelectValue placeholder="选择凭证名称" />
+                  {/* Base UI's SelectValue shows the raw value string unless told
+                      how to format it — see the note on the schedule-agent Select
+                      in schedule-form-dialog.tsx. */}
+                  <SelectValue>
+                    {(value: string | null) =>
+                      !value
+                        ? '选择凭证名称'
+                        : value === CUSTOM_PRESET
+                          ? '自定义…'
+                          : (KEY_NAME_PRESETS.find((item) => item.value === value)?.label ?? value)
+                    }
+                  </SelectValue>
                 </SelectTrigger>
                 <SelectContent>
                   {KEY_NAME_PRESETS.map((item) => (

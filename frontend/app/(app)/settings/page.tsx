@@ -152,7 +152,11 @@ export default function SettingsPage() {
                     </FieldLabel>
                     <Select value={form.theme} onValueChange={(value) => set('theme', value as WorkspaceSettingsValues['theme'])}>
                       <SelectTrigger id="settings-theme" className="w-full">
-                        <SelectValue />
+                        <SelectValue>
+                          {(value: WorkspaceSettingsValues['theme'] | null) =>
+                            value ? (THEME_OPTIONS.find((option) => option.value === value)?.label ?? value) : '选择主题'
+                          }
+                        </SelectValue>
                       </SelectTrigger>
                       <SelectContent>
                         {THEME_OPTIONS.map((option) => (
@@ -174,7 +178,11 @@ export default function SettingsPage() {
                       onValueChange={(value) => set('sidebar_mode', value as WorkspaceSettingsValues['sidebar_mode'])}
                     >
                       <SelectTrigger id="settings-sidebar-mode" className="w-full">
-                        <SelectValue />
+                        <SelectValue>
+                          {(value: WorkspaceSettingsValues['sidebar_mode'] | null) =>
+                            value ? (SIDEBAR_OPTIONS.find((option) => option.value === value)?.label ?? value) : '选择侧边栏'
+                          }
+                        </SelectValue>
                       </SelectTrigger>
                       <SelectContent>
                         {SIDEBAR_OPTIONS.map((option) => (
@@ -198,7 +206,11 @@ export default function SettingsPage() {
                       onValueChange={(value) => set('landing_page', value as WorkspaceSettingsValues['landing_page'])}
                     >
                       <SelectTrigger id="settings-landing-page" className="w-full">
-                        <SelectValue />
+                        <SelectValue>
+                          {(value: WorkspaceSettingsValues['landing_page'] | null) =>
+                            value ? (LANDING_OPTIONS.find((option) => option.value === value)?.label ?? value) : '选择默认落地页'
+                          }
+                        </SelectValue>
                       </SelectTrigger>
                       <SelectContent>
                         {LANDING_OPTIONS.map((option) => (
@@ -311,7 +323,9 @@ export default function SettingsPage() {
                     disabled={!form.retain_raw_data}
                   >
                     <SelectTrigger id="settings-retention-days" className="w-full">
-                      <SelectValue />
+                      <SelectValue>
+                        {(value: string | null) => (value ? `${value} 天` : '选择保留天数')}
+                      </SelectValue>
                     </SelectTrigger>
                     <SelectContent>
                       {RETENTION_OPTIONS.map((days) => (
