@@ -448,6 +448,70 @@ export function useBrowserActPacks() {
   })
 }
 
+// ── Chrome instances (browsers.py pool CRUD) ────────────────────────────────
+// Note: useChromePool() (the list/status read, GET /workers/chrome-pool) is
+// defined further below alongside the other execution-resource reads — reused
+// here rather than duplicated.
+export function useAddChromeInstance() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (data: {
+      count?: number
+      mode?: 'bridge' | 'cdp'
+      agent_url?: string
+      agent_protocol?: 'http' | 'ws' | ''
+    }) => api.addChromeInstance(data.count, data.mode, data.agent_url, data.agent_protocol),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['chrome-pool'] }),
+  })
+}
+
+export function useUpdateChromeInstanceConfig() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({
+      endpoint,
+      data,
+    }: {
+      endpoint: string
+      data: { mode?: string; agent_url?: string | null; agent_protocol?: string | null }
+    }) => api.updateChromeInstanceConfig(endpoint, data),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['chrome-pool'] }),
+  })
+}
+
+export function useRemoveChromeInstance() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (n: number) => api.removeChromeInstance(n),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['chrome-pool'] }),
+  })
+}
+
+// ── Browser bindings (site → browser endpoint routing) ──────────────────────
+export function useBrowserBindings() {
+  return useQuery({
+    queryKey: ['browser-bindings'],
+    queryFn: () => api.listBrowserBindings(),
+  })
+}
+
+export function useCreateBrowserBinding() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (data: { browser_endpoint: string; site: string; notes?: string }) =>
+      api.createBrowserBinding(data),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['browser-bindings'] }),
+  })
+}
+
+export function useDeleteBrowserBinding() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => api.deleteBrowserBinding(id),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['browser-bindings'] }),
+  })
+}
+
 export function usePlans(params?: { draft?: boolean; page?: number; limit?: number }) {
   return useQuery({
     queryKey: ['plans', params],
