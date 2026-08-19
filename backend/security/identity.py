@@ -1,4 +1,4 @@
-"""OIDC request identity verification and emergency bootstrap authentication."""
+"""OIDC, local-session, and emergency bootstrap request identities."""
 
 from __future__ import annotations
 
@@ -12,6 +12,9 @@ from fastapi import HTTPException, Request, status
 from jose import JWTError, jwt
 
 from backend.config import get_settings
+from backend.security.local_auth import LOCAL_AUTH_STATE_KEY, LocalSessionIdentity
+
+REQUEST_IDENTITY_STATE_KEY = "opencli_request_identity"
 
 
 @dataclass(frozen=True)
@@ -129,6 +132,21 @@ def identity_dependency(
     oidc = verifier or OIDCVerifier(resolved)
 
     async def get_request_identity(request: Request) -> RequestIdentity:
+        verified_identity = request.scope.get("state", {}).get(REQUEST_IDENTITY_STATE_KEY)
+        if isinstance(verified_identity, RequestIdentity):
+            return verified_identity
+
+        local_identity = request.scope.get("state", {}).get(LOCAL_AUTH_STATE_KEY)
+        if isinstance(local_identity, LocalSessionIdentity):
+            return RequestIdentity(
+                subject=local_identity.subject,
+                email=local_identity.email,
+                name=local_identity.name,
+                username=local_identity.username,
+                is_platform_admin=True,
+                auth_method="local",
+            )
+
         scheme, _, token = request.headers.get("authorization", "").partition(" ")
         if scheme.lower() != "bearer" or not token:
             raise HTTPException(

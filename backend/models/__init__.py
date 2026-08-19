@@ -8,6 +8,8 @@ from backend.models.control_action import ControlActionRecord
 from backend.models.cookie_jar import CookieJarEntry
 from backend.models.edge_node import EdgeNode, EdgeNodeEvent
 from backend.models.identity import (
+    LocalAuthSession,
+    LocalCredential,
     ServiceIdentity,
     Team,
     TeamMembership,
@@ -89,6 +91,8 @@ __all__ = [
     "EdgeNode",
     "EdgeNodeEvent",
     "User",
+    "LocalCredential",
+    "LocalAuthSession",
     "Workspace",
     "WorkspaceMembership",
     "WorkspaceRole",

@@ -134,19 +134,30 @@ function LoginForm() {
   const searchParams = useSearchParams()
   const {
     status,
+    serverStatus,
     oidcEnabled,
     developmentLoginEnabled,
+    setupLocalAccount,
+    signInWithLocal,
     signInWithOidc,
-    signInWithBootstrap,
     enterDevelopmentMode,
   } = useAuth()
-  const [identityToken, setIdentityToken] = useState('')
-  const [fleetToken, setFleetToken] = useState('')
-  const [submitting, setSubmitting] = useState<'oidc' | 'bootstrap' | 'development' | null>(null)
+  const [claimCode, setClaimCode] = useState('')
+  const [username, setUsername] = useState('')
+  const [displayName, setDisplayName] = useState('')
+  const [password, setPassword] = useState('')
+  const [passwordConfirmation, setPasswordConfirmation] = useState('')
+  const [rememberDevice, setRememberDevice] = useState(true)
+  const [submitting, setSubmitting] = useState<
+    'setup' | 'local' | 'oidc' | 'development' | null
+  >(null)
   const [reduceMotion, setReduceMotion] = useState(true)
   const [backdrop, setBackdrop] = useState<LoginBackdrop>('liquid')
   const [headlineWord, setHeadlineWord] = useState(0)
   const returnTo = sanitizeReturnTo(searchParams.get('returnTo'))
+  const requiresSetup = status === 'setup-required' || serverStatus?.initialized === false
+  const claimAvailable = serverStatus?.claim_available ?? true
+  const localLoginEnabled = serverStatus?.local_login_enabled ?? true
 
   useEffect(() => {
     const mediaQuery = window.matchMedia('(prefers-reduced-motion: reduce)')
@@ -173,27 +184,72 @@ function LoginForm() {
     return () => window.clearInterval(interval)
   }, [reduceMotion])
 
-  const optionalFleetToken = fleetToken.trim() || undefined
-
   async function startOidcLogin() {
     setSubmitting('oidc')
     try {
-      await signInWithOidc(returnTo, optionalFleetToken)
+      await signInWithOidc(returnTo)
     } catch (error) {
       toast.error(error instanceof Error ? error.message : '无法启动 OIDC 登录')
       setSubmitting(null)
     }
   }
 
-  async function handleBootstrapLogin(event: React.FormEvent) {
+  async function handleSetup(event: React.FormEvent) {
     event.preventDefault()
-    setSubmitting('bootstrap')
+    if (!claimCode.trim()) {
+      toast.error('请输入设备认领码')
+      return
+    }
+    if (!username.trim()) {
+      toast.error('请输入管理员用户名')
+      return
+    }
+    if (!password) {
+      toast.error('请输入管理员密码')
+      return
+    }
+    if (password.length < 10) {
+      toast.error('管理员密码至少需要 10 个字符')
+      return
+    }
+    if (password !== passwordConfirmation) {
+      toast.error('两次输入的密码不一致')
+      return
+    }
+
+    setSubmitting('setup')
     try {
-      await signInWithBootstrap(identityToken, optionalFleetToken)
-      toast.success('管理员身份验证成功')
-      router.replace(returnTo)
+      await setupLocalAccount({
+        claim_code: claimCode.trim(),
+        username: username.trim(),
+        display_name: displayName.trim() || undefined,
+        password,
+        remember_device: rememberDevice,
+      })
+      toast.success('本机管理员已创建')
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : '身份验证失败')
+      toast.error(error instanceof Error ? error.message : '无法完成设备设置')
+      setSubmitting(null)
+    }
+  }
+
+  async function handleLocalLogin(event: React.FormEvent) {
+    event.preventDefault()
+    if (!username.trim() || !password) {
+      toast.error('请输入管理员用户名和密码')
+      return
+    }
+
+    setSubmitting('local')
+    try {
+      await signInWithLocal({
+        username: username.trim(),
+        password,
+        remember_device: rememberDevice,
+      })
+      toast.success('登录成功')
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : '用户名或密码不正确')
       setSubmitting(null)
     }
   }
@@ -201,7 +257,7 @@ function LoginForm() {
   function handleDevelopmentLogin() {
     setSubmitting('development')
     try {
-      enterDevelopmentMode(optionalFleetToken)
+      enterDevelopmentMode()
       window.setTimeout(() => router.replace(returnTo), reduceMotion ? 0 : 285)
     } catch (error) {
       toast.error(error instanceof Error ? error.message : '无法进入本地开发模式')
@@ -327,118 +383,283 @@ function LoginForm() {
 
           <Card className="border-white/12 bg-background/92 shadow-2xl shadow-black/40 backdrop-blur-xl">
             <CardHeader>
-              <CardTitle>登录控制台</CardTitle>
+              <CardTitle>{requiresSetup ? '设置此设备' : '登录控制台'}</CardTitle>
               <CardDescription>
-                使用组织账号登录；Bootstrap Admin 仅用于首次部署和紧急恢复。
+                {requiresSetup
+                  ? '这是此设备的首次设置。创建本机管理员后即可直接使用。'
+                  : '使用本机管理员账号登录。'}
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-5">
-              {oidcEnabled ? (
-                <Button
-                  className={`w-full overflow-hidden transition-[height,border-radius,background-color] duration-300 ${submitting === 'oidc' ? 'h-16 rounded-2xl' : 'h-10'}`}
-                  data-triggered={submitting === 'oidc'}
-                  disabled={submitting !== null}
-                  onClick={startOidcLogin}
+              {status === 'loading' ? (
+                <div
+                  className="flex min-h-40 items-center justify-center gap-3 text-sm text-muted-foreground"
+                  role="status"
                 >
-                  {submitting === 'oidc' ? (
-                    <span className="flex items-center gap-3 text-left">
-                      <LoaderCircle className="size-5 animate-spin" />
-                      <span className="grid">
-                        <span>正在连接组织账号</span>
-                        <span className="text-xs font-normal opacity-65">等待身份提供方响应</span>
-                      </span>
-                    </span>
-                  ) : (
-                    <><ShieldCheck />使用组织账号登录</>
-                  )}
-                </Button>
-              ) : (
-                <div className="rounded-lg border bg-muted/40 p-3 text-sm text-muted-foreground">
-                  当前未配置组织登录。请配置 OIDC issuer、client ID 和授权端点。
+                  <LoaderCircle className="size-5 animate-spin" />
+                  正在检查设备状态…
                 </div>
-              )}
-
-              <div className="flex items-center gap-3">
-                <Separator className="flex-1" />
-                <span className="text-xs text-muted-foreground">紧急管理员访问</span>
-                <Separator className="flex-1" />
-              </div>
-
-              <form id="bootstrap-login" onSubmit={handleBootstrapLogin}>
-                <FieldGroup>
-                  <Field>
-                    <FieldLabel htmlFor="identity-token">管理员身份令牌</FieldLabel>
-                    <Input
-                      id="identity-token"
-                      type="password"
-                      placeholder="BOOTSTRAP_ADMIN_TOKEN"
-                      value={identityToken}
-                      onChange={(event) => setIdentityToken(event.target.value)}
-                      autoComplete="off"
+              ) : requiresSetup && claimAvailable ? (
+                <form className="space-y-5" onSubmit={handleSetup}>
+                  <FieldGroup>
+                    <Field>
+                      <FieldLabel htmlFor="claim-code">设备认领码</FieldLabel>
+                      <Input
+                        id="claim-code"
+                        value={claimCode}
+                        onChange={(event) => setClaimCode(event.target.value)}
+                        placeholder="安装完成时显示的一次性认领码"
+                        autoComplete="one-time-code"
+                        autoFocus
+                      />
+                      <FieldDescription>
+                        可在安装完成页或部署主机的首次启动输出中找到。
+                      </FieldDescription>
+                    </Field>
+                    <Field>
+                      <FieldLabel htmlFor="setup-username">管理员用户名</FieldLabel>
+                      <Input
+                        id="setup-username"
+                        value={username}
+                        onChange={(event) => setUsername(event.target.value)}
+                        autoComplete="username"
+                      />
+                    </Field>
+                    <Field>
+                      <FieldLabel htmlFor="display-name">显示名称（可选）</FieldLabel>
+                      <Input
+                        id="display-name"
+                        value={displayName}
+                        onChange={(event) => setDisplayName(event.target.value)}
+                        autoComplete="name"
+                        placeholder="例如：家庭管理员"
+                      />
+                    </Field>
+                    <Field>
+                      <FieldLabel htmlFor="setup-password">管理员密码</FieldLabel>
+                      <Input
+                        id="setup-password"
+                        type="password"
+                        value={password}
+                        onChange={(event) => setPassword(event.target.value)}
+                        autoComplete="new-password"
+                        minLength={10}
+                      />
+                      <FieldDescription>至少 10 个字符；密码仅保存在本机。</FieldDescription>
+                    </Field>
+                    <Field>
+                      <FieldLabel htmlFor="password-confirmation">确认密码</FieldLabel>
+                      <Input
+                        id="password-confirmation"
+                        type="password"
+                        value={passwordConfirmation}
+                        onChange={(event) => setPasswordConfirmation(event.target.value)}
+                        autoComplete="new-password"
+                        minLength={10}
+                      />
+                    </Field>
+                  </FieldGroup>
+                  <label className="flex cursor-pointer items-start gap-3 rounded-lg border bg-muted/30 p-3 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={rememberDevice}
+                      onChange={(event) => setRememberDevice(event.target.checked)}
+                      className="mt-0.5 size-4 accent-orange-500"
                     />
-                    <FieldDescription>验证成功后仅保存在当前标签页会话中。</FieldDescription>
-                  </Field>
-                  <Field>
-                    <FieldLabel htmlFor="fleet-token">Fleet API 令牌（可选）</FieldLabel>
-                    <Input
-                      id="fleet-token"
-                      type="password"
-                      placeholder="API_AUTH_TOKEN"
-                      value={fleetToken}
-                      onChange={(event) => setFleetToken(event.target.value)}
-                      autoComplete="off"
-                    />
-                    <FieldDescription>
-                      后端启用 Fleet Auth 时填写；留空沿用部署配置或浏览器中已有值。
-                    </FieldDescription>
-                  </Field>
-                </FieldGroup>
-              </form>
-            </CardContent>
-            <CardFooter className="flex-col gap-2">
-              <Button
-                type="submit"
-                form="bootstrap-login"
-                variant={oidcEnabled ? 'outline' : 'default'}
-                className={`w-full overflow-hidden transition-[height,border-radius,background-color] duration-300 ${submitting === 'bootstrap' ? 'h-16 rounded-2xl' : 'h-10'}`}
-                data-triggered={submitting === 'bootstrap'}
-                disabled={submitting !== null}
-              >
-                {submitting === 'bootstrap' ? (
-                  <span className="flex items-center gap-3 text-left">
-                    <LoaderCircle className="size-5 animate-spin" />
-                    <span className="grid">
-                      <span>正在验证管理员令牌</span>
-                      <span className="text-xs font-normal opacity-65">验证通过后建立本地会话</span>
-                    </span>
-                  </span>
-                ) : (
-                  <><KeyRound />使用管理员令牌登录</>
-                )}
-              </Button>
-              {developmentLoginEnabled ? (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  className={`w-full overflow-hidden text-muted-foreground transition-[height,border-radius,background-color] duration-300 ${submitting === 'development' ? 'h-16 rounded-2xl bg-muted' : 'h-10'}`}
-                  data-triggered={submitting === 'development'}
-                  disabled={submitting !== null}
-                  onClick={handleDevelopmentLogin}
-                >
-                  {submitting === 'development' ? (
-                    <span className="flex items-center gap-3 text-left text-foreground">
-                      <LoaderCircle className="size-5 animate-spin" />
-                      <span className="grid">
-                        <span>正在进入本地开发模式</span>
-                        <span className="text-xs font-normal text-muted-foreground">正在建立开发会话</span>
+                    <span className="grid gap-0.5">
+                      <span className="font-medium text-foreground">记住此设备</span>
+                      <span className="text-xs text-muted-foreground">
+                        仅在自己的电脑或手机上启用。
                       </span>
                     </span>
-                  ) : (
-                    '进入本地开发模式'
-                  )}
-                </Button>
-              ) : null}
-            </CardFooter>
+                  </label>
+                  <Button
+                    type="submit"
+                    className={`w-full overflow-hidden transition-[height,border-radius,background-color] duration-300 ${submitting === 'setup' ? 'h-16 rounded-2xl' : 'h-10'}`}
+                    data-triggered={submitting === 'setup'}
+                    disabled={submitting !== null}
+                  >
+                    {submitting === 'setup' ? (
+                      <span className="flex items-center gap-3 text-left">
+                        <LoaderCircle className="size-5 animate-spin" />
+                        <span className="grid">
+                          <span>正在创建本机管理员</span>
+                          <span className="text-xs font-normal opacity-65">
+                            完成后将自动进入控制台
+                          </span>
+                        </span>
+                      </span>
+                    ) : (
+                      <>
+                        <KeyRound />
+                        完成设置并进入控制台
+                      </>
+                    )}
+                  </Button>
+                </form>
+              ) : requiresSetup ? (
+                <div className="space-y-5">
+                  <div className="rounded-lg border border-amber-500/35 bg-amber-500/10 p-4 text-sm">
+                    <p className="font-medium text-foreground">设备认领码尚未配置</p>
+                    <p className="mt-2 text-muted-foreground">
+                      这是旧版本升级时的保护状态。请在部署主机的 <code>.env</code> 中设置
+                      10 位 <code>DEVICE_CLAIM_CODE</code>，重启 API 后刷新本页；认领码只用于首次设置。
+                    </p>
+                  </div>
+                  {oidcEnabled ? (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="w-full"
+                      disabled={submitting !== null}
+                      onClick={startOidcLogin}
+                    >
+                      <ShieldCheck />
+                      使用原有组织账号登录
+                    </Button>
+                  ) : null}
+                </div>
+              ) : (
+                <>
+                  {localLoginEnabled ? (
+                    <form className="space-y-5" onSubmit={handleLocalLogin}>
+                      <FieldGroup>
+                        <Field>
+                          <FieldLabel htmlFor="login-username">管理员用户名</FieldLabel>
+                          <Input
+                            id="login-username"
+                            value={username}
+                            onChange={(event) => setUsername(event.target.value)}
+                            autoComplete="username"
+                            autoFocus
+                          />
+                        </Field>
+                        <Field>
+                          <FieldLabel htmlFor="login-password">密码</FieldLabel>
+                          <Input
+                            id="login-password"
+                            type="password"
+                            value={password}
+                            onChange={(event) => setPassword(event.target.value)}
+                            autoComplete="current-password"
+                          />
+                        </Field>
+                      </FieldGroup>
+                      <label className="flex cursor-pointer items-start gap-3 rounded-lg border bg-muted/30 p-3 text-sm">
+                        <input
+                          type="checkbox"
+                          checked={rememberDevice}
+                          onChange={(event) => setRememberDevice(event.target.checked)}
+                          className="mt-0.5 size-4 accent-orange-500"
+                        />
+                        <span className="grid gap-0.5">
+                          <span className="font-medium text-foreground">记住此设备</span>
+                          <span className="text-xs text-muted-foreground">
+                            仅在自己的电脑或手机上启用。
+                          </span>
+                        </span>
+                      </label>
+                      <Button
+                        type="submit"
+                        className={`w-full overflow-hidden transition-[height,border-radius,background-color] duration-300 ${submitting === 'local' ? 'h-16 rounded-2xl' : 'h-10'}`}
+                        data-triggered={submitting === 'local'}
+                        disabled={submitting !== null}
+                      >
+                        {submitting === 'local' ? (
+                          <span className="flex items-center gap-3 text-left">
+                            <LoaderCircle className="size-5 animate-spin" />
+                            <span className="grid">
+                              <span>正在登录</span>
+                              <span className="text-xs font-normal opacity-65">
+                                正在恢复设备会话
+                              </span>
+                            </span>
+                          </span>
+                        ) : (
+                          <>
+                            <KeyRound />
+                            登录
+                          </>
+                        )}
+                      </Button>
+                    </form>
+                  ) : null}
+
+                  {oidcEnabled || developmentLoginEnabled ? (
+                    <div className="space-y-3">
+                      <div className="flex items-center gap-3">
+                        <Separator className="flex-1" />
+                        <span className="text-xs text-muted-foreground">其他登录方式</span>
+                        <Separator className="flex-1" />
+                      </div>
+                      {oidcEnabled ? (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          className={`w-full overflow-hidden transition-[height,border-radius,background-color] duration-300 ${submitting === 'oidc' ? 'h-16 rounded-2xl' : 'h-10'}`}
+                          data-triggered={submitting === 'oidc'}
+                          disabled={submitting !== null}
+                          onClick={startOidcLogin}
+                        >
+                          {submitting === 'oidc' ? (
+                            <span className="flex items-center gap-3 text-left">
+                              <LoaderCircle className="size-5 animate-spin" />
+                              <span className="grid">
+                                <span>正在连接组织账号</span>
+                                <span className="text-xs font-normal opacity-65">
+                                  等待身份提供方响应
+                                </span>
+                              </span>
+                            </span>
+                          ) : (
+                            <>
+                              <ShieldCheck />
+                              使用组织账号登录
+                            </>
+                          )}
+                        </Button>
+                      ) : null}
+                      {developmentLoginEnabled ? (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          className={`w-full overflow-hidden text-muted-foreground transition-[height,border-radius,background-color] duration-300 ${submitting === 'development' ? 'h-16 rounded-2xl bg-muted' : 'h-10'}`}
+                          data-triggered={submitting === 'development'}
+                          disabled={submitting !== null}
+                          onClick={handleDevelopmentLogin}
+                        >
+                          {submitting === 'development' ? (
+                            <span className="flex items-center gap-3 text-left text-foreground">
+                              <LoaderCircle className="size-5 animate-spin" />
+                              <span className="grid">
+                                <span>正在进入本地开发模式</span>
+                                <span className="text-xs font-normal text-muted-foreground">
+                                  正在建立开发会话
+                                </span>
+                              </span>
+                            </span>
+                          ) : (
+                            '进入本地开发模式'
+                          )}
+                        </Button>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </>
+              )}
+            </CardContent>
+            {!requiresSetup &&
+            status !== 'loading' &&
+            serverStatus?.recovery_enabled ? (
+              <CardFooter>
+                <details className="w-full rounded-lg border border-dashed p-3 text-sm text-muted-foreground">
+                  <summary className="cursor-pointer font-medium text-foreground">紧急恢复</summary>
+                  <p className="mt-2 text-xs leading-5">
+                    恢复操作需要直接访问部署主机。请在主机侧生成一次性恢复入口；此登录页不会接收长期管理员令牌。
+                  </p>
+                </details>
+              </CardFooter>
+            ) : null}
           </Card>
           <p className="text-center font-mono text-[11px] tracking-wide text-white/35">
             LOCAL-FIRST · AUDITABLE · NODE-NATIVE

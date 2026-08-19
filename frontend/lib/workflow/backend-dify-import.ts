@@ -7,6 +7,7 @@ import type {
   DifyInspectionSummary,
   DifyTranslationReport,
 } from "./dify-translator"
+import { workflowRequestAuthHeaders } from "./request-auth"
 
 type ApiResponse<T> = {
   success?: boolean
@@ -44,7 +45,7 @@ export async function importDifyWorkflow(
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      ...(options.authorization ? { Authorization: options.authorization } : {}),
+      ...workflowRequestAuthHeaders(options.authorization),
     },
     body: JSON.stringify({
       source,

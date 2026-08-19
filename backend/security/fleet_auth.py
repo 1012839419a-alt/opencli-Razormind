@@ -67,12 +67,28 @@ import sys
 from collections.abc import Sequence
 from urllib.parse import parse_qs
 
+from fastapi import HTTPException
 from starlette.datastructures import Headers
+from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 from starlette.websockets import WebSocketClose
 
-from backend.config import get_settings
+from backend.config import Settings, get_settings
+from backend.security.identity import (
+    REQUEST_IDENTITY_STATE_KEY,
+    IdentitySettings,
+    OIDCVerifier,
+    RequestIdentity,
+)
+from backend.security.local_auth import (
+    CSRF_HEADER_NAME,
+    LOCAL_AUTH_STATE_KEY,
+    SESSION_COOKIE_NAME,
+    authenticate_local_session,
+    is_public_local_auth_path,
+    local_session_write_has_csrf,
+)
 
 #: Path prefixes guarded by :class:`FleetAuthMiddleware`.
 PROTECTED_PREFIXES = ("/api", "/mcp")
@@ -149,6 +165,8 @@ class FleetAuthMiddleware:
 
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
+        self._oidc_signature: tuple[str, str, str] | None = None
+        self._oidc_verifier: OIDCVerifier | None = None
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] not in ("http", "websocket") or not scope["path"].startswith(
@@ -160,14 +178,14 @@ class FleetAuthMiddleware:
         # Read per request: get_settings() is lru_cached (cheap), but
         # api/v1/system.py may cache_clear() it at runtime after a config
         # patch, so don't freeze the token at middleware construction time.
-        token = get_settings().api_auth_token
-        if not token:
-            # Dev posture: no token configured -> API open. Only reachable on
-            # a localhost bind thanks to enforce_bind_guard at startup.
-            await self.app(scope, receive, send)
-            return
+        settings = get_settings()
+        token = settings.api_auth_token
 
         if scope["type"] == "websocket":
+            if not token:
+                # Preserve the existing localhost-only development posture.
+                await self.app(scope, receive, send)
+                return
             headers = Headers(scope=scope)
             credential = _bearer_credential(headers) or _query_token(scope.get("query_string", b""))
             if credential and _token_matches(credential, token):
@@ -179,8 +197,84 @@ class FleetAuthMiddleware:
             return
 
         headers = Headers(scope=scope)
+
+        # Only the three bootstrap/login discovery endpoints are anonymous.
+        # Exact path matching keeps this exemption from widening to the rest
+        # of /auth or any similarly prefixed route.
+        if is_public_local_auth_path(scope["path"]):
+            await self.app(scope, receive, send)
+            return
+
         credential = headers.get("x-api-token", "") or _bearer_credential(headers)
         if credential and _token_matches(credential, token):
+            await self.app(scope, receive, send)
+            return
+
+        bearer = _bearer_credential(headers)
+        if (
+            scope["path"].startswith("/api")
+            and settings.bootstrap_admin_token
+            and bearer
+            and _token_matches(bearer, settings.bootstrap_admin_token)
+        ):
+            # Emergency recovery is a complete bearer credential: operators
+            # do not also need to recover/remember the Fleet token.
+            scope.setdefault("state", {})[REQUEST_IDENTITY_STATE_KEY] = RequestIdentity(
+                subject="bootstrap-admin",
+                name="Bootstrap Admin",
+                is_platform_admin=True,
+                auth_method="bootstrap",
+            )
+            await self.app(scope, receive, send)
+            return
+
+        if scope["path"].startswith("/api"):
+            if bearer and settings.oidc_issuer and settings.oidc_audience:
+                try:
+                    oidc_identity = await self._oidc_verifier_for(settings).verify(bearer)
+                except HTTPException:
+                    oidc_identity = None
+                if oidc_identity is not None:
+                    scope.setdefault("state", {})[REQUEST_IDENTITY_STATE_KEY] = oidc_identity
+                    await self.app(scope, receive, send)
+                    return
+
+            session_token = Request(scope).cookies.get(SESSION_COOKIE_NAME, "")
+            if session_token:
+                try:
+                    local_identity = await authenticate_local_session(session_token)
+                except Exception:
+                    response = JSONResponse(
+                        status_code=503,
+                        content={"success": False, "error": "Local authentication unavailable"},
+                    )
+                    await response(scope, receive, send)
+                    return
+                if local_identity is not None:
+                    if not local_session_write_has_csrf(
+                        scope.get("method", "GET"), headers.get(CSRF_HEADER_NAME, "")
+                    ):
+                        response = JSONResponse(
+                            status_code=403,
+                            content={"success": False, "error": "CSRF header required"},
+                        )
+                        await response(scope, receive, send)
+                        return
+                    scope.setdefault("state", {})[LOCAL_AUTH_STATE_KEY] = local_identity
+                    scope["state"][REQUEST_IDENTITY_STATE_KEY] = RequestIdentity(
+                        subject=local_identity.subject,
+                        email=local_identity.email,
+                        name=local_identity.name,
+                        username=local_identity.username,
+                        is_platform_admin=True,
+                        auth_method="local",
+                    )
+                    await self.app(scope, receive, send)
+                    return
+
+        if not token:
+            # Dev posture: no token configured -> API open. Only reachable on
+            # a localhost bind thanks to enforce_bind_guard at startup.
             await self.app(scope, receive, send)
             return
 
@@ -190,3 +284,20 @@ class FleetAuthMiddleware:
             headers={"WWW-Authenticate": "Bearer"},
         )
         await response(scope, receive, send)
+
+    def _oidc_verifier_for(self, settings: Settings) -> OIDCVerifier:
+        signature = (
+            settings.oidc_issuer.rstrip("/"),
+            settings.oidc_audience,
+            settings.oidc_jwks_url,
+        )
+        if self._oidc_verifier is None or self._oidc_signature != signature:
+            self._oidc_signature = signature
+            self._oidc_verifier = OIDCVerifier(
+                IdentitySettings(
+                    issuer=signature[0],
+                    audience=signature[1],
+                    jwks_url=signature[2],
+                )
+            )
+        return self._oidc_verifier

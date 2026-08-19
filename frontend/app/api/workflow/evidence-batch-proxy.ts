@@ -25,9 +25,7 @@ async function proxyWorkflowEvidenceRequest(
     const search = new URL(req.url).searchParams.toString()
     const response = await fetch(`${root}${search ? `?${search}` : ""}`, {
       headers: {
-        ...(req.headers.get("authorization")
-          ? { Authorization: req.headers.get("authorization") as string }
-          : {}),
+        ...forwardedRequestAuthHeaders(req),
       },
       cache: "no-store",
     })
@@ -47,3 +45,5 @@ async function proxyWorkflowEvidenceRequest(
     )
   }
 }
+
+import { forwardedRequestAuthHeaders } from "@/lib/workflow/request-auth"

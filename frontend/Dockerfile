@@ -1,7 +1,11 @@
 FROM node:22-alpine AS dependencies
 
 WORKDIR /app
-RUN corepack enable && corepack prepare pnpm@11.10.0 --activate
+ARG NPM_REGISTRY=https://registry.npmjs.org
+ENV COREPACK_NPM_REGISTRY=${NPM_REGISTRY}
+RUN corepack enable \
+    && corepack prepare pnpm@11.10.0 --activate \
+    && pnpm config set registry "${NPM_REGISTRY}"
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile
 

@@ -72,9 +72,9 @@
  */
 :root {
   color-scheme: light;
-  --font-ui: var(--font-noto-sans-sc), "Source Han Sans SC", "Noto Sans CJK SC", "Microsoft YaHei UI", ui-sans-serif, system-ui, sans-serif;
-  --font-code: var(--font-ibm-plex-mono), var(--font-noto-sans-sc), "Noto Sans Mono CJK SC", ui-monospace, SFMono-Regular, Consolas, monospace;
-  --font-data: var(--font-ibm-plex-mono), ui-monospace, SFMono-Regular, Consolas, monospace;
+  --font-ui: "Source Han Sans SC", "Noto Sans CJK SC", "Microsoft YaHei UI", "PingFang SC", ui-sans-serif, system-ui, sans-serif;
+  --font-code: "IBM Plex Mono", "Noto Sans Mono CJK SC", "Microsoft YaHei UI", ui-monospace, SFMono-Regular, Consolas, monospace;
+  --font-data: "IBM Plex Mono", ui-monospace, SFMono-Regular, Consolas, monospace;
   --background: #ffffff;
   --foreground: #0a0a0a;
   --card: #f7f7f5;

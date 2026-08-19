@@ -2,7 +2,7 @@
 
 import { useQuery } from "@tanstack/react-query"
 
-import { getApiAuthToken } from "@/lib/api/auth-token"
+import { getApiAuthHeaders } from "@/lib/api/auth-headers"
 
 export type BackendPluginBlocker = {
   code: string
@@ -124,6 +124,5 @@ function readApiError<T>(payload: ApiResponse<T> | null, fallback: string): stri
 }
 
 function apiAuthHeaders(): HeadersInit {
-  const token = getApiAuthToken()
-  return token ? { Authorization: `Bearer ${token}` } : {}
+  return getApiAuthHeaders()
 }

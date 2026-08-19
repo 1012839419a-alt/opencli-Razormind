@@ -1,5 +1,5 @@
 import { apiClient } from '@/lib/api/client'
-import { getApiAuthToken } from '@/lib/api/auth-token'
+import { getApiAuthHeaders } from '@/lib/api/auth-headers'
 
 import {
   EMPTY_CANVAS_RECIPE,
@@ -30,8 +30,7 @@ function segment(value: string): string {
 }
 
 function platformHeaders(accept: string): HeadersInit {
-  const token = getApiAuthToken()
-  return token ? { Accept: accept, Authorization: `Bearer ${token}` } : { Accept: accept }
+  return { Accept: accept, ...getApiAuthHeaders() }
 }
 
 export function createPlatformCanvasHostBridge(scope: ImageStudioScope): CanvasHostBridge {

@@ -1,5 +1,11 @@
 import { apiClient, rootClient } from './client'
-import type { AuthIdentity } from '@/lib/auth/types'
+import type {
+  AuthIdentity,
+  AuthServerStatus,
+  AuthSignOutResult,
+  LocalAuthLoginInput,
+  LocalAuthSetupInput,
+} from '@/lib/auth/types'
 import type {
   AIAgent,
   AdvisoryReport,
@@ -91,6 +97,18 @@ export const resetWorkspaceSettings = () =>
 
 export const getCurrentIdentity = () =>
   apiClient.get<ApiResponse<AuthIdentity>>('/auth/me').then((r) => r.data.data)
+
+export const getAuthStatus = () =>
+  apiClient.get<ApiResponse<AuthServerStatus>>('/auth/status').then((r) => r.data.data)
+
+export const setupLocalAuth = (data: LocalAuthSetupInput) =>
+  apiClient.post<ApiResponse<AuthIdentity>>('/auth/setup', data).then((r) => r.data.data)
+
+export const loginLocalAuth = (data: LocalAuthLoginInput) =>
+  apiClient.post<ApiResponse<AuthIdentity>>('/auth/login', data).then((r) => r.data.data)
+
+export const logoutCurrentSession = () =>
+  apiClient.post<ApiResponse<AuthSignOutResult>>('/auth/logout').then((r) => r.data.data)
 
 export const listMyWorkspaces = () =>
   apiClient.get<ApiResponse<WorkspaceSummary[]>>('/workspaces').then((r) => r.data.data)

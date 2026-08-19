@@ -2,7 +2,6 @@
 
 import { useEffect, useMemo, useRef, useState } from "react"
 import { Activity, Boxes, FileInput, Loader2, Play, RotateCcw } from "lucide-react"
-import { getApiAuthToken } from "@/lib/api/auth-token"
 import { useFlowStore } from "@/lib/flow/store"
 import { fetchWorkflowCapabilities } from "@/lib/workflow/backend-capabilities"
 import { compileWorkflowProject, type WorkflowCompileResponse } from "@/lib/workflow/backend-compile"
@@ -141,13 +140,11 @@ export function RunTracePanel({ runRequestId = 0 }: { runRequestId?: number }) {
   const runBackendWorkflow = async (sourceOutputs?: Record<string, Array<Record<string, unknown>>>) => {
     setRunState((current) => ({ status: "running", projection: current.projection, events: current.events, error: null }))
     try {
-      const token = getApiAuthToken()
-      const authorization = token ? `Bearer ${token}` : null
-      const started = await startWorkflowRun(workflowProject, { authorization, sourceOutputs })
+      const started = await startWorkflowRun(workflowProject, { sourceOutputs })
       applyWorkflowRunProjection(started)
       setRunState({ status: "running", projection: started, events: [], error: null })
 
-      const replay = await replayWorkflowRunEventStream(started.runId, { authorization })
+      const replay = await replayWorkflowRunEventStream(started.runId)
       for (const event of replay.events) {
         applyWorkflowNodeRunEvent(event)
       }
@@ -155,8 +152,8 @@ export function RunTracePanel({ runRequestId = 0 }: { runRequestId?: number }) {
       applyWorkflowRunProjection(finalProjection)
       setRunState({ status: "ready", projection: finalProjection, events: replay.events, error: null })
       await Promise.all([
-        loadEvidenceBatchResults(finalProjection.runId, authorization),
-        loadResearchLedger(finalProjection.runId, authorization),
+        loadEvidenceBatchResults(finalProjection.runId),
+        loadResearchLedger(finalProjection.runId),
       ])
     } catch (error) {
       setRunState((current) => ({
@@ -194,12 +191,12 @@ export function RunTracePanel({ runRequestId = 0 }: { runRequestId?: number }) {
     if (runRequestId > 0) runButtonRef.current?.click()
   }, [runRequestId])
 
-  const loadEvidenceBatchResults = async (runId: string, authorization: string | null) => {
+  const loadEvidenceBatchResults = async (runId: string) => {
     setEvidenceState((current) => ({ ...current, status: "loading", error: null, detail: null, selectedBatchId: null }))
     try {
       const [batchList, projection] = await Promise.all([
-        fetchWorkflowEvidenceBatches(runId, { authorization }),
-        fetchWorkflowEvidenceBatchProjection(runId, { authorization }),
+        fetchWorkflowEvidenceBatches(runId),
+        fetchWorkflowEvidenceBatchProjection(runId),
       ])
       applyWorkflowEvidenceBatchProjection(projection, batchList.batches)
       setEvidenceState({
@@ -219,9 +216,9 @@ export function RunTracePanel({ runRequestId = 0 }: { runRequestId?: number }) {
     }
   }
 
-  const loadResearchLedger = async (runId: string, authorization: string | null) => {
+  const loadResearchLedger = async (runId: string) => {
     try {
-      const ledger = await fetchWorkflowResearchLedger(runId, { authorization })
+      const ledger = await fetchWorkflowResearchLedger(runId)
       setResearchLedger(
         ledger.entries.some((entry) => entry.revisionId || entry.decision) ? ledger : null,
       )
@@ -234,10 +231,7 @@ export function RunTracePanel({ runRequestId = 0 }: { runRequestId?: number }) {
     if (!projection) return
     setEvidenceState((current) => ({ ...current, status: "loading", selectedBatchId: batchId, detail: null, error: null }))
     try {
-      const token = getApiAuthToken()
-      const detail = await fetchWorkflowEvidenceBatchDetail(projection.runId, batchId, {
-        authorization: token ? `Bearer ${token}` : null,
-      })
+      const detail = await fetchWorkflowEvidenceBatchDetail(projection.runId, batchId)
       setEvidenceState((current) => ({ ...current, status: "ready", detail, error: null }))
     } catch (error) {
       setEvidenceState((current) => ({
@@ -267,8 +261,6 @@ export function RunTracePanel({ runRequestId = 0 }: { runRequestId?: number }) {
         throw new Error("sourceOutputs 必须是非空的 { nodeId: object[] } JSON")
       }
       const sourceOutputs = parsed as Record<string, Array<Record<string, unknown>>>
-      const token = getApiAuthToken()
-      const authorization = token ? `Bearer ${token}` : null
       const idempotencyKey = continuationKey || crypto.randomUUID()
       setContinuationKey(idempotencyKey)
       const continued = await continueWorkflowResearch(
@@ -279,7 +271,6 @@ export function RunTracePanel({ runRequestId = 0 }: { runRequestId?: number }) {
           idempotencyKey,
           sourceOutputs,
         },
-        { authorization },
       )
       applyWorkflowRunProjection(continued.projection)
       setRunState((current) => ({
@@ -288,7 +279,7 @@ export function RunTracePanel({ runRequestId = 0 }: { runRequestId?: number }) {
         events: current.events,
         error: null,
       }))
-      const replay = await replayWorkflowRunEventStream(continued.childRunId, { authorization })
+      const replay = await replayWorkflowRunEventStream(continued.childRunId)
       for (const event of replay.events) applyWorkflowNodeRunEvent(event)
       const finalProjection = replay.projection ?? continued.projection
       applyWorkflowRunProjection(finalProjection)
@@ -299,8 +290,8 @@ export function RunTracePanel({ runRequestId = 0 }: { runRequestId?: number }) {
         error: null,
       })
       await Promise.all([
-        loadEvidenceBatchResults(finalProjection.runId, authorization),
-        loadResearchLedger(finalProjection.runId, authorization),
+        loadEvidenceBatchResults(finalProjection.runId),
+        loadResearchLedger(finalProjection.runId),
       ])
       setContinuationInput("{}")
       setContinuationKey("")
@@ -314,22 +305,19 @@ export function RunTracePanel({ runRequestId = 0 }: { runRequestId?: number }) {
   const runBackendPreview = async () => {
     setBackendState((current) => ({ status: "running", compile: current.compile, trace: current.trace, native: current.native, error: null }))
     try {
-      const token = getApiAuthToken()
-      const authorization = token ? `Bearer ${token}` : null
       const nativePackageNodeId = findNativeIntelligenceWorkflowPackageNodeId(workflowProject)
       const [compile, nativeDependencies] = await Promise.all([
-        compileWorkflowProject(workflowProject, { authorization }),
+        compileWorkflowProject(workflowProject),
         nativePackageNodeId
           ? Promise.all([
-              fetchWorkflowCapabilities({ authorization }),
-              fetchWorkflowToolCapabilities({ authorization }),
+              fetchWorkflowCapabilities(),
+              fetchWorkflowToolCapabilities(),
             ])
           : Promise.resolve(null),
       ])
       const openCLIPackageNodeId = findOpenCLIHDAWorkflowPackageNodeId(workflowProject)
       const trace = compile.valid && openCLIPackageNodeId
         ? await traceOpenCLIHDAWorkflow(workflowProject, {
-            authorization,
             packageNodeId: openCLIPackageNodeId,
           })
         : null

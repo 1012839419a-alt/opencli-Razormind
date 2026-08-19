@@ -13,7 +13,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
   const router = useRouter()
 
   useEffect(() => {
-    if (status === 'anonymous') {
+    if (status === 'anonymous' || status === 'setup-required') {
       router.replace(`/login?returnTo=${encodeURIComponent(pathname)}`)
     }
   }, [pathname, router, status])
@@ -32,7 +32,13 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
             palette={{ on: 'var(--color-primary)', off: 'var(--color-muted-foreground)' }}
             ariaLabel="正在加载"
           />
-          <span>{status === 'loading' ? '正在恢复会话…' : '正在前往登录…'}</span>
+          <span>
+            {status === 'loading'
+              ? '正在恢复会话…'
+              : status === 'setup-required'
+                ? '正在前往设置此设备…'
+                : '正在前往登录…'}
+          </span>
         </div>
       </main>
     )

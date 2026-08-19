@@ -11,9 +11,7 @@ export async function POST(req: Request, context: { params: Promise<{ runId: str
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          ...(req.headers.get("authorization")
-            ? { Authorization: req.headers.get("authorization") as string }
-            : {}),
+          ...forwardedRequestAuthHeaders(req),
         },
         body: await req.text(),
         cache: "no-store",
@@ -34,3 +32,5 @@ export async function POST(req: Request, context: { params: Promise<{ runId: str
     )
   }
 }
+
+import { forwardedRequestAuthHeaders } from "@/lib/workflow/request-auth"

@@ -9,9 +9,7 @@ export async function GET(req: Request, context: { params: Promise<{ runId: stri
       `${BACKEND_URL}/api/v1/workflows/runs/${encodeURIComponent(runId)}/research-ledger`,
       {
         headers: {
-          ...(req.headers.get("authorization")
-            ? { Authorization: req.headers.get("authorization") as string }
-            : {}),
+          ...forwardedRequestAuthHeaders(req),
         },
         cache: "no-store",
       },
@@ -31,3 +29,5 @@ export async function GET(req: Request, context: { params: Promise<{ runId: stri
     )
   }
 }
+
+import { forwardedRequestAuthHeaders } from "@/lib/workflow/request-auth"

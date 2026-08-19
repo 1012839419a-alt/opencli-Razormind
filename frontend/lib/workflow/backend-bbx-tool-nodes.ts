@@ -1,4 +1,5 @@
 import type { WorkflowNodeCatalogItem } from "./node-catalog"
+import { workflowRequestAuthHeaders } from "./request-auth"
 
 type ApiResponse<T> = {
   success?: boolean
@@ -59,7 +60,7 @@ export async function fetchWorkflowBbxToolNodes(
   const query = params.toString()
   const response = await fetch(`/api/workflow/bbx-tool-nodes${query ? `?${query}` : ""}`, {
     headers: {
-      ...(options.authorization ? { Authorization: options.authorization } : {}),
+      ...workflowRequestAuthHeaders(options.authorization),
     },
     cache: "no-store",
     signal: options.signal,

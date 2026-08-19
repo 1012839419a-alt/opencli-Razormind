@@ -5,23 +5,34 @@ import { notifyAuthRequired } from './auth-events'
 
 export const apiClient = axios.create({
   baseURL: '/api/v1',
+  withCredentials: true,
   headers: { 'Content-Type': 'application/json' },
 })
 
 export const rootClient = axios.create({
+  withCredentials: true,
   headers: { 'Content-Type': 'application/json' },
 })
 
-// Attach user identity and fleet transport credentials centrally. With both
-// configured, Authorization carries OIDC/bootstrap identity and X-API-Token
-// carries the deployment's fleet credential (ADR-0005).
+const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS'])
+
+// Attach OIDC identity centrally. Local human sessions are carried only by
+// the browser-managed HttpOnly cookie; browsers never attach Fleet tokens.
 const attachAuthHeaders = (config: InternalAxiosRequestConfig) => {
   const headers = getApiAuthHeaders()
   if (headers.Authorization && !config.headers.Authorization) {
     config.headers.Authorization = headers.Authorization
   }
-  if (headers['X-API-Token'] && !config.headers['X-API-Token']) {
-    config.headers['X-API-Token'] = headers['X-API-Token']
+  if (
+    headers['X-OpenCLI-Development-Identity'] &&
+    !config.headers['X-OpenCLI-Development-Identity']
+  ) {
+    config.headers['X-OpenCLI-Development-Identity'] =
+      headers['X-OpenCLI-Development-Identity']
+  }
+  const method = config.method?.toUpperCase() ?? 'GET'
+  if (!SAFE_METHODS.has(method) && !config.headers['X-OpenCLI-CSRF']) {
+    config.headers['X-OpenCLI-CSRF'] = '1'
   }
   return config
 }
@@ -39,7 +50,9 @@ rootClient.interceptors.request.use(attachAuthHeaders)
 // instead, additive to every existing caller that only reads `.message`.
 const normalizeApiError = (err: unknown) => {
   if (axios.isAxiosError(err)) {
-    if (err.response?.status === 401) notifyAuthRequired()
+    const authenticationAttempt =
+      err.config?.url === '/auth/login' || err.config?.url === '/auth/setup'
+    if (err.response?.status === 401 && !authenticationAttempt) notifyAuthRequired()
     const detail = err.response?.data?.detail
     const detailIsList = Array.isArray(detail)
     const message =

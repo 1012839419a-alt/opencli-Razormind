@@ -28,6 +28,7 @@ import {
   MoreHorizontal,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { getApiAuthHeaders } from "@/lib/api/auth-headers"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import {
   DropdownMenu,
@@ -226,7 +227,7 @@ export function CommandStrip({
     try {
       const res = await fetch("/api/render", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...getApiAuthHeaders() },
         body: JSON.stringify({ nodes, edges }),
       })
       if (!res.ok) throw new Error("failed")

@@ -1,4 +1,4 @@
-const BOOTSTRAP_TOKEN_KEY = 'opencli.bootstrapIdentityToken'
+const LEGACY_BOOTSTRAP_TOKEN_KEY = 'opencli.bootstrapIdentityToken'
 const DEVELOPMENT_SESSION_KEY = 'opencli.developmentSession'
 
 let runtimeIdentityToken = ''
@@ -23,26 +23,20 @@ function safeSessionSet(key: string, value: string): void {
 }
 
 export function getIdentityAccessToken(): string {
-  return runtimeIdentityToken || safeSessionGet(BOOTSTRAP_TOKEN_KEY)
+  return runtimeIdentityToken
 }
 
 export function setRuntimeIdentityToken(token: string): void {
   runtimeIdentityToken = token.trim()
 }
 
-export function getBootstrapIdentityToken(): string {
-  return safeSessionGet(BOOTSTRAP_TOKEN_KEY)
-}
-
-export function persistBootstrapIdentityToken(token: string): void {
-  const trimmed = token.trim()
-  runtimeIdentityToken = trimmed
-  safeSessionSet(BOOTSTRAP_TOKEN_KEY, trimmed)
+export function clearLegacyBootstrapIdentityToken(): void {
+  safeSessionSet(LEGACY_BOOTSTRAP_TOKEN_KEY, '')
 }
 
 export function clearIdentityToken(): void {
   runtimeIdentityToken = ''
-  safeSessionSet(BOOTSTRAP_TOKEN_KEY, '')
+  clearLegacyBootstrapIdentityToken()
 }
 
 export function hasDevelopmentSession(): boolean {
@@ -60,4 +54,3 @@ export function isDevelopmentLoginAllowed(): boolean {
     process.env.NEXT_PUBLIC_ALLOW_UNAUTHENTICATED_DEV !== 'false'
   )
 }
-
