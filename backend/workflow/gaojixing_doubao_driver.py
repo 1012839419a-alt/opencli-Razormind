@@ -10,6 +10,7 @@ is accepted under its fencing lease.
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import json
 import os
@@ -46,6 +47,18 @@ _MODULE_NAMES = (
     "product_links",
     "video_links",
     "followups",
+)
+_DOUBAO_SHARE_URL = re.compile(
+    r"^https://www\.doubao\.com/thread/[A-Za-z0-9_-]+(?:[?#].*)?$"
+)
+_INLINE_FOLLOWUP_CUES = (
+    "需要我",
+    "要不要",
+    "是否需要",
+    "告诉我",
+    "可以帮你",
+    "愿意的话",
+    "如需",
 )
 
 CommandRunner = Callable[
@@ -94,6 +107,64 @@ class OpenCLIDoubaoEvidenceDriver:
             if not _chat_url(rows, allow_non_chat=True):
                 raise DoubaoDriverUnavailableError("doubao-session-unavailable")
 
+    async def delete_conversation(self, *, chat_url: str) -> bool:
+        """Delete one saved, fully captured conversation from the visible sidebar."""
+
+        if not _FORMAL_CHAT_URL.fullmatch(chat_url):
+            return False
+        try:
+            from playwright.async_api import async_playwright
+        except ImportError as exc:  # pragma: no cover - deployment dependency
+            raise DoubaoDriverUnavailableError("playwright-unavailable") from exc
+
+        async with self._endpoint_lease() as endpoint:
+            pw = await async_playwright().start()
+            browser = None
+            page = None
+            try:
+                browser = await pw.chromium.connect_over_cdp(endpoint)
+                context = browser.contexts[0] if browser.contexts else None
+                if context is None:
+                    return False
+                page = await context.new_page()
+                await page.goto(chat_url, wait_until="domcontentloaded", timeout=30_000)
+                id_match = _FORMAL_CHAT_URL.fullmatch(chat_url)
+                if id_match is None:
+                    return False
+                conversation_id = chat_url.rsplit("/", 1)[-1]
+                row = page.locator(
+                    f'a[data-testid="chat_list_thread_item"], '
+                    f'#conversation_{conversation_id}, '
+                    f'a[href="/chat/{conversation_id}"]'
+                )
+                await row.wait_for(state="attached", timeout=10_000)
+                if await row.count() != 1:
+                    return False
+                await row.hover()
+                menu = row.locator('button[data-slot="dropdown-menu-trigger"]')
+                if await menu.count() != 1:
+                    return False
+                await menu.click()
+                await page.wait_for_timeout(200)
+                selected = await page.evaluate(_CONFIRM_DELETE_CONVERSATION_JS, "menu")
+                if not isinstance(selected, dict) or selected.get("stage") != "menu":
+                    return False
+                await page.wait_for_timeout(200)
+                confirmed = await page.evaluate(_CONFIRM_DELETE_CONVERSATION_JS, "confirm")
+                return isinstance(confirmed, dict) and confirmed.get("stage") == "confirmed"
+            finally:
+                if page is not None:
+                    try:
+                        await page.close()
+                    except Exception:
+                        pass
+                if browser is not None:
+                    try:
+                        await browser.close()
+                    except Exception:
+                        pass
+                await pw.stop()
+
     async def collect(self, *, question_id: str, question: str) -> dict[str, Any]:
         """Create one conversation, submit ``question`` exactly once, and capture."""
 
@@ -106,21 +177,61 @@ class OpenCLIDoubaoEvidenceDriver:
             if new_code:
                 raise DoubaoDriverUnavailableError("doubao-new-failed")
 
-            ask_code, ask_rows, _ask_stderr = await self._command_runner(
+            ask_code, _ask_rows, _ask_stderr = await self._command_runner(
                 _ask_command(question), endpoint
             )
             if ask_code:
                 # Never retry here: the browser may have accepted the question
-                # even if the CLI response failed. Recovery must inspect only.
+                # even if the CLI response failed. A verified challenge is the
+                # one exception: capture its on-page marker and let the
+                # governed worker notify Hermes/Feishu rather than disguising
+                # it as an unexplained reconciliation failure.
+                if _verification_challenge(_ask_stderr):
+                    status_code, status_rows, _status_stderr = (
+                        await self._command_runner(_status_command(), endpoint)
+                    )
+                    challenge_url = (
+                        _chat_url(status_rows, allow_non_chat=True)
+                        if status_code == 0
+                        else None
+                    )
+                    if challenge_url is not None:
+                        challenge_capture = await _maybe_await(
+                            self._page_capture(
+                                endpoint=endpoint,
+                                project_root=self._project_root,
+                                question_id=question_id,
+                                question=question,
+                                answer="",
+                                chat_url=challenge_url,
+                                allow_submit=False,
+                            )
+                        )
+                        if (
+                            isinstance(challenge_capture, dict)
+                            and challenge_capture.get("status")
+                            == "verification_required"
+                        ):
+                            return challenge_capture
                 raise DoubaoDriverUnavailableError("doubao-ask-failed")
-            answer = _assistant_answer(ask_rows)
-
-            status_code, status_rows, _status_stderr = await self._command_runner(
-                _status_command(), endpoint
-            )
+            # After a successful ask the conversation URL can take a moment
+            # to settle; a transient status read (G0037/G0038 regression:
+            # formal-chat-url-missing) must not discard an already-submitted
+            # question.  Retry the read-only status query briefly before
+            # failing closed -- this never resubmits the question.
+            chat_url = None
+            status_code = 1
+            for _attempt in range(4):
+                status_code, status_rows, _status_stderr = await self._command_runner(
+                    _status_command(), endpoint
+                )
+                if not status_code:
+                    chat_url = _chat_url(status_rows)
+                    if chat_url is not None:
+                        break
+                await asyncio.sleep(1.5)
             if status_code:
                 raise DoubaoDriverUnavailableError("doubao-status-failed")
-            chat_url = _chat_url(status_rows)
             if chat_url is None:
                 raise DoubaoDriverUnavailableError("formal-chat-url-missing")
             capture = await _maybe_await(
@@ -129,7 +240,11 @@ class OpenCLIDoubaoEvidenceDriver:
                     project_root=self._project_root,
                     question_id=question_id,
                     question=question,
-                    answer=answer,
+                    # The OpenCLI command confirms the click/submission only.
+                    # Page capture must derive the answer from the exact matched
+                    # Doubao turn, otherwise a stale CLI response can reject a
+                    # valid visible answer or persist the wrong text.
+                    answer="",
                     chat_url=chat_url,
                     allow_submit=False,
                 )
@@ -210,7 +325,6 @@ async def _default_endpoint_lease() -> AsyncIterator[str]:
 async def _default_command_runner(
     command: list[str], endpoint: str
 ) -> tuple[int, list[dict[str, Any]], str]:
-    from backend.channels.opencli_channel import _parse_json, _parse_yaml, _run_opencli
     from backend.config import get_settings
     from backend.opencli_runtime import resolve_opencli_bin
 
@@ -223,18 +337,42 @@ async def _default_command_runner(
     env.pop("OPENCLI_DAEMON_PORT", None)
     env["OPENCLI_CDP_ENDPOINT"] = endpoint
     try:
-        code, stdout, stderr = await _run_opencli(
-            [resolve_opencli_bin(), *command], env
+        process = await asyncio.create_subprocess_exec(
+            resolve_opencli_bin(),
+            *command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env,
+            start_new_session=True,
         )
-    except (FileNotFoundError, TimeoutError) as exc:
+        stdout_bytes, stderr_bytes = await asyncio.wait_for(
+            process.communicate(), timeout=get_settings().opencli_timeout
+        )
+    except FileNotFoundError as exc:
         raise DoubaoDriverUnavailableError("opencli-runtime-unavailable") from exc
+    except TimeoutError as exc:
+        if "process" in locals() and process.returncode is None:
+            process.kill()
+            await process.wait()
+        raise DoubaoDriverUnavailableError("opencli-runtime-timeout") from exc
+
+    code = process.returncode
+    stdout = stdout_bytes.decode()
+    stderr = stderr_bytes.decode().strip()
     rows: list[dict[str, Any]] = []
     if stdout.strip():
         try:
-            rows = _parse_json(stdout)
-        except (ValueError, TypeError):
-            parsed = _parse_yaml(stdout)
-            rows = [item for item in parsed if isinstance(item, dict)]
+            json_start = next(
+                (index for index, char in enumerate(stdout) if char in "[{"),
+                None,
+            )
+            if json_start is None:
+                raise ValueError("opencli returned no JSON")
+            parsed = json.loads(stdout[json_start:])
+            rows = parsed if isinstance(parsed, list) else [parsed]
+            rows = [item for item in rows if isinstance(item, dict)]
+        except (ValueError, TypeError, json.JSONDecodeError):
+            raise DoubaoDriverUnavailableError("opencli-json-invalid")
     return code, rows, stderr
 
 
@@ -251,18 +389,16 @@ def _chat_url(
     return None
 
 
-def _assistant_answer(rows: list[dict[str, Any]]) -> str:
-    candidates = [
-        row
-        for row in rows
-        if str(row.get("Role", row.get("role", ""))).strip().lower()
-        in {"assistant", "ai", "bot", "助手"}
-    ] or rows
-    return "\n".join(
-        str(row.get("Text", row.get("text", ""))).strip()
-        for row in candidates
-        if str(row.get("Text", row.get("text", ""))).strip()
-    ).strip()
+def _verification_challenge(stderr: str) -> bool:
+    """Recognize an OpenCLI-reported page challenge, never a generic failure."""
+
+    return bool(
+        re.search(
+            r"(?:captcha|verification\s+challenge|登录验证|访问异常)",
+            stderr or "",
+            flags=re.IGNORECASE,
+        )
+    )
 
 
 async def _maybe_await(value):
@@ -348,19 +484,36 @@ async def _capture_page_evidence(
         final_answer = str(target.get("answer") or "").strip()
         if _placeholder_answer(final_answer):
             raise DoubaoDriverUnavailableError("full-answer-missing")
-        if answer.strip() and not _placeholder_answer(answer) and answer.strip() != final_answer:
+        if (
+            answer.strip()
+            and not _placeholder_answer(answer)
+            and not _answers_match(answer, final_answer)
+        ):
             raise DoubaoDriverUnavailableError("opencli-page-answer-mismatch")
 
         await _expand_references(page, target, attempt_token)
         snapshot = await _wait_for_stable_module_snapshot(page, attempt_token)
         if snapshot.get("target_bound") is not True:
             return None
-        if str(snapshot.get("answer") or "").strip() != final_answer:
+        if not _answers_match(str(snapshot.get("answer") or ""), final_answer):
             raise DoubaoDriverUnavailableError("answer-changed-during-capture")
+
+        share_link, share_missing = await _capture_share_link(page, attempt_token)
+        await _dismiss_share_panel(page)
 
         screenshots, coverage = await _save_sequential_screenshots(
             page, attempt_root, project_root, attempt_token
         )
+        # Doubao renders the recommended follow-up chips lazily at the bottom
+        # of the matched answer.  The first snapshot is intentionally kept for
+        # references/products, but follow-ups must be sampled again after the
+        # required top/body/bottom pass has reached that lazy-render boundary.
+        bottom_snapshot = await _wait_for_stable_module_snapshot(page, attempt_token)
+        if bottom_snapshot.get("target_bound") is not True:
+            return None
+        if not _answers_match(str(bottom_snapshot.get("answer") or ""), final_answer):
+            raise DoubaoDriverUnavailableError("answer-changed-during-capture")
+        snapshot["followups"] = bottom_snapshot.get("followups")
         videos = await _capture_video_evidence(
             page,
             snapshot.get("video_cards"),
@@ -369,6 +522,7 @@ async def _capture_page_evidence(
             attempt_token,
         )
         modules, expectations, missing = _page_modules(snapshot, videos)
+        missing.extend(share_missing)
         observation = _brand_observation(question, final_answer, modules)
         return {
             "id": question_id,
@@ -386,6 +540,7 @@ async def _capture_page_evidence(
                 "screenshot_files": screenshots,
                 "module_expectations": expectations,
                 "screenshot_coverage": coverage,
+                "share_link": share_link,
             },
             "required_missing": missing,
         }
@@ -475,6 +630,95 @@ async def _expand_references(
     if not isinstance(result, dict) or result.get("ok") is not True:
         raise DoubaoDriverUnavailableError("reference-module-expand-failed")
     await page.wait_for_timeout(800)
+
+
+async def _capture_share_link(page, token: str) -> tuple[dict[str, Any], list[str]]:
+    """Return the exact value produced by the visible Share → Copy link flow."""
+
+    opened = await page.evaluate(_OPEN_SHARE_PANEL_JS, token)
+    if not isinstance(opened, dict) or opened.get("displayed") is not True:
+        return (
+            {
+                "displayed": False,
+                "copy_control_displayed": False,
+                "url": "页面未显示",
+            },
+            ["share-copy-control-missing"],
+        )
+    if opened.get("opened") is not True:
+        return (
+            {"displayed": True, "copy_control_displayed": False, "url": "未获取"},
+            ["share-panel-open-failed"],
+        )
+
+    try:
+        await page.context.grant_permissions(
+            ["clipboard-read", "clipboard-write"],
+            origin="https://www.doubao.com",
+        )
+    except Exception:
+        return (
+            {"displayed": True, "copy_control_displayed": False, "url": "未获取"},
+            ["share-clipboard-permission-unavailable"],
+        )
+
+    clipboard_marker = f"gjx-share-proof:{uuid4()}"
+    prepared = await page.evaluate(_PREPARE_SHARE_CLIPBOARD_JS, clipboard_marker)
+    if prepared is not True:
+        return (
+            {"displayed": True, "copy_control_displayed": False, "url": "未获取"},
+            ["share-clipboard-unavailable"],
+        )
+
+    # The share panel body (including the copy-link control) renders
+    # asynchronously after the panel opens; a fixed 600ms wait was flaky
+    # (G0027 regression: share_link_copy_control_missing).  Poll until the
+    # control appears, up to ~3.3s, before clicking it once.
+    copied: dict[str, Any] | None = None
+    for _ in range(12):
+        result = await page.evaluate(_COPY_SHARE_LINK_JS, token)
+        if isinstance(result, dict) and result.get("copy_control_displayed") is True:
+            copied = result
+            break
+        await page.wait_for_timeout(250)
+    if not isinstance(copied, dict) or copied.get("copy_control_displayed") is not True:
+        return (
+            {"displayed": True, "copy_control_displayed": False, "url": "未获取"},
+            ["share-copy-control-missing"],
+        )
+
+    url = ""
+    for _ in range(12):
+        clipboard_value = await page.evaluate(_READ_SHARE_CLIPBOARD_JS)
+        candidate = str(clipboard_value or "").strip()
+        if candidate and candidate != clipboard_marker:
+            url = candidate
+            break
+        await page.wait_for_timeout(250)
+    if not _DOUBAO_SHARE_URL.match(url):
+        return (
+            {"displayed": True, "copy_control_displayed": True, "url": "未获取"},
+            ["share-link-unavailable"],
+        )
+    return (
+        {
+            "displayed": True,
+            "copy_control_displayed": True,
+            "capture_method": "share-copy-control",
+            "url": url,
+        },
+        [],
+    )
+
+
+async def _dismiss_share_panel(page) -> None:
+    """Keep the share popover out of the required top/body/bottom screenshots."""
+
+    try:
+        await page.keyboard.press("Escape")
+        await page.wait_for_timeout(100)
+    except Exception:
+        return
 
 
 async def _wait_for_stable_module_snapshot(page, token: str) -> dict[str, Any]:
@@ -596,10 +840,15 @@ def _page_modules(
     signal = signal if isinstance(signal, dict) else {}
     expected_keywords = signal.get("keyword_count")
     expected_refs = signal.get("reference_count")
-    keywords = _unique_texts(snapshot.get("keywords"))
+    # The page's declared keyword count is a count of displayed chips, not a
+    # count of distinct text values.  Preserve repeated chips verbatim so the
+    # saved evidence remains faithful to the UI and can be checked against it.
+    keywords = _displayed_texts(snapshot.get("keywords"))
     references = _unique_links(snapshot.get("source_links"))
     products = _unique_links(snapshot.get("product_links"))
     followups = _unique_texts(snapshot.get("followups"))
+    if not followups:
+        followups = _inline_followups(snapshot.get("answer"))
     modules: dict[str, Any] = {
         "keywords": keywords if isinstance(expected_keywords, int) else "页面未显示",
         "ref_links": references if isinstance(expected_refs, int) else "页面未显示",
@@ -628,6 +877,8 @@ def _page_modules(
         missing.append("reference-source-block-not-unique")
     if snapshot.get("reference_overlay_ambiguous") is True:
         missing.append("reference-overlay-ambiguous")
+    if not followups:
+        missing.append("recommended-followups-missing")
     if isinstance(expected_keywords, int) and len(keywords) != expected_keywords:
         missing.append("keyword-count-mismatch")
     if isinstance(expected_refs, int) and len(references) != expected_refs:
@@ -638,6 +889,40 @@ def _page_modules(
     if isinstance(product_module_count, int) and product_module_count > len(products):
         missing.append("product-module-link-missing")
     return modules, expectations, missing
+
+
+def _inline_followups(value: Any) -> list[str]:
+    """Preserve Doubao's visible trailing invitation when chips are absent."""
+
+    if not isinstance(value, str):
+        return []
+    normalized = re.sub(r"\s+", " ", value).strip()
+    tail_window = normalized[-240:]
+    positions = [
+        tail_window.rfind(cue)
+        for cue in ("需要我", "要不要", "是否需要", "愿意的话", "如需")
+    ]
+    positions = [position for position in positions if position >= 0]
+    positions.extend(
+        match.start()
+        for match in re.finditer("如果你", tail_window)
+        if re.search(
+            r"我(?:可以|能)|可以(?:帮你|为你|直接)",
+            tail_window[match.start() : match.start() + 140],
+        )
+    )
+    if not positions:
+        positions = [
+            tail_window.rfind(cue) for cue in ("告诉我", "可以帮你")
+        ]
+        positions = [position for position in positions if position >= 0]
+    if not positions:
+        return []
+    start = max(positions)
+    tail = tail_window[start:].strip()
+    if not (5 < len(tail) <= 200):
+        return []
+    return [tail]
 
 
 def _unique_texts(value: Any) -> list[str]:
@@ -655,6 +940,24 @@ def _unique_texts(value: Any) -> list[str]:
             seen.add(text)
             output.append(text)
     return output
+
+
+def _displayed_texts(value: Any) -> list[str]:
+    """Keep every non-empty displayed text item, including repeated chips."""
+
+    if not isinstance(value, list):
+        return []
+    return [
+        text
+        for item in value
+        if (
+            text := str(
+                item.get("text") or item.get("title") or ""
+                if isinstance(item, dict)
+                else item
+            ).strip()
+        )
+    ]
 
 
 def _unique_links(value: Any) -> list[dict[str, str]]:
@@ -738,6 +1041,15 @@ def _brand_observation(
         "natural_recommendation": natural,
         "basis": basis,
     }
+
+
+def _answers_match(left: str, right: str) -> bool:
+    """Compare one rendered answer without treating layout whitespace as content."""
+
+    def normalize(value: str) -> str:
+        return re.sub(r"\s+", " ", value.replace("\u00a0", " ")).strip()
+
+    return normalize(left) == normalize(right)
 
 
 def _placeholder_answer(answer: str) -> bool:
@@ -837,18 +1149,24 @@ _BIND_TARGET_TURN_JS = r"""
   if (matches.length !== 1) return {status: matches.length > 1 ? 'ambiguous' : 'missing'};
   const start = matches[0].index;
   const assistants = [];
+  let nextUser = null;
   for (let index = start + 1; index < ordered.length; index += 1) {
-    if (ordered[index].role === 'User') break;
+    if (ordered[index].role === 'User') {
+      nextUser = ordered[index];
+      break;
+    }
     if (ordered[index].role === 'Assistant') assistants.push(ordered[index]);
   }
   if (!assistants.length) return {status: 'pending'};
-  document.querySelectorAll('[data-gjx-target-assistant], [data-gjx-target-user], [data-gjx-scroll]').forEach(el => {
+  document.querySelectorAll('[data-gjx-target-assistant], [data-gjx-target-user], [data-gjx-next-user], [data-gjx-scroll]').forEach(el => {
     el.removeAttribute('data-gjx-target-assistant');
     el.removeAttribute('data-gjx-target-user');
+    el.removeAttribute('data-gjx-next-user');
     el.removeAttribute('data-gjx-scroll');
   });
   matches[0].item.el.setAttribute('data-gjx-target-user', token);
   assistants.forEach(item => item.el.setAttribute('data-gjx-target-assistant', token));
+  if (nextUser) nextUser.el.setAttribute('data-gjx-next-user', token);
   let scroller = assistants[0].el.parentElement;
   while (scroller && scroller !== document.body && scroller.scrollHeight <= scroller.clientHeight + 40) scroller = scroller.parentElement;
   (scroller || document.scrollingElement || document.documentElement).setAttribute('data-gjx-scroll', token);
@@ -875,15 +1193,128 @@ _EXPAND_REFERENCES_JS = r"""
     .filter(el => /搜索\s*\d+\s*个关键词[，,、\s]*参考\s*\d+\s*篇资料/.test(norm(el.innerText)));
   if (sources.length !== 1) return {ok: false, reason: 'source-block-not-unique'};
   const source = sources[0];
-  const trigger = [source, ...source.querySelectorAll('*')]
+  const trigger = [...source.querySelectorAll('[data-copy-ignore].cursor-pointer, [data-copy-ignore][class*="cursor-pointer"]')]
     .filter(el => /搜索\s*\d+\s*个关键词[，,、\s]*参考\s*\d+\s*篇资料/.test(norm(el.innerText)))
-    .sort((a, b) => norm(a.innerText).length - norm(b.innerText).length)[0];
+    .filter(el => {
+      const rect = el.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0;
+    })[0];
   if (!trigger) return {ok: false, reason: 'source-trigger-missing'};
   const rect = trigger.getBoundingClientRect();
   if (rect.width < 1 || rect.height < 1) return {ok: false, reason: 'source-trigger-hidden'};
   trigger.scrollIntoView({block: 'center'});
   trigger.click();
   return {ok: true};
+}
+"""
+
+_OPEN_SHARE_PANEL_JS = r"""
+(token) => {
+  const norm = value => (value || '').replace(/\s+/g, ' ').trim();
+  const visible = el => {
+    if (!(el instanceof HTMLElement)) return false;
+    const style = getComputedStyle(el);
+    const rect = el.getBoundingClientRect();
+    return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+  };
+  const label = el => norm([
+    el.innerText, el.getAttribute('aria-label'), el.getAttribute('title'),
+    el.getAttribute('data-testid'), el.getAttribute('data-tooltip')
+  ].filter(Boolean).join(' '));
+  const roots = [...document.querySelectorAll(`[data-gjx-target-assistant="${token}"]`)].filter(visible);
+  let controls = [...new Set(roots.flatMap(root => [...root.querySelectorAll('button, [role="button"], [data-testid], [data-tooltip]')]))]
+    .filter(visible)
+    .filter(el => /分享|share/i.test(label(el)));
+  // Doubao's current answer bar exposes the share icon without accessible text.
+  // Its order is copy, read, like, dislike, share, regenerate, more.  Anchor the
+  // fallback to the already matched assistant turn and require the unique menu
+  // trigger at position 6 so a visual change fails closed instead of sharing a
+  // different conversation.
+  if (!controls.length) {
+    const candidates = roots.flatMap(root => {
+      const buttons = [...root.querySelectorAll('button')].filter(visible);
+      return buttons.length >= 7
+        && buttons[6]?.getAttribute('data-slot') === 'dropdown-menu-trigger'
+        ? [buttons[4]]
+        : [];
+    }).filter(Boolean);
+    controls = [...new Set(candidates)];
+  }
+  if (!controls.length) return {displayed: false};
+  if (controls.length !== 1) return {displayed: true, opened: false, reason: 'share-control-ambiguous'};
+  controls[0].scrollIntoView({block: 'center'});
+  controls[0].click();
+  return {displayed: true, opened: true};
+}
+"""
+
+_COPY_SHARE_LINK_JS = r"""
+(token) => {
+  const norm = value => (value || '').replace(/\s+/g, ' ').trim();
+  const visible = el => {
+    if (!(el instanceof HTMLElement)) return false;
+    const style = getComputedStyle(el);
+    const rect = el.getBoundingClientRect();
+    return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+  };
+  const label = el => norm([
+    el.innerText, el.getAttribute('aria-label'), el.getAttribute('title'),
+    el.getAttribute('data-testid'), el.getAttribute('data-tooltip')
+  ].filter(Boolean).join(' '));
+  const controls = [...document.querySelectorAll('button, [role="button"], [data-testid], [data-tooltip]')]
+    .filter(visible).filter(el => /^(复制链接|copy link)$/i.test(label(el)));
+  if (controls.length !== 1) return {copy_control_displayed: false, url: null};
+  controls[0].click();
+  return {copy_control_displayed: true, clicked: true};
+}
+"""
+
+_PREPARE_SHARE_CLIPBOARD_JS = r"""
+async (marker) => {
+  try {
+    if (!navigator.clipboard || typeof navigator.clipboard.writeText !== 'function') return false;
+    await navigator.clipboard.writeText(marker);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+"""
+
+_READ_SHARE_CLIPBOARD_JS = r"""
+async () => {
+  try {
+    if (!navigator.clipboard || typeof navigator.clipboard.readText !== 'function') return null;
+    return await navigator.clipboard.readText();
+  } catch (_) {
+    return null;
+  }
+}
+"""
+
+_CONFIRM_DELETE_CONVERSATION_JS = r"""
+(stage) => {
+  const visible = el => {
+    if (!(el instanceof HTMLElement)) return false;
+    const style = getComputedStyle(el);
+    const rect = el.getBoundingClientRect();
+    return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+  };
+  const norm = value => (value || '').replace(/\s+/g, ' ').trim();
+  if (stage === 'menu') {
+    const menuItems = [...document.querySelectorAll('[role="menu"] [role="menuitem"]')]
+      .filter(visible).filter(el => norm(el.innerText || el.textContent) === '删除');
+    if (menuItems.length !== 1) return {stage: 'missing'};
+    menuItems[0].click();
+    return {stage: 'menu'};
+  }
+  const dialogs = [...document.querySelectorAll('[role="dialog"], [aria-modal="true"]')]
+    .filter(visible).filter(el => /删除/.test(norm(el.innerText || el.textContent)));
+  const confirms = dialogs.flatMap(dialog => [...dialog.querySelectorAll('button, [role="button"]')]
+    .filter(visible).filter(el => norm(el.innerText || el.textContent) === '删除'));
+  if (confirms.length !== 1) return {stage: 'missing'};
+  confirms[0].click();
+  return {stage: 'confirmed'};
 }
 """
 
@@ -912,10 +1343,19 @@ _COLLECT_PAGE_JS = r"""
   const source = sources.length === 1 ? sources[0] : null;
   const sourceText = norm(source && source.innerText);
   const signal = sourceText.match(/搜索\s*(\d+)\s*个关键词[，,、\s]*参考\s*(\d+)\s*篇资料/);
+  const keywordText = source ? (() => {
+    const walker = document.createTreeWalker(source, NodeFilter.SHOW_TEXT, {
+      acceptNode: node => node.parentElement && node.parentElement.closest('a')
+        ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT,
+    });
+    const values = [];
+    while (walker.nextNode()) values.push(walker.currentNode.nodeValue || '');
+    return norm(values.join(' '));
+  })() : '';
   const keywords = [];
-  for (const match of sourceText.matchAll(/[“"]([^”"]+)[”"]/g)) {
+  for (const match of keywordText.matchAll(/[“"]([^”"]+)[”"]/g)) {
     const value = norm(match[1]);
-    if (value && value.length < 160 && !keywords.includes(value)) keywords.push(value);
+    if (value && value.length < 160) keywords.push(value);
   }
   const productRoots = roots.flatMap(root => [...root.querySelectorAll('[data-plugin-identifier*="product"], [class*="product-card"], [class*="commodity-card"], [class*="goods-card"]')]).filter(visible);
   const productLinks = productRoots.flatMap(linkRows);
@@ -925,9 +1365,33 @@ _COLLECT_PAGE_JS = r"""
       const card = block.querySelector('.video-card-CJKKPp, [class*="video-card"], .video-wrapper-YpeXnI, [class*="video-wrapper"]');
       return card && visible(card) ? {card_title: norm(card.innerText)} : null;
     }).filter(Boolean);
-  const followups = roots.flatMap(root => [...root.querySelectorAll('[class*="recommend"], [class*="suggest"], [class*="follow"], [class*="related"]')])
-    .filter(visible).flatMap(root => [...root.querySelectorAll('button, [role="button"], li')]).filter(visible)
-    .map(el => norm(el.innerText)).filter(text => text.length > 4 && text.length < 160 && /[?？]/.test(text))
+  // Follow-up chips are lazy-rendered after the answer action bar and their
+  // generated class names are not stable.  Bind by conversation order instead:
+  // inside the same message scroller, after this answer and before the next
+  // user turn.  Only concise clickable questions qualify; answer/reference/
+  // product/video content is excluded so a question-shaped citation cannot be
+  // mistaken for a recommended follow-up.
+  const scroller = document.querySelector(`[data-gjx-scroll="${token}"]`);
+  const nextUser = document.querySelector(`[data-gjx-next-user="${token}"]`);
+  const lastRoot = roots[roots.length - 1];
+  const excludedSelector = `${answerSelector}, [data-plugin-identifier*="block_type:10025"], [data-plugin-identifier*="block_type:10050"], [data-plugin-identifier*="product"], [class*="product-card"], [class*="commodity-card"], [class*="goods-card"]`;
+  const followupElements = scroller instanceof HTMLElement
+    ? [...scroller.querySelectorAll('*')].filter(visible).filter(el => {
+        const text = norm(el.innerText || el.textContent || '');
+        if (text.length <= 4 || text.length >= 160 || !/[?？]$/.test(text)) return false;
+        if (el.closest(excludedSelector)) return false;
+        const insideAnswer = roots.some(root => root === el || root.contains(el));
+        const afterAnswer = insideAnswer || Boolean(lastRoot.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING);
+        const beforeNext = !nextUser || Boolean(el.compareDocumentPosition(nextUser) & Node.DOCUMENT_POSITION_FOLLOWING);
+        if (!afterAnswer || !beforeNext) return false;
+        return el.matches('button, [role="button"], a[href], [tabindex]:not([tabindex="-1"])')
+          || getComputedStyle(el).cursor === 'pointer';
+      })
+    : [];
+  const followups = followupElements
+    .filter(el => !followupElements.some(other => other !== el && el.contains(other)
+      && norm(other.innerText || other.textContent || '') === norm(el.innerText || el.textContent || '')))
+    .map(el => norm(el.innerText || el.textContent || ''))
     .filter((text, index, all) => all.indexOf(text) === index);
   let references = source ? linkRows(source) : [];
   let overlay_ambiguous = false;
@@ -1000,7 +1464,10 @@ _READ_VIDEO_PLAYER_JS = r"""
     const rect = el.getBoundingClientRect();
     return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
   };
-  const roots = [...document.querySelectorAll('.play-wrapper.active, [role="dialog"]')].filter(visible);
+  // Prefer the active xgplayer wrapper: the fullscreen Semi dialog wraps the
+  // same player, so matching both at once double-counts one visible player.
+  const direct = [...document.querySelectorAll('.play-wrapper.active')].filter(visible);
+  const roots = direct.length ? direct : [...document.querySelectorAll('[role="dialog"]')].filter(visible);
   if (roots.length !== 1) return {valid: false};
   const root = roots[0];
   const unique = entries => entries.filter((entry, index, all) => all.findIndex(other => other.text === entry.text) === index);

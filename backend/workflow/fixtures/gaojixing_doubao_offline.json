@@ -14,7 +14,7 @@
         "ref_links": [{"title": "孕妇 DHA 选购指南", "url": "https://example.com/dha-guide"}],
         "product_links": "页面未显示",
         "video_links": "页面未显示",
-        "followups": "页面未显示"
+        "followups": ["孕妇补充DHA有哪些注意事项？"]
       },
       "brand_observation": {
         "target": "高吉星",
@@ -29,12 +29,18 @@
           "gaojixing_fixture_正文.svg",
           "gaojixing_fixture_底部.svg"
         ],
+        "share_link": {
+          "displayed": true,
+          "copy_control_displayed": true,
+          "capture_method": "share-copy-control",
+          "url": "https://www.doubao.com/thread/fixtureG0001"
+        },
         "module_expectations": {
           "keywords": {"displayed": false, "expected_count": 0},
           "ref_links": {"displayed": true, "expected_count": 1},
           "product_links": {"displayed": false, "expected_count": 0},
           "video_links": {"displayed": false, "expected_count": 0},
-          "followups": {"displayed": false, "expected_count": 0}
+          "followups": {"displayed": true, "expected_count": 1}
         },
         "screenshot_coverage": {"top": true, "answer": true, "bottom": true}
       },
@@ -53,7 +59,7 @@
         "ref_links": "页面未显示",
         "product_links": "页面未显示",
         "video_links": "页面未显示",
-        "followups": "页面未显示"
+        "followups": ["孕妇DHA不同配方应该怎么选？"]
       },
       "brand_observation": {
         "target": "高吉星",
@@ -68,12 +74,18 @@
           "gaojixing_fixture_正文.svg",
           "gaojixing_fixture_底部.svg"
         ],
+        "share_link": {
+          "displayed": true,
+          "copy_control_displayed": true,
+          "capture_method": "share-copy-control",
+          "url": "https://www.doubao.com/thread/fixtureB001"
+        },
         "module_expectations": {
           "keywords": {"displayed": false, "expected_count": 0},
           "ref_links": {"displayed": false, "expected_count": 0},
           "product_links": {"displayed": false, "expected_count": 0},
           "video_links": {"displayed": false, "expected_count": 0},
-          "followups": {"displayed": false, "expected_count": 0}
+          "followups": {"displayed": true, "expected_count": 1}
         },
         "screenshot_coverage": {"top": true, "answer": true, "bottom": true}
       },

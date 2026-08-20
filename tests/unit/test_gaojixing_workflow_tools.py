@@ -39,7 +39,7 @@ def _valid_evidence(tmp_path, question_id: str = "G0001") -> dict:
             ],
             "product_links": "页面未显示",
             "video_links": "页面未显示",
-            "followups": "页面未显示",
+            "followups": ["孕妇补充DHA有哪些注意事项？"],
         },
         "brand_observation": {
             "target": "高吉星",
@@ -50,12 +50,18 @@ def _valid_evidence(tmp_path, question_id: str = "G0001") -> dict:
         },
         "page_evidence": {
             "screenshot_files": screenshot_files,
+            "share_link": {
+                "displayed": True,
+                "copy_control_displayed": True,
+                "capture_method": "share-copy-control",
+                "url": "https://www.doubao.com/thread/fixtureG0001",
+            },
             "module_expectations": {
                 "keywords": {"displayed": False, "expected_count": 0},
                 "ref_links": {"displayed": True, "expected_count": 1},
                 "product_links": {"displayed": False, "expected_count": 0},
                 "video_links": {"displayed": False, "expected_count": 0},
-                "followups": {"displayed": False, "expected_count": 0},
+                "followups": {"displayed": True, "expected_count": 1},
             },
             "screenshot_coverage": {"top": True, "answer": True, "bottom": True},
         },
@@ -72,6 +78,7 @@ def _markdown_entry(record: dict) -> str:
         f"- 原问句：{record['question']}",
         "- 状态：已完成",
         f"- 豆包会话 URL（原文）：{record['chat_url']}",
+        f"- 分享复制链接：{record['page_evidence']['share_link']['url']}",
         f"- 采集时间：{record['collected_at']}",
         f"- 回答原文（{len(record['answer'])} 字）：",
         "",
@@ -1506,6 +1513,53 @@ def test_displayed_product_link_must_be_clickable(tmp_path):
     )
 
 
+def test_share_link_is_required_when_it_is_not_explicitly_absent_from_the_page(tmp_path):
+    evidence = _valid_evidence(tmp_path, "G0007")
+    del evidence["page_evidence"]["share_link"]
+
+    assert "share_link_missing" in audit_gaojixing_question_evidence(
+        evidence, project_root=tmp_path
+    )
+
+
+def test_share_link_cannot_be_claimed_as_absent_from_a_completed_answer(tmp_path):
+    evidence = _valid_evidence(tmp_path, "G0007")
+    evidence["page_evidence"]["share_link"] = {
+        "displayed": False,
+        "copy_control_displayed": False,
+        "url": "页面未显示",
+    }
+
+    assert "share_link_copy_control_missing" in audit_gaojixing_question_evidence(
+        evidence, project_root=tmp_path
+    )
+
+
+def test_share_link_accepts_the_copied_doubao_thread_url(tmp_path):
+    evidence = _valid_evidence(tmp_path, "G0008")
+    evidence["page_evidence"]["share_link"] = {
+        "displayed": True,
+        "copy_control_displayed": True,
+        "capture_method": "share-copy-control",
+        "url": "https://www.doubao.com/thread/xg8AbxCMCtMcDYoUs",
+    }
+
+    violations = audit_gaojixing_question_evidence(evidence, project_root=tmp_path)
+
+    assert not [item for item in violations if item.startswith("share_link_")]
+
+
+def test_share_link_rejects_the_address_bar_conversation_url(tmp_path):
+    evidence = _valid_evidence(tmp_path, "G0008")
+    evidence["page_evidence"]["share_link"]["url"] = (
+        "https://www.doubao.com/chat/38437069588741378"
+    )
+
+    assert "share_link_unavailable" in audit_gaojixing_question_evidence(
+        evidence, project_root=tmp_path
+    )
+
+
 def test_displayed_module_cannot_claim_zero_or_page_not_displayed(tmp_path):
     evidence = _valid_evidence(tmp_path, "G0008")
     evidence["page_evidence"]["module_expectations"]["ref_links"] = {
@@ -1516,6 +1570,21 @@ def test_displayed_module_cannot_claim_zero_or_page_not_displayed(tmp_path):
 
     violations = audit_gaojixing_question_evidence(evidence, project_root=tmp_path)
     assert "module_ref_links_displayed_content_missing" in violations
+
+
+def test_recommended_followups_are_required_for_every_completed_doubao_answer(
+    tmp_path,
+):
+    evidence = _valid_evidence(tmp_path, "G0009")
+    evidence["page_modules"]["followups"] = "页面未显示"
+    evidence["page_evidence"]["module_expectations"]["followups"] = {
+        "displayed": False,
+        "expected_count": 0,
+    }
+
+    assert "recommended_followups_missing" in audit_gaojixing_question_evidence(
+        evidence, project_root=tmp_path
+    )
 
 
 def test_three_coverage_flags_cannot_be_backed_by_one_screenshot(tmp_path):

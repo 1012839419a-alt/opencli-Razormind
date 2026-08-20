@@ -25,6 +25,9 @@ _FIXTURE_PATHS = {
 }
 
 _FORMAL_CHAT_URL = re.compile(r"^https://www\.doubao\.com/chat/\d+$")
+_DOUBAO_SHARE_URL = re.compile(
+    r"^https://www\.doubao\.com/thread/[A-Za-z0-9_-]+(?:[?#].*)?$"
+)
 _PAGE_MODULES = {"keywords", "ref_links", "product_links", "video_links", "followups"}
 
 
@@ -528,6 +531,11 @@ def audit_gaojixing_question_evidence(
         violations.append("page_modules_incomplete")
     elif any(not _module_has_explicit_value(page_modules[name]) for name in _PAGE_MODULES):
         violations.append("page_module_content_missing")
+    if isinstance(page_modules, dict) and not (
+        isinstance(page_modules.get("followups"), list)
+        and bool(page_modules["followups"])
+    ):
+        violations.append("recommended_followups_missing")
 
     page_evidence = evidence.get("page_evidence")
     if not isinstance(page_evidence, dict):
@@ -554,6 +562,20 @@ def audit_gaojixing_question_evidence(
             coverage.get(name) is not True for name in ("top", "answer", "bottom")
         ):
             violations.append("screenshot_coverage_incomplete")
+        share_link = page_evidence.get("share_link")
+        if not isinstance(share_link, dict):
+            violations.append("share_link_missing")
+        elif not isinstance(share_link.get("displayed"), bool):
+            violations.append("share_link_display_state_invalid")
+        elif share_link["displayed"] is False:
+            violations.append("share_link_copy_control_missing")
+        else:
+            if share_link.get("copy_control_displayed") is not True:
+                violations.append("share_link_copy_control_missing")
+            if share_link.get("capture_method") != "share-copy-control":
+                violations.append("share_link_capture_method_invalid")
+            if not _DOUBAO_SHARE_URL.match(str(share_link.get("url") or "")):
+                violations.append("share_link_unavailable")
 
     observation = evidence.get("brand_observation")
     if not _brand_observation_complete(evidence, observation):
