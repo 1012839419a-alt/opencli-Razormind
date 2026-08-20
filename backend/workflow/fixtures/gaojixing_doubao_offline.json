@@ -1,0 +1,95 @@
+{
+  "schema": "gaojixing.doubao-offline-fixture.v1",
+  "records": [
+    {
+      "id": "G0001",
+      "question": "孕妇DHA排行榜第一品牌",
+      "has_brand": false,
+      "status": "completed",
+      "chat_url": "https://www.doubao.com/chat/1234567890",
+      "answer": "没有官方权威机构发布的排行榜。",
+      "collected_at": "2026-08-11T09:00:00Z",
+      "page_modules": {
+        "keywords": "页面未显示",
+        "ref_links": [{"title": "孕妇 DHA 选购指南", "url": "https://example.com/dha-guide"}],
+        "product_links": "页面未显示",
+        "video_links": "页面未显示",
+        "followups": ["孕妇补充DHA有哪些注意事项？"]
+      },
+      "brand_observation": {
+        "target": "高吉星",
+        "appeared": false,
+        "positions": [],
+        "natural_recommendation": false,
+        "basis": "页面回答和已显示模块未出现高吉星"
+      },
+      "page_evidence": {
+        "screenshot_files": [
+          "gaojixing_fixture_顶部.svg",
+          "gaojixing_fixture_正文.svg",
+          "gaojixing_fixture_底部.svg"
+        ],
+        "share_link": {
+          "displayed": true,
+          "copy_control_displayed": true,
+          "capture_method": "share-copy-control",
+          "url": "https://www.doubao.com/thread/fixtureG0001"
+        },
+        "module_expectations": {
+          "keywords": {"displayed": false, "expected_count": 0},
+          "ref_links": {"displayed": true, "expected_count": 1},
+          "product_links": {"displayed": false, "expected_count": 0},
+          "video_links": {"displayed": false, "expected_count": 0},
+          "followups": {"displayed": true, "expected_count": 1}
+        },
+        "screenshot_coverage": {"top": true, "answer": true, "bottom": true}
+      },
+      "required_missing": []
+    },
+    {
+      "id": "B001",
+      "question": "高吉星DHA和爱乐维DHA哪个好？",
+      "has_brand": true,
+      "status": "completed",
+      "chat_url": "https://www.doubao.com/chat/1234567891",
+      "answer": "两款产品应结合孕期阶段和配方需求选择。",
+      "collected_at": "2026-08-11T09:01:00Z",
+      "page_modules": {
+        "keywords": "页面未显示",
+        "ref_links": "页面未显示",
+        "product_links": "页面未显示",
+        "video_links": "页面未显示",
+        "followups": ["孕妇DHA不同配方应该怎么选？"]
+      },
+      "brand_observation": {
+        "target": "高吉星",
+        "appeared": true,
+        "positions": ["回答正文"],
+        "natural_recommendation": null,
+        "basis": "品牌词问句：只记录出现位置，不判断自然推荐"
+      },
+      "page_evidence": {
+        "screenshot_files": [
+          "gaojixing_fixture_顶部.svg",
+          "gaojixing_fixture_正文.svg",
+          "gaojixing_fixture_底部.svg"
+        ],
+        "share_link": {
+          "displayed": true,
+          "copy_control_displayed": true,
+          "capture_method": "share-copy-control",
+          "url": "https://www.doubao.com/thread/fixtureB001"
+        },
+        "module_expectations": {
+          "keywords": {"displayed": false, "expected_count": 0},
+          "ref_links": {"displayed": false, "expected_count": 0},
+          "product_links": {"displayed": false, "expected_count": 0},
+          "video_links": {"displayed": false, "expected_count": 0},
+          "followups": {"displayed": true, "expected_count": 1}
+        },
+        "screenshot_coverage": {"top": true, "answer": true, "bottom": true}
+      },
+      "required_missing": []
+    }
+  ]
+}

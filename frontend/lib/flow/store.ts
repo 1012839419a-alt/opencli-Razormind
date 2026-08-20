@@ -1480,7 +1480,6 @@ export const useFlowStore = create<FlowState>((set, get) => ({
           ui: {
             ...(node.ui ?? {}),
             runtimeCapability,
-            runtimeContract: runtimeContractForCapability(runtimeCapability),
           },
         }
       }
@@ -1497,7 +1496,8 @@ export const useFlowStore = create<FlowState>((set, get) => ({
         if (isWorkflowRuntimeCapability(runtimeCapability)) {
           runtimeByNodeId.set(canvasNodeId, {
             capability: runtimeCapability,
-            contract: runtimeContractForCapability(runtimeCapability),
+            contract: (node.ui?.runtimeContract as WorkflowNodeData["runtimeContract"] | undefined)
+              ?? runtimeContractForCapability(runtimeCapability),
           })
         }
         for (const child of workflowProjectNodeChildren(node)) {

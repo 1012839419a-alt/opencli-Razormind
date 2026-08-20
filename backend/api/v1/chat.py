@@ -40,7 +40,11 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 MAX_TOOL_STEPS = 5
 
 ActivitySink = Callable[[dict[str, Any]], Awaitable[None]]
+ActivityFlusher = Callable[[], Awaitable[None]]
 _activity_sink: ContextVar[ActivitySink | None] = ContextVar("chat_activity_sink", default=None)
+_activity_flusher: ContextVar[ActivityFlusher | None] = ContextVar(
+    "chat_activity_flusher", default=None
+)
 _background_runs: set[asyncio.Task] = set()
 
 _PUBLIC_TOOL_LABELS = {
@@ -59,6 +63,12 @@ async def _emit_activity(event_type: str, label: str, detail: str, **extra: Any)
     sink = _activity_sink.get()
     if sink is not None:
         await sink({"type": event_type, "label": label, "detail": detail, **extra})
+
+
+async def _flush_activity() -> None:
+    flusher = _activity_flusher.get()
+    if flusher is not None:
+        await flusher()
 
 
 def _tool_public_description(name: str, args: dict[str, Any]) -> tuple[str, str, str | None]:
@@ -260,29 +270,128 @@ async def _create_durable_run(body: ChatRequest, identity: RequestIdentity | Non
         return run
 
 
-async def _record_durable_event(run_id: str, event: dict[str, Any]) -> dict[str, Any]:
-    """Append one public event atomically. Event payloads are deliberately already redacted."""
+class _DurableEventPersistenceError(RuntimeError):
+    """The run-scoped writer could not commit its pending durable events."""
+
+
+class _RunScopedDurableEventWriter:
+    """Persist ordered public events in natural run batches before publishing them."""
+
+    def __init__(self, run_id: str, queue: asyncio.Queue[dict[str, Any] | None]):
+        self.run_id = run_id
+        self.queue = queue
+        self.session: AsyncSession | None = None
+        self.run: AgentRun | None = None
+        self.next_sequence = 1
+        self.pending: list[dict[str, Any]] = []
+        self.dirty = False
+
+    async def __aenter__(self) -> "_RunScopedDurableEventWriter":
+        self.session = AsyncSessionLocal()
+        self.run = await self.session.get(AgentRun, self.run_id)
+        if self.run is None:
+            await self.session.close()
+            raise RuntimeError("Agent run disappeared")
+        self.next_sequence = self.run.next_event_sequence
+        return self
+
+    async def __aexit__(self, _exc_type, _exc, _traceback) -> None:
+        if self.session is not None:
+            await self.session.close()
+
+    def mark_running(self) -> None:
+        if self.run is None:
+            raise RuntimeError("Durable event writer is not open")
+        self.run.status = "running"
+        self.dirty = True
+
+    async def emit(self, event: dict[str, Any]) -> None:
+        if self.session is None or self.run is None:
+            raise RuntimeError("Durable event writer is not open")
+        payload = {"sequence": self.next_sequence, **event}
+        self.next_sequence += 1
+        self.run.next_event_sequence = self.next_sequence
+        self.session.add(
+            AgentRunEvent(
+                run_id=self.run.id,
+                sequence=payload["sequence"],
+                event_type=event["type"],
+                payload=payload,
+            )
+        )
+        self.pending.append(payload)
+        self.dirty = True
+
+    async def flush(self) -> None:
+        if self.session is None or not self.dirty:
+            return
+        try:
+            await self.session.commit()
+        except Exception as exc:
+            try:
+                await self.session.rollback()
+            except Exception:
+                logger.exception("chat durable event rollback failed")
+            finally:
+                self.pending.clear()
+                self.dirty = False
+            raise _DurableEventPersistenceError(
+                "Failed to persist agent run events"
+            ) from exc
+        committed, self.pending = self.pending, []
+        self.dirty = False
+        for payload in committed:
+            await self.queue.put(payload)
+
+    async def finish(
+        self,
+        *,
+        reply: dict[str, Any] | None = None,
+        error: str | None = None,
+    ) -> None:
+        if self.run is None:
+            raise RuntimeError("Durable event writer is not open")
+        self.run.status = "failed" if error else "completed"
+        self.run.reply_payload = reply
+        self.run.error_message = error
+        self.dirty = True
+        await self.flush()
+
+
+async def _persist_writer_failure(
+    run_id: str,
+    queue: asyncio.Queue[dict[str, Any] | None],
+) -> None:
+    """Atomically persist a terminal event with a fresh database session."""
+
     async with AsyncSessionLocal() as session:
         run = await session.get(AgentRun, run_id, with_for_update=True)
         if run is None:
             raise RuntimeError("Agent run disappeared")
-        sequence = run.next_event_sequence
+        payload = {
+            "sequence": run.next_event_sequence,
+            "type": "run.failed",
+            "label": "处理未完成",
+            "detail": "Agent 无法保存这次任务的执行进度。",
+            "state": "failed",
+            "status": 500,
+            "recovery": "稍后重试；本次失败状态已保存。",
+        }
         run.next_event_sequence += 1
-        payload = {"sequence": sequence, **event}
-        session.add(AgentRunEvent(run_id=run.id, sequence=sequence, event_type=event["type"], payload=payload))
+        run.status = "failed"
+        run.reply_payload = None
+        run.error_message = "Agent event persistence failed"
+        session.add(
+            AgentRunEvent(
+                run_id=run.id,
+                sequence=payload["sequence"],
+                event_type=payload["type"],
+                payload=payload,
+            )
+        )
         await session.commit()
-        return payload
 
-
-async def _finish_durable_run(run_id: str, *, reply: dict[str, Any] | None = None, error: str | None = None) -> None:
-    async with AsyncSessionLocal() as session:
-        run = await session.get(AgentRun, run_id)
-        if run is None:
-            return
-        run.status = "failed" if error else "completed"
-        run.reply_payload = reply
-        run.error_message = error
-        await session.commit()
+    await queue.put(payload)
 
 
 # ── provider → AsyncOpenAI client ───────────────────────────────────────────
@@ -472,6 +581,7 @@ async def chat(
             "正在根据已获得的信息决定下一步。",
             state="active",
         )
+        await _flush_activity()
         try:
             response = await client.chat.completions.create(
                 model=model, messages=messages, tools=TOOLS, tool_choice="auto"
@@ -545,6 +655,7 @@ async def chat(
                 state="active",
                 target={"type": target_type, "id": target_id},
             )
+            await _flush_activity()
             result = await _run_read_tool(db, tc.function.name, args)
             await _emit_activity(
                 "tool.completed",
@@ -578,64 +689,76 @@ async def chat_stream(
     async def event_source():
         queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
 
-        async def emit(event: dict[str, Any]) -> None:
-            await queue.put(await _record_durable_event(durable_run.id, event))
-
         async def produce() -> None:
-            token = _activity_sink.set(emit)
             try:
-                async with AsyncSessionLocal() as run_db:
-                    run = await run_db.get(AgentRun, durable_run.id)
-                    if run:
-                        run.status = "running"
-                        await run_db.commit()
-                await emit(
-                    {
-                        "type": "run.started",
-                        "label": "开始处理",
-                        "detail": "已接收请求，正在建立执行上下文。",
-                        "state": "active",
-                    }
-                )
-                async with AsyncSessionLocal() as run_db:
-                    response = await chat(body, identity, run_db)
-                await emit(
-                    {
-                        "type": "reply",
-                        "label": "结果已就绪",
-                        "detail": "本次处理已返回结果。",
-                        "state": "completed",
-                        "reply": response.data.model_dump(mode="json"),
-                    }
-                )
-                await _finish_durable_run(durable_run.id, reply=response.data.model_dump(mode="json"))
-            except HTTPException as exc:
-                await emit(
-                    {
-                        "type": "run.failed",
-                        "label": "处理未完成",
-                        "detail": str(exc.detail),
-                        "state": "failed",
-                        "status": exc.status_code,
-                        "recovery": "检查连接或目标状态后重试。",
-                    }
-                )
-                await _finish_durable_run(durable_run.id, error=str(exc.detail))
+                async with _RunScopedDurableEventWriter(durable_run.id, queue) as writer:
+                    sink_token = _activity_sink.set(writer.emit)
+                    flusher_token = _activity_flusher.set(writer.flush)
+                    try:
+                        writer.mark_running()
+                        await writer.emit(
+                            {
+                                "type": "run.started",
+                                "label": "开始处理",
+                                "detail": "已接收请求，正在建立执行上下文。",
+                                "state": "active",
+                            }
+                        )
+                        await writer.flush()
+                        async with AsyncSessionLocal() as run_db:
+                            response = await chat(body, identity, run_db)
+                            if response.data.type == "proposal":
+                                await run_db.commit()
+                        reply = response.data.model_dump(mode="json")
+                        await writer.emit(
+                            {
+                                "type": "reply",
+                                "label": "结果已就绪",
+                                "detail": "本次处理已返回结果。",
+                                "state": "completed",
+                                "reply": reply,
+                            }
+                        )
+                        await writer.finish(reply=reply)
+                    except _DurableEventPersistenceError:
+                        raise
+                    except HTTPException as exc:
+                        await writer.emit(
+                            {
+                                "type": "run.failed",
+                                "label": "处理未完成",
+                                "detail": str(exc.detail),
+                                "state": "failed",
+                                "status": exc.status_code,
+                                "recovery": "检查连接或目标状态后重试。",
+                            }
+                        )
+                        await writer.finish(error=str(exc.detail))
+                    except Exception:
+                        logger.exception("chat stream failed")
+                        await writer.emit(
+                            {
+                                "type": "run.failed",
+                                "label": "处理未完成",
+                                "detail": "Agent 暂时无法完成这项任务。",
+                                "state": "failed",
+                                "status": 500,
+                                "recovery": "稍后重试，或调整请求后继续。",
+                            }
+                        )
+                        await writer.finish(error="Agent run failed")
+                    finally:
+                        _activity_flusher.reset(flusher_token)
+                        _activity_sink.reset(sink_token)
+            except _DurableEventPersistenceError:
+                logger.exception("chat durable event persistence failed")
+                try:
+                    await _persist_writer_failure(durable_run.id, queue)
+                except Exception:
+                    logger.exception("chat durable failure fallback failed")
             except Exception:
-                logger.exception("chat stream failed")
-                await emit(
-                    {
-                        "type": "run.failed",
-                        "label": "处理未完成",
-                        "detail": "Agent 暂时无法完成这项任务。",
-                        "state": "failed",
-                        "status": 500,
-                        "recovery": "稍后重试，或调整请求后继续。",
-                    }
-                )
-                await _finish_durable_run(durable_run.id, error="Agent run failed")
+                logger.exception("chat durable event writer failed")
             finally:
-                _activity_sink.reset(token)
                 await queue.put(None)
 
         task = asyncio.create_task(produce())
@@ -761,6 +884,7 @@ async def _chat_xml(
     messages += [{"role": m.role, "content": m.content} for m in body.messages]
 
     for _step in range(MAX_TOOL_STEPS):
+        await _flush_activity()
         try:
             response = await client.chat.completions.create(model=model, messages=messages, max_tokens=1024)
         except Exception as exc:

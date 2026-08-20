@@ -55,6 +55,8 @@ WORKFLOW_CATALOG_IDS = {
     "package.intelligence.situation-awareness",
     "package.simulation.swarm-forecast",
     "package.intelligence.native-lifecycle",
+    "package.gaojixing.doubao-batch",
+    "package.gaojixing.batch-certification",
     "package.dispatch.fanout",
     "package.intelligence.pipeline",
     "package.ops.event",

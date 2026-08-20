@@ -17,6 +17,7 @@ import {
 import { Textarea } from '@/components/ui/textarea'
 import { apiClient } from '@/lib/api/client'
 import { getApiAuthHeaders } from '@/lib/api/auth-headers'
+import { proposalQueryKeys, recentAgentMessages } from '@/lib/agent-dock-state'
 import { ROUTE_LABELS } from '@/lib/navigation'
 
 type AgentMessage = {
@@ -100,13 +101,14 @@ export function GlobalAgentDock({
   const [showLiveSurface, setShowLiveSurface] = useState(false)
   const [agentSessionId, setAgentSessionId] = useState<string | null>(null)
   const [agentRunId, setAgentRunId] = useState<string | null>(null)
+  const visibleMessages = recentAgentMessages(messages)
 
   async function sendMessage(event?: FormEvent) {
     event?.preventDefault()
     const content = input.trim()
     if (!content || sending || proposal) return
 
-    const nextMessages = [...messages, { role: 'user' as const, content }]
+    const nextMessages = recentAgentMessages([...messages, { role: 'user' as const, content }])
     setMessages(nextMessages)
     setInput('')
     setError(null)
@@ -183,10 +185,10 @@ export function GlobalAgentDock({
       if (reply.type === 'proposal' && reply.proposal) {
         setProposal(reply.proposal)
       } else {
-        setMessages((current) => [
+        setMessages((current) => recentAgentMessages([
           ...current,
           { role: 'assistant', content: reply.content?.trim() || '没有返回内容。' },
-        ])
+        ]))
       }
       setActivities((current) => [...current.filter((item) => item.state !== 'active'), ...activityForReply(reply)].slice(-8))
     } catch (reason) {
@@ -197,7 +199,10 @@ export function GlobalAgentDock({
           for (const replayed of recovery.data ?? []) {
             if (replayed.type === 'reply' && replayed.reply) {
               if (replayed.reply.type === 'proposal' && replayed.reply.proposal) setProposal(replayed.reply.proposal)
-              else setMessages((current) => [...current, { role: 'assistant', content: replayed.reply?.content?.trim() || '' }])
+              else setMessages((current) => recentAgentMessages([
+                ...current,
+                { role: 'assistant', content: replayed.reply?.content?.trim() || '' },
+              ]))
             }
           }
         } catch {
@@ -226,12 +231,16 @@ export function GlobalAgentDock({
     ])
     try {
       await apiClient.post('/chat/confirm', { proposal: proposalToConfirm })
-      setMessages((current) => [
+      setMessages((current) => recentAgentMessages([
         ...current,
         { role: 'assistant', content: `已完成：${proposalToConfirm.summary}` },
-      ])
+      ]))
       setProposal(null)
-      await queryClient.invalidateQueries()
+      await Promise.all(
+        proposalQueryKeys(proposalToConfirm).map((queryKey) =>
+          queryClient.invalidateQueries({ queryKey }),
+        ),
+      )
       setActivities([
         { label: '操作已完成', detail: proposalToConfirm.summary, state: 'complete' },
         { label: '界面已同步', detail: '已刷新相关数据；你现在看到的是最新状态。', state: 'complete' },
@@ -287,7 +296,7 @@ export function GlobalAgentDock({
                 </p>
               </div>
             ) : null}
-            {messages.map((message, index) => (
+            {visibleMessages.map((message, index) => (
               <div
                 key={`${message.role}-${index}`}
                 className={message.role === 'user'

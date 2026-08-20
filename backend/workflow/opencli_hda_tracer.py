@@ -68,6 +68,16 @@ from backend.workflow.dify_grants import resolve_dify_ephemeral_grants
 from backend.workflow.dify_graphon_client import DifyGraphonClient
 from backend.workflow.event_mirror import publish_workflow_run_event_mirror
 from backend.workflow.fleet_inventory import match_workflow_fleet_capability
+from backend.workflow.gaojixing_certification import (
+    GAOJIXING_BATCH_CERTIFY_EXECUTOR,
+    GAOJIXING_BATCH_CERTIFY_TOOL_ID,
+    execute_gaojixing_batch_certification,
+)
+from backend.workflow.gaojixing_doubao import (
+    GAOJIXING_DOUBAO_BATCH_EXECUTOR,
+    GAOJIXING_DOUBAO_BATCH_TOOL_ID,
+    execute_gaojixing_doubao_batch,
+)
 from backend.workflow.http_source_executor import (
     WorkflowHTTPSourceExecutionError,
     execute_workflow_http_source,
@@ -89,6 +99,9 @@ from backend.workflow.kats_runtime import (
     execute_kats_operation,
 )
 from backend.workflow.last30days_provider import Last30DaysProviderError
+from backend.workflow.managed_gaojixing_question_batches import (
+    resolve_managed_question_batch,
+)
 from backend.workflow.native_intelligence_executor import (
     NATIVE_INTELLIGENCE_ACTION_BY_TOOL_ID,
     NATIVE_INTELLIGENCE_EXECUTOR,
@@ -174,6 +187,24 @@ class _StoredWorkflowRun:
     events: list[WorkflowNodeRunEvent]
     workflow_version_id: str | None = None
     studio_workflow_version_id: str | None = None
+
+
+class _GaojixingToolTerminalError(Exception):
+    """Carry governed business terminal output into the workflow event spine."""
+
+    def __init__(
+        self,
+        *,
+        event_type: WorkflowNodeRunEventType,
+        code: str,
+        message: str,
+        output_items: list[dict[str, Any]],
+    ) -> None:
+        super().__init__(message)
+        self.event_type = event_type
+        self.code = code
+        self.message = message
+        self.output_items = output_items
 
 
 _RUNS: dict[str, _StoredWorkflowRun] = {}
@@ -509,6 +540,7 @@ async def start_workflow_run(
     outputs_by_node: dict[str, list[dict[str, Any]]] = {}
     materialized_source_tasks: dict[str, tuple[str, str]] = {}
     waiting_nodes: set[str] = set()
+    terminal_nodes: dict[str, WorkflowRunBlockReason] = {}
 
     for node in runtime_nodes:
         emitter.emit(node, "queued", message="Node queued for workflow run")
@@ -645,6 +677,33 @@ async def start_workflow_run(
             waiting_nodes.add(node.id)
             continue
 
+        terminal_dependency = next(
+            (
+                (dependency, terminal_nodes[dependency])
+                for dependency in node.depends_on
+                if dependency in terminal_nodes
+            ),
+            None,
+        )
+        if terminal_dependency is not None:
+            dependency_id, dependency_reason = terminal_dependency
+            reason = WorkflowRunBlockReason(
+                code="upstream_node_not_completed",
+                message=f'Upstream node "{dependency_id}" did not complete.',
+                source="workflow_runtime",
+                details={
+                    "nodeId": node.id,
+                    "upstreamNodeId": dependency_id,
+                    "upstreamReason": dependency_reason.model_dump(mode="json"),
+                },
+            )
+            outputs_by_node[node.id] = []
+            emitter.emit(node, "blocked", message=reason.message, block_reason=reason)
+            terminal_nodes[node.id] = reason
+            for ancestor_id in _package_ancestor_ids(node):
+                blocked_by_package.setdefault(ancestor_id, []).append(reason)
+            continue
+
         missing_runtime = _read_dict(node.runtime.get("missing_runtime"))
         if missing_runtime:
             reason = WorkflowRunBlockReason(
@@ -723,7 +782,11 @@ async def start_workflow_run(
             emitter.emit(node, "completed", message="Image generation node completed")
             continue
 
-        request_items = _request_source_items(node, body.sourceOutputs)
+        request_items = (
+            []
+            if _is_governed_gaojixing_tool_node(node)
+            else _request_source_items(node, body.sourceOutputs)
+        )
         if request_items:
             outputs_by_node[node.id] = request_items
             emitter.emit(node, "started", message="Runtime source output started")
@@ -1116,7 +1179,60 @@ async def start_workflow_run(
                     session=session,
                     runtime_nodes_by_id=runtime_nodes_by_id,
                     materialized_source_tasks=materialized_source_tasks,
+                    agent_can_send_notifications=(
+                        body.project.agentPermissions.canSendNotifications
+                    ),
+                    workflow_input=body.input.payload,
                 )
+            except _GaojixingToolTerminalError as exc:
+                output_items = exc.output_items
+                outputs_by_node[node.id] = output_items
+                binding_input = _binding_input(node)
+                details = {
+                    **_external_tool_call_details(
+                        node,
+                        input_item_count=len(_upstream_outputs(node, outputs_by_node)),
+                        output_item_count=len(output_items),
+                    ),
+                    "outputPort": binding_input.get("outputPort", "unknown"),
+                    "sampleOutputs": [
+                        _trace_sample_output(item) for item in output_items[:3]
+                    ],
+                }
+                emitter.emit(
+                    node,
+                    "partial",
+                    message="Gaojixing tool preserved governed terminal evidence",
+                    details=details,
+                )
+                if exc.event_type == "waiting":
+                    emitter.emit(
+                        node,
+                        "waiting",
+                        message=exc.message,
+                        details=details,
+                    )
+                    waiting_nodes.add(node.id)
+                    await _persist_emitter_events(run_id, emitter, session=session)
+                    continue
+                reason = WorkflowRunBlockReason(
+                    code=exc.code,
+                    message=exc.message,
+                    source="gaojixing_runtime",
+                    details=details,
+                )
+                emitter.emit(
+                    node,
+                    exc.event_type,
+                    message=exc.message,
+                    block_reason=reason,
+                    details=details,
+                )
+                terminal_nodes[node.id] = reason
+                for ancestor_id in _package_ancestor_ids(node):
+                    blocked_by_package.setdefault(ancestor_id, []).append(reason)
+                await _persist_emitter_events(run_id, emitter, session=session)
+                continue
             except WorkflowWebhookDeliveryError as exc:
                 reason = WorkflowRunBlockReason(
                     code=exc.code,
@@ -1525,13 +1641,23 @@ async def start_workflow_run(
             )
             continue
 
+        descendant_ids = {
+            node.id
+            for node in runtime_nodes
+            if package_node.id in _package_ancestor_ids(node)
+        }
+        waiting_descendant_ids = sorted(descendant_ids & waiting_nodes)
+        if waiting_descendant_ids:
+            emitter.emit(
+                package_node,
+                "waiting",
+                message="Package is waiting for an internal recovery checkpoint",
+                details={"waitingNodeIds": waiting_descendant_ids},
+            )
+            continue
+
         internal_reasons = blocked_by_package.get(package_node.id, [])
         if internal_reasons:
-            descendant_ids = {
-                node.id
-                for node in runtime_nodes
-                if package_node.id in _package_ancestor_ids(node)
-            }
             source_node_ids = {
                 node.id
                 for node in runtime_nodes
@@ -1812,6 +1938,9 @@ async def continue_workflow_run_with_source_outputs(
         if stored is None:
             return None
 
+        if _project_has_governed_gaojixing(stored.request.project):
+            return stored.projection
+
         incoming_node_ids = set(body.sourceOutputs)
         duplicate_image_node_ids = {
             node_id
@@ -1837,6 +1966,117 @@ async def continue_workflow_run_with_source_outputs(
         )
         return await start_workflow_run(
             request,
+            session=session,
+            existing_events=stored.events,
+            workflow_version_id=stored.workflow_version_id,
+            studio_workflow_version_id=stored.studio_workflow_version_id,
+        )
+
+
+async def resume_gaojixing_workflow_run(
+    run_id: str,
+    *,
+    session: AsyncSession | None = None,
+) -> WorkflowRunProjection | None:
+    """Resume governed collection from its durable REVIEWING state only.
+
+    This is intentionally separate from the public ``sourceOutputs``
+    continuation. It replays the immutable stored request and acknowledges
+    success in the same transaction that stores the HDA audit/certification.
+    """
+
+    if session is None:
+        from backend.database import AsyncSessionLocal, commit_session
+
+        async with AsyncSessionLocal() as owned_session:
+            projection = await resume_gaojixing_workflow_run(
+                run_id,
+                session=owned_session,
+            )
+            await commit_session(owned_session)
+            return projection
+
+    from backend.models.gaojixing_collection import (
+        GaojixingCollectionRun,
+        GaojixingCollectionRunStatus,
+    )
+    from backend.services.gaojixing_collection_service import (
+        mark_collection_review_failed,
+        mark_collection_succeeded,
+    )
+
+    lock = await _get_run_lock(run_id)
+    async with lock:
+        stored = await _load_workflow_run(run_id, session=session, cache=False)
+        if stored is None or not _project_has_governed_gaojixing(stored.request.project):
+            return None
+        job = await session.scalar(
+            select(GaojixingCollectionRun)
+            .where(GaojixingCollectionRun.workflow_run_id == run_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if job is None:
+            return None
+        if job.status == GaojixingCollectionRunStatus.SUCCEEDED.value:
+            return stored.projection
+        if job.status != GaojixingCollectionRunStatus.REVIEWING.value:
+            return stored.projection
+        request = stored.request.model_copy(
+            update={
+                "runId": run_id,
+                "traceId": stored.projection.traceId,
+                # Governed worker output is read from the managed archive;
+                # public/generic continuation data is never introduced here.
+                "sourceOutputs": stored.request.sourceOutputs,
+            },
+            deep=True,
+        )
+        projection = await start_workflow_run(
+            request,
+            session=session,
+            existing_events=stored.events,
+            workflow_version_id=stored.workflow_version_id,
+            studio_workflow_version_id=stored.studio_workflow_version_id,
+        )
+        if projection.status == "completed":
+            await mark_collection_succeeded(session, workflow_run_id=run_id)
+        elif projection.status in {"failed", "blocked", "cancelled"}:
+            await mark_collection_review_failed(
+                session,
+                workflow_run_id=run_id,
+                code=f"hda-review-{projection.status}",
+            )
+        return projection
+
+
+async def refresh_gaojixing_workflow_run(
+    run_id: str,
+    *,
+    session: AsyncSession | None = None,
+) -> WorkflowRunProjection | None:
+    """Project durable worker waiting/failure state without accepting inputs."""
+
+    if session is None:
+        from backend.database import AsyncSessionLocal, commit_session
+
+        async with AsyncSessionLocal() as owned_session:
+            projection = await refresh_gaojixing_workflow_run(
+                run_id,
+                session=owned_session,
+            )
+            await commit_session(owned_session)
+            return projection
+    lock = await _get_run_lock(run_id)
+    async with lock:
+        stored = await _load_workflow_run(run_id, session=session, cache=False)
+        if stored is None or not _project_has_governed_gaojixing(stored.request.project):
+            return None
+        return await start_workflow_run(
+            stored.request.model_copy(
+                update={"runId": run_id, "traceId": stored.projection.traceId},
+                deep=True,
+            ),
             session=session,
             existing_events=stored.events,
             workflow_version_id=stored.workflow_version_id,
@@ -2027,7 +2267,7 @@ def _build_checkpoint(
         sourceOutputItemCount=source_output_item_count,
         waitingNodeIds=waiting_node_ids,
         pendingJobs=pending_jobs,
-        canContinueWithSourceOutputs=True,
+        canContinueWithSourceOutputs=not _project_has_governed_gaojixing(request.project),
         continuationPath=f"/api/v1/workflows/runs/{projection.runId}/source-outputs",
         tracePath=f"/api/v1/workflows/runs/{projection.runId}/trace",
     )
@@ -2739,6 +2979,19 @@ def _is_image_generation_project_node(project: WorkflowProject, node_id: str) ->
     )
 
 
+def _project_has_governed_gaojixing(project: WorkflowProject) -> bool:
+    return any(
+        str(node.params.get("template") or "")
+        in {"gaojixing-doubao-batch", "gaojixing-batch-certification"}
+        or str((node.ui or {}).get("catalogId") or "")
+        in {
+            "package.gaojixing.doubao-batch",
+            "package.gaojixing.batch-certification",
+        }
+        for node in project.nodes
+    )
+
+
 def _projection_node_status(
     projection: WorkflowRunProjection,
     node_id: str,
@@ -3207,6 +3460,8 @@ async def _execute_native_node(
     session: AsyncSession | None = None,
     runtime_nodes_by_id: dict[str, CompiledWorkflowNode] | None = None,
     materialized_source_tasks: dict[str, tuple[str, str]] | None = None,
+    agent_can_send_notifications: bool = False,
+    workflow_input: dict[str, Any] | None = None,
 ) -> tuple[dict[str, object], list[dict[str, Any]]]:
     binding_id = _binding_id(node)
     input_items = _upstream_outputs(node, outputs_by_node)
@@ -3471,6 +3726,8 @@ async def _execute_native_node(
             trace_id=trace_id,
             session=session,
             binding_input=binding_input,
+            agent_can_send_notifications=agent_can_send_notifications,
+            workflow_input=workflow_input or {},
         )
         return (
             {
@@ -3557,7 +3814,143 @@ async def _execute_external_tool_capability(
     trace_id: str,
     session: AsyncSession | None,
     binding_input: dict[str, Any],
+    agent_can_send_notifications: bool,
+    workflow_input: dict[str, Any],
 ) -> list[dict[str, Any]]:
+    if (
+        binding_input.get("executorMode") == GAOJIXING_DOUBAO_BATCH_EXECUTOR
+        and binding_input.get("toolCapabilityId") == GAOJIXING_DOUBAO_BATCH_TOOL_ID
+    ):
+        question_batch_ref = workflow_input.get("questionBatchRef")
+        if isinstance(question_batch_ref, str) and question_batch_ref:
+            if session is None:
+                raise ValueError("gaojixing_durable_session_required")
+            from backend.models.gaojixing_collection import (
+                GaojixingCollectionRun,
+                GaojixingCollectionRunStatus,
+                GaojixingQuestionCheckpoint,
+                GaojixingQuestionStatus,
+            )
+            from backend.services.gaojixing_collection_service import ensure_collection
+
+            job = await session.scalar(
+                select(GaojixingCollectionRun).where(
+                    GaojixingCollectionRun.workflow_run_id == run_id
+                )
+            )
+            if job is None:
+                job = await ensure_collection(
+                    session,
+                    workflow_run_id=run_id,
+                    node_id=node.id,
+                    question_batch_ref=question_batch_ref,
+                )
+            if job.status not in {
+                GaojixingCollectionRunStatus.REVIEWING.value,
+                GaojixingCollectionRunStatus.SUCCEEDED.value,
+            }:
+                checkpoints = list(
+                    (
+                        await session.execute(
+                            select(GaojixingQuestionCheckpoint).where(
+                                GaojixingQuestionCheckpoint.collection_run_id == job.id
+                            )
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                output = {
+                    "schema": "gaojixing.collection-run.v1",
+                    "status": job.status,
+                    "jobId": job.id,
+                    "questionCount": len(checkpoints),
+                    "completedCount": sum(
+                        checkpoint.status == GaojixingQuestionStatus.PASSED.value
+                        for checkpoint in checkpoints
+                    ),
+                    "currentQuestionId": job.current_question_id,
+                    "waitingKind": job.waiting_kind,
+                    "artifactRef": job.waiting_artifact_ref,
+                }
+                output_items = [
+                    _external_tool_output(node, output, input_items, run_id, 0, binding_input)
+                ]
+                if job.status in {
+                    GaojixingCollectionRunStatus.FAILED.value,
+                    GaojixingCollectionRunStatus.BLOCKED.value,
+                    GaojixingCollectionRunStatus.CANCELLED.value,
+                }:
+                    raise _GaojixingToolTerminalError(
+                        event_type=(
+                            "blocked"
+                            if job.status == GaojixingCollectionRunStatus.BLOCKED.value
+                            else "failed"
+                        ),
+                        code="gaojixing_collection_terminal",
+                        message="Gaojixing durable collection did not complete.",
+                        output_items=output_items,
+                    )
+                raise _GaojixingToolTerminalError(
+                    event_type="waiting",
+                    code="gaojixing_collection_waiting",
+                    message="Gaojixing durable collection is waiting for worker progress.",
+                    output_items=output_items,
+                )
+        output = await execute_gaojixing_doubao_batch(
+            input_items,
+            _gaojixing_tool_params(binding_input, workflow_input, run_id=run_id),
+            notification_permission_granted=agent_can_send_notifications,
+        )
+        output_items = [
+            _external_tool_output(node, output, input_items, run_id, 0, binding_input)
+        ]
+        if output.get("status") == "verification_required":
+            raise _GaojixingToolTerminalError(
+                event_type="waiting",
+                code="gaojixing_verification_required",
+                message="Gaojixing batch is waiting for human verification.",
+                output_items=output_items,
+            )
+        if output.get("status") == "failed":
+            raise _GaojixingToolTerminalError(
+                event_type="failed",
+                code="gaojixing_batch_failed",
+                message="Gaojixing batch failed its governed evidence checks.",
+                output_items=output_items,
+            )
+        if (
+            output.get("schema") == "gaojixing.doubao-driver-preflight.v1"
+            and output.get("status") == "blocked"
+        ):
+            raise _GaojixingToolTerminalError(
+                event_type="blocked",
+                code="gaojixing_driver_preflight_blocked",
+                message="Gaojixing read-only driver preflight is blocked.",
+                output_items=output_items,
+            )
+        return output_items
+
+    if (
+        binding_input.get("executorMode") == GAOJIXING_BATCH_CERTIFY_EXECUTOR
+        and binding_input.get("toolCapabilityId") == GAOJIXING_BATCH_CERTIFY_TOOL_ID
+    ):
+        output = await execute_gaojixing_batch_certification(
+            input_items,
+            _gaojixing_tool_params(binding_input, workflow_input, run_id=run_id),
+        )
+        output_items = [
+            _external_tool_output(node, output, input_items, run_id, 0, binding_input)
+        ]
+        if output.get("status") == "rejected":
+            raise _GaojixingToolTerminalError(
+                event_type="failed",
+                code="gaojixing_certification_rejected",
+                message="Gaojixing terminal certification rejected the batch.",
+                output_items=output_items,
+            )
+        return output_items
+
     if binding_input.get("executorMode") == NATIVE_INTELLIGENCE_EXECUTOR:
         tool_id = binding_input.get("toolCapabilityId")
         action = (
@@ -3770,6 +4163,23 @@ def _merged_tool_params(binding_input: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _gaojixing_tool_params(
+    binding_input: dict[str, Any], workflow_input: dict[str, Any], *, run_id: str
+) -> dict[str, Any]:
+    params = _merged_tool_params(binding_input)
+    question_batch_ref = workflow_input.get("questionBatchRef")
+    if not isinstance(question_batch_ref, str) or not question_batch_ref:
+        return params
+    resolved = resolve_managed_question_batch(
+        question_batch_ref,
+        expected_run_id=run_id,
+    )
+    params["sourceMode"] = "project_archive"
+    params["projectRoot"] = str(resolved.project_root)
+    params["questionBankPath"] = str(resolved.question_bank_path)
+    return params
+
+
 def _resolved_kats_params(
     binding_input: dict[str, Any],
 ) -> tuple[str, dict[str, Any]]:
@@ -3822,6 +4232,27 @@ def _trace_sample_output(item: dict[str, Any]) -> dict[str, Any]:
             "market",
             "status",
             "message",
+            "sourceMode",
+            "searchTriggered",
+            "batchId",
+            "snapshotDigest",
+            "acceptedQuestionIds",
+            "phaseCounts",
+            "audits",
+            "batchViolations",
+            "recordCount",
+            "recoveryCase",
+            "notification",
+            "blockedByPermission",
+            "jobId",
+            "questionCount",
+            "completedCount",
+            "currentQuestionId",
+            "waitingKind",
+            "artifactRef",
+            "violations",
+            "certificationScope",
+            "evidenceDigest",
             "query",
             "counts",
             "window",
@@ -3891,6 +4322,17 @@ def _external_tool_call_details(
 
 def _is_native_intelligence_node(node: CompiledWorkflowNode) -> bool:
     return _binding_input(node).get("executorMode") == NATIVE_INTELLIGENCE_EXECUTOR
+
+
+def _is_governed_gaojixing_tool_node(node: CompiledWorkflowNode) -> bool:
+    binding_input = _binding_input(node)
+    return (
+        binding_input.get("executorMode"),
+        binding_input.get("toolCapabilityId"),
+    ) in {
+        (GAOJIXING_DOUBAO_BATCH_EXECUTOR, GAOJIXING_DOUBAO_BATCH_TOOL_ID),
+        (GAOJIXING_BATCH_CERTIFY_EXECUTOR, GAOJIXING_BATCH_CERTIFY_TOOL_ID),
+    }
 
 
 def _is_external_tool_node(node: CompiledWorkflowNode) -> bool:
