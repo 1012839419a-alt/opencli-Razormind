@@ -362,14 +362,11 @@ async def test_internal_worker_resume_certifies_same_run_without_source_outputs(
                 "answer": "完整回答",
                 "collected_at": "2026-08-12T10:00:00Z",
                 "page_modules": {
-                    name: "页面未显示"
-                    for name in (
-                        "keywords",
-                        "ref_links",
-                        "product_links",
-                        "video_links",
-                        "followups",
-                    )
+                    "keywords": "页面未显示",
+                    "ref_links": "页面未显示",
+                    "product_links": "页面未显示",
+                    "video_links": "页面未显示",
+                    "followups": [f"{question}还有哪些注意事项？"],
                 },
                 "brand_observation": {
                     "target": "高吉星",
@@ -380,8 +377,17 @@ async def test_internal_worker_resume_certifies_same_run_without_source_outputs(
                 },
                 "page_evidence": {
                     "screenshot_files": screenshots,
+                    "share_link": {
+                        "displayed": True,
+                        "copy_control_displayed": True,
+                        "capture_method": "share-copy-control",
+                        "url": f"https://www.doubao.com/thread/fixture{question_id}",
+                    },
                     "module_expectations": {
-                        name: {"displayed": False, "expected_count": 0}
+                        name: {
+                            "displayed": name == "followups",
+                            "expected_count": 1 if name == "followups" else 0,
+                        }
                         for name in (
                             "keywords",
                             "ref_links",

@@ -139,7 +139,7 @@ class _FakeEvidenceDriver:
                 "ref_links": "页面未显示",
                 "product_links": "页面未显示",
                 "video_links": "页面未显示",
-                "followups": "页面未显示",
+                "followups": [f"{question}还有哪些注意事项？"],
             },
             "brand_observation": {
                 "target": "高吉星",
@@ -154,8 +154,17 @@ class _FakeEvidenceDriver:
             },
             "page_evidence": {
                 "screenshot_files": screenshot_files,
+                "share_link": {
+                    "displayed": True,
+                    "copy_control_displayed": True,
+                    "capture_method": "share-copy-control",
+                    "url": f"https://www.doubao.com/thread/fixture{question_id}",
+                },
                 "module_expectations": {
-                    name: {"displayed": False, "expected_count": 0}
+                    name: {
+                        "displayed": name == "followups",
+                        "expected_count": 1 if name == "followups" else 0,
+                    }
                     for name in (
                         "keywords",
                         "ref_links",
