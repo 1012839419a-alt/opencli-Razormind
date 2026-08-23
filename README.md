@@ -72,6 +72,20 @@ Invoke-WebRequest https://raw.githubusercontent.com/2233admin/opencli-Razormind/
 6. 在项目内查看数据、逻辑与证据、证据关系和 Galaxy 视图。Galaxy 是证据关系的一种查看方式，不是独立的项目模块。
 7. 配置 Webhook、飞书、钉钉、企业微信或 Email，将通过规则和质量门的数据交付出去。
 
+### 直接调用高吉星豆包采集
+
+已发布的“高吉星豆包采集”工作流只要求每次上传一份 JSON、XLS 或 XLSX 题库；题量和阶段顺序由题库内容决定，调用方不填写 `questionBankPath` 或 `projectRoot`。管理界面可直接点击“运行”上传题库，也可通过同一工作流的 multipart API 调用：
+
+~~~bash
+curl -X POST \
+  "http://localhost:8031/api/v1/workspaces/{workspace_id}/projects/{project_id}/workflows/{workflow_id}/runs/question-bank" \
+  -H "Authorization: Bearer ${API_AUTH_TOKEN}" \
+  -F "questionBank=@questions.xlsx" \
+  -F 'request={"responseMode":"async"}'
+~~~
+
+运行时会复用内置浏览器的豆包登录态，逐题保存完整回答、关键词、参考资料、回答内电商产品链接、相关视频、推荐追问、连续截图和真实 `/thread/` 分享链接。证据持久化通过后，只删除本次新建的精确会话；真实验证码、登录或访问异常会暂停任务并交给 Hermes/飞书告警。
+
 ## 产品界面
 
 ### 可视化工作流

@@ -128,6 +128,92 @@ async def test_preflight_is_read_only_and_only_calls_status(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_prepare_run_clears_only_disposable_cache_and_preserves_login(
+    tmp_path, monkeypatch
+):
+    commands = _CommandProbe(status_url="https://www.doubao.com/chat")
+    cookies = [
+        {
+            "name": "sessionid",
+            "domain": ".doubao.com",
+            "path": "/",
+            "value": "logged-in",
+        }
+    ]
+
+    class FakePage:
+        url = "https://www.doubao.com/chat"
+
+    class FakeCDP:
+        def __init__(self):
+            self.calls = []
+
+        async def send(self, method, params=None):
+            self.calls.append((method, params))
+
+    cdp = FakeCDP()
+
+    class FakeContext:
+        pages = [FakePage()]
+
+        async def cookies(self, _origin):
+            return [dict(cookie) for cookie in cookies]
+
+        async def new_cdp_session(self, _page):
+            return cdp
+
+    class FakeBrowser:
+        contexts = [FakeContext()]
+
+        async def close(self):
+            return None
+
+    class FakeChromium:
+        async def connect_over_cdp(self, _endpoint):
+            return FakeBrowser()
+
+    class FakePlaywright:
+        chromium = FakeChromium()
+
+        async def stop(self):
+            return None
+
+    class FakeStarter:
+        async def start(self):
+            return FakePlaywright()
+
+    async_api = types.ModuleType("playwright.async_api")
+    async_api.async_playwright = lambda: FakeStarter()
+    playwright = types.ModuleType("playwright")
+    playwright.async_api = async_api
+    monkeypatch.setitem(sys.modules, "playwright", playwright)
+    monkeypatch.setitem(sys.modules, "playwright.async_api", async_api)
+
+    driver = OpenCLIDoubaoEvidenceDriver(
+        project_root=tmp_path,
+        endpoint_lease=_endpoint_lease,
+        command_runner=commands,
+        page_capture=lambda **_kwargs: None,
+    )
+
+    await driver.prepare_run()
+
+    assert [command[1] for command in commands.commands] == ["status"]
+    assert cdp.calls == [
+        ("Network.enable", None),
+        ("Network.clearBrowserCache", None),
+        (
+            "Storage.clearDataForOrigin",
+            {
+                "origin": "https://www.doubao.com",
+                "storageTypes": "cache_storage",
+            },
+        ),
+    ]
+    assert cookies[0]["value"] == "logged-in"
+
+
+@pytest.mark.asyncio
 async def test_collect_uses_the_matched_page_answer_not_opencli_command_output(tmp_path):
     commands = _CommandProbe()
     page_calls = []
@@ -491,6 +577,7 @@ def test_saved_conversation_cleanup_targets_only_the_matching_sidebar_item():
     assert 'button[data-slot="dropdown-menu-trigger"]' in delete_source
     assert "=== '删除'" in _CONFIRM_DELETE_CONVERSATION_JS
     assert 'wait_for(state="attached"' in delete_source
+    assert 'wait_for(state="detached"' in delete_source
 
 
 def test_keyword_extraction_does_not_count_quoted_text_inside_reference_links():

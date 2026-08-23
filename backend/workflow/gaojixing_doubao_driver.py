@@ -107,6 +107,82 @@ class OpenCLIDoubaoEvidenceDriver:
             if not _chat_url(rows, allow_non_chat=True):
                 raise DoubaoDriverUnavailableError("doubao-session-unavailable")
 
+    async def prepare_run(self) -> None:
+        """Clear disposable Doubao caches while proving login state is preserved."""
+
+        try:
+            from playwright.async_api import async_playwright
+        except ImportError as exc:  # pragma: no cover - deployment dependency
+            raise DoubaoDriverUnavailableError("playwright-unavailable") from exc
+
+        async with self._endpoint_lease() as endpoint:
+            pw = await async_playwright().start()
+            browser = None
+            created_page = None
+            try:
+                browser = await pw.chromium.connect_over_cdp(endpoint)
+                context = browser.contexts[0] if browser.contexts else None
+                if context is None:
+                    raise DoubaoDriverUnavailableError(
+                        "doubao-browser-context-missing"
+                    )
+                page = next(
+                    (
+                        candidate
+                        for candidate in context.pages
+                        if candidate.url.startswith("https://www.doubao.com")
+                    ),
+                    None,
+                )
+                if page is None:
+                    created_page = await context.new_page()
+                    page = created_page
+                    await page.goto(
+                        "https://www.doubao.com/chat",
+                        wait_until="domcontentloaded",
+                        timeout=30_000,
+                    )
+                cookies_before = _stable_cookie_snapshot(
+                    await context.cookies("https://www.doubao.com")
+                )
+                cdp = await context.new_cdp_session(page)
+                await cdp.send("Network.enable")
+                await cdp.send("Network.clearBrowserCache")
+                await cdp.send(
+                    "Storage.clearDataForOrigin",
+                    {
+                        "origin": "https://www.doubao.com",
+                        "storageTypes": "cache_storage",
+                    },
+                )
+                cookies_after = _stable_cookie_snapshot(
+                    await context.cookies("https://www.doubao.com")
+                )
+                if cookies_after != cookies_before:
+                    raise DoubaoDriverUnavailableError(
+                        "cache-cleanup-session-mutated"
+                    )
+            finally:
+                if created_page is not None:
+                    try:
+                        await created_page.close()
+                    except Exception:
+                        pass
+                if browser is not None:
+                    try:
+                        await browser.close()
+                    except Exception:
+                        pass
+                await pw.stop()
+
+            code, rows, _stderr = await self._command_runner(
+                _status_command(), endpoint
+            )
+            if code or not _chat_url(rows, allow_non_chat=True):
+                raise DoubaoDriverUnavailableError(
+                    "doubao-session-lost-after-cache-cleanup"
+                )
+
     async def delete_conversation(self, *, chat_url: str) -> bool:
         """Delete one saved, fully captured conversation from the visible sidebar."""
 
@@ -151,7 +227,16 @@ class OpenCLIDoubaoEvidenceDriver:
                     return False
                 await page.wait_for_timeout(200)
                 confirmed = await page.evaluate(_CONFIRM_DELETE_CONVERSATION_JS, "confirm")
-                return isinstance(confirmed, dict) and confirmed.get("stage") == "confirmed"
+                if not (
+                    isinstance(confirmed, dict)
+                    and confirmed.get("stage") == "confirmed"
+                ):
+                    return False
+                try:
+                    await row.wait_for(state="detached", timeout=10_000)
+                except Exception:
+                    return await row.count() == 0
+                return True
             finally:
                 if page is not None:
                     try:
@@ -308,6 +393,20 @@ def _ask_command(question: str) -> list[str]:
 
 def _status_command() -> list[str]:
     return ["doubao", "status", "--site-session", "persistent", "-f", "json"]
+
+
+def _stable_cookie_snapshot(cookies: list[dict[str, Any]]) -> tuple[tuple[str, ...], ...]:
+    return tuple(
+        sorted(
+            (
+                str(cookie.get("name") or ""),
+                str(cookie.get("domain") or ""),
+                str(cookie.get("path") or ""),
+                str(cookie.get("value") or ""),
+            )
+            for cookie in cookies
+        )
+    )
 
 
 @asynccontextmanager

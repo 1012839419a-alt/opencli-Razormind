@@ -118,6 +118,9 @@ class GaojixingQuestionCheckpoint(TimestampMixin):
     attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     chat_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     raw_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    conversation_cleanup_pending: Mapped[bool] = mapped_column(
+        nullable=False, default=False
+    )
     artifact_refs: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     failure: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 

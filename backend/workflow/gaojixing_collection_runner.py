@@ -55,11 +55,15 @@ WorkerOutcome = Literal[
 class DriverPort(Protocol):
     async def preflight(self) -> None: ...
 
+    async def prepare_run(self) -> None: ...
+
     async def collect(self, *, question_id: str, question: str) -> dict[str, Any]: ...
 
     async def inspect_current(
         self, *, question_id: str, question: str
     ) -> dict[str, Any] | None: ...
+
+    async def delete_conversation(self, *, chat_url: str) -> bool: ...
 
 
 DriverFactory = Callable[[Path], DriverPort]
@@ -101,11 +105,10 @@ async def run_collection_job(
         storage_root=storage_root,
         signing_key=signing_key,
     )
-    attempt_root = (
-        resolved.project_root
-        / ".worker-staging"
-        / f"{job_id}-{owner}-{fencing_token}"
-    )
+    attempt_token = hashlib.sha256(
+        f"{job_id}:{owner}:{fencing_token}".encode()
+    ).hexdigest()[:20]
+    attempt_root = resolved.project_root / ".worker-staging" / f"attempt-{attempt_token}"
     lease_lost = asyncio.Event()
     heartbeat_stop = asyncio.Event()
     heartbeat = asyncio.create_task(
@@ -123,6 +126,7 @@ async def run_collection_job(
             attempt_root.mkdir(parents=True, exist_ok=False)
             driver = driver_factory(attempt_root)
             await _await_driver(driver.preflight(), lease_lost)
+            await _await_driver(driver.prepare_run(), lease_lost)
         except _LeaseLostError:
             return "lease_lost"
         except Exception as exc:
@@ -173,6 +177,28 @@ async def run_collection_job(
                     failure={"code": "question-checkpoint-set-mismatch"},
                 )
                 return "failed"
+            cleanup_pending = next(
+                (
+                    row
+                    for row in checkpoints
+                    if row.status == GaojixingQuestionStatus.PASSED.value
+                    and row.conversation_cleanup_pending
+                ),
+                None,
+            )
+            if cleanup_pending is not None:
+                cleanup_outcome = await _cleanup_saved_conversation(
+                    session_factory,
+                    job_id,
+                    cleanup_pending,
+                    driver,
+                    owner,
+                    fencing_token,
+                    lease_lost,
+                )
+                if cleanup_outcome is not None:
+                    return cleanup_outcome
+                continue
             pending = next(
                 (row for row in checkpoints if row.status != GaojixingQuestionStatus.PASSED.value),
                 None,
@@ -459,6 +485,7 @@ async def _accept_capture(
                 status=GaojixingQuestionStatus.PASSED.value,
                 chat_url=str(canonical_capture.get("chat_url") or ""),
                 raw_digest=raw_digest,
+                conversation_cleanup_pending=True,
                 failure=None,
             )
         )
@@ -472,6 +499,103 @@ async def _accept_capture(
             return "lease_lost"
         await session.commit()
     return None
+
+
+async def _cleanup_saved_conversation(
+    session_factory,
+    job_id,
+    checkpoint,
+    driver,
+    owner,
+    fencing_token,
+    lease_lost,
+) -> WorkerOutcome | None:
+    """Delete only the exact accepted chat, retaining a crash-safe retry bit."""
+
+    try:
+        deleted = await _await_driver(
+            driver.delete_conversation(chat_url=checkpoint.chat_url or ""),
+            lease_lost,
+        )
+    except _LeaseLostError:
+        return "lease_lost"
+    except Exception:
+        deleted = False
+    if not deleted:
+        waiting_saved = await _mark_conversation_cleanup_waiting(
+            session_factory,
+            job_id,
+            checkpoint,
+            owner,
+            fencing_token,
+        )
+        return "waiting_reconciliation" if waiting_saved else "lease_lost"
+
+    async with session_factory() as session:
+        if not await _lock_fence(session, job_id, owner, fencing_token):
+            await session.rollback()
+            return "lease_lost"
+        cleared = await session.execute(
+            update(GaojixingQuestionCheckpoint)
+            .where(
+                GaojixingQuestionCheckpoint.id == checkpoint.id,
+                GaojixingQuestionCheckpoint.collection_run_id == job_id,
+                GaojixingQuestionCheckpoint.status
+                == GaojixingQuestionStatus.PASSED.value,
+                GaojixingQuestionCheckpoint.conversation_cleanup_pending.is_(True),
+            )
+            .values(conversation_cleanup_pending=False, failure=None)
+        )
+        if cleared.rowcount != 1:
+            await session.rollback()
+            return "lease_lost"
+        await session.commit()
+    return None
+
+
+async def _mark_conversation_cleanup_waiting(
+    session_factory,
+    job_id,
+    checkpoint,
+    owner,
+    fencing_token,
+) -> bool:
+    failure = {
+        "code": "conversation-cleanup-failed",
+        "chatUrl": checkpoint.chat_url,
+    }
+    async with session_factory() as session:
+        if not await _lock_fence(session, job_id, owner, fencing_token):
+            await session.rollback()
+            return False
+        run_update = await session.execute(
+            update(GaojixingCollectionRun)
+            .where(GaojixingCollectionRun.id == job_id)
+            .values(
+                status=GaojixingCollectionRunStatus.WAITING_RECONCILIATION.value,
+                current_question_id=checkpoint.question_id,
+                waiting_kind="conversation_cleanup",
+                waiting_artifact_ref=None,
+                failure=failure,
+                lease_owner=None,
+                lease_fencing_token=None,
+                heartbeat_at=None,
+                lease_expires_at=None,
+            )
+        )
+        checkpoint_update = await session.execute(
+            update(GaojixingQuestionCheckpoint)
+            .where(GaojixingQuestionCheckpoint.id == checkpoint.id)
+            .values(
+                status=GaojixingQuestionStatus.WAITING_RECONCILIATION.value,
+                failure=failure,
+            )
+        )
+        if run_update.rowcount != 1 or checkpoint_update.rowcount != 1:
+            await session.rollback()
+            return False
+        await session.commit()
+    return True
 
 
 async def _fail_capture_locked(

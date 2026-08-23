@@ -103,11 +103,20 @@ async def test_managed_question_batch_materializes_once_and_dispatches_after_com
 class _FakeEvidenceDriver:
     def __init__(self, project_root):
         self.project_root = project_root
+        self.prepared = 0
         self.collected: list[str] = []
         self.inspected: list[str] = []
+        self.deleted: list[str] = []
 
     async def preflight(self) -> None:
         return None
+
+    async def prepare_run(self) -> None:
+        self.prepared += 1
+
+    async def delete_conversation(self, *, chat_url: str) -> bool:
+        self.deleted.append(chat_url)
+        return True
 
     async def collect(self, *, question_id: str, question: str) -> dict:
         self.collected.append(question_id)
@@ -139,7 +148,7 @@ class _FakeEvidenceDriver:
                 "ref_links": "页面未显示",
                 "product_links": "页面未显示",
                 "video_links": "页面未显示",
-                "followups": "页面未显示",
+                "followups": [f"继续了解：{question}"],
             },
             "brand_observation": {
                 "target": "高吉星",
@@ -154,8 +163,17 @@ class _FakeEvidenceDriver:
             },
             "page_evidence": {
                 "screenshot_files": screenshot_files,
+                "share_link": {
+                    "displayed": True,
+                    "copy_control_displayed": True,
+                    "capture_method": "share-copy-control",
+                    "url": f"https://www.doubao.com/thread/{question_id}proof",
+                },
                 "module_expectations": {
-                    name: {"displayed": False, "expected_count": 0}
+                    name: {
+                        "displayed": name == "followups",
+                        "expected_count": 1 if name == "followups" else 0,
+                    }
                     for name in (
                         "keywords",
                         "ref_links",
@@ -339,8 +357,14 @@ async def test_fake_driver_collects_phase1_before_phase2_and_builds_certifiable_
     )
 
     assert outcome == "workflow_resume_scheduled"
+    assert drivers[0].prepared == 1
     assert drivers[0].collected == ["G0001", "G0002", "B001"]
     assert drivers[0].inspected == []
+    assert drivers[0].deleted == [
+        "https://www.doubao.com/chat/1000000001",
+        "https://www.doubao.com/chat/1000000002",
+        "https://www.doubao.com/chat/1000000003",
+    ]
     assert resumed == [run_id]
     accepted = json.loads(
         (resolved_root / "raw" / "G0001.json").read_text(encoding="utf-8")
@@ -576,6 +600,89 @@ class _BlockingDriver(_FakeEvidenceDriver):
         self.started.set()
         await self.release.wait()
         return capture
+
+
+class _CleanupRetryDriver(_FakeEvidenceDriver):
+    def __init__(self, project_root):
+        super().__init__(project_root)
+        self.cleanup_attempts = 0
+
+    async def delete_conversation(self, *, chat_url: str) -> bool:
+        self.cleanup_attempts += 1
+        if self.cleanup_attempts == 1:
+            return False
+        return await super().delete_conversation(chat_url=chat_url)
+
+
+@pytest.mark.asyncio
+async def test_cleanup_failure_waits_and_resume_does_not_resubmit_saved_question(
+    db_engine, tmp_path
+):
+    from backend.models.gaojixing_collection import GaojixingCollectionRun
+    from backend.services.gaojixing_collection_service import (
+        ensure_collection,
+        resume_collection,
+    )
+    from backend.workflow.gaojixing_collection_runner import run_collection_job
+
+    run_id = "run-gjx-cleanup-retry"
+    signing_key = "test-signing-key"
+    staged = stage_managed_question_batch(
+        _question_bank(),
+        filename="questions.json",
+        run_id=run_id,
+        storage_root=tmp_path,
+        signing_key=signing_key,
+    )
+    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    async with sessions() as db:
+        db.add(_workflow_run(run_id))
+        job = await ensure_collection(
+            db,
+            workflow_run_id=run_id,
+            node_id="batch::tool",
+            question_batch_ref=staged.question_batch_ref,
+            storage_root=tmp_path,
+            signing_key=signing_key,
+            dispatch=lambda _job_id: None,
+        )
+        job_id = job.id
+        await commit_session(db)
+
+    driver = _CleanupRetryDriver(tmp_path / "unused")
+
+    def driver_factory(attempt_root):
+        driver.project_root = attempt_root
+        return driver
+
+    first = await run_collection_job(
+        job_id,
+        session_factory=sessions,
+        driver_factory=driver_factory,
+        schedule_resume=lambda _run_id: None,
+        storage_root=tmp_path,
+        signing_key=signing_key,
+    )
+    assert first == "waiting_reconciliation"
+    assert driver.collected == ["G0001"]
+    async with sessions() as db:
+        waiting = await db.get(GaojixingCollectionRun, job_id)
+        assert waiting is not None
+        assert waiting.waiting_kind == "conversation_cleanup"
+        await resume_collection(db, job_id=job_id, dispatch=lambda _job_id: None)
+        await commit_session(db)
+
+    second = await run_collection_job(
+        job_id,
+        session_factory=sessions,
+        driver_factory=driver_factory,
+        schedule_resume=lambda _run_id: None,
+        storage_root=tmp_path,
+        signing_key=signing_key,
+    )
+    assert second == "workflow_resume_scheduled"
+    assert driver.collected.count("G0001") == 1
+    assert driver.deleted[0] == "https://www.doubao.com/chat/1000000001"
 
 
 @pytest.mark.asyncio

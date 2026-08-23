@@ -345,9 +345,15 @@ async def test_internal_worker_resume_certifies_same_run_without_source_outputs(
         async def preflight(self):
             return None
 
+        async def prepare_run(self):
+            return None
+
+        async def delete_conversation(self, *, chat_url):
+            return True
+
         async def collect(self, *, question_id, question):
             screenshots = []
-            for suffix in ("01_顶部", "02_正文", "03_底部"):
+            for suffix in ("top", "answer", "bottom"):
                 relative = f"screenshots/{question_id}_{suffix}.png"
                 path = self.project_root / relative
                 path.parent.mkdir(parents=True, exist_ok=True)
@@ -362,7 +368,11 @@ async def test_internal_worker_resume_certifies_same_run_without_source_outputs(
                 "answer": "完整回答",
                 "collected_at": "2026-08-12T10:00:00Z",
                 "page_modules": {
-                    name: "页面未显示"
+                    name: (
+                        [f"继续了解：{question}"]
+                        if name == "followups"
+                        else "页面未显示"
+                    )
                     for name in (
                         "keywords",
                         "ref_links",
@@ -380,8 +390,17 @@ async def test_internal_worker_resume_certifies_same_run_without_source_outputs(
                 },
                 "page_evidence": {
                     "screenshot_files": screenshots,
+                    "share_link": {
+                        "displayed": True,
+                        "copy_control_displayed": True,
+                        "capture_method": "share-copy-control",
+                        "url": "https://www.doubao.com/thread/integrationproof",
+                    },
                     "module_expectations": {
-                        name: {"displayed": False, "expected_count": 0}
+                        name: {
+                            "displayed": name == "followups",
+                            "expected_count": 1 if name == "followups" else 0,
+                        }
                         for name in (
                             "keywords",
                             "ref_links",
