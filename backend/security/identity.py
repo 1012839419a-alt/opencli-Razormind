@@ -1,9 +1,8 @@
-"""OIDC request identity verification and emergency bootstrap authentication."""
+"""OIDC, local-session, and emergency bootstrap request identities."""
 
 from __future__ import annotations
 
 import hmac
-import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -12,7 +11,10 @@ import httpx
 from fastapi import HTTPException, Request, status
 from jose import JWTError, jwt
 
-from backend.security.local_auth import is_local_session
+from backend.config import get_settings
+from backend.security.local_auth import LOCAL_AUTH_STATE_KEY, LocalSessionIdentity
+
+REQUEST_IDENTITY_STATE_KEY = "opencli_request_identity"
 
 
 @dataclass(frozen=True)
@@ -24,11 +26,17 @@ class IdentitySettings:
 
     @classmethod
     def from_env(cls) -> IdentitySettings:
+        # Sourced from Settings (backend/config.py), not raw os.getenv(): the
+        # process environment alone is not a reliable source for these — under
+        # plain `uv run uvicorn ...` uv does not inject .env into os.environ,
+        # while Settings parses .env directly via pydantic-settings regardless
+        # of what the launching process actually exported.
+        settings = get_settings()
         return cls(
-            issuer=os.getenv("OIDC_ISSUER", "").rstrip("/"),
-            audience=os.getenv("OIDC_AUDIENCE", ""),
-            jwks_url=os.getenv("OIDC_JWKS_URL", ""),
-            bootstrap_admin_token=os.getenv("BOOTSTRAP_ADMIN_TOKEN", ""),
+            issuer=settings.oidc_issuer.rstrip("/"),
+            audience=settings.oidc_audience,
+            jwks_url=settings.oidc_jwks_url,
+            bootstrap_admin_token=settings.bootstrap_admin_token,
         )
 
 
@@ -124,6 +132,21 @@ def identity_dependency(
     oidc = verifier or OIDCVerifier(resolved)
 
     async def get_request_identity(request: Request) -> RequestIdentity:
+        verified_identity = request.scope.get("state", {}).get(REQUEST_IDENTITY_STATE_KEY)
+        if isinstance(verified_identity, RequestIdentity):
+            return verified_identity
+
+        local_identity = request.scope.get("state", {}).get(LOCAL_AUTH_STATE_KEY)
+        if isinstance(local_identity, LocalSessionIdentity):
+            return RequestIdentity(
+                subject=local_identity.subject,
+                email=local_identity.email,
+                name=local_identity.name,
+                username=local_identity.username,
+                is_platform_admin=True,
+                auth_method="local",
+            )
+
         scheme, _, token = request.headers.get("authorization", "").partition(" ")
         if scheme.lower() != "bearer" or not token:
             raise HTTPException(
@@ -139,13 +162,6 @@ def identity_dependency(
                 name="Bootstrap Admin",
                 is_platform_admin=True,
                 auth_method="bootstrap",
-            )
-        if is_local_session(token):
-            return RequestIdentity(
-                subject="local-admin",
-                name="Local Administrator",
-                is_platform_admin=True,
-                auth_method="local",
             )
         return await oidc.verify(token)
 

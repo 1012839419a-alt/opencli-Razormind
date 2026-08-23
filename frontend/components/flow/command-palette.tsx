@@ -19,6 +19,7 @@ import {
 } from "lucide-react"
 
 import { NODE_PALETTE } from "@/lib/flow/palette"
+import { getApiAuthHeaders } from "@/lib/api/auth-headers"
 import { portTypesCompatible } from "@/lib/flow/graph"
 import { getIcon } from "@/lib/flow/icons"
 import { generateWorkflowLocally } from "@/lib/flow/local-generate"
@@ -623,7 +624,7 @@ export function CommandPalette({
       try {
         const response = await fetch("/api/generate-workflow", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", ...getApiAuthHeaders() },
           body: JSON.stringify({ prompt: text }),
         })
         const data = await response.json()

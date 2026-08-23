@@ -214,8 +214,8 @@ export function RunTracePanel({ runRequestId = 0 }: { runRequestId?: number }) {
         error: null,
       })
       await Promise.all([
-        loadEvidenceBatchResults(finalSnapshot.projection.runId, authorization),
-        loadResearchLedger(finalSnapshot.projection.runId, authorization),
+        loadEvidenceBatchResults(finalSnapshot.projection.runId),
+        loadResearchLedger(finalSnapshot.projection.runId),
       ])
     } catch (error) {
       if (controller.signal.aborted) return
@@ -327,12 +327,12 @@ export function RunTracePanel({ runRequestId = 0 }: { runRequestId?: number }) {
     if (runRequestId > 0) runButtonRef.current?.click()
   }, [runRequestId])
 
-  const loadEvidenceBatchResults = async (runId: string, authorization: string | null) => {
+  const loadEvidenceBatchResults = async (runId: string) => {
     setEvidenceState((current) => ({ ...current, status: "loading", error: null, detail: null, selectedBatchId: null }))
     try {
       const [batchList, projection] = await Promise.all([
-        fetchWorkflowEvidenceBatches(runId, { authorization }),
-        fetchWorkflowEvidenceBatchProjection(runId, { authorization }),
+        fetchWorkflowEvidenceBatches(runId),
+        fetchWorkflowEvidenceBatchProjection(runId),
       ])
       applyWorkflowEvidenceBatchProjection(projection, batchList.batches)
       setEvidenceState({
@@ -352,9 +352,9 @@ export function RunTracePanel({ runRequestId = 0 }: { runRequestId?: number }) {
     }
   }
 
-  const loadResearchLedger = async (runId: string, authorization: string | null) => {
+  const loadResearchLedger = async (runId: string) => {
     try {
-      const ledger = await fetchWorkflowResearchLedger(runId, { authorization })
+      const ledger = await fetchWorkflowResearchLedger(runId)
       setResearchLedger(
         ledger.entries.some((entry) => entry.revisionId || entry.decision) ? ledger : null,
       )
@@ -367,10 +367,7 @@ export function RunTracePanel({ runRequestId = 0 }: { runRequestId?: number }) {
     if (!projection) return
     setEvidenceState((current) => ({ ...current, status: "loading", selectedBatchId: batchId, detail: null, error: null }))
     try {
-      const token = getApiAuthToken()
-      const detail = await fetchWorkflowEvidenceBatchDetail(projection.runId, batchId, {
-        authorization: token ? `Bearer ${token}` : null,
-      })
+      const detail = await fetchWorkflowEvidenceBatchDetail(projection.runId, batchId)
       setEvidenceState((current) => ({ ...current, status: "ready", detail, error: null }))
     } catch (error) {
       setEvidenceState((current) => ({
@@ -404,8 +401,6 @@ export function RunTracePanel({ runRequestId = 0 }: { runRequestId?: number }) {
         throw new Error("sourceOutputs 必须是非空的 { nodeId: object[] } JSON")
       }
       const sourceOutputs = parsed as Record<string, Array<Record<string, unknown>>>
-      const token = getApiAuthToken()
-      const authorization = token ? `Bearer ${token}` : null
       const idempotencyKey = continuationKey || crypto.randomUUID()
       setContinuationKey(idempotencyKey)
       const continued = await continueWorkflowResearch(
@@ -416,7 +411,6 @@ export function RunTracePanel({ runRequestId = 0 }: { runRequestId?: number }) {
           idempotencyKey,
           sourceOutputs,
         },
-        { authorization },
       )
       applyWorkflowRunProjection(continued.projection)
       setRunState((current) => ({
@@ -425,7 +419,7 @@ export function RunTracePanel({ runRequestId = 0 }: { runRequestId?: number }) {
         events: current.events,
         error: null,
       }))
-      const replay = await replayWorkflowRunEventStream(continued.childRunId, { authorization })
+      const replay = await replayWorkflowRunEventStream(continued.childRunId)
       for (const event of replay.events) applyWorkflowNodeRunEvent(event)
       const finalProjection = replay.projection ?? continued.projection
       applyWorkflowRunProjection(finalProjection)
@@ -436,8 +430,8 @@ export function RunTracePanel({ runRequestId = 0 }: { runRequestId?: number }) {
         error: null,
       })
       await Promise.all([
-        loadEvidenceBatchResults(finalProjection.runId, authorization),
-        loadResearchLedger(finalProjection.runId, authorization),
+        loadEvidenceBatchResults(finalProjection.runId),
+        loadResearchLedger(finalProjection.runId),
       ])
       setContinuationInput("{}")
       setContinuationKey("")
@@ -451,22 +445,19 @@ export function RunTracePanel({ runRequestId = 0 }: { runRequestId?: number }) {
   const runBackendPreview = async () => {
     setBackendState((current) => ({ status: "running", compile: current.compile, trace: current.trace, native: current.native, error: null }))
     try {
-      const token = getApiAuthToken()
-      const authorization = token ? `Bearer ${token}` : null
       const nativePackageNodeId = findNativeIntelligenceWorkflowPackageNodeId(workflowProject)
       const [compile, nativeDependencies] = await Promise.all([
-        compileWorkflowProject(workflowProject, { authorization }),
+        compileWorkflowProject(workflowProject),
         nativePackageNodeId
           ? Promise.all([
-              fetchWorkflowCapabilities({ authorization }),
-              fetchWorkflowToolCapabilities({ authorization }),
+              fetchWorkflowCapabilities(),
+              fetchWorkflowToolCapabilities(),
             ])
           : Promise.resolve(null),
       ])
       const openCLIPackageNodeId = findOpenCLIHDAWorkflowPackageNodeId(workflowProject)
       const trace = compile.valid && openCLIPackageNodeId
         ? await traceOpenCLIHDAWorkflow(workflowProject, {
-            authorization,
             packageNodeId: openCLIPackageNodeId,
           })
         : null
@@ -633,7 +624,24 @@ export function RunTracePanel({ runRequestId = 0 }: { runRequestId?: number }) {
             </summary>
             <div className="mt-2.5 space-y-2">
               <p className="text-[11px] leading-relaxed text-muted-foreground">把真实或测试 JSON 输出注入一个源节点，再启动同一条原生运行链路；不会改写节点配置。</p>
-              {outputInputNodes.length ? <Select value={effectiveImportNodeId} onValueChange={(value) => setImportNodeId(value ?? "")}><SelectTrigger className="h-8 text-xs"><SelectValue placeholder="选择输入节点" /></SelectTrigger><SelectContent>{outputInputNodes.map((node) => <SelectItem key={node.id} value={node.id}>{node.label}</SelectItem>)}</SelectContent></Select> : null}
+              {outputInputNodes.length ? (
+                <Select value={effectiveImportNodeId} onValueChange={(value) => setImportNodeId(value ?? "")}>
+                  <SelectTrigger className="h-8 text-xs">
+                    <SelectValue>
+                      {(value: string | null) =>
+                        value
+                          ? (outputInputNodes.find((node) => node.id === value)?.label ?? value)
+                          : "选择输入节点"
+                      }
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent>
+                    {outputInputNodes.map((node) => (
+                      <SelectItem key={node.id} value={node.id}>{node.label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              ) : null}
               <Textarea value={importOutputText} onChange={(event) => setImportOutputText(event.target.value)} rows={5} className="font-mono text-[10px]" aria-label="导入节点输出 JSON" />
               {importError ? <p className="text-[11px] text-destructive">{importError}</p> : null}
               <Button size="sm" variant="outline" className="w-full" onClick={() => void runImportedOutput()} disabled={!outputInputNodes.length || isRunning || isBackendRunning}>

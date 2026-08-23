@@ -1,105 +1,133 @@
+from datetime import timedelta
+
 import pytest
-from fastapi import HTTPException
+from sqlalchemy import select
 
-from backend.config import get_settings
-from backend.security.local_auth import LoginAttemptLimiter, verify_password
+from backend.config import Settings
+from backend.models import (
+    LocalAuthSession,
+    LocalCredential,
+    Workspace,
+    WorkspaceMembership,
+    WorkspaceRole,
+)
+from backend.security.local_auth import (
+    InvalidLocalCredentials,
+    LocalOwnerAlreadyInitialized,
+    authenticate_local_owner,
+    claim_local_owner,
+    create_local_session,
+    get_local_session_identity,
+    revoke_local_session,
+    utcnow,
+)
+
+CLAIM_CODE = "01ARZ3NDEK"
 
 
-@pytest.fixture(autouse=True)
-def _clear_settings_cache():
-    get_settings.cache_clear()
-    yield
-    get_settings.cache_clear()
+def _settings(**overrides) -> Settings:
+    return Settings(
+        _env_file=None,
+        device_claim_code=CLAIM_CODE,
+        local_login_max_failures=2,
+        local_login_lock_seconds=300,
+        **overrides,
+    )
+
+
+def test_local_session_cookie_secure_defaults_off_and_accepts_proxy_override():
+    assert _settings().local_session_cookie_secure is False
+    assert _settings(local_session_cookie_secure=True).local_session_cookie_secure is True
 
 
 @pytest.mark.asyncio
-async def test_first_run_setup_creates_local_admin_and_session(client, monkeypatch):
-    monkeypatch.setenv("BOOTSTRAP_ADMIN_TOKEN", "first-run-secret")
-    monkeypatch.setenv("SECRET_KEY", "test-session-signing-key")
-    monkeypatch.setenv("API_AUTH_TOKEN", "fleet-secret")
-    get_settings.cache_clear()
-
-    status = await client.get("/api/v1/auth/local/status")
-    assert status.status_code == 200
-    assert status.json()["data"] == {"configured": False}
-    assert (await client.get("/api/v1/auth/local/status/extra")).status_code == 401
-
-    denied = await client.post(
-        "/api/v1/auth/local/setup",
-        json={"bootstrap_token": "wrong", "password": "long-enough-password"},
+async def test_claim_creates_one_owner_default_workspace_and_opaque_session(db_session):
+    settings = _settings()
+    identity = await claim_local_owner(
+        db_session,
+        claim_code=CLAIM_CODE.lower(),
+        username=" Owner ",
+        display_name="设备管理员",
+        password="correct horse battery staple",
+        settings=settings,
     )
-    assert denied.status_code == 401
-
-    setup = await client.post(
-        "/api/v1/auth/local/setup",
-        json={"bootstrap_token": "first-run-secret", "password": "long-enough-password"},
+    grant = await create_local_session(
+        db_session,
+        identity=identity,
+        remember_device=False,
+        settings=settings,
     )
-    assert setup.status_code == 200
-    token = setup.json()["data"]["access_token"]
 
-    identity = await client.get(
-        "/api/v1/auth/me", headers={"Authorization": f"Bearer {token}"}
-    )
-    assert identity.status_code == 200
-    assert identity.json()["data"]["auth_method"] == "local"
-    assert identity.json()["data"]["is_platform_admin"] is True
+    credential = await db_session.scalar(select(LocalCredential))
+    workspace = await db_session.scalar(select(Workspace))
+    membership = await db_session.scalar(select(WorkspaceMembership))
+    stored_session = await db_session.scalar(select(LocalAuthSession))
 
-    identity_with_stale_fleet_token = await client.get(
-        "/api/v1/auth/me",
-        headers={
-            "Authorization": f"Bearer {token}",
-            "X-API-Token": "stale-browser-token",
-        },
-    )
-    assert identity_with_stale_fleet_token.status_code == 200
-    assert identity_with_stale_fleet_token.json()["data"]["auth_method"] == "local"
+    assert identity.subject == "local:owner"
+    assert credential is not None
+    assert credential.username == "owner"
+    assert credential.password_hash.startswith("$bcrypt-sha256$")
+    assert workspace is not None and (workspace.name, workspace.slug) == ("我的空间", "my-space")
+    assert membership is not None and membership.role == WorkspaceRole.ADMIN
+    assert stored_session is not None
+    assert grant.token != stored_session.token_hash
+    assert len(stored_session.token_hash) == 64
+    assert (await get_local_session_identity(db_session, grant.token)).username == "owner"
+
+    assert await revoke_local_session(db_session, grant.token) is True
+    assert await get_local_session_identity(db_session, grant.token) is None
+
+    with pytest.raises(LocalOwnerAlreadyInitialized):
+        await claim_local_owner(
+            db_session,
+            claim_code=CLAIM_CODE,
+            username="second",
+            display_name=None,
+            password="another long password",
+            settings=settings,
+        )
 
 
 @pytest.mark.asyncio
-async def test_local_admin_login_and_second_setup_are_guarded(client, monkeypatch):
-    monkeypatch.setenv("BOOTSTRAP_ADMIN_TOKEN", "first-run-secret")
-    monkeypatch.setenv("SECRET_KEY", "test-session-signing-key")
-    get_settings.cache_clear()
-    payload = {"bootstrap_token": "first-run-secret", "password": "long-enough-password"}
-    assert (await client.post("/api/v1/auth/local/setup", json=payload)).status_code == 200
-    assert (await client.post("/api/v1/auth/local/setup", json=payload)).status_code == 409
-
-    denied = await client.post(
-        "/api/v1/auth/local/login", json={"password": "incorrect-password"}
+async def test_password_failures_lock_owner_and_expired_session_is_rejected(db_session):
+    settings = _settings()
+    identity = await claim_local_owner(
+        db_session,
+        claim_code=CLAIM_CODE,
+        username="owner",
+        display_name=None,
+        password="correct horse battery staple",
+        settings=settings,
     )
-    assert denied.status_code == 401
-    accepted = await client.post(
-        "/api/v1/auth/local/login", json={"password": "long-enough-password"}
+
+    for _ in range(2):
+        with pytest.raises(InvalidLocalCredentials):
+            await authenticate_local_owner(
+                db_session,
+                username="owner",
+                password="wrong password",
+                settings=settings,
+            )
+
+    credential = await db_session.scalar(select(LocalCredential))
+    assert credential is not None
+    assert credential.failed_attempts == 2
+    assert credential.locked_until is not None
+    with pytest.raises(InvalidLocalCredentials):
+        await authenticate_local_owner(
+            db_session,
+            username="owner",
+            password="correct horse battery staple",
+            settings=settings,
+        )
+
+    grant = await create_local_session(
+        db_session,
+        identity=identity,
+        remember_device=False,
+        settings=settings,
     )
-    assert accepted.status_code == 200
-    assert accepted.json()["data"]["access_token"]
-
-
-def test_login_attempt_limiter_blocks_and_can_reset():
-    limiter = LoginAttemptLimiter(max_attempts=2, window_seconds=60)
-    limiter.record_failure("client")
-    limiter.record_failure("client")
-
-    with pytest.raises(HTTPException) as exc_info:
-        limiter.check("client")
-    assert exc_info.value.status_code == 429
-    assert exc_info.value.headers["Retry-After"]
-
-    limiter.reset("client")
-    limiter.check("client")
-
-
-def test_login_attempt_limiter_bounds_tracked_clients():
-    limiter = LoginAttemptLimiter(max_attempts=1, window_seconds=60, max_clients=1)
-    limiter.record_failure("first")
-    limiter.check("new-client")
-    limiter.record_failure("second")
-
-    limiter.check("first")
-    with pytest.raises(HTTPException):
-        limiter.check("second")
-
-
-def test_password_hash_rejects_untrusted_work_factor():
-    forged = "scrypt$1073741824$8$1$c2FsdA==$ZGlnZXN0"
-    assert verify_password("long-enough-password", forged) is False
+    stored_session = await db_session.scalar(select(LocalAuthSession))
+    stored_session.expires_at = utcnow() - timedelta(seconds=1)
+    await db_session.flush()
+    assert await get_local_session_identity(db_session, grant.token) is None

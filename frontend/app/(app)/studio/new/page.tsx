@@ -30,6 +30,7 @@ import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { useBootstrapWorkspaceProject, useMyWorkspaces } from '@/lib/api/hooks'
 import { updateProjectWorkflowDraft } from '@/lib/api/endpoints'
+import { getApiAuthHeaders } from '@/lib/api/auth-headers'
 import { analyzeGeneratedWorkflowReadiness, extractWorkflowSchedule, extractWorkflowSource, generateWorkflowLocally } from '@/lib/flow/local-generate'
 import type { GeneratedWorkflowSpec } from '@/lib/flow/types'
 import { generatedSpecToWorkflowProject } from '@/lib/workflow/generated-project'
@@ -314,7 +315,7 @@ export default function NewAgentStudioPage() {
       try {
         const response = await fetch('/api/generate-workflow', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...getApiAuthHeaders() },
           body: JSON.stringify({ prompt: requirements.join('\n补充要求：') }),
         })
         const payload = await response.json()

@@ -3,6 +3,7 @@ import { z } from "zod"
 
 import { analyzeGeneratedWorkflowReadiness } from "@/lib/flow/local-generate"
 import type { GeneratedWorkflowSpec } from "@/lib/flow/types"
+import { requireAuthenticatedMutation } from "@/lib/api/server-auth"
 
 export const maxDuration = 30
 
@@ -118,6 +119,8 @@ const workflowSchema = z.object({
 })
 
 export async function POST(req: Request) {
+  const authError = await requireAuthenticatedMutation(req)
+  if (authError) return authError
   try {
     let body: { prompt?: unknown }
     try {

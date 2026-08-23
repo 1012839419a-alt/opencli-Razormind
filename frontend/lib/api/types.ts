@@ -353,6 +353,33 @@ export interface NotificationRule {
   updated_at: string
 }
 
+// Write-only request body for POST /notifications/rules and PATCH
+// /notifications/rules/{id} (NotificationRuleCreate / NotificationRuleUpdate
+// on the backend). All fields optional here so PATCH can omit any of them —
+// POST additionally requires name/trigger_event/notifier_type, enforced by
+// the backend schema, not this type.
+//
+// trigger_event is pinned to the literal 'on_new_record': dispatch_
+// notifications() (backend/pipeline/notifier_dispatch.py) only ever queries
+// rules with that value — there is no producer for anything else, so the
+// backend schema rejects any other string with a 422. Treat this as a fixed
+// field, not a preview of a future open set of trigger types.
+//
+// source_id is accepted by NotificationRuleCreate but is deliberately absent
+// from NotificationRuleUpdate on the backend — a rule's source filter can be
+// set at creation but not changed afterward via this API. Omit it from PATCH
+// payloads (an included value would silently be dropped by the backend's
+// exclude_unset handling anyway).
+export interface NotificationRuleInput {
+  name?: string
+  source_id?: string | null
+  trigger_event?: 'on_new_record'
+  notifier_type?: string
+  notifier_config?: Record<string, unknown>
+  filter_conditions?: Record<string, unknown> | null
+  enabled?: boolean
+}
+
 export interface NotificationLog {
   id: string
   rule_id: string
@@ -374,6 +401,10 @@ export interface ChromeEndpoint {
   mode: 'bridge' | 'cdp'
   agent_url?: string | null
   agent_protocol?: 'http' | 'ws' | null
+  /** Fail-closed default is 'authenticated' — 'anonymous' means the pool
+   *  operator explicitly registered this endpoint as a clean, no-session
+   *  profile (backend.browser_pool.BrowserPool.get_profile_kind). */
+  profile_kind?: 'anonymous' | 'authenticated'
 }
 
 export interface BrowserBinding {

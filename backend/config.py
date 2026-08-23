@@ -63,6 +63,34 @@ class Settings(BaseSettings):
     # verifies this value but never persists it as a daily login secret.
     bootstrap_admin_token: str = ""
 
+    # OIDC identity verification + emergency bootstrap admin token
+    # (backend/security/identity.py). Read via Settings — not raw
+    # os.getenv() — so these are correctly populated under plain
+    # `uv run uvicorn ...` even when uv does not inject .env into the
+    # process environment (uv only does that for `uv run --env-file .env`;
+    # BaseSettings' own env_file=".env" parsing is what actually reads
+    # these today). Empty (default) = OIDC not configured / bootstrap
+    # token disabled.
+    oidc_issuer: str = ""
+    oidc_audience: str = ""
+    oidc_jwks_url: str = ""
+    bootstrap_admin_token: str = ""
+
+    # Single-owner appliance login. DEVICE_CLAIM_CODE is a deployment-created,
+    # one-time 10-character Crockford code: once the local owner credential
+    # exists, the setup endpoint is permanently closed. Browser sessions are
+    # opaque database records; the short TTL is used for tab/session cookies,
+    # while remember-device cookies use the longer TTL.
+    device_claim_code: str = ""
+    # Keep false for direct localhost/LAN HTTP. Set true when the public
+    # console is served exclusively over HTTPS but TLS terminates at a reverse
+    # proxy, so the internal ASGI request may still appear to use HTTP.
+    local_session_cookie_secure: bool = False
+    local_session_ttl_seconds: int = 43_200
+    local_remember_session_ttl_seconds: int = 2_592_000
+    local_login_max_failures: int = 5
+    local_login_lock_seconds: int = 300
+
     # CLI channel binary allowlist (ADR-0005, audit P0-4). The cli channel is
     # an arbitrary-binary-execution surface, so it only runs binaries the
     # operator explicitly listed here. Comma-separated binary paths/names,

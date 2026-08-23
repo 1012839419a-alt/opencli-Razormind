@@ -1,5 +1,11 @@
 import { apiClient, rootClient } from './client'
-import type { AuthIdentity } from '@/lib/auth/types'
+import type {
+  AuthIdentity,
+  AuthServerStatus,
+  AuthSignOutResult,
+  LocalAuthLoginInput,
+  LocalAuthSetupInput,
+} from '@/lib/auth/types'
 import type {
   AIAgent,
   AdvisoryReport,
@@ -36,6 +42,7 @@ import type {
   NodeStats,
   NotificationLog,
   NotificationRule,
+  NotificationRuleInput,
   OdpSystemState,
   OpinionMonitor,
   PlanGraph,
@@ -91,21 +98,17 @@ export const resetWorkspaceSettings = () =>
 export const getCurrentIdentity = () =>
   apiClient.get<ApiResponse<AuthIdentity>>('/auth/me').then((r) => r.data.data)
 
-export const getLocalAuthStatus = () =>
-  apiClient.get<ApiResponse<{ configured: boolean }>>('/auth/local/status').then((r) => r.data.data)
+export const getAuthStatus = () =>
+  apiClient.get<ApiResponse<AuthServerStatus>>('/auth/status').then((r) => r.data.data)
 
-export const loginLocalAdmin = (password: string) =>
-  apiClient
-    .post<ApiResponse<{ access_token: string }>>('/auth/local/login', { password })
-    .then((r) => r.data.data.access_token)
+export const setupLocalAuth = (data: LocalAuthSetupInput) =>
+  apiClient.post<ApiResponse<AuthIdentity>>('/auth/setup', data).then((r) => r.data.data)
 
-export const setupLocalAdmin = (bootstrapToken: string, password: string) =>
-  apiClient
-    .post<ApiResponse<{ access_token: string }>>('/auth/local/setup', {
-      bootstrap_token: bootstrapToken,
-      password,
-    })
-    .then((r) => r.data.data.access_token)
+export const loginLocalAuth = (data: LocalAuthLoginInput) =>
+  apiClient.post<ApiResponse<AuthIdentity>>('/auth/login', data).then((r) => r.data.data)
+
+export const logoutCurrentSession = () =>
+  apiClient.post<ApiResponse<AuthSignOutResult>>('/auth/logout').then((r) => r.data.data)
 
 export const listMyWorkspaces = () =>
   apiClient.get<ApiResponse<WorkspaceSummary[]>>('/workspaces').then((r) => r.data.data)
@@ -554,12 +557,12 @@ export const deleteSchedule = (id: string) =>
 export const listNotificationRules = () =>
   apiClient.get<ApiResponse<NotificationRule[]>>('/notifications/rules').then((r) => r.data)
 
-export const createNotificationRule = (data: Partial<NotificationRule>) =>
+export const createNotificationRule = (data: NotificationRuleInput) =>
   apiClient
     .post<ApiResponse<NotificationRule>>('/notifications/rules', data)
     .then((r) => r.data.data)
 
-export const updateNotificationRule = (id: string, data: Partial<NotificationRule>) =>
+export const updateNotificationRule = (id: string, data: NotificationRuleInput) =>
   apiClient
     .patch<ApiResponse<NotificationRule>>(`/notifications/rules/${id}`, data)
     .then((r) => r.data.data)

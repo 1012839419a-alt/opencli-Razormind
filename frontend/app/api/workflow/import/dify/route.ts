@@ -22,9 +22,7 @@ export async function POST(req: Request) {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        ...(req.headers.get("authorization")
-          ? { Authorization: req.headers.get("authorization") as string }
-          : {}),
+        ...forwardedRequestAuthHeaders(req),
       },
       body: JSON.stringify({
         source: readProperty(body, "source"),
@@ -48,6 +46,8 @@ export async function POST(req: Request) {
     )
   }
 }
+
+import { forwardedRequestAuthHeaders } from "@/lib/workflow/request-auth"
 
 function readProperty(value: unknown, key: string): unknown {
   return typeof value === "object" && value !== null && key in value

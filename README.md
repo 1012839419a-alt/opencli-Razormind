@@ -30,9 +30,15 @@ opencli-Razormind 是一个开源、自托管的研究与情报管线。它把�
 
 **登录采集账号 → 创建研究项目 → 编排工作流 → 执行与追踪 → 查看记录和证据 → 定时运行 / 对外交付**
 
-## 一条命令启动
+## 安装本地设备
 
 前置要求：Docker 与 Docker Compose。
+
+> **发布状态**：本机管理员与一次性设备认领目前已在当前源码和本地镜像中完成验证，尚未发布到
+> `v0.4.0` 的 GHCR 镜像。下面的 `v0.4.0` 一键命令仍安装旧登录版本；不要用它验收本文的
+> 本机管理员体验。发布下一版本前，请从当前源码按“开发与构建”中的 Compose build 方式部署。
+
+已发布的 v0.4.0（旧登录）命令保留如下，供现有部署复现：
 
 Linux / macOS：
 
@@ -47,30 +53,38 @@ Invoke-WebRequest https://raw.githubusercontent.com/2233admin/opencli-Razormind/
 .\install.ps1
 ~~~
 
-安装器会生成安全密钥、拉取公开的多架构 GHCR 镜像、启动服务并等待健康检查通过。
+下一公开版本的安装器会生成安全密钥和一次性设备认领码，拉取对应的多架构 GHCR 镜像，启动默认的 API、控制台和内置浏览器三个服务，并等待健康检查通过。发布前不得把当前源码行为描述成 v0.4.0 镜像能力。
 
 | 入口 | 地址 | 用途 |
 | --- | --- | --- |
-| 管理界面 | http://localhost:3010 | 项目、工作流、运行和数据 |
+| 控制台 | http://localhost:3010 | 首次认领、本地管理、项目、工作流、运行和数据 |
 | API 文档 | http://localhost:8031/docs | REST API 与集成调试 |
-| 内置浏览器 | http://localhost:6080 | 扫码或登录需要账号的平台 |
+| 内置浏览器 | http://localhost:6080 | 同机扫码或登录需要账号的平台 |
 
-安装完成后，终端会打印：
+安装完成后，终端只突出显示控制台地址、可可靠探测时的局域网地址，以及 10 位一次性设备认领码。首次使用：
 
-- `BOOTSTRAP_ADMIN_TOKEN`：首次创建本地管理员及紧急恢复时使用；
-- `API_AUTH_TOKEN`：Fleet、Agent、API 和 MCP 访问使用。
+1. 从本机或局域网浏览器打开控制台；
+2. 输入终端显示的设备认领码；
+3. 创建本地管理员，之后使用本地账号日常登录。
 
-首次进入控制台时设置本地管理员密码并输入一次 `BOOTSTRAP_ADMIN_TOKEN`；后续直接使用管理员密码登录。令牌同时保存在安装目录的 `.env`，仅供恢复使用。不要公开 noVNC、令牌或浏览器调试端口；远程部署建议使用 HTTPS、反向代理或 SSH 隧道。
+安装器仍会生成 `BOOTSTRAP_ADMIN_TOKEN` 和 `API_AUTH_TOKEN`，但不会把值打印到终端：前者只用于紧急恢复，后者用于 Fleet、Agent、API 和 MCP 等机器访问，两者仅保存在安装目录的 `.env`。不要公开 `.env`、noVNC 或浏览器调试端口；远程部署建议使用 HTTPS、反向代理或 SSH 隧道。
+
+OIDC 是可选的组织登录方式。家庭 NAS、软路由和个人工作站默认不需要先部署身份提供方；需要多用户或企业统一身份时，再在高级配置中接入 OIDC。
+
+### NAS 与软路由
+
+家庭设备默认仍使用上述三个服务栈。仓库中的 `.env.nas.example` 是包含 III、ODP、PostgreSQL、Redis、Kats 和 Graphon 的 24×7 完整数据面参考，保留 `nas` profile 名仅为兼容既有部署；它不是低资源 NAS/软路由的默认入口。使用完整参考前，必须把所有 `CHANGE_*` / `REPLACE_*` 哨兵值换成独立随机值，并确认设备资源足够。
 
 ## 正常的研究流程
 
-1. 打开 `:6080`，在内置 Chromium 中扫码或登录目标平台。公开 RSS、API 和网页来源可跳过这一步。
-2. 在「插件中心」确认 OpenCLI、RSS、API 或工具能力，在「项目」中从模板或空白项目开始。
-3. 在 Dify 风格的画布中连接来源、处理、Agent、Gate 和交付节点；右侧参数面板配置当前节点实际声明的业务参数。
-4. 保存、验证并发布工作流，手动执行已发布版本；Webhook 也可直接提交 `workflowProject` 触发运行。
-5. 在运行记录中查看节点事件、Trace、错误、重试和输出；采集结果统一进入「成果与数据」。
-6. 在项目内查看数据、逻辑与证据、证据关系和 Galaxy 视图。Galaxy 是证据关系的一种查看方式，不是独立的项目模块。
-7. 配置 Webhook、飞书、钉钉、企业微信或 Email，将通过规则和质量门的数据交付出去。
+1. 首次打开控制台时完成设备认领并创建本地管理员。
+2. 同机打开 `:6080`，在内置 Chromium 中扫码或登录目标平台。公开 RSS、API 和网页来源可跳过这一步。
+3. 在「插件中心」确认 OpenCLI、RSS、API 或工具能力，在「项目」中从模板或空白项目开始。
+4. 在 Dify 风格的画布中连接来源、处理、Agent、Gate 和交付节点；右侧参数面板配置当前节点实际声明的业务参数。
+5. 保存、验证并发布工作流，手动执行已发布版本；Webhook 也可直接提交 `workflowProject` 触发运行。
+6. 在运行记录中查看节点事件、Trace、错误、重试和输出；采集结果统一进入「成果与数据」。
+7. 在项目内查看数据、逻辑与证据、证据关系和 Galaxy 视图。Galaxy 是证据关系的一种查看方式，不是独立的项目模块。
+8. 配置 Webhook、飞书、钉钉、企业微信或 Email，将通过规则和质量门的数据交付出去。
 
 ### 直接调用高吉星豆包采集
 
@@ -217,9 +231,20 @@ npm run test:backend
 
 ~~~bash
 cp .env.docker.example .env
-# 设置 API_AUTH_TOKEN、BOOTSTRAP_ADMIN_TOKEN、SECRET_KEY、CREDENTIAL_ENCRYPTION_KEY
+# 设置 API_AUTH_TOKEN、BOOTSTRAP_ADMIN_TOKEN、DEVICE_CLAIM_CODE、SECRET_KEY、CREDENTIAL_ENCRYPTION_KEY
 npm run docker:up
 ~~~
+
+从未包含本机管理员的旧版本升级时，先备份 `.env` 和数据卷，并在 `.env` 增加一个随机的
+`DEVICE_CLAIM_CODE`：必须为 10 位，字符仅使用
+`0123456789ABCDEFGHJKMNPQRSTVWXYZ`。不要复用 API、Bootstrap 或其他长期密钥。随后执行
+`docker compose pull && docker compose up -d`，打开控制台用该码创建本机管理员。若遗漏此项，
+控制台会进入可恢复的“认领码尚未配置”状态并给出主机侧提示；已有 OIDC 的部署仍可使用原有
+组织登录入口。认领成功后该码不再能创建第二位 owner，但仍建议从 `.env` 删除并重启 API。
+
+局域网或 localhost 直接使用 HTTP 时保持 `LOCAL_SESSION_COOKIE_SECURE=false`。如果控制台只通过
+HTTPS 反向代理访问（TLS 在代理处终止），请设为 `true`，确保本地登录会话 Cookie 始终带
+`Secure` 属性；启用后不要再通过 HTTP 地址访问控制台。
 
 ## 发布镜像
 

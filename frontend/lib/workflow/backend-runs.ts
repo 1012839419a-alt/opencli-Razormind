@@ -1,4 +1,5 @@
 import type { WorkflowProject } from "./schema"
+import { workflowRequestAuthHeaders } from "./request-auth"
 
 type ApiResponse<T> = {
   success?: boolean
@@ -436,7 +437,7 @@ export async function startWorkflowRun(
     method: "POST",
     headers: {
       ...(!questionBankBody ? { "Content-Type": "application/json" } : {}),
-      ...(options.authorization ? { Authorization: options.authorization } : {}),
+      ...workflowRequestAuthHeaders(options.authorization),
     },
     body: questionBankBody ?? JSON.stringify(request),
   })
@@ -449,7 +450,7 @@ export async function fetchWorkflowRunProjection(
 ): Promise<WorkflowRunProjection> {
   const response = await fetch(workflowRunEndpoint(runId), {
     headers: {
-      ...(options.authorization ? { Authorization: options.authorization } : {}),
+      ...workflowRequestAuthHeaders(options.authorization),
     },
     cache: "no-store",
   })
@@ -462,7 +463,7 @@ export async function fetchWorkflowRunCheckpoint(
 ): Promise<WorkflowRunCheckpoint> {
   const response = await fetch(`${workflowRunEndpoint(runId)}/checkpoint`, {
     headers: {
-      ...(options.authorization ? { Authorization: options.authorization } : {}),
+      ...workflowRequestAuthHeaders(options.authorization),
     },
     cache: "no-store",
   })
@@ -491,7 +492,7 @@ export async function queryWorkflowRunTrace(
   const suffix = search.size > 0 ? `${separator}${search.toString()}` : ""
   const response = await fetch(`${endpoint}${suffix}`, {
     headers: {
-      ...(options.authorization ? { Authorization: options.authorization } : {}),
+      ...workflowRequestAuthHeaders(options.authorization),
     },
     cache: "no-store",
     signal: options.signal,
@@ -533,7 +534,7 @@ export async function fetchWorkflowRunEvents(
   const suffix = search.size > 0 ? `?${search.toString()}` : ""
   const response = await fetch(`${workflowRunEndpoint(runId)}/events${suffix}`, {
     headers: {
-      ...(options.authorization ? { Authorization: options.authorization } : {}),
+      ...workflowRequestAuthHeaders(options.authorization),
     },
     cache: "no-store",
   })
@@ -549,7 +550,7 @@ export async function continueWorkflowRunWithSourceOutputs(
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      ...(options.authorization ? { Authorization: options.authorization } : {}),
+      ...workflowRequestAuthHeaders(options.authorization),
     },
     body: JSON.stringify({ sourceOutputs }),
   })
@@ -562,7 +563,7 @@ export async function fetchWorkflowResearchLedger(
 ): Promise<WorkflowResearchLedgerResponse> {
   const response = await fetch(`${workflowRunEndpoint(runId)}/research-ledger`, {
     headers: {
-      ...(options.authorization ? { Authorization: options.authorization } : {}),
+      ...workflowRequestAuthHeaders(options.authorization),
     },
     cache: "no-store",
   })
@@ -583,7 +584,7 @@ export async function continueWorkflowResearch(
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      ...(options.authorization ? { Authorization: options.authorization } : {}),
+      ...workflowRequestAuthHeaders(options.authorization),
     },
     body: JSON.stringify(input),
   })
@@ -601,7 +602,7 @@ export async function replayWorkflowRunEventStream(
     }
     const response = await fetch(`${workflowRunEndpoint(runId)}/events/stream`, {
       headers: {
-        ...(options.authorization ? { Authorization: options.authorization } : {}),
+        ...workflowRequestAuthHeaders(options.authorization),
       },
       cache: "no-store",
     })
@@ -635,7 +636,7 @@ export async function fetchWorkflowEvidenceBatches(
   const suffix = search.size > 0 ? `?${search.toString()}` : ""
   const response = await fetch(`${workflowEvidenceBatchEndpoint(runId)}${suffix}`, {
     headers: {
-      ...(options.authorization ? { Authorization: options.authorization } : {}),
+      ...workflowRequestAuthHeaders(options.authorization),
     },
     cache: "no-store",
   })
@@ -649,7 +650,7 @@ export async function fetchWorkflowEvidenceBatchDetail(
 ): Promise<WorkflowEvidenceBatchDetail> {
   const response = await fetch(workflowEvidenceBatchEndpoint(runId, batchId), {
     headers: {
-      ...(options.authorization ? { Authorization: options.authorization } : {}),
+      ...workflowRequestAuthHeaders(options.authorization),
     },
     cache: "no-store",
   })
@@ -672,7 +673,7 @@ export async function fetchWorkflowEvidenceBatchProjection(
   const suffix = search.size > 0 ? `?${search.toString()}` : ""
   const response = await fetch(`${workflowEvidenceBatchEndpoint(runId)}/projection${suffix}`, {
     headers: {
-      ...(options.authorization ? { Authorization: options.authorization } : {}),
+      ...workflowRequestAuthHeaders(options.authorization),
     },
     cache: "no-store",
   })

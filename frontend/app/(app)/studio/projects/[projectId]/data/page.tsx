@@ -36,6 +36,15 @@ const PAGE_SIZE = 50
 const PRIORITY_FIELDS = ['title', 'name', 'url', 'text', 'content', 'author', 'published_at', 'source']
 const SOURCE_PUBLISHED_RAW_KEYS = ['displayTime', 'published_at', 'publishedAt', 'published', 'sent_at', 'sentAt', 'time', 'timestamp'] as const
 const SOURCE_PUBLISHED_FALLBACK_KEYS = ['noticeDate', 'date', 'created_at', 'createdAt', 'listed', 'updated'] as const
+// Base UI's SelectValue shows the raw value string unless told how to format it — see the note on the schedule-agent Select in schedule-form-dialog.tsx.
+const RECORD_STATUS_LABEL: Record<string, string> = {
+  all: '全部处理状态',
+  raw: '原始数据',
+  normalized: '已标准化',
+  ai_processed: '已富化',
+  notified: '已交付',
+  error: '处理失败',
+}
 type WorkbenchView = 'dataset' | 'profile' | 'files'
 
 function recordPayload(record: CollectedRecord) {
@@ -206,7 +215,7 @@ export default function ProjectDataWorkbenchPage({ params }: { params: Promise<{
                 <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索标题、正文、URL 或字段值…" className="pl-9" />
               </div>
               <Select value={status} onValueChange={(value) => setStatus(value ?? 'all')}>
-                <SelectTrigger><Filter className="size-4" /><SelectValue /></SelectTrigger>
+                <SelectTrigger><Filter className="size-4" /><SelectValue>{(value: string | null) => (value ? (RECORD_STATUS_LABEL[value] ?? value) : '全部处理状态')}</SelectValue></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">全部处理状态</SelectItem>
                   <SelectItem value="raw">原始数据</SelectItem>

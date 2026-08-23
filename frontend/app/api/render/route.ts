@@ -1,6 +1,8 @@
 // Server-Side Image Creation
 // Renders the workflow graph to a standalone SVG on the server (no headless browser needed).
 
+import { requireAuthenticatedMutation } from "@/lib/api/server-auth"
+
 interface RNode {
   id: string
   position: { x: number; y: number }
@@ -40,6 +42,8 @@ function esc(s: string) {
 }
 
 export async function POST(req: Request) {
+  const authError = await requireAuthenticatedMutation(req)
+  if (authError) return authError
   try {
     const { nodes, edges } = (await req.json()) as { nodes: RNode[]; edges: REdge[] }
     if (!Array.isArray(nodes) || nodes.length === 0) {

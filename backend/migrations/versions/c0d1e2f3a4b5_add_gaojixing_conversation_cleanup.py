@@ -1,14 +1,14 @@
 """add durable Gaojixing conversation cleanup checkpoint
 
 Revision ID: c0d1e2f3a4b5
-Revises: b9c0d1e2f3a5
+Revises: b9c0d1e2f3a5, l9m0n1o2p3q4
 """
 
 import sqlalchemy as sa
 from alembic import op
 
 revision = "c0d1e2f3a4b5"
-down_revision = "b9c0d1e2f3a5"
+down_revision = ("b9c0d1e2f3a5", "l9m0n1o2p3q4")
 branch_labels = None
 depends_on = None
 

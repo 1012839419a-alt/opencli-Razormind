@@ -2,7 +2,7 @@
 set -eu
 
 VERSION="${OPENCLI_ADMIN_VERSION:-0.4.0}"
-REPOSITORY="${OPENCLI_ADMIN_REPOSITORY:-2233admin/opencli-admin}"
+REPOSITORY="${OPENCLI_ADMIN_REPOSITORY:-2233admin/opencli-Razormind}"
 INSTALL_DIR="${OPENCLI_ADMIN_DIR:-$PWD/opencli-admin}"
 
 for command_name in docker curl tar; do
@@ -49,6 +49,43 @@ random_fernet() {
   fi
 }
 
+random_crockford() {
+  length="${1:-10}"
+  alphabet='0123456789ABCDEFGHJKMNPQRSTVWXYZ'
+  if command -v openssl >/dev/null 2>&1; then
+    openssl rand "$length" | od -An -tu1 | awk -v alphabet="$alphabet" -v needed="$length" '
+      {
+        for (i = 1; i <= NF && count < needed; i++) {
+          printf "%s", substr(alphabet, ($i % 32) + 1, 1)
+          count++
+        }
+      }
+      END { if (count != needed) exit 1 }
+    '
+  else
+    docker run --rm python:3.13-alpine python -c \
+      "import secrets; alphabet='0123456789ABCDEFGHJKMNPQRSTVWXYZ'; print(''.join(secrets.choice(alphabet) for _ in range($length)))"
+  fi
+}
+
+detect_lan_ipv4() {
+  candidate=''
+  if command -v ip >/dev/null 2>&1; then
+    candidate="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{ for (i = 1; i <= NF; i++) if ($i == "src") { print $(i + 1); exit } }')"
+  elif command -v route >/dev/null 2>&1 && command -v ipconfig >/dev/null 2>&1; then
+    interface="$(route -n get default 2>/dev/null | awk '/interface:/ { print $2; exit }')"
+    if [ -n "$interface" ]; then
+      candidate="$(ipconfig getifaddr "$interface" 2>/dev/null || true)"
+    fi
+  elif command -v hostname >/dev/null 2>&1; then
+    candidate="$(hostname -I 2>/dev/null | awk '{ print $1 }')"
+  fi
+
+  case "$candidate" in
+    10.*|192.168.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*) printf '%s' "$candidate" ;;
+  esac
+}
+
 replace_env() {
   key="$1"
   value="$2"
@@ -62,13 +99,19 @@ replace_env() {
 
 api_token="$(random_hex 32)"
 bootstrap_token="$(random_hex 32)"
+device_claim_code="$(random_crockford 10)"
 credential_encryption_key="$(random_fernet)"
+if [ "${#device_claim_code}" -ne 10 ]; then
+  echo "Failed to generate DEVICE_CLAIM_CODE" >&2
+  exit 1
+fi
 if [ -z "$credential_encryption_key" ]; then
   echo "Failed to generate CREDENTIAL_ENCRYPTION_KEY" >&2
   exit 1
 fi
 replace_env API_AUTH_TOKEN "$api_token"
 replace_env BOOTSTRAP_ADMIN_TOKEN "$bootstrap_token"
+replace_env DEVICE_CLAIM_CODE "$device_claim_code"
 replace_env SECRET_KEY "$(random_hex 32)"
 replace_env CREDENTIAL_ENCRYPTION_KEY "$credential_encryption_key"
 chmod 600 "$INSTALL_DIR/.env"
@@ -90,8 +133,12 @@ until curl -fsS "http://localhost:${FRONTEND_PORT:-3010}/login" >/dev/null 2>&1;
 done
 
 printf '\nOpenCLI Admin %s is ready.\n' "$VERSION"
-printf 'URL: http://localhost:%s\n' "${FRONTEND_PORT:-3010}"
-printf 'BOOTSTRAP_ADMIN_TOKEN: %s\n' "$bootstrap_token"
-printf 'API_AUTH_TOKEN: %s\n' "$api_token"
-printf 'First run: open the URL, create a local administrator password, and enter BOOTSTRAP_ADMIN_TOKEN once.\n'
-printf 'After setup, sign in with the administrator password. Recovery tokens remain stored in %s/.env\n' "$INSTALL_DIR"
+printf 'Console URL: http://localhost:%s\n' "${FRONTEND_PORT:-3010}"
+lan_address="$(detect_lan_ipv4)"
+if [ -n "$lan_address" ]; then
+  printf 'LAN URL: http://%s:%s\n' "$lan_address" "${FRONTEND_PORT:-3010}"
+fi
+printf 'Device claim code: %s\n' "$device_claim_code"
+printf 'Open the console and use this one-time code to claim the device and create the local administrator.\n'
+printf 'BOOTSTRAP_ADMIN_TOKEN and API_AUTH_TOKEN were generated and stored only in %s/.env for emergency recovery and machine access.\n' "$INSTALL_DIR"
+printf 'Keep %s/.env private.\n' "$INSTALL_DIR"

@@ -1,136 +1,366 @@
-"""Local single-admin authentication for self-hosted first-run deployments."""
+"""Single-owner appliance authentication and opaque browser sessions."""
 
 from __future__ import annotations
 
-import base64
 import hashlib
-import hmac
+import re
 import secrets
-import time
-from collections import defaultdict, deque
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from threading import Lock
 
-from fastapi import HTTPException, status
-from jose import JWTError, jwt
+import bcrypt
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.concurrency import run_in_threadpool
 
-from backend.config import get_settings
+from backend.config import Settings
+from backend.database import AsyncSessionLocal
+from backend.models.identity import (
+    LocalAuthSession,
+    LocalCredential,
+    User,
+    Workspace,
+    WorkspaceMembership,
+    WorkspaceRole,
+)
+from backend.schemas.local_auth import normalize_username
 
-_ALGORITHM = "HS256"
-_SUBJECT = "local-admin"
-_SCRYPT_N = 2**14
-_SCRYPT_R = 8
-_SCRYPT_P = 1
+SESSION_COOKIE_NAME = "opencli_session"
+LOCAL_AUTH_STATE_KEY = "opencli_local_identity"
+CSRF_HEADER_NAME = "X-OpenCLI-CSRF"
+CSRF_HEADER_VALUE = "1"
+LOCAL_OWNER_SUBJECT = "local:owner"
+
+# These are the only API routes which may cross the Fleet middleware without
+# an already-authenticated browser session. Logout is intentionally excluded:
+# it crosses with a valid session and the normal write-CSRF requirement.
+PUBLIC_LOCAL_AUTH_PATHS = frozenset(
+    {
+        "/api/v1/auth/status",
+        "/api/v1/auth/setup",
+        "/api/v1/auth/login",
+    }
+)
+
+_SAFE_HTTP_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+_CROCKFORD_CODE = re.compile(r"^[0-9A-HJKMNP-TV-Z]{10}$")
+_PASSWORD_HASH_PREFIX = "$bcrypt-sha256$v=1$"
+_PASSWORD_BCRYPT_ROUNDS = 12
+_DUMMY_PASSWORD_HASH: str | None = None
+
+# Middleware cannot use FastAPI's request-scoped dependency session, so it
+# opens a short read-only session through this replaceable factory. Keeping the
+# seam explicit also lets isolated integration tests bind it to their engine.
+local_auth_session_factory = AsyncSessionLocal
 
 
-class LoginAttemptLimiter:
-    """Small per-process guard against rapid password guessing."""
+class LocalOwnerAlreadyInitialized(Exception):  # noqa: N818
+    pass
 
-    def __init__(
-        self, max_attempts: int = 10, window_seconds: int = 60, max_clients: int = 1024
-    ) -> None:
-        self.max_attempts = max_attempts
-        self.window_seconds = window_seconds
-        self.max_clients = max_clients
-        self._attempts: dict[str, deque[float]] = defaultdict(deque)
-        self._lock = Lock()
 
-    def check(self, client_id: str) -> None:
-        now = time.monotonic()
-        with self._lock:
-            attempts = self._attempts.get(client_id)
-            if not attempts:
-                return
-            while attempts and now - attempts[0] >= self.window_seconds:
-                attempts.popleft()
-            if not attempts:
-                self._attempts.pop(client_id, None)
-                return
-            if len(attempts) >= self.max_attempts:
-                retry_after = max(1, int(self.window_seconds - (now - attempts[0])))
-                raise HTTPException(
-                    status.HTTP_429_TOO_MANY_REQUESTS,
-                    "Too many authentication attempts",
-                    headers={"Retry-After": str(retry_after)},
+class DeviceClaimUnavailable(Exception):  # noqa: N818
+    pass
+
+
+class InvalidDeviceClaim(Exception):  # noqa: N818
+    pass
+
+
+class InvalidLocalCredentials(Exception):  # noqa: N818
+    pass
+
+
+@dataclass(frozen=True)
+class LocalSessionIdentity:
+    user_id: str
+    subject: str
+    email: str | None
+    name: str | None
+    username: str
+
+
+@dataclass(frozen=True)
+class LocalSessionGrant:
+    token: str
+    expires_at: datetime
+    identity: LocalSessionIdentity
+
+
+def utcnow() -> datetime:
+    return datetime.now(UTC)
+
+
+def is_public_local_auth_path(path: str) -> bool:
+    normalized = path.rstrip("/") or "/"
+    return normalized in PUBLIC_LOCAL_AUTH_PATHS
+
+
+def local_session_write_has_csrf(method: str, header_value: str) -> bool:
+    return method.upper() in _SAFE_HTTP_METHODS or secrets.compare_digest(
+        header_value.encode("utf-8"), CSRF_HEADER_VALUE.encode("utf-8")
+    )
+
+
+def hash_session_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+async def hash_password(password: str) -> str:
+    """Hash an arbitrary-length UTF-8 password without bcrypt's 72-byte truncation.
+
+    The SHA-256 digest is fixed-width and bcrypt still supplies the per-password
+    salt and work factor.  This deliberately avoids passlib's legacy bcrypt
+    backend probe, which is incompatible with bcrypt 5.x.
+    """
+
+    digest = hashlib.sha256(password.encode("utf-8")).digest()
+    encoded = await run_in_threadpool(
+        bcrypt.hashpw,
+        digest,
+        bcrypt.gensalt(rounds=_PASSWORD_BCRYPT_ROUNDS),
+    )
+    return f"{_PASSWORD_HASH_PREFIX}{encoded.decode('ascii').removeprefix('$')}"
+
+
+async def verify_password(password: str, password_hash: str) -> bool:
+    if not password_hash.startswith(_PASSWORD_HASH_PREFIX):
+        return False
+    encoded = f"${password_hash.removeprefix(_PASSWORD_HASH_PREFIX)}".encode("ascii")
+    digest = hashlib.sha256(password.encode("utf-8")).digest()
+    try:
+        return await run_in_threadpool(bcrypt.checkpw, digest, encoded)
+    except (UnicodeEncodeError, TypeError, ValueError):
+        return False
+
+
+async def local_auth_initialized(db: AsyncSession) -> bool:
+    credential_id = await db.scalar(select(LocalCredential.id).limit(1))
+    return credential_id is not None
+
+
+def device_claim_available(settings: Settings) -> bool:
+    """Return whether this deployment can complete one-time owner setup."""
+    return bool(_CROCKFORD_CODE.fullmatch(settings.device_claim_code.strip().upper()))
+
+
+async def claim_local_owner(
+    db: AsyncSession,
+    *,
+    claim_code: str,
+    username: str,
+    display_name: str | None,
+    password: str,
+    settings: Settings,
+) -> LocalSessionIdentity:
+    """Consume the deployment claim by creating the sole local owner."""
+    if await local_auth_initialized(db):
+        raise LocalOwnerAlreadyInitialized
+
+    configured_claim = settings.device_claim_code.strip().upper()
+    if not device_claim_available(settings):
+        raise DeviceClaimUnavailable
+    candidate = claim_code.strip().upper()
+    if not _CROCKFORD_CODE.fullmatch(candidate) or not secrets.compare_digest(
+        candidate.encode("ascii"), configured_claim.encode("ascii")
+    ):
+        raise InvalidDeviceClaim
+
+    normalized_username = normalize_username(username)
+    password_hash = await hash_password(password)
+
+    user = await db.scalar(select(User).where(User.subject == LOCAL_OWNER_SUBJECT))
+    if user is None:
+        user = User(
+            subject=LOCAL_OWNER_SUBJECT,
+            display_name=display_name or normalized_username,
+            disabled=False,
+        )
+        db.add(user)
+        await db.flush()
+    else:
+        user.disabled = False
+        if display_name is not None or not user.display_name:
+            user.display_name = display_name or normalized_username
+
+    db.add(
+        LocalCredential(
+            user_id=user.id,
+            singleton_key="owner",
+            username=normalized_username,
+            password_hash=password_hash,
+        )
+    )
+
+    workspaces = list((await db.scalars(select(Workspace))).all())
+    if not workspaces:
+        workspace = Workspace(name="我的空间", slug="my-space", active=True)
+        db.add(workspace)
+        await db.flush()
+        workspaces = [workspace]
+
+    existing_memberships = {
+        membership.workspace_id: membership
+        for membership in (
+            await db.scalars(
+                select(WorkspaceMembership).where(WorkspaceMembership.user_id == user.id)
+            )
+        ).all()
+    }
+    for workspace in workspaces:
+        membership = existing_memberships.get(workspace.id)
+        if membership is None:
+            db.add(
+                WorkspaceMembership(
+                    workspace_id=workspace.id,
+                    user_id=user.id,
+                    role=WorkspaceRole.ADMIN,
                 )
+            )
+        else:
+            membership.role = WorkspaceRole.ADMIN
 
-    def record_failure(self, client_id: str) -> None:
-        with self._lock:
-            if client_id not in self._attempts and len(self._attempts) >= self.max_clients:
-                self._attempts.pop(next(iter(self._attempts)))
-            self._attempts[client_id].append(time.monotonic())
-
-    def reset(self, client_id: str) -> None:
-        with self._lock:
-            self._attempts.pop(client_id, None)
+    await db.flush()
+    return _identity_from_user(user, normalized_username)
 
 
-login_attempt_limiter = LoginAttemptLimiter()
+async def authenticate_local_owner(
+    db: AsyncSession,
+    *,
+    username: str,
+    password: str,
+    settings: Settings,
+) -> LocalSessionIdentity:
+    """Verify the owner password with bounded lockout and uniform failure."""
+    global _DUMMY_PASSWORD_HASH
 
-
-def validate_password(password: str) -> str:
-    if len(password) < 12:
-        raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_ENTITY,
-            "Password must be at least 12 characters",
+    normalized_username = normalize_username(username)
+    result = (
+        await db.execute(
+            select(LocalCredential, User)
+            .join(User, User.id == LocalCredential.user_id)
+            .where(LocalCredential.username == normalized_username)
         )
-    if len(password) > 256:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Password is too long")
-    return password
+    ).one_or_none()
+
+    if result is None:
+        if _DUMMY_PASSWORD_HASH is None:
+            _DUMMY_PASSWORD_HASH = await hash_password("opencli-dummy-owner-password")
+        await verify_password(password, _DUMMY_PASSWORD_HASH)
+        raise InvalidLocalCredentials
+
+    credential, user = result
+    now = utcnow()
+    locked_until = _as_utc(credential.locked_until)
+    password_valid = await verify_password(password, credential.password_hash)
+
+    if locked_until is not None and locked_until > now:
+        raise InvalidLocalCredentials
+
+    if locked_until is not None:
+        credential.locked_until = None
+        credential.failed_attempts = 0
+
+    if not password_valid or user.disabled:
+        max_failures = max(1, settings.local_login_max_failures)
+        credential.failed_attempts += 1
+        if credential.failed_attempts >= max_failures:
+            credential.locked_until = now + timedelta(
+                seconds=max(1, settings.local_login_lock_seconds)
+            )
+        await db.flush()
+        raise InvalidLocalCredentials
+
+    credential.failed_attempts = 0
+    credential.locked_until = None
+    credential.last_login_at = now
+    await db.flush()
+    return _identity_from_user(user, credential.username)
 
 
-def hash_password(password: str) -> str:
-    encoded = validate_password(password).encode("utf-8")
-    salt = secrets.token_bytes(16)
-    digest = hashlib.scrypt(
-        encoded, salt=salt, n=_SCRYPT_N, r=_SCRYPT_R, p=_SCRYPT_P, dklen=32
+async def create_local_session(
+    db: AsyncSession,
+    *,
+    identity: LocalSessionIdentity,
+    remember_device: bool,
+    settings: Settings,
+) -> LocalSessionGrant:
+    now = utcnow()
+    ttl_seconds = (
+        settings.local_remember_session_ttl_seconds
+        if remember_device
+        else settings.local_session_ttl_seconds
     )
-    return "$".join(
-        (
-            "scrypt",
-            str(_SCRYPT_N),
-            str(_SCRYPT_R),
-            str(_SCRYPT_P),
-            base64.urlsafe_b64encode(salt).decode("ascii"),
-            base64.urlsafe_b64encode(digest).decode("ascii"),
+    expires_at = now + timedelta(seconds=max(60, ttl_seconds))
+    token = secrets.token_urlsafe(32)
+    db.add(
+        LocalAuthSession(
+            user_id=identity.user_id,
+            token_hash=hash_session_token(token),
+            expires_at=expires_at,
+            last_seen_at=now,
         )
     )
+    await db.flush()
+    return LocalSessionGrant(token=token, expires_at=expires_at, identity=identity)
 
 
-def verify_password(password: str, password_hash: str) -> bool:
-    try:
-        scheme, n, r, p, salt, expected = password_hash.split("$", 5)
-        if scheme != "scrypt" or (int(n), int(r), int(p)) != (
-            _SCRYPT_N,
-            _SCRYPT_R,
-            _SCRYPT_P,
-        ):
-            return False
-        digest = hashlib.scrypt(
-            password.encode("utf-8"),
-            salt=base64.urlsafe_b64decode(salt),
-            n=_SCRYPT_N,
-            r=_SCRYPT_R,
-            p=_SCRYPT_P,
-            dklen=32,
+async def get_local_session_identity(
+    db: AsyncSession, token: str
+) -> LocalSessionIdentity | None:
+    if not token:
+        return None
+    result = (
+        await db.execute(
+            select(LocalAuthSession, User, LocalCredential)
+            .join(User, User.id == LocalAuthSession.user_id)
+            .join(LocalCredential, LocalCredential.user_id == User.id)
+            .where(LocalAuthSession.token_hash == hash_session_token(token))
+            .where(LocalAuthSession.revoked_at.is_(None))
         )
-    except (ValueError, TypeError):
+    ).one_or_none()
+    if result is None:
+        return None
+    session, user, credential = result
+    if user.disabled or _as_utc(session.expires_at) <= utcnow():
+        return None
+    return _identity_from_user(user, credential.username)
+
+
+async def authenticate_local_session(token: str) -> LocalSessionIdentity | None:
+    """Resolve a browser session from middleware's independent DB session."""
+    async with local_auth_session_factory() as db:
+        return await get_local_session_identity(db, token)
+
+
+async def revoke_local_session(db: AsyncSession, token: str) -> bool:
+    if not token:
         return False
-    return hmac.compare_digest(base64.urlsafe_b64encode(digest).decode("ascii"), expected)
+    session = await db.scalar(
+        select(LocalAuthSession).where(
+            LocalAuthSession.token_hash == hash_session_token(token),
+            LocalAuthSession.revoked_at.is_(None),
+        )
+    )
+    if session is None:
+        return False
+    session.revoked_at = utcnow()
+    await db.flush()
+    return True
 
 
-def issue_session() -> str:
-    now = datetime.now(UTC)
-    return jwt.encode(
-        {"sub": _SUBJECT, "typ": "local-admin", "iat": now, "exp": now + timedelta(hours=12)},
-        get_settings().secret_key,
-        algorithm=_ALGORITHM,
+def _identity_from_user(user: User, username: str) -> LocalSessionIdentity:
+    return LocalSessionIdentity(
+        user_id=user.id,
+        subject=user.subject,
+        email=user.email,
+        name=user.display_name or username,
+        username=username,
     )
 
 
-def is_local_session(token: str) -> bool:
-    try:
-        claims = jwt.decode(token, get_settings().secret_key, algorithms=[_ALGORITHM])
-    except JWTError:
-        return False
-    return claims.get("sub") == _SUBJECT and claims.get("typ") == "local-admin"
+def _as_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
