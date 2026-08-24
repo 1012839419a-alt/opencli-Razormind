@@ -3,7 +3,7 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { Bot, Check, Loader2, Send, ShieldCheck, X } from 'lucide-react'
 import { usePathname } from 'next/navigation'
-import { FormEvent, KeyboardEvent, useState } from 'react'
+import { FormEvent, KeyboardEvent, useEffect, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
@@ -43,9 +43,11 @@ type AgentReply = {
 export function GlobalAgentDock({
   open,
   onOpenChange,
+  initialPrompt = '',
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
+  initialPrompt?: string
 }) {
   const pathname = usePathname()
   const queryClient = useQueryClient()
@@ -55,6 +57,11 @@ export function GlobalAgentDock({
   const [error, setError] = useState<string | null>(null)
   const [sending, setSending] = useState(false)
   const [confirming, setConfirming] = useState(false)
+  useEffect(() => {
+    if (open && initialPrompt) {
+      setInput(initialPrompt)
+    }
+  }, [initialPrompt, open])
 
   async function sendMessage(event?: FormEvent) {
     event?.preventDefault()
