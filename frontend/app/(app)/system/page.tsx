@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import Link from 'next/link'
 import { toast } from 'sonner'
 
 import { useAuth } from '@/components/auth/auth-provider'
@@ -172,6 +173,25 @@ export default function SystemSettingsPage() {
             </CardContent>
           </Card>
         </div>
+
+        <Card>
+          <CardHeader><CardTitle>系统模块</CardTitle><CardDescription>从这里进入各个系统级管理区域，不再把配置散落在不同入口。</CardDescription></CardHeader>
+          <CardContent className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {[
+              ['/operations-agents', '自动化与智能体', '安排任务、选择 Agent 和查看活动'],
+              ['/nodes', '执行资源', '管理浏览器节点与远程 Agent'],
+              ['/providers', '模型与连接', '配置模型供应商和运行时连接'],
+              ['/notifications', '通知与交付', '配置消息渠道和通知规则'],
+              ['/control/actions', '控制与审计', '查看系统建议、执行记录和控制状态'],
+              ['/inbox', '任务与日志', '处理失败任务、待确认操作和通知'],
+            ].map(([href, title, description]) => (
+              <Link key={href} href={href} className="rounded-lg border p-3 transition-colors hover:bg-muted/50">
+                <span className="block text-sm font-medium">{title}</span>
+                <span className="mt-1 block text-xs leading-5 text-muted-foreground">{description}</span>
+              </Link>
+            ))}
+          </CardContent>
+        </Card>
 
         <Card>
           <CardHeader><CardTitle>管理员账户</CardTitle><CardDescription>系统级设置的一部分：在这里修改本地管理员密码。</CardDescription></CardHeader>
