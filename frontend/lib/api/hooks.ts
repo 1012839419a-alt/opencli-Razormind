@@ -18,6 +18,19 @@ export function useMyWorkspaces() {
   return useQuery({ queryKey: ['workspaces'], queryFn: api.listMyWorkspaces })
 }
 
+export function useSystemConfig() {
+  return useQuery({ queryKey: ['system-config'], queryFn: api.getSystemConfig })
+}
+
+export function useUpdateSystemConfig() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (data: Parameters<typeof api.updateSystemConfig>[0]) =>
+      api.updateSystemConfig(data),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['system-config'] }),
+  })
+}
+
 export function useWorkspaceProjects(workspaceId: string | null) {
   return useQuery({
     queryKey: ['workspace-projects', workspaceId],

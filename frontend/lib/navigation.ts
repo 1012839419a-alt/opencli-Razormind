@@ -4,6 +4,7 @@ import {
   Database,
   LayoutDashboard,
   PanelsTopLeft,
+  Settings2,
   ShieldCheck,
   Workflow,
   type LucideIcon,
@@ -73,6 +74,11 @@ export const NAV_GROUPS: NavGroup[] = [
         icon: ShieldCheck,
         match: ['/providers', '/control/actions'],
       },
+      {
+        href: '/system',
+        label: '系统设置',
+        icon: Settings2,
+      },
     ],
   },
 ]
@@ -92,6 +98,7 @@ export const ROUTE_LABELS: Record<string, string> = {
   '/notifications': '通知',
   '/agents': '智能体',
   '/operations-agents': '自动化与智能体',
+  '/system': '系统设置',
   '/skills': '技能',
   '/providers': '模型与连接',
   '/workers': 'Worker',
