@@ -33,9 +33,6 @@ function StatusRow({ label, value, status = 'readonly' }: StatusRowProps) {
   )
 }
 
-function requestAgent(prompt: string) {
-  window.dispatchEvent(new CustomEvent('open-global-agent', { detail: { prompt } }))
-}
 
 export default function SystemSettingsPage() {
   const config = useSystemConfig()
@@ -70,16 +67,12 @@ export default function SystemSettingsPage() {
     return <ErrorState message={(config.error as Error)?.message} hint={BACKEND_HINT} />
   }
 
-  const runtimePrompt = '请检查当前 OpenCLI 的任务执行模式、调度器、并发数、超时和时区；列出未配置项，并在我确认后完成必要配置。'
-  const agentPrompt = '请检查浏览器节点、Agent Pool、CDP 地址和 Fleet 网络；告诉我哪些节点可用、哪些配置缺失，并在我确认后修复。'
-  const collaborationPrompt = '请检查模型连接、AI 并发限制、控制策略和全局暂停开关；用人能看懂的方式说明当前状态，并给出需要我确认的变更。'
 
   return (
     <PageContainer
       eyebrow="SYSTEM"
       title="系统设置"
-      description="这里主要展示系统状态。需要变更时，让 Agent 读取上下文并协助配置。"
-      actions={<Button onClick={() => requestAgent('请完整检查这套 OpenCLI 部署的系统设置，告诉我哪些已完成、哪些未完成。')}>让 Agent 检查全部</Button>}
+      description="查看整套 OpenCLI 部署的状态、完成项与待处理项。"
     >
       <div className="space-y-5">
         <Card>
@@ -104,30 +97,28 @@ export default function SystemSettingsPage() {
               <StatusRow label="最大并发任务" value={String(config.data.local_max_concurrent_pipelines)} />
               <StatusRow label="OpenCLI 超时" value={`${config.data.opencli_timeout} 秒`} />
               <StatusRow label="默认时区" value={config.data.default_timezone} />
-              <Button variant="outline" onClick={() => requestAgent(runtimePrompt)}>让 Agent 配置执行参数</Button>
             </CardContent>
           </Card>
 
           <Card>
-            <CardHeader><CardTitle>浏览器与 Agent</CardTitle><CardDescription>查看执行资源是否准备好，具体修改交给 Agent。</CardDescription></CardHeader>
+            <CardHeader><CardTitle>浏览器与 Agent</CardTitle><CardDescription>查看执行资源是否准备好。</CardDescription></CardHeader>
             <CardContent className="space-y-3">
               <StatusRow label="默认 CDP" value={config.data.opencli_cdp_endpoint} />
               <StatusRow label="Agent Pool" value={config.data.agent_pool_endpoints.length ? `${config.data.agent_pool_endpoints.length} 个地址` : '未配置'} status={config.data.agent_pool_endpoints.length ? 'done' : 'pending'} />
               <StatusRow label="Fleet 网络" value={config.data.fleet_network_provider} />
               <StatusRow label="NetBird 模式" value={config.data.netbird_mode} />
               <StatusRow label="对外访问地址" value={config.data.public_url || '未配置'} status={config.data.public_url ? 'done' : 'pending'} />
-              <div className="flex gap-2"><Button variant="outline" onClick={() => requestAgent(agentPrompt)}>让 Agent 检查节点</Button><Button variant="ghost" render={<Link href="/nodes" />}>查看节点</Button></div>
+              <Button variant="ghost" render={<Link href="/nodes" />}>查看节点</Button>
             </CardContent>
           </Card>
 
           <Card>
-            <CardHeader><CardTitle>AI 与人机协作</CardTitle><CardDescription>模型与控制策略由 Agent 解释，人只确认有影响的变更。</CardDescription></CardHeader>
+            <CardHeader><CardTitle>AI 与人机协作</CardTitle><CardDescription>展示模型与控制策略的当前状态。</CardDescription></CardHeader>
             <CardContent className="space-y-3">
               <StatusRow label="模型请求超时" value={`${config.data.llm_request_timeout_seconds} 秒`} />
               <StatusRow label="模型并发数" value={String(config.data.llm_max_concurrency)} />
               <StatusRow label="控制策略" value={config.data.control_mode === 'advisory' ? '建议模式' : '自动模式'} />
               <StatusRow label="全局暂停自动执行" value={config.data.control_kill_switch ? '已暂停' : '未暂停'} status={config.data.control_kill_switch ? 'pending' : 'done'} />
-              <Button variant="outline" onClick={() => requestAgent(collaborationPrompt)}>让 Agent 检查协作策略</Button>
             </CardContent>
           </Card>
 
@@ -138,7 +129,6 @@ export default function SystemSettingsPage() {
               <StatusRow label="凭证加密密钥" value={config.data.credential_encryption_configured ? '已配置' : '未配置'} status={config.data.credential_encryption_configured ? 'done' : 'pending'} />
               <StatusRow label="OIDC 组织登录" value={config.data.oidc_configured ? '已配置' : '未配置'} status={config.data.oidc_configured ? 'done' : 'pending'} />
               <StatusRow label="SMTP 通知" value={config.data.smtp_configured ? '已配置' : '未配置'} status={config.data.smtp_configured ? 'done' : 'pending'} />
-              <Button variant="outline" onClick={() => requestAgent('请检查模型、OIDC、SMTP 和通知渠道配置，列出哪些集成可以使用，哪些还没有配置。')}>让 Agent 检查集成</Button>
             </CardContent>
           </Card>
         </div>
