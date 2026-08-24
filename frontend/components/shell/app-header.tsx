@@ -39,10 +39,8 @@ function resolveLabels(pathname: string): string[] {
   return match ? [ROUTE_LABELS[match]] : []
 }
 export function AppHeader({
-  onOpenAgent,
   onOpenCommand,
 }: {
-  onOpenAgent?: () => void
   onOpenCommand?: () => void
 }) {
   const pathname = usePathname()
@@ -91,17 +89,19 @@ export function AppHeader({
           variant="outline"
           size="sm"
           className="hidden gap-2 sm:flex"
-          onClick={onOpenAgent}
+          nativeButton={false}
+          render={<Link href="/operations-agents" />}
         >
           <Bot />
-          <span>Agent</span>
+          <span>自动化与智能体</span>
         </Button>
         <Button
           variant="ghost"
           size="icon"
           className="sm:hidden"
-          aria-label="打开全局 Agent"
-          onClick={onOpenAgent}
+          aria-label="打开自动化与智能体"
+          nativeButton={false}
+          render={<Link href="/operations-agents" />}
         >
           <Bot />
         </Button>
