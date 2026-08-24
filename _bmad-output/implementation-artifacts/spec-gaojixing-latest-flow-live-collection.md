@@ -77,5 +77,12 @@ The canary question bank is `{"phase1":[],"phase2":[{"id":"B001","question":"高
 - `pnpm --dir frontend install --frozen-lockfile && node --test frontend/scripts/check-gaojixing-doubao-workflow.mjs` -- frontend graph and multipart contracts pass.
 - `docker compose config` -- deployment topology resolves without machine-specific source overlays.
 
+**Live verification evidence (2026-08-24):**
+- Deployed commit/image: `e299ca2b0ed695885b3fcdb56afbaeccf997d8e3` / `opencli-admin-api:gjx-live-e299ca2`; API healthy with zero restarts and authenticated config reporting `task_executor=local` plus the same runtime revision.
+- Published canary run: `521c3b6a-8969-460c-a370-db110ae28f94`; durable collection job: `d645f1e8-6b45-44f7-9963-0764639bc62d`; final workflow state `completed`, `valid=true`, 41 trace events, and every workflow node completed.
+- Record projection: one run-scoped B001 Record `f5368e2f-2f03-4d1c-8261-6057d7ee0513` under source key `gaojixing-certified-archive:521c3b6a-8969-460c-a370-db110ae28f94`; standard title/content/url fields and certification lineage are present.
+- Evidence chain: archive core files present; `required_missing=[]`; formal chat and share URLs present; 13 reference links include `item.jd.com`, `mall.jd.com`, and `www.taobao.com`; 5 distinct screenshots carry per-artifact SHA-256 values.
+- Digest agreement: archived `raw/B001.json` and the Record both report `599d2736dbe4c2c22f86031f7307cf8804e5db72f5ab2204486c7c34f9ba9e57`; batch evidence digest is `6622816185f49ae01af47e146eae6d82a9b16a5f04f27dffa071ac1db3baf357`.
+
 **Manual checks (if no CLI):**
 - Inspect the canary trace, collection checkpoint, archive manifest/files, and project Record; all share the same run ID and evidence digests, and the deployed revision equals this branch commit.
