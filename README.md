@@ -55,12 +55,13 @@ Invoke-WebRequest https://raw.githubusercontent.com/2233admin/opencli-Razormind/
 | API 文档 | http://localhost:8031/docs | REST API 与集成调试 |
 | 内置浏览器 | http://localhost:6080 | 扫码或登录需要账号的平台 |
 
-安装完成后，终端会打印：
+安装完成后可以直接使用本地管理员账号登录：
 
-- `BOOTSTRAP_ADMIN_TOKEN`：首次进入管理界面使用；
-- `API_AUTH_TOKEN`：Fleet、Agent、API 和 MCP 访问使用。
+- 用户名：`admin`
+- 密码：`admin`
+- 登录后可在「账户设置」修改密码
 
-两者同时保存在安装目录的 `.env`。不要公开 noVNC、令牌或浏览器调试端口；远程部署建议使用 HTTPS、反向代理或 SSH 隧道。
+`API_AUTH_TOKEN` 仅由 Fleet、Agent、API 和 MCP 传输使用，自动保存在安装目录的 `.env`，不需要填入管理界面。不要公开 API 令牌、noVNC 或浏览器调试端口；远程部署建议使用 HTTPS、反向代理或 SSH 隧道。
 
 ## 正常的研究流程
 
