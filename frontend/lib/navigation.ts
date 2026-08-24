@@ -103,5 +103,5 @@ export const ROUTE_LABELS: Record<string, string> = {
   '/providers': '模型与连接',
   '/workers': 'Worker',
   '/control/actions': '控制与审计',
-  '/settings': '账户设置',
+  '/settings': '系统设置',
 }
