@@ -2,7 +2,7 @@
 title: 'Run Gaojixing Live Collection Through the Latest Workflow'
 type: 'bugfix'
 created: '2026-08-24'
-status: 'in-review'
+status: 'done'
 review_loop_iteration: 0
 baseline_commit: 'f0390d4c4c1029347255b0eb94112ba1b00b998c'
 context: []
@@ -86,3 +86,60 @@ The canary question bank is `{"phase1":[],"phase2":[{"id":"B001","question":"高
 
 **Manual checks (if no CLI):**
 - Inspect the canary trace, collection checkpoint, archive manifest/files, and project Record; all share the same run ID and evidence digests, and the deployed revision equals this branch commit.
+
+## Suggested Review Order
+
+**Durable workflow execution**
+
+- Follow the published run from claimant wait through certified delivery.
+  [`opencli_hda_tracer.py:3808`](../../backend/workflow/opencli_hda_tracer.py#L3808)
+
+- Keep Windows worker staging bounded and recoverable per run.
+  [`gaojixing_collection_runner.py:106`](../../backend/workflow/gaojixing_collection_runner.py#L106)
+
+**Certified browser evidence**
+
+- Pin the authenticated browser and reject unavailable endpoints without fallback.
+  [`gaojixing_doubao_driver.py:304`](../../backend/workflow/gaojixing_doubao_driver.py#L304)
+
+- Distinguish absent optional follow-ups from visible extraction failures.
+  [`gaojixing_doubao_driver.py:836`](../../backend/workflow/gaojixing_doubao_driver.py#L836)
+
+- Fail certification on projection gaps or evidence changes.
+  [`gaojixing_certification.py:27`](../../backend/workflow/gaojixing_certification.py#L27)
+
+- Project standard fields plus resolvable artifact digests.
+  [`gaojixing_certification.py:112`](../../backend/workflow/gaojixing_certification.py#L112)
+
+**Agent-facing persistence**
+
+- Expand certified batches into one lineage-bearing Record per question.
+  [`opencli_hda_tracer.py:4357`](../../backend/workflow/opencli_hda_tracer.py#L4357)
+
+- Isolate managed sources by run to prevent provenance overwrite.
+  [`opencli_hda_tracer.py:4509`](../../backend/workflow/opencli_hda_tracer.py#L4509)
+
+**Deployment identity**
+
+- Build the local API claimant from the checked-out revision.
+  [`docker-compose.yml:145`](../../docker-compose.yml#L145)
+
+- Keep Celery claimants on the identical image and revision contract.
+  [`docker-compose.yml:256`](../../docker-compose.yml#L256)
+
+- Expose runtime identity only through authenticated system configuration.
+  [`system.py:56`](../../backend/api/v1/system.py#L56)
+
+**Compatibility and regression gates**
+
+- Recognize the deployed merged migration head without startup loops.
+  [`c0d1e2f3a4b5_add_gaojixing_conversation_cleanup.py:10`](../../backend/migrations/versions/c0d1e2f3a4b5_add_gaojixing_conversation_cleanup.py#L10)
+
+- Exercise atomic certification, artifact digests, and run-scoped sources.
+  [`test_gaojixing_workflow_tools.py:957`](../../tests/unit/test_gaojixing_workflow_tools.py#L957)
+
+- Verify endpoint fail-closed and optional-module semantics.
+  [`test_gaojixing_doubao_driver.py:97`](../../tests/unit/test_gaojixing_doubao_driver.py#L97)
+
+- Assert deployment revision survives API and trace projections.
+  [`test_auth_api.py:44`](../../tests/integration/test_auth_api.py#L44)
