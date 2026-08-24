@@ -44,6 +44,7 @@ WORKFLOW_CATALOG_IDS = {
     "intelligence.output.webhook",
     "intelligence.output.collection-result",
     "intelligence.sink.records",
+    "intelligence.sink.feishu-bitable",
     "intelligence.output.turbopush-publish",
     "media.image-generation",
     "media.image-asset",

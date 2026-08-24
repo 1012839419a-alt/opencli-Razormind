@@ -1,9 +1,14 @@
 import json
+from unittest.mock import AsyncMock, patch
 
 import pytest
+from sqlalchemy import select
 
 from backend.config import get_settings
+from backend.models.delivery_connection import DeliveryAttempt, DeliveryConnection
+from backend.models.source import DataSource
 from backend.models.workflow_run import WorkflowRun
+from backend.services.feishu_bitable_delivery import FeishuDeliveryError
 from backend.workflow import opencli_hda_tracer
 from backend.workflow.capability_projection import build_workflow_capabilities
 from backend.workflow.gaojixing_certification import (
@@ -113,6 +118,111 @@ def _four_node_project(
     return project
 
 
+def _feishu_delivery_project(connection_id: str, source_id: str) -> dict:
+    source = {
+        "id": "certified-source",
+        "kind": "source",
+        "capability": "fetch",
+        "adapter": "certified-opencli",
+        "params": {
+            "site": "gaojixing-certified-archive",
+            "command": "read",
+            "sourceId": source_id,
+            "fixtureItems": [
+                {
+                    "schema": "gaojixing.project-record.v1",
+                    "questionId": "B001",
+                    "title": "有电商链接的高吉星问题",
+                    "_certification": {
+                        "batchId": "batch-1",
+                        "snapshotDigest": "b" * 64,
+                        "evidenceDigest": "e" * 64,
+                    },
+                }
+            ],
+        },
+        "ui": {"catalogId": "intelligence.source.opencli-slot"},
+    }
+    record_sink = {
+        "id": "record-sink",
+        "kind": "sink",
+        "capability": "store",
+        "params": {
+            "target": "records",
+            "writeMode": "append",
+            "preserveLineage": True,
+        },
+        "ui": {"catalogId": "intelligence.sink.records"},
+    }
+    normalize = {
+        "id": "normalize",
+        "kind": "agent",
+        "capability": "normalize",
+        "params": {"language": "zh-CN", "preserveSourceRefs": True},
+        "ui": {"catalogId": "intelligence.processing.normalize"},
+    }
+    accept = {
+        "id": "accept",
+        "kind": "control",
+        "capability": "accept",
+        "params": {
+            "mode": "automatic_with_review",
+            "schema": "record.v1",
+            "dedupe": "off",
+            "lineageRequired": True,
+            "minQuality": 0,
+        },
+        "ui": {"catalogId": "intelligence.control.record-acceptance"},
+    }
+    feishu = (
+        {
+            "id": "feishu",
+            "kind": "inbox",
+            "capability": "store",
+            "params": {
+                "connectionId": connection_id,
+                "appToken": "app_token",
+                "tableId": "table_id",
+                "fieldMap": {
+                    "recordId": "Record ID",
+                    "workflowRunId": "Run ID",
+                    "evidenceDigest": "Evidence Digest",
+                    "normalizedData.title": "Title",
+                },
+            },
+            "ui": {"catalogId": "intelligence.sink.feishu-bitable"},
+        }
+    )
+    return {
+        "id": "wf-gaojixing-feishu-delivery",
+        "name": "Certified Record to Feishu",
+        "profile": "intelligence",
+        "version": 1,
+        "nodes": [source, normalize, accept, record_sink, feishu],
+        "edges": [
+            {"id": "source-normalize", "source": "certified-source", "target": "normalize"},
+            {"id": "normalize-accept", "source": "normalize", "target": "accept"},
+            {"id": "accept-record", "source": "accept", "target": "record-sink"},
+            {"id": "record-feishu", "source": "record-sink", "target": "feishu"},
+        ],
+        "adapters": [
+            {
+                "id": "certified-opencli",
+                "type": "source",
+                "provider": "opencli",
+                "mode": "live",
+                "config": {"channel": "opencli"},
+            }
+        ],
+        "agentPermissions": {
+            "canFetchNetwork": True,
+            "canSendNotifications": False,
+            "canWriteInbox": True,
+            "canMutateExternalSites": True,
+        },
+    }
+
+
 def test_gaojixing_tool_and_package_capabilities_are_runnable():
     batch_tool = resolve_workflow_tool_capability(GAOJIXING_DOUBAO_BATCH_TOOL_ID)
     certify_tool = resolve_workflow_tool_capability(GAOJIXING_BATCH_CERTIFY_TOOL_ID)
@@ -143,7 +253,7 @@ async def test_fixture_workflow_dispatches_both_real_executors(client):
         },
     )
 
-    assert response.status_code == 202
+    assert response.status_code == 202, response.text
     assert response.json()["data"]["status"] == "completed"
     events = (await client.get("/api/v1/workflows/runs/run-gaojixing-fixture/events")).json()[
         "data"
@@ -192,6 +302,188 @@ async def test_exact_four_node_manual_graph_validates_and_runs_end_to_end(client
     assert terminal["batch::tool"] == "completed"
     assert terminal["certify::tool"] == "completed"
     assert terminal["delivery"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_certified_records_deliver_to_feishu_once_with_trace(
+    client, db_session
+):
+    connection = DeliveryConnection(
+        name="Feishu", app_id="cli_test", app_secret="never-in-trace", enabled=True
+    )
+    db_session.add(connection)
+    source = DataSource(
+        name="Certified archive",
+        channel_type="opencli",
+        channel_config={"adapter": "gaojixing.project-record.v1"},
+        enabled=True,
+        tags=["workflow", "gaojixing", "certified-evidence"],
+    )
+    db_session.add(source)
+    await db_session.flush()
+    project = _feishu_delivery_project(connection.id, source.id)
+
+    with patch(
+        "backend.services.feishu_bitable_delivery.create_record",
+        new=AsyncMock(return_value="remote_record"),
+    ) as create:
+        response = await client.post(
+            "/api/v1/workflows/runs",
+            json={
+                "project": project,
+                "runId": "run-gaojixing-feishu",
+                "traceId": "trace-gaojixing-feishu",
+                "trigger": {"kind": "manual", "triggerNodeId": "trigger"},
+            },
+        )
+
+    assert response.status_code == 202, response.text
+    assert response.json()["data"]["status"] == "completed", response.text
+    events_response = await client.get(
+        "/api/v1/workflows/runs/run-gaojixing-feishu/events"
+    )
+    attempts = (await db_session.execute(select(DeliveryAttempt))).scalars().all()
+    assert attempts, events_response.text
+    assert all(row.status == "succeeded" for row in attempts)
+    assert all(row.workflow_run_id == "run-gaojixing-feishu" for row in attempts)
+    assert all(row.evidence_digest for row in attempts)
+    assert create.await_count == len(attempts)
+
+    assert events_response.status_code == 200
+    serialized = events_response.text
+    assert "workflow.feishu-bitable.records" in serialized
+    assert "never-in-trace" not in serialized
+
+
+@pytest.mark.asyncio
+async def test_feishu_delivery_failure_is_typed_and_persisted(client, db_session):
+    connection = DeliveryConnection(
+        name="Feishu", app_id="cli_test", app_secret="never-in-trace", enabled=True
+    )
+    source = DataSource(
+        name="Certified archive",
+        channel_type="opencli",
+        channel_config={"adapter": "gaojixing.project-record.v1"},
+        enabled=True,
+        tags=["workflow", "gaojixing", "certified-evidence"],
+    )
+    db_session.add_all([connection, source])
+    await db_session.flush()
+
+    with patch(
+        "backend.services.feishu_bitable_delivery.create_record",
+        new=AsyncMock(side_effect=FeishuDeliveryError("rate_limited")),
+    ):
+        response = await client.post(
+            "/api/v1/workflows/runs",
+            json={
+                "project": _feishu_delivery_project(connection.id, source.id),
+                "runId": "run-gaojixing-feishu-failed",
+                "traceId": "trace-gaojixing-feishu-failed",
+            },
+        )
+    assert response.status_code == 202, response.text
+    events = (
+        await client.get("/api/v1/workflows/runs/run-gaojixing-feishu-failed/events")
+    ).json()["data"]
+    failed = next(
+        event
+        for event in events
+        if event["nodeId"] == "feishu" and event["eventType"] == "failed"
+    )
+    assert failed["blockReason"]["code"] == "feishu_rate_limited"
+    attempts = (await db_session.execute(select(DeliveryAttempt))).scalars().all()
+    assert attempts and all(attempt.status == "failed" for attempt in attempts)
+    assert "never-in-trace" not in json.dumps(events)
+
+
+@pytest.mark.asyncio
+async def test_disabled_feishu_connection_blocks_before_network(client, db_session):
+    connection = DeliveryConnection(
+        name="Disabled", app_id="cli_test", app_secret="never-in-trace", enabled=False
+    )
+    db_session.add(connection)
+    source = DataSource(
+        name="Certified archive",
+        channel_type="opencli",
+        channel_config={"adapter": "gaojixing.project-record.v1"},
+        enabled=True,
+        tags=["workflow", "gaojixing", "certified-evidence"],
+    )
+    db_session.add(source)
+    await db_session.flush()
+
+    with patch(
+        "backend.services.feishu_bitable_delivery.create_record",
+        new=AsyncMock(return_value="must-not-run"),
+    ) as create:
+        response = await client.post(
+            "/api/v1/workflows/runs",
+            json={
+                "project": _feishu_delivery_project(connection.id, source.id),
+                "runId": "run-gaojixing-feishu-disabled",
+                "traceId": "trace-gaojixing-feishu-disabled",
+            },
+        )
+
+    assert response.status_code == 202, response.text
+    events = (
+        await client.get(
+            "/api/v1/workflows/runs/run-gaojixing-feishu-disabled/events"
+        )
+    ).json()["data"]
+    blocked = next(
+        event
+        for event in events
+        if event["nodeId"] == "feishu" and event["eventType"] == "blocked"
+    )
+    assert blocked["blockReason"]["code"] == "missing_feishu_connection"
+    assert "never-in-trace" not in json.dumps(events)
+    create.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_feishu_delivery_requires_external_mutation_permission(client, db_session):
+    connection = DeliveryConnection(
+        name="Feishu", app_id="cli_test", app_secret="never-in-trace", enabled=True
+    )
+    source = DataSource(
+        name="Certified archive",
+        channel_type="opencli",
+        channel_config={"adapter": "gaojixing.project-record.v1"},
+        enabled=True,
+        tags=["workflow", "gaojixing", "certified-evidence"],
+    )
+    db_session.add_all([connection, source])
+    await db_session.flush()
+    project = _feishu_delivery_project(connection.id, source.id)
+    project["agentPermissions"]["canMutateExternalSites"] = False
+
+    with patch(
+        "backend.services.feishu_bitable_delivery.create_record",
+        new=AsyncMock(return_value="must-not-run"),
+    ) as create:
+        response = await client.post(
+            "/api/v1/workflows/runs",
+            json={
+                "project": project,
+                "runId": "run-gaojixing-feishu-no-permission",
+                "traceId": "trace-gaojixing-feishu-no-permission",
+            },
+        )
+    assert response.status_code == 202, response.text
+    events = (
+        await client.get(
+            "/api/v1/workflows/runs/run-gaojixing-feishu-no-permission/events"
+        )
+    ).json()["data"]
+    blocked = next(
+        event
+        for event in events
+        if event["nodeId"] == "feishu" and event["eventType"] == "blocked"
+    )
+    assert blocked["blockReason"]["code"] == "feishu_write_permission_required"
+    create.assert_not_awaited()
 
 
 @pytest.mark.asyncio

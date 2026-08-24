@@ -12,6 +12,7 @@ from backend.api.v1 import (
     control,
     cookies,
     dashboard,
+    delivery_connections,
     dify_imports,
     geo_acquisition,
     identity,
@@ -79,6 +80,7 @@ v1_router.include_router(operations_inbox.router)
 v1_router.include_router(operations_agents.router)
 v1_router.include_router(workers.router)
 v1_router.include_router(dashboard.router)
+v1_router.include_router(delivery_connections.router)
 v1_router.include_router(system.router)
 v1_router.include_router(identity.router)
 v1_router.include_router(local_auth.router)

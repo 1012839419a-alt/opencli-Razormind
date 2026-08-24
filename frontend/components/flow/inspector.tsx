@@ -112,6 +112,10 @@ import {
   workflowStatusText,
 } from "./inspector-shell"
 import { cn } from "@/lib/utils"
+import {
+  FeishuBitableTargetEditor,
+  type FeishuBitableTargetParams,
+} from "./feishu-bitable-target-editor"
 
 const edgeTypeOptions = [
   { value: "workflow", label: "默认（贝塞尔曲线）" },
@@ -1666,6 +1670,12 @@ export function Inspector({ compact = false, onClose }: { compact?: boolean; onC
         ) : (
           <>
         {publicParameterPanel}
+        {configurationNode?.ui?.catalogId === "intelligence.sink.feishu-bitable" ? (
+          <FeishuBitableTargetEditor
+            params={(configurationNode.params ?? {}) as FeishuBitableTargetParams}
+            onChange={(patch) => updateWorkflowNodeParams(configurationNodeId, patch)}
+          />
+        ) : null}
         <section className="space-y-3 rounded-[3px] border border-[#20242a] bg-[#101216]/84 p-3">
           <div>
             <SectionCaption>{copy.businessConfig}</SectionCaption>

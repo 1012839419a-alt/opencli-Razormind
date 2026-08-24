@@ -7,6 +7,8 @@ import type {
   ApprovalDecision,
   Automation,
   FeedProviderInput,
+  DeliveryConnectionInput,
+  FeishuBitableProbeInput,
   ModelDefaultCandidate,
   ModelProviderInput,
   ModelRole,
@@ -649,6 +651,45 @@ export function useBuildFeedProviderWorkflowNode() {
       providerId: string
       data: Parameters<typeof api.buildFeedProviderWorkflowNode>[1]
     }) => api.buildFeedProviderWorkflowNode(providerId, data),
+  })
+}
+
+export function useDeliveryConnections() {
+  return useQuery({
+    queryKey: ['delivery-connections'],
+    queryFn: api.listDeliveryConnections,
+  })
+}
+
+export function useCreateDeliveryConnection() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (data: DeliveryConnectionInput) => api.createDeliveryConnection(data),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['delivery-connections'] }),
+  })
+}
+
+export function useUpdateDeliveryConnection() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, data }: { id: string; data: DeliveryConnectionInput }) =>
+      api.updateDeliveryConnection(id, data),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['delivery-connections'] }),
+  })
+}
+
+export function useDeleteDeliveryConnection() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => api.deleteDeliveryConnection(id),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['delivery-connections'] }),
+  })
+}
+
+export function useProbeFeishuBitable() {
+  return useMutation({
+    mutationFn: ({ id, data }: { id: string; data: FeishuBitableProbeInput }) =>
+      api.probeFeishuBitable(id, data),
   })
 }
 

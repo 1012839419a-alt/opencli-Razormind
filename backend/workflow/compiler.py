@@ -1,7 +1,6 @@
 """Compile Canvas WorkflowProject documents into executable-plan previews."""
 
 import re
-
 from collections import Counter, defaultdict, deque
 from dataclasses import dataclass
 from typing import Literal
@@ -126,6 +125,10 @@ _PORT_CONTRACTS: dict[str, tuple[list[_PortContract], list[_PortContract]]] = {
     "intelligence.sink.records": (
         [_PortContract("records", "input", "record[]")],
         [_PortContract("stored", "output", "storedItems[]", required=False)],
+    ),
+    "intelligence.sink.feishu-bitable": (
+        [_PortContract("records", "input", "storedItems[]")],
+        [_PortContract("delivery", "output", "deliveryAttempt[]", required=False)],
     ),
     "intelligence.output.collection-result": (
         [_PortContract("in", "input", "recordCandidate[]")],
@@ -1721,7 +1724,15 @@ def _plan_ports_for_node(
             [PlanPort(name="records", type="record[]")],
         )
     if catalog_id == "intelligence.sink.records":
-        return ([PlanPort(name="records", type="record[]")], [])
+        return (
+            [PlanPort(name="records", type="record[]")],
+            [PlanPort(name="stored", type="storedItems[]")],
+        )
+    if catalog_id == "intelligence.sink.feishu-bitable":
+        return (
+            [PlanPort(name="records", type="storedItems[]")],
+            [PlanPort(name="delivery", type="deliveryAttempt[]")],
+        )
     declared_contract = _node_port_contracts(node)
     if declared_contract is not None:
         inputs, outputs = declared_contract

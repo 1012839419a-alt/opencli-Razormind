@@ -12,11 +12,13 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from backend.auth.crypto import CredentialCryptoError
 from backend.database import (
     commit_session,
     queue_after_commit,
     rollback_session_preserving_primary,
 )
+from backend.models.delivery_connection import DeliveryConnection
 from backend.models.record import CollectedRecord
 from backend.models.source import DataSource
 from backend.models.task import CollectionTask
@@ -43,6 +45,10 @@ from backend.schemas.workflow import (
     WorkflowRunStartRequest,
     WorkflowRunStatus,
 )
+from backend.services.feishu_bitable_delivery import (
+    FeishuDeliveryError,
+    deliver_record_once,
+)
 from backend.workflow.async_orchestrator import image_generation_execution_key
 from backend.workflow.bbx_tool_nodes import (
     BBX_EXECUTOR_MODE,
@@ -52,8 +58,11 @@ from backend.workflow.bbx_tool_nodes import (
     invoke_bbx_tool,
 )
 from backend.workflow.block_reasons import (
+    FEISHU_WRITE_PERMISSION_REQUIRED,
     FETCH_PERMISSION_REQUIRED,
+    INVALID_FEISHU_RECORD_INPUT,
     MISSING_DELIVERY_PROJECTION,
+    MISSING_FEISHU_CONNECTION,
     MISSING_SOURCE_CREDENTIAL,
     OPENCLI_WRITE_APPROVAL_REQUIRED,
     OPENCLI_WRITE_PERMISSION_REQUIRED,
@@ -139,6 +148,7 @@ from backend.workflow.runtime_registry import (
     DEDUPE_BINDING_ID,
     DIFY_GRAPHON_BINDING_ID,
     EXTERNAL_TOOL_BINDING_ID,
+    FEISHU_BITABLE_SINK_BINDING_ID,
     IMAGE_ASSET_BINDING_ID,
     IMAGE_GENERATION_BINDING_ID,
     INBOX_STORE_BINDING_ID,
@@ -205,6 +215,24 @@ class _GaojixingToolTerminalError(Exception):
         self.code = code
         self.message = message
         self.output_items = output_items
+
+
+class _FeishuBitableWorkflowError(RuntimeError):
+    """A redacted, stable workflow failure for the Feishu destination."""
+
+    def __init__(
+        self,
+        *,
+        code: str,
+        message: str,
+        details: dict[str, Any],
+        event_type: WorkflowNodeRunEventType = "blocked",
+    ) -> None:
+        super().__init__(code)
+        self.code = code
+        self.message = message
+        self.details = details
+        self.event_type = event_type
 
 
 _RUNS: dict[str, _StoredWorkflowRun] = {}
@@ -1140,7 +1168,9 @@ async def start_workflow_run(
             browser_tool_block = _opentabs_tool_block_reason(
                 node,
                 body.project.agentPermissions,
-            ) or _bbx_tool_block_reason(node, body.project.agentPermissions)
+            ) or _bbx_tool_block_reason(
+                node, body.project.agentPermissions
+            ) or _feishu_bitable_block_reason(node, body.project.agentPermissions)
             if browser_tool_block is not None:
                 emitter.emit(
                     node,
@@ -1231,6 +1261,23 @@ async def start_workflow_run(
                 terminal_nodes[node.id] = reason
                 for ancestor_id in _package_ancestor_ids(node):
                     blocked_by_package.setdefault(ancestor_id, []).append(reason)
+                await _persist_emitter_events(run_id, emitter, session=session)
+                continue
+            except _FeishuBitableWorkflowError as exc:
+                reason = WorkflowRunBlockReason(
+                    code=exc.code,
+                    message=exc.message,
+                    source="feishu_bitable_delivery",
+                    details=exc.details,
+                )
+                emitter.emit(
+                    node,
+                    exc.event_type,
+                    message=exc.message,
+                    block_reason=reason,
+                    details=reason.details,
+                )
+                terminal_nodes[node.id] = reason
                 await _persist_emitter_events(run_id, emitter, session=session)
                 continue
             except WorkflowWebhookDeliveryError as exc:
@@ -3216,6 +3263,7 @@ def _is_first_loop_native_node(node: CompiledWorkflowNode) -> bool:
         ROUTER_ROUTE_BINDING_ID,
         RECORD_ACCEPTANCE_BINDING_ID,
         RECORD_SINK_BINDING_ID,
+        FEISHU_BITABLE_SINK_BINDING_ID,
         COLLECTION_OUTPUT_BINDING_ID,
         INBOX_STORE_BINDING_ID,
         NOTIFY_SEND_BINDING_ID,
@@ -3683,6 +3731,13 @@ async def _execute_native_node(
             },
             stored_refs,
         )
+    if binding_id == FEISHU_BITABLE_SINK_BINDING_ID:
+        return await _execute_feishu_bitable_sink(
+            node,
+            input_items,
+            run_id=run_id,
+            session=session,
+        )
     if binding_id == NOTIFY_SEND_BINDING_ID:
         binding = _read_dict(node.runtime.get("binding"))
         binding_input = _read_dict(binding.get("input"))
@@ -3742,6 +3797,158 @@ async def _execute_native_node(
             output_items,
         )
     return ({"bindingId": binding_id or "", "lineage": _lineage_pointer(node)}, [])
+
+
+async def _execute_feishu_bitable_sink(
+    node: CompiledWorkflowNode,
+    input_items: list[dict[str, Any]],
+    *,
+    run_id: str,
+    session: AsyncSession | None,
+) -> tuple[dict[str, object], list[dict[str, Any]]]:
+    binding_input = _binding_input(node)
+    connection_id = _read_string(binding_input.get("connectionId"))
+    app_token = _read_string(binding_input.get("appToken"))
+    table_id = _read_string(binding_input.get("tableId"))
+    field_map = _read_dict(binding_input.get("fieldMap"))
+    safe_details: dict[str, Any] = {
+        "nodeId": node.id,
+        "bindingId": FEISHU_BITABLE_SINK_BINDING_ID,
+        "connectionId": connection_id,
+    }
+    if session is None or not connection_id:
+        raise _FeishuBitableWorkflowError(
+            code=MISSING_FEISHU_CONNECTION,
+            message="Feishu Bitable delivery requires an enabled saved connection.",
+            details=safe_details,
+        )
+    connection = await session.get(DeliveryConnection, connection_id)
+    if connection is None or not connection.enabled:
+        raise _FeishuBitableWorkflowError(
+            code=MISSING_FEISHU_CONNECTION,
+            message="Feishu Bitable delivery connection is missing or disabled.",
+            details=safe_details,
+        )
+
+    required_identity_keys = {"recordId", "workflowRunId", "evidenceDigest"}
+    identity_targets = [field_map.get(key) for key in required_identity_keys]
+    if (
+        not app_token
+        or not table_id
+        or not required_identity_keys.issubset(field_map)
+        or any(not isinstance(target, str) or not target.strip() for target in identity_targets)
+        or len(set(identity_targets)) != len(identity_targets)
+        or any(not isinstance(key, str) or not key for key in field_map)
+    ):
+        raise _FeishuBitableWorkflowError(
+            code=INVALID_FEISHU_RECORD_INPUT,
+            message="Feishu field mapping must preserve Record, run, and evidence identity.",
+            details=safe_details,
+        )
+
+    delivery_refs: list[dict[str, Any]] = []
+    for input_item in input_items:
+        record_id = _read_string(input_item.get("recordId"))
+        record = await session.get(CollectedRecord, record_id) if record_id else None
+        source_row = await session.get(DataSource, record.source_id) if record else None
+        source_config = _read_dict(source_row.channel_config) if source_row else {}
+        certification = _read_dict(record.raw_data.get("_certification")) if record else {}
+        evidence_digest = _read_string(certification.get("evidenceDigest"))
+        if (
+            record is None
+            or record.workflow_run_id != run_id
+            or record.raw_data.get("schema") != "gaojixing.project-record.v1"
+            or not evidence_digest
+            or source_config.get("adapter") != "gaojixing.project-record.v1"
+            or "certified-evidence" not in (source_row.tags if source_row else [])
+        ):
+            raise _FeishuBitableWorkflowError(
+                code=INVALID_FEISHU_RECORD_INPUT,
+                message="Feishu Bitable delivery accepts only stored certified Record refs.",
+                details=safe_details,
+            )
+        source = {
+            "recordId": record.id,
+            "workflowRunId": record.workflow_run_id,
+            "evidenceDigest": evidence_digest,
+            "sourceId": record.source_id,
+            "taskId": record.task_id,
+            "raw": record.raw_data,
+            "normalizedData": record.normalized_data,
+        }
+        fields = {
+            target_field: value
+            for source_path, target_field in field_map.items()
+            if isinstance(target_field, str)
+            and target_field.strip()
+            and (value := _nested_mapping_value(source, source_path)) is not None
+            and _is_safe_feishu_field_value(value)
+        }
+        try:
+            attempt = await deliver_record_once(
+                session,
+                connection=connection,
+                app_token=app_token,
+                table_id=table_id,
+                record_id=record.id,
+                workflow_run_id=run_id,
+                evidence_digest=evidence_digest,
+                fields=fields,
+                field_map={str(key): str(value) for key, value in field_map.items()},
+            )
+        except CredentialCryptoError as exc:
+            raise _FeishuBitableWorkflowError(
+                code=MISSING_FEISHU_CONNECTION,
+                message="Feishu credential encryption is unavailable.",
+                details=safe_details,
+            ) from exc
+        except FeishuDeliveryError as exc:
+            raise _FeishuBitableWorkflowError(
+                code=f"feishu_{exc.kind}",
+                message="Feishu Bitable delivery failed.",
+                details={**safe_details, "errorKind": exc.kind},
+                event_type="failed",
+            ) from exc
+        delivery_refs.append(
+            {
+                "attemptId": attempt.id,
+                "recordId": record.id,
+                "workflowRunId": run_id,
+                "evidenceDigest": evidence_digest,
+                "status": attempt.status,
+                "remoteRecordId": attempt.remote_record_id,
+            }
+        )
+
+    return (
+        {
+            "bindingId": FEISHU_BITABLE_SINK_BINDING_ID,
+            "connectionId": connection_id,
+            "inputRecordCount": len(input_items),
+            "deliveredRecordCount": len(delivery_refs),
+            "deliveryAttempts": delivery_refs,
+            "lineage": _lineage_pointer(node),
+        },
+        delivery_refs,
+    )
+
+
+def _nested_mapping_value(source: dict[str, Any], path: object) -> Any:
+    if not isinstance(path, str) or not path:
+        return None
+    value: Any = source
+    for segment in path.split("."):
+        if not isinstance(value, dict) or segment not in value:
+            return None
+        value = value[segment]
+    return value
+
+
+def _is_safe_feishu_field_value(value: Any) -> bool:
+    scalar = (str, int, float, bool)
+    return isinstance(value, scalar) or (
+        isinstance(value, list) and all(isinstance(item, scalar) for item in value)
+    )
 
 
 def _execute_capability_native_node(
@@ -5041,6 +5248,26 @@ def _notify_send_block_reason(
     return None
 
 
+def _feishu_bitable_block_reason(
+    node: CompiledWorkflowNode,
+    permissions: object,
+) -> WorkflowRunBlockReason | None:
+    if _binding_id(node) != FEISHU_BITABLE_SINK_BINDING_ID:
+        return None
+    if bool(getattr(permissions, "canMutateExternalSites", False)):
+        return None
+    return WorkflowRunBlockReason(
+        code=FEISHU_WRITE_PERMISSION_REQUIRED,
+        message="Feishu Bitable delivery requires external-site mutation permission.",
+        source="workflow_permissions",
+        details={
+            "nodeId": node.id,
+            "bindingId": FEISHU_BITABLE_SINK_BINDING_ID,
+            "requiredPermission": "canMutateExternalSites",
+        },
+    )
+
+
 def _is_opencli_write_node(node: CompiledWorkflowNode) -> bool:
     return (
         _binding_id(node) == OPENCLI_BINDING_ID
@@ -5103,6 +5330,8 @@ def _native_node_started_message(node: CompiledWorkflowNode) -> str:
         return "Record acceptance gate started"
     if binding_id == RECORD_SINK_BINDING_ID:
         return "Record sink started"
+    if binding_id == FEISHU_BITABLE_SINK_BINDING_ID:
+        return "Feishu Bitable delivery started"
     if binding_id == INBOX_STORE_BINDING_ID:
         return "Inbox store started"
     if binding_id == NOTIFY_SEND_BINDING_ID:
@@ -5130,6 +5359,8 @@ def _native_node_partial_message(node: CompiledWorkflowNode) -> str:
         return "Record Candidates accepted as Records"
     if binding_id == RECORD_SINK_BINDING_ID:
         return "Accepted Records stored through Record Sink boundary"
+    if binding_id == FEISHU_BITABLE_SINK_BINDING_ID:
+        return "Feishu Bitable delivery evidence emitted"
     if binding_id == INBOX_STORE_BINDING_ID:
         return "Items stored through Inbox boundary"
     if binding_id == NOTIFY_SEND_BINDING_ID:
@@ -5157,6 +5388,8 @@ def _native_node_completed_message(node: CompiledWorkflowNode) -> str:
         return "Record acceptance gate completed"
     if binding_id == RECORD_SINK_BINDING_ID:
         return "Record sink completed"
+    if binding_id == FEISHU_BITABLE_SINK_BINDING_ID:
+        return "Feishu Bitable delivery completed"
     if binding_id == INBOX_STORE_BINDING_ID:
         return "Inbox store completed"
     if binding_id == NOTIFY_SEND_BINDING_ID:

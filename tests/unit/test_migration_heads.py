@@ -13,7 +13,7 @@ def test_alembic_has_one_head():
     config = Config()
     config.set_main_option("script_location", "backend/migrations")
 
-    assert ScriptDirectory.from_config(config).get_heads() == ["c0d1e2f3a4b5"]
+    assert ScriptDirectory.from_config(config).get_heads() == ["d1e2f3a4b5c6"]
 
 
 def test_upgrade_head_creates_identity_and_operations_tables(monkeypatch):
@@ -55,6 +55,8 @@ def test_upgrade_head_creates_identity_and_operations_tables(monkeypatch):
         "workflow_versions",
         "local_credentials",
         "local_auth_sessions",
+        "delivery_connections",
+        "delivery_attempts",
     } <= tables
 
 
