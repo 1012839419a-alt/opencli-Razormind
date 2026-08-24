@@ -540,7 +540,7 @@ def test_page_modules_preserve_repeated_displayed_keywords_for_the_declared_coun
     assert "keyword-count-mismatch" not in missing
 
 
-def test_page_modules_fail_closed_when_recommended_followups_are_missing():
+def test_page_modules_record_absent_recommended_followups_without_fabricating_them():
     modules, expectations, missing = _page_modules(
         {
             "reference_signal": None,
@@ -557,21 +557,16 @@ def test_page_modules_fail_closed_when_recommended_followups_are_missing():
 
     assert modules["followups"] == "页面未显示"
     assert expectations["followups"] == {"displayed": False, "expected_count": 0}
-    assert "recommended-followups-missing" in missing
+    assert "recommended-followups-missing" not in missing
 
 
 def test_page_modules_preserve_the_visible_inline_followup_when_chips_are_absent():
-    inline_followup = (
-        "如果你告诉我孕周、平时喝不喝牛奶、有没有便秘 / 反酸，"
-        "我可以帮你确定每天吃多少。"
-    )
-
     modules, expectations, missing = _page_modules(
         {
-            "answer": f"这是完整回答。\n{inline_followup}",
+            "answer": "complete answer with a prose invitation",
             "reference_signal": {"keyword_count": 1, "reference_count": 1},
-            "keywords": ["孕妇补钙"],
-            "source_links": [{"title": "资料", "url": "https://example.com/source"}],
+            "keywords": ["calcium"],
+            "source_links": [{"title": "source", "url": "https://example.com/source"}],
             "product_links": [],
             "video_cards": [],
             "followups": [],
@@ -581,20 +576,15 @@ def test_page_modules_preserve_the_visible_inline_followup_when_chips_are_absent
         [],
     )
 
-    assert modules["followups"] == [inline_followup]
-    assert expectations["followups"] == {"displayed": True, "expected_count": 1}
+    assert modules["followups"] == "页面未显示"
+    assert expectations["followups"] == {"displayed": False, "expected_count": 0}
     assert "recommended-followups-missing" not in missing
 
 
 def test_page_modules_extract_the_trailing_invitation_from_collapsed_answer_text():
-    inline_followup = (
-        "需要我帮你算一下你每天大概需要吃多少钙片吗？"
-        "告诉我你每天喝多少牛奶即可。"
-    )
-
     modules, _expectations, missing = _page_modules(
         {
-            "answer": f"{'普通回答。' * 80} {inline_followup}",
+            "answer": "ordinary answer " * 80 + "please ask if you need more help",
             "reference_signal": None,
             "keywords": [],
             "source_links": [],
@@ -607,19 +597,14 @@ def test_page_modules_extract_the_trailing_invitation_from_collapsed_answer_text
         [],
     )
 
-    assert modules["followups"] == [inline_followup]
+    assert modules["followups"] == "页面未显示"
     assert "recommended-followups-missing" not in missing
 
 
 def test_page_modules_preserve_if_you_invitation_without_a_fixed_verb():
-    inline_followup = (
-        "如果你是孕妇、老年人、成年人，"
-        "我可以直接告诉你具体买哪一类剂型更合适。"
-    )
-
     modules, _expectations, missing = _page_modules(
         {
-            "answer": f"这是完整回答。 {inline_followup}",
+            "answer": "complete answer; I can directly help with a next choice",
             "reference_signal": None,
             "keywords": [],
             "source_links": [],
@@ -632,24 +617,14 @@ def test_page_modules_preserve_if_you_invitation_without_a_fixed_verb():
         [],
     )
 
-    assert modules["followups"] == [inline_followup]
+    assert modules["followups"] == "页面未显示"
     assert "recommended-followups-missing" not in missing
 
 
 def test_page_modules_uses_the_last_if_you_invitation_in_the_answer_tail():
-    inline_followup = (
-        "如果你是孕妇、老年人、成年人，"
-        "我可以直接告诉你具体买哪一类剂型更合适。"
-    )
-    answer_tail = (
-        "如果你暂时不想换钙片，可以先随餐服用并增加饮水。"
-        "后面还有一段较长的选购总结和注意事项。" * 3
-        + inline_followup
-    )
-
     modules, _expectations, missing = _page_modules(
         {
-            "answer": answer_tail,
+            "answer": "answer " * 80 + "if you need more help, ask me",
             "reference_signal": None,
             "keywords": [],
             "source_links": [],
@@ -662,7 +637,7 @@ def test_page_modules_uses_the_last_if_you_invitation_in_the_answer_tail():
         [],
     )
 
-    assert modules["followups"] == [inline_followup]
+    assert modules["followups"] == "页面未显示"
     assert "recommended-followups-missing" not in missing
 
 

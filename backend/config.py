@@ -98,6 +98,9 @@ class Settings(BaseSettings):
     # Docker image tag used in agent install scripts / node wizard.
     # Set IMAGE_TAG env var (or bake it in at build time) to match the deployed version.
     image_tag: str = "latest"
+    # Immutable source revision carried by the API and collection claimant.
+    # Deployment must set this from the same checkout used to build both images.
+    opencli_runtime_revision: str = "unidentified"
 
     # Public-facing URL of this deployment (used in install scripts and invite links).
     # Set this to the URL your remote agents will use to reach the center API.

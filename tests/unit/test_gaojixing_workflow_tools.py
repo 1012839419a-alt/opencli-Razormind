@@ -2,8 +2,12 @@ import json
 import re
 
 import pytest
+from sqlalchemy import select
 
-from backend.schemas.workflow import WorkflowProject
+from backend.models.record import CollectedRecord
+from backend.models.source import DataSource
+from backend.models.task import CollectionTask
+from backend.schemas.workflow import CompiledWorkflowNode, WorkflowProject
 from backend.workflow.compiler import compile_workflow_project
 from backend.workflow.gaojixing_certification import (
     _evidence_digest,
@@ -15,6 +19,7 @@ from backend.workflow.gaojixing_doubao import (
     execute_gaojixing_doubao_batch,
 )
 from backend.workflow.hda_templates import materialize_hda_templates
+from backend.workflow.opencli_hda_tracer import _store_record_sink_outputs
 
 
 def _valid_evidence(tmp_path, question_id: str = "G0001") -> dict:
@@ -1009,6 +1014,7 @@ async def test_certification_reads_real_v22_project_layout_and_question_bank(tmp
     )
 
     evidence_digest = result.pop("evidenceDigest")
+    project_records = result.pop("projectRecords")
     batch_id = result.pop("batchId")
     snapshot_digest = result.pop("snapshotDigest")
     snapshot = result.pop("snapshot")
@@ -1020,6 +1026,21 @@ async def test_certification_reads_real_v22_project_layout_and_question_bank(tmp
         "stage2_brand": 1,
     }
     assert snapshot["recordCount"] == 2
+    assert [record["questionId"] for record in project_records] == ["G0001", "B001"]
+    assert [record["answer"] for record in project_records] == [
+        stage1["answer"],
+        stage2["answer"],
+    ]
+    assert all(
+        record["formalChatUrl"] == "https://www.doubao.com/chat/1234567890"
+        for record in project_records
+    )
+    assert all(
+        record["shareUrl"].startswith("https://www.doubao.com/thread/")
+        for record in project_records
+    )
+    assert all(record["evidenceDigest"] == evidence_digest for record in project_records)
+    assert all(re.fullmatch(r"[0-9a-f]{64}", record["rawDigest"]) for record in project_records)
     assert result == {
         "schema": "gaojixing.batch-certification.v1",
         "status": "certified",
@@ -1040,6 +1061,7 @@ async def test_certification_reads_real_v22_project_layout_and_question_bank(tmp
             "ocrAuthenticated": False,
         },
     }
+
 
     repeated = await execute_gaojixing_batch_certification(
         [],
@@ -1067,6 +1089,86 @@ async def test_certification_reads_real_v22_project_layout_and_question_bank(tmp
         },
     )
     assert changed["evidenceDigest"] != evidence_digest
+
+
+@pytest.mark.asyncio
+async def test_certified_gaojixing_projection_materializes_a_managed_project_record(
+    db_session,
+):
+    sink = CompiledWorkflowNode(
+        id="delivery",
+        kind="sink",
+        capability="store",
+        params={},
+    )
+    certification = CompiledWorkflowNode(
+        id="certification",
+        kind="action",
+        capability="accept",
+        params={},
+    )
+    project_record = {
+        "schema": "gaojixing.project-record.v1",
+        "questionId": "B001",
+        "question": "where can the product be purchased",
+        "answer": "certified answer",
+        "formalChatUrl": "https://www.doubao.com/chat/1234567890",
+        "shareUrl": "https://www.doubao.com/thread/B001",
+        "rawArtifact": "raw/B001.json",
+        "rawDigest": "a" * 64,
+        "screenshots": [
+            "screenshots/B001/top.png",
+            "screenshots/B001/answer.png",
+            "screenshots/B001/bottom.png",
+        ],
+        "evidenceDigest": "b" * 64,
+        "batchId": "batch-1",
+        "snapshotDigest": "c" * 64,
+    }
+
+    stored_refs, skipped = await _store_record_sink_outputs(
+        sink,
+        [
+            {
+                "raw": {
+                    "schema": "gaojixing.batch-certification.v1",
+                    "batchId": "batch-1",
+                    "snapshotDigest": "c" * 64,
+                    "evidenceDigest": "b" * 64,
+                    "projectRecords": [project_record],
+                },
+                "lineage": [{"nodeId": "certification", "artifact": "certified"}],
+            }
+        ],
+        run_id="run-gaojixing-record",
+        workflow_id="workflow-gaojixing",
+        target="project-records",
+        session=db_session,
+        runtime_nodes_by_id={
+            sink.id: sink,
+            certification.id: certification,
+        },
+        materialized_source_tasks={},
+    )
+
+    assert skipped == 0
+    assert len(stored_refs) == 1
+    records = (
+        await db_session.scalars(
+            select(CollectedRecord).where(
+                CollectedRecord.workflow_run_id == "run-gaojixing-record"
+            )
+        )
+    ).all()
+    assert len(records) == 1
+    assert records[0].normalized_data["questionId"] == "B001"
+    assert records[0].normalized_data["rawDigest"] == "a" * 64
+    source = await db_session.get(DataSource, records[0].source_id)
+    task = await db_session.get(CollectionTask, records[0].task_id)
+    assert source is not None
+    assert source.channel_config["sourceNodeId"] == "gaojixing-certified-archive"
+    assert task is not None
+    assert task.parameters["workflowRunId"] == "run-gaojixing-record"
 
 
 @pytest.mark.asyncio
@@ -1572,7 +1674,7 @@ def test_displayed_module_cannot_claim_zero_or_page_not_displayed(tmp_path):
     assert "module_ref_links_displayed_content_missing" in violations
 
 
-def test_recommended_followups_are_required_for_every_completed_doubao_answer(
+def test_absent_recommended_followups_are_an_explicit_optional_module(
     tmp_path,
 ):
     evidence = _valid_evidence(tmp_path, "G0009")
@@ -1582,9 +1684,7 @@ def test_recommended_followups_are_required_for_every_completed_doubao_answer(
         "expected_count": 0,
     }
 
-    assert "recommended_followups_missing" in audit_gaojixing_question_evidence(
-        evidence, project_root=tmp_path
-    )
+    assert audit_gaojixing_question_evidence(evidence, project_root=tmp_path) == []
 
 
 def test_three_coverage_flags_cannot_be_backed_by_one_screenshot(tmp_path):

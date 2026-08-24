@@ -3863,6 +3863,7 @@ async def _execute_external_tool_capability(
                 output = {
                     "schema": "gaojixing.collection-run.v1",
                     "status": job.status,
+                    "runtimeRevision": _gaojixing_runtime_revision(),
                     "jobId": job.id,
                     "questionCount": len(checkpoints),
                     "completedCount": sum(
@@ -4163,6 +4164,14 @@ def _merged_tool_params(binding_input: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _gaojixing_runtime_revision() -> str:
+    """Expose the configured immutable deployment identity in the run trace."""
+
+    from backend.config import get_settings
+
+    return get_settings().opencli_runtime_revision
+
+
 def _gaojixing_tool_params(
     binding_input: dict[str, Any], workflow_input: dict[str, Any], *, run_id: str
 ) -> dict[str, Any]:
@@ -4354,6 +4363,7 @@ async def _store_record_sink_outputs(
     runtime_nodes_by_id: dict[str, CompiledWorkflowNode],
     materialized_source_tasks: dict[str, tuple[str, str]],
 ) -> tuple[list[dict[str, Any]], int]:
+    input_items = _expand_gaojixing_project_records(input_items)
     if session is None:
         return (
             [
@@ -4369,18 +4379,34 @@ async def _store_record_sink_outputs(
         )
 
     triples_by_source_node: dict[str, list[tuple[dict, dict, str, list[dict[str, Any]]]]] = {}
+    source_tasks_by_key: dict[str, tuple[str, str, str]] = {}
     for item in input_items:
         source_node_id = _origin_source_node_id(item, runtime_nodes_by_id)
-        if not source_node_id:
+        if source_node_id:
+            source_id, task_id = await _materialize_source_task(
+                session,
+                runtime_nodes_by_id[source_node_id],
+                run_id=run_id,
+                workflow_id=workflow_id,
+                sink_node_id=node.id,
+                cache=materialized_source_tasks,
+            )
+            channel_type = _workflow_source_channel_type(
+                runtime_nodes_by_id[source_node_id]
+            )
+        elif _is_gaojixing_project_record(item):
+            source_node_id = "gaojixing-certified-archive"
+            source_id, task_id = await _materialize_gaojixing_source_task(
+                session,
+                run_id=run_id,
+                workflow_id=workflow_id,
+                sink_node_id=node.id,
+                cache=materialized_source_tasks,
+            )
+            channel_type = "opencli"
+        else:
             continue
-        source_id, _task_id = await _materialize_source_task(
-            session,
-            runtime_nodes_by_id[source_node_id],
-            run_id=run_id,
-            workflow_id=workflow_id,
-            sink_node_id=node.id,
-            cache=materialized_source_tasks,
-        )
+        source_tasks_by_key[source_node_id] = (source_id, task_id, channel_type)
         raw = dict(_read_dict(item.get("raw")))
         lineage = _read_dict_list(item.get("lineage"))
         raw["_workflowLineage"] = lineage
@@ -4400,14 +4426,7 @@ async def _store_record_sink_outputs(
     stored_refs: list[dict[str, Any]] = []
     skipped_total = 0
     for source_node_id, triples_with_lineage in triples_by_source_node.items():
-        source_id, task_id = await _materialize_source_task(
-            session,
-            runtime_nodes_by_id[source_node_id],
-            run_id=run_id,
-            workflow_id=workflow_id,
-            sink_node_id=node.id,
-            cache=materialized_source_tasks,
-        )
+        source_id, task_id, channel_type = source_tasks_by_key[source_node_id]
         records, skipped = await store_records(
             session,
             task_id,
@@ -4416,7 +4435,7 @@ async def _store_record_sink_outputs(
                 (raw, normalized, content_hash)
                 for raw, normalized, content_hash, _lineage in triples_with_lineage
             ],
-            channel_type=_workflow_source_channel_type(runtime_nodes_by_id[source_node_id]),
+            channel_type=channel_type,
             forward_to_odp=False,
             workflow_id=workflow_id,
             workflow_run_id=run_id,
@@ -4440,6 +4459,106 @@ async def _store_record_sink_outputs(
 
     await session.flush()
     return stored_refs, skipped_total
+
+
+def _expand_gaojixing_project_records(
+    input_items: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Store certified Gaojixing evidence as one Record per captured question.
+
+    The certification capability emits a batch result for traceability. Its
+    ``projectRecords`` members are deliberately archive-backed projections, so
+    the standard Record Sink can index each answer without turning the archive
+    into an editable second source of truth.
+    """
+
+    expanded: list[dict[str, Any]] = []
+    for item in input_items:
+        raw = _read_dict(item.get("raw"))
+        project_records = raw.get("projectRecords")
+        if raw.get("schema") != "gaojixing.batch-certification.v1" or not isinstance(
+            project_records, list
+        ):
+            expanded.append(item)
+            continue
+        for record in project_records:
+            if not isinstance(record, dict):
+                continue
+            projected = dict(record)
+            projected["_certification"] = {
+                "batchId": raw.get("batchId"),
+                "snapshotDigest": raw.get("snapshotDigest"),
+                "evidenceDigest": raw.get("evidenceDigest"),
+            }
+            expanded.append(
+                {
+                    **item,
+                    "raw": projected,
+                    "normalizedData": projected,
+                }
+            )
+    return expanded
+
+
+def _is_gaojixing_project_record(item: dict[str, Any]) -> bool:
+    return _read_dict(item.get("raw")).get("schema") == "gaojixing.project-record.v1"
+
+
+async def _materialize_gaojixing_source_task(
+    session: AsyncSession,
+    *,
+    run_id: str,
+    workflow_id: str,
+    sink_node_id: str,
+    cache: dict[str, tuple[str, str]],
+) -> tuple[str, str]:
+    """Create the managed source/task required to index certified GJX archives."""
+
+    source_key = "gaojixing-certified-archive"
+    cached = cache.get(source_key)
+    if cached:
+        return cached
+    source = await _find_materialized_workflow_source(
+        session,
+        workflow_id=workflow_id,
+        source_node_id=source_key,
+        channel_type="opencli",
+    )
+    source_config = {
+        "workflowId": workflow_id,
+        "workflowRunId": run_id,
+        "sourceNodeId": source_key,
+        "displayName": "高吉星认证证据归档",
+        "adapter": "gaojixing.project-record.v1",
+    }
+    if source is None:
+        source = DataSource(
+            name="高吉星认证证据归档 · 工作流扫描数据源",
+            description="由高吉星终审结果投影到记录库；原始归档保持不可变。",
+            channel_type="opencli",
+            channel_config=source_config,
+            enabled=True,
+            tags=["workflow", "record-sink", "gaojixing", "certified-evidence"],
+        )
+        session.add(source)
+        await session.flush()
+    else:
+        source.channel_config = source_config
+    task = CollectionTask(
+        source_id=source.id,
+        trigger_type="workflow",
+        parameters={
+            "workflowId": workflow_id,
+            "workflowRunId": run_id,
+            "sourceNodeId": source_key,
+            "sinkNodeId": sink_node_id,
+        },
+        status="completed",
+    )
+    session.add(task)
+    await session.flush()
+    cache[source_key] = (source.id, task.id)
+    return source.id, task.id
 
 
 async def _materialize_source_task(

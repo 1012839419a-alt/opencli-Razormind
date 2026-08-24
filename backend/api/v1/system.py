@@ -53,6 +53,7 @@ async def get_config() -> ApiResponse:
             "collection_mode": s.collection_mode,
             "task_executor": s.task_executor,
             "image_tag": s.image_tag,
+            "runtime_revision": s.opencli_runtime_revision,
         }
     )
 
@@ -76,5 +77,6 @@ async def update_config(body: ConfigPatch) -> ApiResponse:
             "collection_mode": s.collection_mode,
             "task_executor": s.task_executor,
             "image_tag": s.image_tag,
+            "runtime_revision": s.opencli_runtime_revision,
         }
     )

@@ -51,16 +51,6 @@ _MODULE_NAMES = (
 _DOUBAO_SHARE_URL = re.compile(
     r"^https://www\.doubao\.com/thread/[A-Za-z0-9_-]+(?:[?#].*)?$"
 )
-_INLINE_FOLLOWUP_CUES = (
-    "需要我",
-    "要不要",
-    "是否需要",
-    "告诉我",
-    "可以帮你",
-    "愿意的话",
-    "如需",
-)
-
 CommandRunner = Callable[
     [list[str], str], Awaitable[tuple[int, list[dict[str, Any]], str]]
 ]
@@ -846,9 +836,10 @@ def _page_modules(
     keywords = _displayed_texts(snapshot.get("keywords"))
     references = _unique_links(snapshot.get("source_links"))
     products = _unique_links(snapshot.get("product_links"))
+    # Recommendation chips are an optional, separately-rendered UI module.
+    # Do not turn an assistant's prose invitation into a chip: that would
+    # fabricate page evidence when Doubao intentionally renders no module.
     followups = _unique_texts(snapshot.get("followups"))
-    if not followups:
-        followups = _inline_followups(snapshot.get("answer"))
     modules: dict[str, Any] = {
         "keywords": keywords if isinstance(expected_keywords, int) else "页面未显示",
         "ref_links": references if isinstance(expected_refs, int) else "页面未显示",
@@ -877,8 +868,6 @@ def _page_modules(
         missing.append("reference-source-block-not-unique")
     if snapshot.get("reference_overlay_ambiguous") is True:
         missing.append("reference-overlay-ambiguous")
-    if not followups:
-        missing.append("recommended-followups-missing")
     if isinstance(expected_keywords, int) and len(keywords) != expected_keywords:
         missing.append("keyword-count-mismatch")
     if isinstance(expected_refs, int) and len(references) != expected_refs:
@@ -889,40 +878,6 @@ def _page_modules(
     if isinstance(product_module_count, int) and product_module_count > len(products):
         missing.append("product-module-link-missing")
     return modules, expectations, missing
-
-
-def _inline_followups(value: Any) -> list[str]:
-    """Preserve Doubao's visible trailing invitation when chips are absent."""
-
-    if not isinstance(value, str):
-        return []
-    normalized = re.sub(r"\s+", " ", value).strip()
-    tail_window = normalized[-240:]
-    positions = [
-        tail_window.rfind(cue)
-        for cue in ("需要我", "要不要", "是否需要", "愿意的话", "如需")
-    ]
-    positions = [position for position in positions if position >= 0]
-    positions.extend(
-        match.start()
-        for match in re.finditer("如果你", tail_window)
-        if re.search(
-            r"我(?:可以|能)|可以(?:帮你|为你|直接)",
-            tail_window[match.start() : match.start() + 140],
-        )
-    )
-    if not positions:
-        positions = [
-            tail_window.rfind(cue) for cue in ("告诉我", "可以帮你")
-        ]
-        positions = [position for position in positions if position >= 0]
-    if not positions:
-        return []
-    start = max(positions)
-    tail = tail_window[start:].strip()
-    if not (5 < len(tail) <= 200):
-        return []
-    return [tail]
 
 
 def _unique_texts(value: Any) -> list[str]:

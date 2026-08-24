@@ -34,6 +34,7 @@ async def execute_gaojixing_batch_certification(
     source_mode = str(params.get("sourceMode") or "").strip()
     evidence_digest: str | None = None
     batch_identity: dict[str, Any] = {}
+    project_records: list[dict[str, Any]] = []
     if source_mode not in {"offline_fixture", "project_archive"}:
         counts, violations = _counts(0, 0), ["unsupported_source_mode"]
     elif source_mode == "project_archive":
@@ -56,6 +57,12 @@ async def execute_gaojixing_batch_certification(
             )
             violations = sorted(set(violations))
             evidence_digest = _evidence_digest(project_root, question_bank_path)
+            if not violations:
+                project_records = _project_record_projections(
+                    project_root,
+                    batch_identity,
+                    evidence_digest,
+                )
     else:
         evidence_root = _trusted_upstream_evidence_root(params)
         counts, violations, batch_identity = _certify_upstream_batch(
@@ -86,8 +93,73 @@ async def execute_gaojixing_batch_certification(
     }
     if evidence_digest is not None:
         result["evidenceDigest"] = evidence_digest
+    if project_records:
+        # This is deliberately an indexed projection, not a replacement for
+        # the canonical archive.  The raw file and its digest remain the
+        # evidence source that a project Record must link back to.
+        result["projectRecords"] = project_records
     result.update(batch_identity)
     return result
+
+
+def _project_record_projections(
+    project_root: Path,
+    batch_identity: dict[str, Any],
+    evidence_digest: str,
+) -> list[dict[str, Any]]:
+    """Build one immutable-archive-backed Record candidate per certified question."""
+
+    snapshot = batch_identity.get("snapshot")
+    if not isinstance(snapshot, dict):
+        return []
+    questions = snapshot.get("questions")
+    if not isinstance(questions, list):
+        return []
+    records: list[dict[str, Any]] = []
+    for question in questions:
+        if not isinstance(question, dict):
+            continue
+        question_id = question.get("id")
+        if not isinstance(question_id, str) or not question_id:
+            continue
+        raw_relative = Path("raw") / f"{question_id}.json"
+        raw_path = project_root / raw_relative
+        try:
+            raw_payload = raw_path.read_bytes()
+            capture = json.loads(raw_payload.decode("utf-8"))
+        except (OSError, UnicodeDecodeError, ValueError):
+            # Certification has already validated this path. Keep this helper
+            # defensive so a post-certification filesystem change cannot make
+            # us manufacture a partial Record.
+            return []
+        if not isinstance(capture, dict):
+            return []
+        page_evidence = capture.get("page_evidence")
+        if not isinstance(page_evidence, dict):
+            return []
+        share_link = page_evidence.get("share_link")
+        if not isinstance(share_link, dict):
+            return []
+        screenshots = page_evidence.get("screenshot_files")
+        if not isinstance(screenshots, list):
+            return []
+        records.append(
+            {
+                "schema": "gaojixing.project-record.v1",
+                "questionId": question_id,
+                "question": capture.get("question"),
+                "answer": capture.get("answer"),
+                "formalChatUrl": capture.get("chat_url"),
+                "shareUrl": share_link.get("url"),
+                "rawArtifact": raw_relative.as_posix(),
+                "rawDigest": hashlib.sha256(raw_payload).hexdigest(),
+                "screenshots": screenshots,
+                "evidenceDigest": evidence_digest,
+                "batchId": batch_identity.get("batchId"),
+                "snapshotDigest": batch_identity.get("snapshotDigest"),
+            }
+        )
+    return records
 
 
 def _certify_upstream_batch(

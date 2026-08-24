@@ -104,7 +104,9 @@ async def run_collection_job(
     attempt_root = (
         resolved.project_root
         / ".worker-staging"
-        / f"{job_id}-{owner}-{fencing_token}"
+        # Keep attempt paths below Windows' legacy path limit. The durable DB
+        # fence, not a verbose directory name, is the ownership boundary.
+        / f"{fencing_token}-{uuid4().hex[:8]}"
     )
     lease_lost = asyncio.Event()
     heartbeat_stop = asyncio.Event()

@@ -531,12 +531,6 @@ def audit_gaojixing_question_evidence(
         violations.append("page_modules_incomplete")
     elif any(not _module_has_explicit_value(page_modules[name]) for name in _PAGE_MODULES):
         violations.append("page_module_content_missing")
-    if isinstance(page_modules, dict) and not (
-        isinstance(page_modules.get("followups"), list)
-        and bool(page_modules["followups"])
-    ):
-        violations.append("recommended_followups_missing")
-
     page_evidence = evidence.get("page_evidence")
     if not isinstance(page_evidence, dict):
         violations.append("page_evidence_missing")

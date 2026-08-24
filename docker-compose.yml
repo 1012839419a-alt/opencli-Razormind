@@ -144,14 +144,21 @@ services:
   # ── Backend API ───────────────────────────────────────────────────────────
   api:
     <<: *backend-common
-    # 0.4.1 上游镜像缺 2 个 alembic 迁移文件(a8b9c0d1e2f3/z7a8b9c0d1e2)导致旧库无法升级
-    # 用本地补全文件重建的修复版镜像,其余服务仍用官方 0.4.1
-    image: opencli-admin-api:0.4.1-gjx  # gjx 叠加页面模块提取
+    # Build the API from this checkout.  The workflow claimant is dispatched
+    # by this process in local mode, so a published run cannot mix an API from
+    # one revision with collection code from another.
+    build:
+      context: .
+      args:
+        IMAGE_TAG: ${API_IMAGE_TAG:-gjx-live}
+    image: opencli-admin-api:${API_IMAGE_TAG:-gjx-live}
     # Run as root so the API can manage Docker containers (agent pool) via
     # the mounted socket. Acceptable for a self-hosted admin panel.
     user: root
     environment:
       DATABASE_URL: ${DATABASE_URL:-sqlite+aiosqlite:////data/opencli_admin.db}
+      TASK_EXECUTOR: ${TASK_EXECUTOR:-local}
+      OPENCLI_RUNTIME_REVISION: ${OPENCLI_RUNTIME_REVISION:-unidentified}
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/1
       REDIS_URL: redis://redis:6379/0
@@ -222,9 +229,12 @@ services:
 
   # ── Next.js operator console ─────────────────────────────────────────────
   frontend:
-    image: ${DOCKER_REGISTRY:-ghcr.io/}${DOCKER_IMAGE_NAMESPACE:-2233admin}/opencli-admin-frontend:${IMAGE_TAG:-0.4.0}
+    build:
+      context: ./frontend
+    image: opencli-admin-frontend:${FRONTEND_IMAGE_TAG:-gjx-live}
     environment:
       BACKEND_URL: http://api:8000
+      OPENCLI_RUNTIME_REVISION: ${OPENCLI_RUNTIME_REVISION:-unidentified}
     ports:
       - "${FRONTEND_PORT:-3010}:3010"
     depends_on:
