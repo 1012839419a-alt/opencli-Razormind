@@ -24,6 +24,7 @@ from backend.workflow.gaojixing_doubao_driver import (
     OpenCLIDoubaoEvidenceDriver,
     _answers_match,
     _brand_observation,
+    _default_endpoint_lease,
     _page_modules,
 )
 
@@ -64,6 +65,31 @@ class _CommandProbe:
 @asynccontextmanager
 async def _endpoint_lease():
     yield "http://agent-1:19222"
+
+
+@pytest.mark.asyncio
+async def test_default_endpoint_lease_pins_the_certified_cdp_endpoint(monkeypatch):
+    from backend import browser_pool
+    from backend.config import get_settings
+
+    class _Pool:
+        requested: str | None = None
+
+        @asynccontextmanager
+        async def acquire(self, endpoint=None, **_kwargs):
+            self.requested = endpoint
+            yield endpoint
+
+    pool = _Pool()
+    monkeypatch.setattr(browser_pool, "get_pool", lambda: pool)
+    monkeypatch.setattr(
+        get_settings(), "opencli_cdp_endpoint", "http://agent-1:19222"
+    )
+
+    async with _default_endpoint_lease() as endpoint:
+        assert endpoint == "http://agent-1:19222"
+
+    assert pool.requested == "http://agent-1:19222"
 
 
 def _canonical_capture(question_id: str, question: str, answer: str) -> dict:

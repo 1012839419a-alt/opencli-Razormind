@@ -303,12 +303,17 @@ def _status_command() -> list[str]:
 @asynccontextmanager
 async def _default_endpoint_lease() -> AsyncIterator[str]:
     from backend.browser_pool import get_pool
+    from backend.config import get_settings
 
     try:
         pool = get_pool()
     except RuntimeError as exc:
         raise DoubaoDriverUnavailableError("browser-pool-unavailable") from exc
-    async with pool.acquire() as endpoint:
+    # The certified Gaojixing session is intentionally pinned to the configured
+    # authenticated CDP endpoint. An unrelated registered edge node may be
+    # offline or logged into another account and must not win an unrouted race.
+    configured_endpoint = get_settings().opencli_cdp_endpoint.strip() or None
+    async with pool.acquire(endpoint=configured_endpoint) as endpoint:
         yield endpoint
 
 
