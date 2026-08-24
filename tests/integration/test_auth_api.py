@@ -40,6 +40,18 @@ async def test_api_open_when_no_token_configured(client, auth_disabled):
     assert response.json()["success"] is True
 
 
+@pytest.mark.asyncio
+async def test_system_config_reports_claimant_runtime_revision(
+    client, auth_disabled, monkeypatch
+):
+    monkeypatch.setattr(get_settings(), "opencli_runtime_revision", "commit-abc123")
+
+    response = await client.get("/api/v1/system/config")
+
+    assert response.status_code == 200
+    assert response.json()["data"]["runtime_revision"] == "commit-abc123"
+
+
 # ── token configured ───────────────────────────────────────────────────────────
 
 

@@ -150,7 +150,7 @@ services:
     build:
       context: .
       args:
-        IMAGE_TAG: ${API_IMAGE_TAG:-gjx-live}
+        IMAGE_TAG: ${IMAGE_TAG:-0.4.0}
     image: opencli-admin-api:${API_IMAGE_TAG:-gjx-live}
     # Run as root so the API can manage Docker containers (agent pool) via
     # the mounted socket. Acceptable for a self-hosted admin panel.
@@ -256,6 +256,11 @@ services:
   worker:
     profiles: ["celery"]
     <<: *backend-common
+    build:
+      context: .
+      args:
+        IMAGE_TAG: ${IMAGE_TAG:-0.4.0}
+    image: opencli-admin-api:${API_IMAGE_TAG:-gjx-live}
     command: celery -A backend.worker.celery_app worker --loglevel=info --concurrency=4
     environment:
       DATABASE_URL: ${DATABASE_URL:-sqlite+aiosqlite:////data/opencli_admin.db}
@@ -263,6 +268,7 @@ services:
       CELERY_RESULT_BACKEND: redis://redis:6379/1
       REDIS_URL: redis://redis:6379/0
       RUN_MIGRATIONS: "false"
+      OPENCLI_RUNTIME_REVISION: ${OPENCLI_RUNTIME_REVISION:-unidentified}
       SECRET_KEY: ${SECRET_KEY:-change-me-in-production}
       API_AUTH_TOKEN: ${API_AUTH_TOKEN:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}

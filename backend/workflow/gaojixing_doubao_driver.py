@@ -313,6 +313,8 @@ async def _default_endpoint_lease() -> AsyncIterator[str]:
     # authenticated CDP endpoint. An unrelated registered edge node may be
     # offline or logged into another account and must not win an unrouted race.
     configured_endpoint = get_settings().opencli_cdp_endpoint.strip() or None
+    if configured_endpoint is None or configured_endpoint not in pool.endpoints:
+        raise DoubaoDriverUnavailableError("certified-endpoint-unavailable")
     async with pool.acquire(endpoint=configured_endpoint) as endpoint:
         yield endpoint
 
@@ -509,6 +511,9 @@ async def _capture_page_evidence(
         if not _answers_match(str(bottom_snapshot.get("answer") or ""), final_answer):
             raise DoubaoDriverUnavailableError("answer-changed-during-capture")
         snapshot["followups"] = bottom_snapshot.get("followups")
+        snapshot["followup_module_displayed"] = bottom_snapshot.get(
+            "followup_module_displayed"
+        )
         videos = await _capture_video_evidence(
             page,
             snapshot.get("video_cards"),
@@ -845,6 +850,7 @@ def _page_modules(
     # Do not turn an assistant's prose invitation into a chip: that would
     # fabricate page evidence when Doubao intentionally renders no module.
     followups = _unique_texts(snapshot.get("followups"))
+    followup_module_displayed = snapshot.get("followup_module_displayed") is True
     modules: dict[str, Any] = {
         "keywords": keywords if isinstance(expected_keywords, int) else "页面未显示",
         "ref_links": references if isinstance(expected_refs, int) else "页面未显示",
@@ -863,7 +869,10 @@ def _page_modules(
         },
         "product_links": {"displayed": bool(products), "expected_count": len(products)},
         "video_links": {"displayed": bool(videos), "expected_count": len(videos)},
-        "followups": {"displayed": bool(followups), "expected_count": len(followups)},
+        "followups": {
+            "displayed": followup_module_displayed or bool(followups),
+            "expected_count": len(followups),
+        },
     }
     missing: list[str] = []
     source_count = snapshot.get("source_block_count")
@@ -882,6 +891,8 @@ def _page_modules(
     product_module_count = snapshot.get("product_module_count")
     if isinstance(product_module_count, int) and product_module_count > len(products):
         missing.append("product-module-link-missing")
+    if followup_module_displayed and not followups:
+        missing.append("recommended-followups-extraction-inconsistent")
     return modules, expectations, missing
 
 
@@ -1335,6 +1346,11 @@ _COLLECT_PAGE_JS = r"""
   const nextUser = document.querySelector(`[data-gjx-next-user="${token}"]`);
   const lastRoot = roots[roots.length - 1];
   const excludedSelector = `${answerSelector}, [data-plugin-identifier*="block_type:10025"], [data-plugin-identifier*="block_type:10050"], [data-plugin-identifier*="product"], [class*="product-card"], [class*="commodity-card"], [class*="goods-card"]`;
+  const followupModule = scroller instanceof HTMLElement
+    ? [...scroller.querySelectorAll('[data-testid*="recommend"], [data-testid*="follow"], [aria-label*="追问"], [aria-label*="推荐问题"]')]
+        .find(el => visible(el) && (lastRoot === el || Boolean(lastRoot.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING))
+          && (!nextUser || Boolean(el.compareDocumentPosition(nextUser) & Node.DOCUMENT_POSITION_FOLLOWING)))
+    : null;
   const followupElements = scroller instanceof HTMLElement
     ? [...scroller.querySelectorAll('*')].filter(visible).filter(el => {
         const text = norm(el.innerText || el.textContent || '');
@@ -1370,6 +1386,7 @@ _COLLECT_PAGE_JS = r"""
     product_module_count: productRoots.length,
     video_cards: videoCards,
     followups,
+    followup_module_displayed: Boolean(followupModule) || followups.length > 0,
     source_block_count: sources.length,
     reference_overlay_ambiguous: overlay_ambiguous,
   };

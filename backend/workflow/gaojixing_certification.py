@@ -63,6 +63,13 @@ async def execute_gaojixing_batch_certification(
                     batch_identity,
                     evidence_digest,
                 )
+                if len(project_records) != counts["total"]:
+                    violations.append("project_record_projection_incomplete")
+                    project_records = []
+                elif _evidence_digest(project_root, question_bank_path) != evidence_digest:
+                    violations.append("evidence_changed_during_certification")
+                    project_records = []
+                violations = sorted(set(violations))
     else:
         evidence_root = _trusted_upstream_evidence_root(params)
         counts, violations, batch_identity = _certify_upstream_batch(
@@ -143,17 +150,39 @@ def _project_record_projections(
         screenshots = page_evidence.get("screenshot_files")
         if not isinstance(screenshots, list):
             return []
+        screenshot_artifacts: list[dict[str, str]] = []
+        for value in screenshots:
+            if not isinstance(value, str):
+                return []
+            screenshot_path = _resolve_artifact_path(project_root, value)
+            if screenshot_path is None or not screenshot_path.is_file():
+                return []
+            relative = screenshot_path.relative_to(project_root.resolve()).as_posix()
+            screenshot_artifacts.append(
+                {
+                    "path": f"run-artifact:{relative}",
+                    "sha256": _sha256_file(screenshot_path).hex(),
+                }
+            )
+        question_text = capture.get("question")
+        answer_text = capture.get("answer")
+        formal_url = capture.get("chat_url")
         records.append(
             {
                 "schema": "gaojixing.project-record.v1",
                 "questionId": question_id,
-                "question": capture.get("question"),
-                "answer": capture.get("answer"),
-                "formalChatUrl": capture.get("chat_url"),
+                "title": question_text,
+                "content": answer_text,
+                "url": formal_url,
+                "question": question_text,
+                "answer": answer_text,
+                "formalChatUrl": formal_url,
                 "shareUrl": share_link.get("url"),
-                "rawArtifact": raw_relative.as_posix(),
+                "archiveRef": f"gaojixing-run:{project_root.name}",
+                "rawArtifact": f"run-artifact:{raw_relative.as_posix()}",
                 "rawDigest": hashlib.sha256(raw_payload).hexdigest(),
                 "screenshots": screenshots,
+                "screenshotArtifacts": screenshot_artifacts,
                 "evidenceDigest": evidence_digest,
                 "batchId": batch_identity.get("batchId"),
                 "snapshotDigest": batch_identity.get("snapshotDigest"),

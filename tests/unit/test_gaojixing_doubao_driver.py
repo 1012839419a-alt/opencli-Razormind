@@ -74,6 +74,7 @@ async def test_default_endpoint_lease_pins_the_certified_cdp_endpoint(monkeypatc
 
     class _Pool:
         requested: str | None = None
+        endpoints = ["http://agent-1:19222"]
 
         @asynccontextmanager
         async def acquire(self, endpoint=None, **_kwargs):
@@ -90,6 +91,33 @@ async def test_default_endpoint_lease_pins_the_certified_cdp_endpoint(monkeypatc
         assert endpoint == "http://agent-1:19222"
 
     assert pool.requested == "http://agent-1:19222"
+
+
+@pytest.mark.asyncio
+async def test_default_endpoint_lease_rejects_an_unregistered_certified_endpoint(
+    monkeypatch,
+):
+    from backend import browser_pool
+    from backend.config import get_settings
+
+    class _Pool:
+        endpoints = ["http://unrelated-agent:19823"]
+
+        @asynccontextmanager
+        async def acquire(self, endpoint=None, **_kwargs):
+            raise AssertionError(f"must not acquire fallback endpoint: {endpoint}")
+            yield endpoint
+
+    monkeypatch.setattr(browser_pool, "get_pool", lambda: _Pool())
+    monkeypatch.setattr(
+        get_settings(), "opencli_cdp_endpoint", "http://agent-1:19222"
+    )
+
+    with pytest.raises(
+        DoubaoDriverUnavailableError, match="certified-endpoint-unavailable"
+    ):
+        async with _default_endpoint_lease():
+            pass
 
 
 def _canonical_capture(question_id: str, question: str, answer: str) -> dict:
@@ -584,6 +612,26 @@ def test_page_modules_record_absent_recommended_followups_without_fabricating_th
     assert modules["followups"] == "页面未显示"
     assert expectations["followups"] == {"displayed": False, "expected_count": 0}
     assert "recommended-followups-missing" not in missing
+
+
+def test_page_modules_reject_visible_followup_module_with_empty_extraction():
+    modules, expectations, missing = _page_modules(
+        {
+            "reference_signal": None,
+            "keywords": [],
+            "source_links": [],
+            "product_links": [],
+            "followups": [],
+            "followup_module_displayed": True,
+            "source_block_count": 0,
+            "product_module_count": 0,
+        },
+        [],
+    )
+
+    assert modules["followups"] == "页面未显示"
+    assert expectations["followups"] == {"displayed": True, "expected_count": 0}
+    assert "recommended-followups-extraction-inconsistent" in missing
 
 
 def test_page_modules_preserve_the_visible_inline_followup_when_chips_are_absent():

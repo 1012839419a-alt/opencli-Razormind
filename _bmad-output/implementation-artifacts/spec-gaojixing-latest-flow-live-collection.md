@@ -2,7 +2,7 @@
 title: 'Run Gaojixing Live Collection Through the Latest Workflow'
 type: 'bugfix'
 created: '2026-08-24'
-status: 'in-progress'
+status: 'in-review'
 review_loop_iteration: 0
 baseline_commit: 'f0390d4c4c1029347255b0eb94112ba1b00b998c'
 context: []
@@ -51,12 +51,12 @@ context: []
 ## Tasks & Acceptance
 
 **Execution:**
-- [ ] `docker-compose.yml`, `.env.example`, and runtime startup code -- make the claimant and browser dependencies repository-owned, health-checkable, and revision-identifiable.
-- [ ] Published-run API and Gaojixing runtime modules -- keep one durable run from upload through claim, capture, certification, delivery, and typed failure/reconciliation.
-- [ ] Driver and evidence audit modules -- distinguish absent optional recommendation UI from broken extraction without weakening core evidence.
-- [ ] HDA tracer/data persistence -- materialize each certified question as a project Record with links and digests that preserve the raw evidence chain.
-- [ ] Targeted backend/frontend tests -- cover the matrix, trigger routing, claimant readiness, same-run resume, and Record lineage.
-- [ ] Live environment -- rebuild from this branch and execute one `B001` ecommerce canary through the published endpoint.
+- [x] `docker-compose.yml`, `.env.example`, and runtime startup code -- make the claimant and browser dependencies repository-owned, health-checkable, and revision-identifiable.
+- [x] Published-run API and Gaojixing runtime modules -- keep one durable run from upload through claim, capture, certification, delivery, and typed failure/reconciliation.
+- [x] Driver and evidence audit modules -- distinguish absent optional recommendation UI from broken extraction without weakening core evidence.
+- [x] HDA tracer/data persistence -- materialize each certified question as a project Record with links and digests that preserve the raw evidence chain.
+- [x] Targeted backend/frontend tests -- cover the matrix, trigger routing, claimant readiness, same-run resume, and Record lineage.
+- [x] Live environment -- rebuild from this branch and execute one `B001` ecommerce canary through the published endpoint.
 
 **Acceptance Criteria:**
 - Given the deployed revision and a valid one-question bank, when the published workflow starts, then trace state progresses from waiting through a claimed collection job to certified workflow completion on the same run ID.
@@ -73,7 +73,7 @@ The canary question bank is `{"phase1":[],"phase2":[{"id":"B001","question":"高
 ## Verification
 
 **Commands:**
-- `uv run --extra dev pytest -q tests/integration/test_workflow_gaojixing_hda.py tests/unit/test_gaojixing_collection_service.py tests/unit/test_gaojixing_doubao_driver.py tests/unit/test_gaojixing_workflow_tools.py` -- targeted backend contracts pass.
+- `uv run --extra dev pytest -q --no-cov tests/integration/test_workflow_gaojixing_hda.py tests/unit/test_gaojixing_collection_service.py tests/unit/test_gaojixing_doubao_driver.py tests/unit/test_gaojixing_workflow_tools.py tests/unit/test_migration_heads.py` -- targeted backend and deployed-schema contracts pass without applying the repository-wide coverage gate to a focused run.
 - `pnpm --dir frontend install --frozen-lockfile && node --test frontend/scripts/check-gaojixing-doubao-workflow.mjs` -- frontend graph and multipart contracts pass.
 - `docker compose config` -- deployment topology resolves without machine-specific source overlays.
 

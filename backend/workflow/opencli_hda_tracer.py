@@ -3903,6 +3903,7 @@ async def _execute_external_tool_capability(
             _gaojixing_tool_params(binding_input, workflow_input, run_id=run_id),
             notification_permission_granted=agent_can_send_notifications,
         )
+        output["runtimeRevision"] = _gaojixing_runtime_revision()
         output_items = [
             _external_tool_output(node, output, input_items, run_id, 0, binding_input)
         ]
@@ -4240,6 +4241,7 @@ def _trace_sample_output(item: dict[str, Any]) -> dict[str, Any]:
             "latencyMs",
             "market",
             "status",
+            "runtimeRevision",
             "message",
             "sourceMode",
             "searchTriggered",
@@ -4395,7 +4397,7 @@ async def _store_record_sink_outputs(
                 runtime_nodes_by_id[source_node_id]
             )
         elif _is_gaojixing_project_record(item):
-            source_node_id = "gaojixing-certified-archive"
+            source_node_id = f"gaojixing-certified-archive:{run_id}"
             source_id, task_id = await _materialize_gaojixing_source_task(
                 session,
                 run_id=run_id,
@@ -4514,7 +4516,7 @@ async def _materialize_gaojixing_source_task(
 ) -> tuple[str, str]:
     """Create the managed source/task required to index certified GJX archives."""
 
-    source_key = "gaojixing-certified-archive"
+    source_key = f"gaojixing-certified-archive:{run_id}"
     cached = cache.get(source_key)
     if cached:
         return cached

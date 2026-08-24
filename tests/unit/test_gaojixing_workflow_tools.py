@@ -4,6 +4,7 @@ import re
 import pytest
 from sqlalchemy import select
 
+import backend.workflow.gaojixing_certification as gaojixing_certification
 from backend.models.record import CollectedRecord
 from backend.models.source import DataSource
 from backend.models.task import CollectionTask
@@ -19,7 +20,10 @@ from backend.workflow.gaojixing_doubao import (
     execute_gaojixing_doubao_batch,
 )
 from backend.workflow.hda_templates import materialize_hda_templates
-from backend.workflow.opencli_hda_tracer import _store_record_sink_outputs
+from backend.workflow.opencli_hda_tracer import (
+    _store_record_sink_outputs,
+    _trace_sample_output,
+)
 
 
 def _valid_evidence(tmp_path, question_id: str = "G0001") -> dict:
@@ -950,7 +954,9 @@ async def test_certification_rejects_non_certification_source_modes(source_mode)
 
 
 @pytest.mark.asyncio
-async def test_certification_reads_real_v22_project_layout_and_question_bank(tmp_path):
+async def test_certification_reads_real_v22_project_layout_and_question_bank(
+    tmp_path, monkeypatch
+):
     raw_dir = tmp_path / "raw"
     raw_dir.mkdir()
     stage1 = _valid_evidence(tmp_path, "G0001")
@@ -1041,6 +1047,18 @@ async def test_certification_reads_real_v22_project_layout_and_question_bank(tmp
     )
     assert all(record["evidenceDigest"] == evidence_digest for record in project_records)
     assert all(re.fullmatch(r"[0-9a-f]{64}", record["rawDigest"]) for record in project_records)
+    assert all(record["title"] == record["question"] for record in project_records)
+    assert all(record["content"] == record["answer"] for record in project_records)
+    assert all(record["url"] == record["formalChatUrl"] for record in project_records)
+    assert all(record["archiveRef"].startswith("gaojixing-run:") for record in project_records)
+    assert all(record["rawArtifact"].startswith("run-artifact:raw/") for record in project_records)
+    assert all(len(record["screenshotArtifacts"]) == 3 for record in project_records)
+    assert all(
+        len({artifact["path"] for artifact in record["screenshotArtifacts"]}) == 3
+        and all(re.fullmatch(r"[0-9a-f]{64}", artifact["sha256"])
+                for artifact in record["screenshotArtifacts"])
+        for record in project_records
+    )
     assert result == {
         "schema": "gaojixing.batch-certification.v1",
         "status": "certified",
@@ -1075,6 +1093,52 @@ async def test_certification_reads_real_v22_project_layout_and_question_bank(tmp
         },
     )
     assert repeated["evidenceDigest"] == evidence_digest
+
+    real_projection = gaojixing_certification._project_record_projections
+    monkeypatch.setattr(
+        gaojixing_certification, "_project_record_projections", lambda *_args: []
+    )
+    incomplete = await execute_gaojixing_batch_certification(
+        [],
+        {
+            "sourceMode": "project_archive",
+            "projectRoot": str(tmp_path),
+            "questionBankPath": str(question_bank),
+            "policyVersion": "2.2",
+        },
+    )
+    assert incomplete["status"] == "rejected"
+    assert incomplete["violations"] == ["project_record_projection_incomplete"]
+    assert "projectRecords" not in incomplete
+    monkeypatch.setattr(
+        gaojixing_certification, "_project_record_projections", real_projection
+    )
+
+    real_digest = gaojixing_certification._evidence_digest
+    digest_calls = 0
+
+    def shifting_digest(project_root, question_bank_path):
+        nonlocal digest_calls
+        digest_calls += 1
+        value = real_digest(project_root, question_bank_path)
+        return value if digest_calls == 1 else ("0" if value[0] != "0" else "1") + value[1:]
+
+    monkeypatch.setattr(gaojixing_certification, "_evidence_digest", shifting_digest)
+    changed_during_projection = await execute_gaojixing_batch_certification(
+        [],
+        {
+            "sourceMode": "project_archive",
+            "projectRoot": str(tmp_path),
+            "questionBankPath": str(question_bank),
+            "policyVersion": "2.2",
+        },
+    )
+    assert changed_during_projection["status"] == "rejected"
+    assert changed_during_projection["violations"] == [
+        "evidence_changed_during_certification"
+    ]
+    assert "projectRecords" not in changed_during_projection
+    monkeypatch.setattr(gaojixing_certification, "_evidence_digest", real_digest)
 
     (tmp_path / stage1["page_evidence"]["screenshot_files"][0]).write_bytes(b"changed")
     changed = await execute_gaojixing_batch_certification(
@@ -1163,12 +1227,72 @@ async def test_certified_gaojixing_projection_materializes_a_managed_project_rec
     assert len(records) == 1
     assert records[0].normalized_data["questionId"] == "B001"
     assert records[0].normalized_data["rawDigest"] == "a" * 64
+    assert records[0].normalized_data["_certification"] == {
+        "batchId": "batch-1",
+        "snapshotDigest": "c" * 64,
+        "evidenceDigest": "b" * 64,
+    }
     source = await db_session.get(DataSource, records[0].source_id)
     task = await db_session.get(CollectionTask, records[0].task_id)
     assert source is not None
-    assert source.channel_config["sourceNodeId"] == "gaojixing-certified-archive"
+    assert source.channel_config["sourceNodeId"] == (
+        "gaojixing-certified-archive:run-gaojixing-record"
+    )
     assert task is not None
     assert task.parameters["workflowRunId"] == "run-gaojixing-record"
+
+    await _store_record_sink_outputs(
+        sink,
+        [
+            {
+                "raw": {
+                    "schema": "gaojixing.batch-certification.v1",
+                    "batchId": "batch-2",
+                    "snapshotDigest": "d" * 64,
+                    "evidenceDigest": "e" * 64,
+                    "projectRecords": [project_record],
+                },
+                "lineage": [{"nodeId": "certification", "artifact": "certified"}],
+            }
+        ],
+        run_id="run-gaojixing-record-2",
+        workflow_id="workflow-gaojixing",
+        target="project-records",
+        session=db_session,
+        runtime_nodes_by_id={sink.id: sink, certification.id: certification},
+        materialized_source_tasks={},
+    )
+    source_keys = set(
+        (
+            await db_session.scalars(
+                select(DataSource).where(DataSource.channel_type == "opencli")
+            )
+        )
+        .unique()
+        .all()
+    )
+    assert {
+        source.channel_config["sourceNodeId"]
+        for source in source_keys
+        if str(source.channel_config.get("sourceNodeId", "")).startswith(
+            "gaojixing-certified-archive:"
+        )
+    } == {
+        "gaojixing-certified-archive:run-gaojixing-record",
+        "gaojixing-certified-archive:run-gaojixing-record-2",
+    }
+
+
+def test_gaojixing_runtime_revision_survives_trace_sampling():
+    assert _trace_sample_output(
+        {
+            "raw": {
+                "schema": "gaojixing.doubao-batch-result.v1",
+                "status": "completed",
+                "runtimeRevision": "15253bd",
+            }
+        }
+    )["runtimeRevision"] == "15253bd"
 
 
 @pytest.mark.asyncio
