@@ -320,6 +320,15 @@ export function useAutomations(workspaceId: string | null) {
   return useQuery({ queryKey: ['automations', workspaceId], queryFn: () => api.listAutomations(workspaceId as string), enabled: !!workspaceId, refetchInterval: 15_000 })
 }
 
+export function useInstallAutomationStarters() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ workspaceId }: { workspaceId: string }) => api.installAutomationStarters(workspaceId),
+    onSuccess: (_result, { workspaceId }) =>
+      queryClient.invalidateQueries({ queryKey: ['automations', workspaceId] }),
+  })
+}
+
 export function useCreateAutomation() {
   const queryClient = useQueryClient()
   return useMutation({

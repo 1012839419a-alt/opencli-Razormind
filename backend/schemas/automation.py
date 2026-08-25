@@ -7,7 +7,12 @@ from backend.schemas.common import UTCModel
 
 SessionMode = Literal["fresh", "reuse"]
 ApprovalMode = Literal["observe_only", "suggest_changes", "low_risk_automatic"]
-
+StarterKey = Literal["daily-run-brief", "weekly-system-review", "anomaly-follow-up"]
+STARTER_KEYS: tuple[str, ...] = (
+    "daily-run-brief",
+    "weekly-system-review",
+    "anomaly-follow-up",
+)
 
 class AutomationCreate(BaseModel):
     name: str = Field(min_length=1, max_length=255)
@@ -20,7 +25,7 @@ class AutomationCreate(BaseModel):
     approval_mode: ApprovalMode = "suggest_changes"
     project: dict = Field(default_factory=dict)
     enabled: bool = True
-
+    starter_key: StarterKey | None = None
 
 class AutomationUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=255)
@@ -38,6 +43,7 @@ class AutomationUpdate(BaseModel):
 class AutomationRead(UTCModel):
     id: str
     workspace_id: str
+    starter_key: StarterKey | None
     name: str
     prompt: str
     precheck: str | None
@@ -51,5 +57,26 @@ class AutomationRead(UTCModel):
     created_by_user_id: str
     created_at: datetime
     updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class StarterPreviewItem(BaseModel):
+    key: StarterKey
+    name: str
+    installed: bool
+    automation_id: str | None = None
+
+
+class StarterInstallationPreview(BaseModel):
+    workspace_id: str
+    starters: list[StarterPreviewItem]
+    missing_count: int
+    installed_count: int
+
+
+class StarterInstallationResult(StarterInstallationPreview):
+    created_count: int
+    skipped_count: int
 
     model_config = {"from_attributes": True}
