@@ -83,6 +83,7 @@ from backend.security.local_auth import is_local_session
 PROTECTED_PREFIXES = ("/api", "/mcp")
 PUBLIC_LOCAL_AUTH_PATHS = frozenset(
     {
+        "/api/v1/auth/login",
         "/api/v1/auth/local/status",
         "/api/v1/auth/local/setup",
         "/api/v1/auth/local/login",
