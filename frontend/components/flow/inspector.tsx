@@ -1029,7 +1029,9 @@ export function Inspector({ compact = false, onClose }: { compact?: boolean; onC
             <Label className="font-mono text-[10px] uppercase tracking-wider">Type</Label>
             <Select value={edgeType} onValueChange={(v) => v && updateEdgeType(edge.id, v)}>
               <SelectTrigger>
-                <SelectValue />
+                <SelectValue>
+                  {(value: string | null) => edgeTypeOptions.find((o) => o.value === value)?.label ?? value}
+                </SelectValue>
               </SelectTrigger>
               <SelectContent>
                 {edgeTypeOptions.map((o) => (
@@ -1242,7 +1244,11 @@ export function Inspector({ compact = false, onClose }: { compact?: boolean; onC
           aria-label={`${copy.insertVariable}: ${fieldText.label}`}
           className={cn(houdiniSelectTriggerClass, "w-full")}
         >
-          <SelectValue placeholder={copy.insertVariable} />
+          <SelectValue>
+            {(value: string | null) =>
+              value ? (upstreamVariableOptions.find((option) => option.value === value)?.label ?? value) : copy.insertVariable
+            }
+          </SelectValue>
         </SelectTrigger>
         <SelectContent className="rounded-[2px] border border-[#2c3036] bg-[#0d0f12] font-mono text-[11px]">
           {upstreamVariableOptions.map((option) => (
@@ -1854,7 +1860,15 @@ export function Inspector({ compact = false, onClose }: { compact?: boolean; onC
                       aria-label={`${copy.inputs}: ${port.name}`}
                       className={houdiniSelectTriggerClass}
                     >
-                      <SelectValue placeholder={copy.inputUnbound} />
+                      <SelectValue>
+                        {(value: string | null) =>
+                          !value || value === UNBOUND_INPUT_VALUE
+                            ? copy.inputUnbound
+                            : value === legacyValue && currentEdge
+                              ? `${copy.legacyMapping} · ${currentEdge.source}:${currentEdge.sourceHandle ?? "default"}`
+                              : (options.find((option) => option.value === value)?.label ?? value)
+                        }
+                      </SelectValue>
                     </SelectTrigger>
                     <SelectContent className="rounded-xs border border-ops-line bg-ops-raised font-mono text-2xs">
                       <SelectItem value={UNBOUND_INPUT_VALUE}>{copy.inputUnbound}</SelectItem>
@@ -2301,7 +2315,15 @@ function OpenCLISourceEditor({
               className="h-7 w-auto min-w-28 rounded-[2px] border-[#343a43] bg-[#111317] px-2 text-[11px] shadow-none focus:ring-0"
             >
               <Plus className="size-3" />
-              <SelectValue placeholder={sourceCatalog.isLoading ? copy.loading : copy.addSource} />
+              <SelectValue>
+                {(value: string | null) =>
+                  value
+                    ? (registeredSources.find((source) => source.id === value)?.label ?? value)
+                    : sourceCatalog.isLoading
+                      ? copy.loading
+                      : copy.addSource
+                }
+              </SelectValue>
             </SelectTrigger>
             <SelectContent>
               {availableSources.map((source) => (
@@ -2366,7 +2388,13 @@ function OpenCLISourceEditor({
               className="h-8 rounded-[3px] border-[#303640] bg-[#080a0c] text-xs shadow-none focus:ring-0"
             >
               <Plus className="size-3" />
-              <SelectValue placeholder={copy.addContent} />
+              <SelectValue>
+                {(value: string | null) =>
+                  value && value in copy.contentTypes
+                    ? copy.contentTypes[value as keyof typeof copy.contentTypes]
+                    : copy.addContent
+                }
+              </SelectValue>
             </SelectTrigger>
             <SelectContent>
               {Object.entries(copy.contentTypes).map(([value, label]) => (
@@ -2417,7 +2445,9 @@ function OpenCLISourceEditor({
               <Label className="text-[11px] font-medium text-foreground">{copy.market}</Label>
               <Select value={market} onValueChange={(value) => value && onChange(updateSourceMarket(sources, value))}>
                 <SelectTrigger className="h-8 rounded-[3px] border-[#303640] bg-[#080a0c] text-xs focus:ring-0">
-                  <SelectValue />
+                  <SelectValue>
+                    {(value: string | null) => SOURCE_MARKET_OPTIONS.find((option) => option.value === value)?.label ?? value}
+                  </SelectValue>
                 </SelectTrigger>
                 <SelectContent>
                   {!SOURCE_MARKET_OPTIONS.some((option) => option.value === market) ? (

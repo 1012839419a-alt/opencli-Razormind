@@ -304,7 +304,16 @@ export default function StudioPage() {
           <label className="space-y-2 text-sm">
             <span>目标 Project</span>
             <Select value={importProjectId} onValueChange={(value) => setImportProjectId(value ?? '')}>
-              <SelectTrigger className="w-full"><SelectValue placeholder="选择 Project" /></SelectTrigger>
+              <SelectTrigger className="w-full">
+                <SelectValue>
+                  {(value: string | null) => {
+                    if (!value) return '选择 Project'
+                    if (value === '__new__') return '＋ 新建 Project'
+                    const project = projects.data?.find((item) => item.id === value)
+                    return project ? businessProjectName(project.name) : value
+                  }}
+                </SelectValue>
+              </SelectTrigger>
               <SelectContent>
                 {(projects.data ?? []).map((project) => <SelectItem key={project.id} value={project.id}>{businessProjectName(project.name)}</SelectItem>)}
                 <SelectItem value="__new__">＋ 新建 Project</SelectItem>

@@ -40,6 +40,7 @@ import type {
   NodeStats,
   NotificationLog,
   NotificationRule,
+  NotificationRuleInput,
   OdpSystemState,
   OpinionMonitor,
   PlanGraph,
@@ -558,12 +559,12 @@ export const deleteSchedule = (id: string) =>
 export const listNotificationRules = () =>
   apiClient.get<ApiResponse<NotificationRule[]>>('/notifications/rules').then((r) => r.data)
 
-export const createNotificationRule = (data: Partial<NotificationRule>) =>
+export const createNotificationRule = (data: NotificationRuleInput) =>
   apiClient
     .post<ApiResponse<NotificationRule>>('/notifications/rules', data)
     .then((r) => r.data.data)
 
-export const updateNotificationRule = (id: string, data: Partial<NotificationRule>) =>
+export const updateNotificationRule = (id: string, data: NotificationRuleInput) =>
   apiClient
     .patch<ApiResponse<NotificationRule>>(`/notifications/rules/${id}`, data)
     .then((r) => r.data.data)

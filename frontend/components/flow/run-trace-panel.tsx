@@ -633,7 +633,26 @@ export function RunTracePanel({ runRequestId = 0 }: { runRequestId?: number }) {
             </summary>
             <div className="mt-2.5 space-y-2">
               <p className="text-[11px] leading-relaxed text-muted-foreground">把真实或测试 JSON 输出注入一个源节点，再启动同一条原生运行链路；不会改写节点配置。</p>
-              {outputInputNodes.length ? <Select value={effectiveImportNodeId} onValueChange={(value) => setImportNodeId(value ?? "")}><SelectTrigger className="h-8 text-xs"><SelectValue placeholder="选择输入节点" /></SelectTrigger><SelectContent>{outputInputNodes.map((node) => <SelectItem key={node.id} value={node.id}>{node.label}</SelectItem>)}</SelectContent></Select> : null}
+              {outputInputNodes.length ? (
+                <Select value={effectiveImportNodeId} onValueChange={(value) => setImportNodeId(value ?? "")}>
+                  <SelectTrigger className="h-8 text-xs">
+                    <SelectValue>
+                      {(value: string | null) =>
+                        value
+                          ? (outputInputNodes.find((node) => node.id === value)?.label ?? value)
+                          : "选择输入节点"
+                      }
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent>
+                    {outputInputNodes.map((node) => (
+                      <SelectItem key={node.id} value={node.id}>
+                        {node.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              ) : null}
               <Textarea value={importOutputText} onChange={(event) => setImportOutputText(event.target.value)} rows={5} className="font-mono text-[10px]" aria-label="导入节点输出 JSON" />
               {importError ? <p className="text-[11px] text-destructive">{importError}</p> : null}
               <Button size="sm" variant="outline" className="w-full" onClick={() => void runImportedOutput()} disabled={!outputInputNodes.length || isRunning || isBackendRunning}>

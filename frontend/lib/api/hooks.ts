@@ -4,6 +4,7 @@ import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tansta
 
 import * as api from './endpoints'
 import type {
+  AIAgent,
   ApprovalDecision,
   Automation,
   FeedProviderInput,
@@ -12,8 +13,11 @@ import type {
   ModelDefaultCandidate,
   ModelProviderInput,
   ModelRole,
+  NotificationRuleInput,
   OperationsAgentMode,
   ProviderModelDiscoveryInput,
+  SystemConfig,
+  WorkspaceSettingsValues,
 } from './types'
 
 export function useMyWorkspaces() {
@@ -447,6 +451,70 @@ export function useBrowserActPacks() {
   })
 }
 
+// ── Chrome instances (browsers.py pool CRUD) ────────────────────────────────
+// Note: useChromePool() (the list/status read, GET /workers/chrome-pool) is
+// defined further below alongside the other execution-resource reads — reused
+// here rather than duplicated.
+export function useAddChromeInstance() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (data: {
+      count?: number
+      mode?: 'bridge' | 'cdp'
+      agent_url?: string
+      agent_protocol?: 'http' | 'ws' | ''
+    }) => api.addChromeInstance(data.count, data.mode, data.agent_url, data.agent_protocol),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['chrome-pool'] }),
+  })
+}
+
+export function useUpdateChromeInstanceConfig() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({
+      endpoint,
+      data,
+    }: {
+      endpoint: string
+      data: { mode?: string; agent_url?: string | null; agent_protocol?: string | null }
+    }) => api.updateChromeInstanceConfig(endpoint, data),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['chrome-pool'] }),
+  })
+}
+
+export function useRemoveChromeInstance() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (n: number) => api.removeChromeInstance(n),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['chrome-pool'] }),
+  })
+}
+
+// ── Browser bindings (site → browser endpoint routing) ──────────────────────
+export function useBrowserBindings() {
+  return useQuery({
+    queryKey: ['browser-bindings'],
+    queryFn: () => api.listBrowserBindings(),
+  })
+}
+
+export function useCreateBrowserBinding() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (data: { browser_endpoint: string; site: string; notes?: string }) =>
+      api.createBrowserBinding(data),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['browser-bindings'] }),
+  })
+}
+
+export function useDeleteBrowserBinding() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => api.deleteBrowserBinding(id),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['browser-bindings'] }),
+  })
+}
+
 export function usePlans(params?: { draft?: boolean; page?: number; limit?: number }) {
   return useQuery({
     queryKey: ['plans', params],
@@ -459,6 +527,58 @@ export function usePlan(id: string | null) {
     queryKey: ['plans', id],
     queryFn: () => api.getPlan(id as string),
     enabled: !!id,
+  })
+}
+
+export function useCreatePlan() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (data: Parameters<typeof api.createPlan>[0]) => api.createPlan(data),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['plans'] }),
+  })
+}
+
+export function useUpdatePlan() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, data }: { id: string; data: Parameters<typeof api.updatePlan>[1] }) =>
+      api.updatePlan(id, data),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['plans'] }),
+  })
+}
+
+export function useDeletePlan() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => api.deletePlan(id),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['plans'] }),
+  })
+}
+
+// Run is synchronous (the response already reflects the completed run — see
+// endpoints.ts's runPlan comment), so callers keep the PlanRunRead result in
+// local component state keyed by plan id, same non-caching rationale as
+// useTestProvider above. Success still invalidates Plan Health so the
+// per-plan health badge picks up the new run's rows.
+export function useRunPlan() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, parameters }: { id: string; parameters?: Record<string, unknown> }) =>
+      api.runPlan(id, parameters),
+    onSuccess: (_result, { id }) =>
+      queryClient.invalidateQueries({ queryKey: ['plans', id, 'health'] }),
+  })
+}
+
+export function usePlanHealth(
+  id: string | null,
+  params?: { run_key?: string; page?: number; limit?: number },
+) {
+  return useQuery({
+    queryKey: ['plans', id, 'health', params],
+    queryFn: () => api.getPlanHealth(id as string, params),
+    enabled: !!id,
+    staleTime: 30_000,
   })
 }
 
@@ -487,11 +607,63 @@ export function useSourceMeasurements(id: string | null, params?: { page?: numbe
   })
 }
 
+// Encrypted credential store (backend.auth.AuthManager). The list endpoint
+// only ever returns key_name — see api.listSourceCredentials — so there is
+// nothing secret-shaped in this query's cache to worry about redisplaying.
+export function useSourceCredentials(id: string | null) {
+  return useQuery({
+    queryKey: ['sources', id, 'credentials'],
+    queryFn: () => api.listSourceCredentials(id as string),
+    enabled: !!id,
+  })
+}
+
+export function useStoreSourceCredential(id: string) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (data: { key_name: string; secret: string }) => api.storeSourceCredential(id, data),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['sources', id, 'credentials'] }),
+  })
+}
+
+export function useDeleteSourceCredential(id: string) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (keyName: string) => api.deleteSourceCredential(id, keyName),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['sources', id, 'credentials'] }),
+  })
+}
+
 export function useSchedules(params?: { source_id?: string; enabled?: boolean }) {
   return useQuery({
     queryKey: ['schedules', params],
     queryFn: () => api.listSchedules(params),
     refetchInterval: 30_000,
+  })
+}
+
+export function useCreateSchedule() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (data: Parameters<typeof api.createSchedule>[0]) => api.createSchedule(data),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['schedules'] }),
+  })
+}
+
+export function useUpdateSchedule() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, data }: { id: string; data: Parameters<typeof api.updateSchedule>[1] }) =>
+      api.updateSchedule(id, data),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['schedules'] }),
+  })
+}
+
+export function useDeleteSchedule() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => api.deleteSchedule(id),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['schedules'] }),
   })
 }
 
@@ -502,6 +674,56 @@ export function useAgents(params?: { enabled?: boolean }) {
   })
 }
 
+export function useCreateAgent() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (data: Partial<AIAgent>) => api.createAgent(data),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['agents'] }),
+  })
+}
+
+export function useUpdateAgent() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, data }: { id: string; data: Partial<AIAgent> }) => api.updateAgent(id, data),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['agents'] }),
+  })
+}
+
+export function useDeleteAgent() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => api.deleteAgent(id),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['agents'] }),
+  })
+}
+
+// Singleton workspace settings (GET/PATCH/DELETE /settings) — unlike every
+// other resource in this file, there's no list to invalidate; the query key
+// is a fixed singleton tuple and every mutation invalidates that same key.
+export function useWorkspaceSettings() {
+  return useQuery({
+    queryKey: ['workspace-settings'],
+    queryFn: () => api.getWorkspaceSettings(),
+  })
+}
+
+export function useUpdateWorkspaceSettings() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (data: Partial<WorkspaceSettingsValues>) => api.updateWorkspaceSettings(data),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['workspace-settings'] }),
+  })
+}
+
+export function useResetWorkspaceSettings() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: () => api.resetWorkspaceSettings(),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['workspace-settings'] }),
+  })
+}
+
 export function useSkills(params?: { domain?: string; enabled?: boolean; page?: number; limit?: number }) {
   return useQuery({
     queryKey: ['skills', params],
@@ -509,10 +731,62 @@ export function useSkills(params?: { domain?: string; enabled?: boolean; page?: 
   })
 }
 
+export function useSkill(id: string | null) {
+  return useQuery({
+    queryKey: ['skills', id],
+    queryFn: () => api.getSkill(id as string),
+    enabled: !!id,
+  })
+}
+
+export function useDismissCorrection() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => api.dismissCorrection(id),
+    // The list query key carries a variable `params` object, so invalidate the
+    // whole 'skills' prefix — covers the list (any params) and this skill's
+    // own detail query (['skills', id]) in one call.
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['skills'] }),
+  })
+}
+
+export function useRollbackSkill() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => api.rollbackSkill(id),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['skills'] }),
+  })
+}
+
 export function useNotificationRules() {
   return useQuery({
     queryKey: ['notification-rules'],
     queryFn: () => api.listNotificationRules(),
+  })
+}
+
+export function useCreateNotificationRule() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (data: NotificationRuleInput) => api.createNotificationRule(data),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['notification-rules'] }),
+  })
+}
+
+export function useUpdateNotificationRule() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, data }: { id: string; data: NotificationRuleInput }) =>
+      api.updateNotificationRule(id, data),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['notification-rules'] }),
+  })
+}
+
+export function useDeleteNotificationRule() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => api.deleteNotificationRule(id),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['notification-rules'] }),
   })
 }
 
@@ -768,6 +1042,51 @@ export function useWorkers() {
   })
 }
 
+// ── System / ops (WIRING_GAP_LEDGER W5) ─────────────────────────────────────────
+export function useSystemConfig() {
+  return useQuery({
+    queryKey: ['system-config'],
+    queryFn: () => api.getSystemConfig(),
+  })
+}
+
+// PATCH /system/config only actually persists collection_mode (see
+// backend/api/v1/system.py ConfigPatch) — task_executor and image_tag are
+// deployment-time settings; sending them is a silent no-op. Callers should
+// only pass collection_mode.
+export function useUpdateSystemConfig() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (data: Partial<SystemConfig>) => api.updateSystemConfig(data),
+    onSuccess: (result) => queryClient.setQueryData(['system-config'], result),
+  })
+}
+
+// Restarts the whole backend API container (backend/api/v1/browsers.py
+// restart_api) — affects every connected user/agent, not just this session.
+// No query invalidation on success: the process is about to go down.
+export function useRestartApi() {
+  return useMutation({
+    mutationFn: () => api.restartApi(),
+  })
+}
+
+export function useCeleryStats() {
+  return useQuery({
+    queryKey: ['celery-stats'],
+    queryFn: () => api.getCeleryStats(),
+    refetchInterval: 20_000,
+  })
+}
+
+export function useChromePool() {
+  return useQuery({
+    queryKey: ['chrome-pool'],
+    queryFn: () => api.getChromePool(),
+    refetchInterval: 20_000,
+  })
+}
+
 export function useControlActions(params?: {
   source_id?: string
   mode?: string
@@ -795,5 +1114,51 @@ export function useInfiniteControlActions(params?: {
       const meta = lastPage.meta
       return meta && meta.page < meta.pages ? meta.page + 1 : undefined
     },
+  })
+}
+
+// ── Control plane (issue 03 / PR-Control-3.5 / C2) ──────────────────────────────
+// Global actuator kill switch — polled like other control-state surfaces so an
+// operator sees a runtime-side flip (e.g. from another tab) without a manual
+// refresh. The mutation writes the fresh server response straight into the
+// query cache instead of invalidating, since the POST response IS the new
+// canonical snapshot (KillSwitchRead) — no extra round trip needed.
+export function useKillSwitch() {
+  return useQuery({
+    queryKey: ['control', 'kill-switch'],
+    queryFn: () => api.getKillSwitch(),
+    refetchInterval: 15_000,
+  })
+}
+
+export function useSetKillSwitch() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (engaged: boolean) => api.setKillSwitch(engaged),
+    onSuccess: (result) => {
+      queryClient.setQueryData(['control', 'kill-switch'], result)
+    },
+  })
+}
+
+// Agreement/recovery report over the control_actions ledger — an on-demand
+// read like the actions table itself (no refetchInterval); the backend runs
+// its lazy outcome-evaluation pass on every read so refetching is how an
+// operator gets a newer verdict, not a background poll.
+export function useAdvisoryReport() {
+  return useQuery({
+    queryKey: ['control', 'advisory-report'],
+    queryFn: () => api.getAdvisoryReport(),
+  })
+}
+
+// System-level ODP data-plane snapshot — polled at the same cadence as
+// useNodes/useWorkers/useSourceControlState so the dashboard reflects a
+// down Redis or DLQ backlog without a manual refresh.
+export function useOdpState() {
+  return useQuery({
+    queryKey: ['control', 'odp-state'],
+    queryFn: () => api.getOdpState(),
+    refetchInterval: 15_000,
   })
 }
