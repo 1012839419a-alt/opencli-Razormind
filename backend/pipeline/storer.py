@@ -2,6 +2,7 @@
 
 import logging
 import os
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -9,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.models.record import CollectedRecord
 from backend.pipeline import odp_client
-
+from backend.pipeline.sinks.base import CollectionLineage
 logger = logging.getLogger(__name__)
 
 # SQLite's default SQLITE_MAX_VARIABLE_NUMBER is 999 on older builds (32766 on
@@ -62,7 +63,6 @@ async def _existing_by_identity(
             existing[record.identity_key] = record
     return existing
 
-
 async def store_records(
     session: AsyncSession,
     task_id: str,
@@ -74,6 +74,7 @@ async def store_records(
     workflow_id: str | None = None,
     workflow_run_id: str | None = None,
     identities: list[str | None] | None = None,
+    lineage: CollectionLineage | dict[str, Any] | None = None,
 ) -> tuple[list[CollectedRecord], int]:
     """Insert new records; skip existing ones by content_hash.
 
@@ -108,8 +109,18 @@ async def store_records(
         completely unchanged — content_hash-only dedup, exactly as before
         C7. This is the only path channels without identity() ever take.
 
+
     Returns (new_records, skipped_count).
     """
+    if isinstance(lineage, CollectionLineage):
+        lineage_payload = lineage.to_dict()
+    elif lineage is None:
+        lineage_payload = None
+    else:
+        # Accept already-serialized envelopes for callers crossing a process
+        # boundary, while keeping one canonical shape at this persistence seam.
+        lineage_payload = CollectionLineage.from_dict(lineage)
+        lineage_payload = lineage_payload.to_dict() if lineage_payload else None
     if not normalized_triples:
         return [], 0
 
@@ -174,8 +185,8 @@ async def store_records(
                 continue
             if identity in seen_identities_in_batch:
                 # Two triples in this same batch share an identity (e.g. a
-                # feed listed the same entry twice) — keep the first, skip
-                # the rest rather than fight over which one "wins".
+                # feed listed the same entry twice) — keep the first, skip the
+                # rest rather than fight over which one "wins".
                 skipped += 1
                 continue
             seen_identities_in_batch.add(identity)
@@ -190,6 +201,7 @@ async def store_records(
             source_id=source_id,
             workflow_id=workflow_id,
             workflow_run_id=workflow_run_id,
+            lineage=lineage_payload,
             raw_data=raw,
             normalized_data=normalized,
             content_hash=content_hash,

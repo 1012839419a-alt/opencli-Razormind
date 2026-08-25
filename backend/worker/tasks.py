@@ -340,6 +340,7 @@ async def _send_notification_async(rule_id: str, record_id: str) -> dict:
             event=rule.trigger_event,
             source_id=record.source_id,
             record_id=record.id,
+            lineage=record.lineage,
             data=record.normalized_data,
             ai_enrichment=record.ai_enrichment,
         )

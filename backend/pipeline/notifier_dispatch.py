@@ -39,6 +39,11 @@ def _normalize_send_result(result: bool | NotificationSendResult) -> tuple[bool,
         return result.success, result.response_data
     return bool(result), None
 
+def _record_lineage(record: CollectedRecord) -> dict[str, Any] | None:
+    """Return only a JSON object; compatibility callers may use lightweight mocks."""
+    value = getattr(record, "lineage", None)
+    return dict(value) if isinstance(value, dict) else None
+
 
 @dataclass
 class _PendingSend:
@@ -123,14 +128,15 @@ async def dispatch_notifications(
                 rule.id, rule.notifier_type,
             )
             continue
-
         ack_required = bool(_ack_secret(rule.notifier_config))
         for record in records:
             log_id = str(uuid.uuid4())
+            lineage = _record_lineage(record)
             session.add(NotificationLog(
                 id=log_id,
                 rule_id=rule.id,
                 record_id=record.id,
+                lineage=lineage,
                 status="pending",
                 ack_status="not_required",
             ))
@@ -143,6 +149,7 @@ async def dispatch_notifications(
                     source_id=source_id,
                     delivery_id=log_id,
                     record_id=record.id,
+                    lineage=lineage,
                     data=record.normalized_data,
                     ai_enrichment=record.ai_enrichment,
                 ),

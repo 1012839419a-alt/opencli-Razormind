@@ -11,6 +11,7 @@ class NotificationPayload:
     record_id: str | None = None
     data: dict[str, Any] = field(default_factory=dict)
     ai_enrichment: dict[str, Any] | None = None
+    lineage: dict[str, Any] | None = None
 
 
 @dataclass

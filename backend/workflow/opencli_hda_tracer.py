@@ -24,6 +24,7 @@ from backend.models.workflow_run import WorkflowRun as WorkflowRunRow
 from backend.models.workflow_run import WorkflowRunEvent as WorkflowRunEventRow
 from backend.pipeline.normalizer import normalize_item
 from backend.pipeline.storer import store_records
+from backend.pipeline.sinks.base import CollectionLineage
 from backend.schemas.workflow import (
     CompiledWorkflowNode,
     WorkflowCompileError,
@@ -165,6 +166,13 @@ from backend.workflow.webhook_delivery import (
     execute_workflow_webhook_delivery,
 )
 from backend.workflow.workflow_run_events import append_workflow_run_events
+from backend.workflow.gaojixing_runtime import (
+    GAOJIXING_CHANNEL_TYPE,
+    GaojixingReadinessError,
+    build_question_package,
+    capture_live_doubao,
+    map_capture_item,
+)
 
 
 @dataclass
@@ -692,11 +700,23 @@ async def start_workflow_run(
                     "runId": run_id,
                     "nodeId": node.id,
                     "sourceId": body.input.sourceId or body.input.source,
-                    "requestId": body.trigger.requestId,
+
                     "runtimeInputEnvelope": envelope,
                 },
             )
             emitter.emit(node, "completed", message="Workflow webhook input completed")
+            continue
+        if _is_gaojixing_source_node(node) and _source_live_mode(node):
+            await _execute_gaojixing_source(
+                node,
+                body=body,
+                run_id=run_id,
+                workflow_id=body.project.id,
+                trace_id=trace_id,
+                outputs_by_node=outputs_by_node,
+                emitter=emitter,
+                session=session,
+            )
             continue
 
         resumed_assets = _read_dict_list(body.sourceOutputs.get(node.id))
@@ -2951,6 +2971,141 @@ def _bbx_tool_block_reason(
     return None
 
 
+async def _execute_gaojixing_source(
+    node: CompiledWorkflowNode,
+    *,
+    body: WorkflowRunStartRequest,
+    run_id: str,
+    workflow_id: str,
+    trace_id: str,
+    outputs_by_node: dict[str, list[dict[str, Any]]],
+    emitter: Any,
+    session: AsyncSession | None,
+) -> None:
+    """Run live Gaojixing through the existing channel and source path."""
+    del trace_id, session
+    binding_input = _binding_input(node)
+    adapter_config = _read_dict(binding_input.get("adapterConfig"))
+    if not adapter_config:
+        adapter_config = binding_input
+    try:
+        package = build_question_package(
+            node_params=dict(node.params),
+            adapter_config=adapter_config,
+            runtime_payload=body.input.payload,
+        )
+        result = await capture_live_doubao(
+            package=package,
+            node_params=dict(node.params),
+            adapter_config=adapter_config,
+            network_allowed=body.project.agentPermissions.canFetchNetwork,
+        )
+    except GaojixingReadinessError as exc:
+        reason = WorkflowRunBlockReason(
+            code=exc.code,
+            message=exc.message,
+            source="gaojixing_readiness",
+            details={"nodeId": node.id, **exc.details},
+        )
+        emitter.emit(node, "blocked", message=exc.message, block_reason=reason, details=reason.details)
+        outputs_by_node[node.id] = []
+        return
+
+    if not result.success:
+        code = result.error_type or "gaojixing_capture_failed"
+        reason = WorkflowRunBlockReason(
+            code=code,
+            message=result.error or "Live Gaojixing capture failed.",
+            source="doubao_research_channel",
+            details={"nodeId": node.id, "mode": "live", "packageDigest": package.digest},
+        )
+        emitter.emit(node, "failed", message=reason.message, block_reason=reason, details=reason.details)
+        outputs_by_node[node.id] = []
+        return
+
+    raw_item = next(
+        (item for item in result.items if isinstance(item, dict) and _read_string(item.get("content"))),
+        None,
+    )
+    if raw_item is None:
+        reason = WorkflowRunBlockReason(
+            code="gaojixing_answer_missing",
+            message="Live Gaojixing capture returned no assistant answer.",
+            source="gaojixing_evidence",
+            details={"nodeId": node.id, "packageDigest": package.digest},
+        )
+        emitter.emit(node, "failed", message=reason.message, block_reason=reason, details=reason.details)
+        outputs_by_node[node.id] = []
+        return
+
+    artifact_id = _stable_id("gaojixing-answer-artifact", run_id, node.id, package.digest)
+    mapped = map_capture_item(
+        raw_item,
+        package=package,
+        workflow_id=workflow_id,
+        run_id=run_id,
+        node_id=node.id,
+        artifact_id=artifact_id,
+    )
+    source_group = _source_group(node, node.id)
+    lineage = [
+        {
+            "nodeId": node.id,
+            "sourceGroup": source_group,
+            "artifact": "gaojixing.capture",
+            "artifactId": artifact_id,
+            "packageDigest": package.digest,
+            "runId": run_id,
+            "workflowId": workflow_id,
+            "mode": "live",
+            "index": 0,
+        }
+    ]
+    outputs_by_node[node.id] = [{"raw": mapped, "lineage": lineage}]
+    evidence = mapped["gaojixing"]["evidence"]
+    batch = _node_batch_reference(workflow_id, run_id, node, item_count=1)
+    emitter.emit(
+        node,
+        "partial",
+        message="Live Gaojixing answer and evidence captured",
+        batch=batch,
+        details={
+            "bindingId": SOURCE_FETCH_BINDING_ID,
+            "channelType": GAOJIXING_CHANNEL_TYPE,
+            "capabilityId": mapped["gaojixing"]["capabilityId"],
+            "mode": "live",
+            "package": package.to_dict(),
+            "artifactId": artifact_id,
+            "evidence": evidence,
+            "lineage": _lineage_pointer(node),
+        },
+    )
+    emitter.emit(node, "completed", message="Live Gaojixing source completed")
+
+
+def _is_gaojixing_source_node(node: CompiledWorkflowNode) -> bool:
+    binding_input = _binding_input(node)
+    return (
+        node.kind == "source"
+        and (
+            _read_string(binding_input.get("channelType"))
+            or _read_string(node.params.get("channelType"))
+        )
+        == GAOJIXING_CHANNEL_TYPE
+    )
+
+
+def _source_live_mode(node: CompiledWorkflowNode) -> bool:
+    binding_input = _binding_input(node)
+    adapter_config = _read_dict(binding_input.get("adapterConfig"))
+    return (
+        _read_string(binding_input.get("liveMode"))
+        or _read_string(adapter_config.get("liveMode"))
+        or _read_string(node.params.get("liveMode"))
+        or "live"
+    ) == "live"
+
+
 def _is_first_loop_native_node(node: CompiledWorkflowNode) -> bool:
     binding = node.runtime.get("binding")
     if not isinstance(binding, dict):
@@ -3950,6 +4105,14 @@ async def _store_record_sink_outputs(
             {key: value for key, value in accepted_normalized.items() if key not in {"source_id"}}
         )
         normalized["source_id"] = source_id
+        gaojixing = _read_dict(raw.get("gaojixing"))
+        if gaojixing:
+            package = _read_dict(gaojixing.get("package"))
+            normalized["packageDigest"] = _read_string(package.get("digest"))
+            normalized["answerArtifactId"] = _read_string(gaojixing.get("artifactId"))
+            normalized["evidenceRefs"] = _read_dict(
+                gaojixing.get("evidence")
+            )
         content_hash = _read_string(item.get("contentHash")) or content_hash
         triples_by_source_node.setdefault(source_node_id, []).append(
             (raw, normalized, content_hash, lineage)
@@ -3978,6 +4141,15 @@ async def _store_record_sink_outputs(
             forward_to_odp=False,
             workflow_id=workflow_id,
             workflow_run_id=run_id,
+            lineage=_record_lineage_envelope(
+                triples_with_lineage[0][0],
+                triples_with_lineage[0][3],
+                workflow_id=workflow_id,
+                run_id=run_id,
+                source_id=source_id,
+                task_id=task_id,
+                source_node_id=source_node_id,
+            ),
         )
         skipped_total += skipped
         for record, (raw, normalized, content_hash, lineage) in zip(
@@ -3990,6 +4162,8 @@ async def _store_record_sink_outputs(
                     "sourceId": source_id,
                     "taskId": task_id,
                     "raw": raw,
+
+
                     "normalizedData": normalized,
                     "contentHash": content_hash,
                     "lineage": lineage,
@@ -3998,6 +4172,47 @@ async def _store_record_sink_outputs(
 
     await session.flush()
     return stored_refs, skipped_total
+def _record_lineage_envelope(
+    raw: dict[str, Any],
+    lineage: list[dict[str, Any]],
+    *,
+    workflow_id: str,
+    run_id: str,
+    source_id: str,
+    task_id: str,
+    source_node_id: str,
+) -> dict[str, Any]:
+    gaojixing = _read_dict(raw.get("gaojixing"))
+    package = _read_dict(gaojixing.get("package"))
+    evidence = _read_dict(gaojixing.get("evidence"))
+    artifact_id = _read_string(gaojixing.get("artifactId"))
+    artifact_refs: list[dict[str, Any]] = [
+        {
+            "kind": "workflow-lineage",
+            "nodeId": source_node_id,
+            "runId": run_id,
+            "lineage": lineage,
+        }
+    ]
+    if artifact_id:
+        artifact_refs.append(
+            {
+                "kind": "gaojixing.capture",
+                "artifactId": artifact_id,
+                "packageDigest": _read_string(package.get("digest")),
+                "evidence": evidence,
+            }
+        )
+    return CollectionLineage(
+        task_id=task_id,
+        source_id=source_id,
+        provider=GAOJIXING_CHANNEL_TYPE if gaojixing else "workflow",
+        ingest_mode="snapshot",
+        collection_run_id=run_id,
+        project_id=workflow_id,
+        runtime_id="workflow.opencli_hda",
+        artifact_refs=artifact_refs,
+    ).to_dict()
 
 
 async def _materialize_source_task(

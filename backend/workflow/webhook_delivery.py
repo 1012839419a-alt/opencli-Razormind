@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from typing import Any
 
 import httpx
@@ -32,57 +33,83 @@ async def execute_workflow_webhook_delivery(
 ) -> dict[str, Any]:
     config = _webhook_config(binding_input)
     target = _read_string(binding_input.get("target")) or "webhook"
+    gaojixing = _gaojixing_delivery_context(
+        input_items,
+        workflow_id=workflow_id,
+        run_id=run_id,
+        node_id=node_id,
+    )
+    payload_data = {
+        "schema": WEBHOOK_DELIVERY_PAYLOAD_SCHEMA,
+        "workflowId": workflow_id,
+        "workflowRunId": run_id,
+        "nodeId": node_id,
+        "target": target,
+        "itemCount": len(input_items),
+        "items": [_safe_delivery_item(item) for item in input_items],
+    }
+    if gaojixing:
+        payload_data["packageDigest"] = gaojixing["packageDigest"]
+        payload_data["lineage"] = gaojixing["lineage"]
     payload = NotificationPayload(
         event=WEBHOOK_DELIVERY_EVENT,
         source_id=workflow_id,
+        delivery_id=gaojixing["deliveryAttemptId"] if gaojixing else None,
         record_id=run_id,
-        data={
-            "schema": WEBHOOK_DELIVERY_PAYLOAD_SCHEMA,
-            "workflowId": workflow_id,
-            "workflowRunId": run_id,
-            "nodeId": node_id,
-            "target": target,
-            "itemCount": len(input_items),
-            "items": [_safe_delivery_item(item) for item in input_items],
-        },
+        data=payload_data,
+        lineage=gaojixing["lineage"] if gaojixing else None,
     )
 
     try:
-        delivered, _ = _normalize_send_result(
+        delivered, response_data = _normalize_send_result(
             await get_notifier("webhook").send(config, payload)
         )
     except WorkflowWebhookDeliveryError:
         raise
     except (httpx.HTTPError, OSError) as exc:
-        # Network-level failures (connect errors, timeouts, DNS failures,
-        # etc.) from the notifier's underlying HTTP client are not part of
-        # its bool contract — without this, an unreachable webhook raises an
-        # untyped exception here that isn't caught by the per-node
-        # WorkflowWebhookDeliveryError handler in opencli_hda_tracer.py and
-        # 500s the entire workflow run instead of failing just this node.
+        details = {
+            "nodeId": node_id,
+            "target": target,
+            "itemCount": len(input_items),
+            "payloadSchema": WEBHOOK_DELIVERY_PAYLOAD_SCHEMA,
+        }
+        if gaojixing:
+            details.update(
+                {
+                    "deliveryAttemptId": gaojixing["deliveryAttemptId"],
+                    "transportStatus": "failed",
+                    "businessOutcome": "unknown",
+                    "lineage": gaojixing["lineage"],
+                }
+            )
         raise WorkflowWebhookDeliveryError(
             code="webhook_delivery_network_error",
             message=f"Webhook delivery failed due to a network error: {exc}",
-            details={
-                "nodeId": node_id,
-                "target": target,
-                "itemCount": len(input_items),
-                "payloadSchema": WEBHOOK_DELIVERY_PAYLOAD_SCHEMA,
-            },
+            details=details,
         ) from exc
     if not delivered:
+        details = {
+            "nodeId": node_id,
+            "target": target,
+            "itemCount": len(input_items),
+            "payloadSchema": WEBHOOK_DELIVERY_PAYLOAD_SCHEMA,
+        }
+        if gaojixing:
+            details.update(
+                {
+                    "deliveryAttemptId": gaojixing["deliveryAttemptId"],
+                    "transportStatus": "failed",
+                    "businessOutcome": "unknown",
+                    "lineage": gaojixing["lineage"],
+                }
+            )
         raise WorkflowWebhookDeliveryError(
             code="webhook_delivery_failed",
             message="Webhook delivery attempted but the notifier returned a failure.",
-            details={
-                "nodeId": node_id,
-                "target": target,
-                "itemCount": len(input_items),
-                "payloadSchema": WEBHOOK_DELIVERY_PAYLOAD_SCHEMA,
-            },
+            details=details,
         )
 
-    return {
+    result = {
         "notifierType": "webhook",
         "target": target,
         "deliveryAttempted": True,
@@ -91,6 +118,68 @@ async def execute_workflow_webhook_delivery(
         "payloadSchema": WEBHOOK_DELIVERY_PAYLOAD_SCHEMA,
         "itemCount": len(input_items),
     }
+    if gaojixing:
+        ack = _destination_ack(response_data)
+        result.update(
+            {
+                "deliveryAttemptId": gaojixing["deliveryAttemptId"],
+                "transportStatus": "accepted",
+                "businessOutcome": "confirmed" if ack else "unconfirmed",
+                "ackEvidence": ack,
+                "packageDigest": gaojixing["packageDigest"],
+                "lineage": gaojixing["lineage"],
+            }
+        )
+    return result
+
+def _gaojixing_delivery_context(
+    input_items: list[dict[str, Any]],
+    *,
+    workflow_id: str,
+    run_id: str,
+    node_id: str,
+) -> dict[str, Any] | None:
+    for item in input_items:
+        raw = _read_dict(item.get("raw"))
+        gaojixing = _read_dict(raw.get("gaojixing"))
+        if not gaojixing:
+            continue
+        package = _read_dict(gaojixing.get("package"))
+        package_digest = _read_string(package.get("digest"))
+        if not package_digest:
+            continue
+        lineage = {
+            "workflowId": workflow_id,
+            "workflowRunId": run_id,
+            "nodeId": node_id,
+            "packageDigest": package_digest,
+            "artifactId": _read_string(gaojixing.get("artifactId")),
+            "sourceLineage": _read_dict_list(item.get("lineage")),
+        }
+        delivery_id = str(
+            uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                f"opencli-admin/gaojixing/delivery/{workflow_id}/{run_id}/{node_id}/{package_digest}",
+            )
+        )
+        return {
+            "deliveryAttemptId": delivery_id,
+            "packageDigest": package_digest,
+            "lineage": lineage,
+        }
+    return None
+
+
+def _destination_ack(response_data: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(response_data, dict):
+        return None
+    for key in ("businessAck", "business_ack", "acknowledged"):
+        if response_data.get(key) is True:
+            return {"status": "confirmed", "source": "destination_response", "field": key}
+    status = _read_string(response_data.get("status"))
+    if status in {"confirmed", "acknowledged"}:
+        return {"status": "confirmed", "source": "destination_response", "field": "status"}
+    return None
 
 
 def _webhook_config(binding_input: dict[str, Any]) -> dict[str, Any]:
