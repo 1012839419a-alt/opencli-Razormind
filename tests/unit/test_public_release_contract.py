@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -10,10 +11,12 @@ def source(path: str) -> str:
 
 def test_public_release_has_a_runnable_frontend_and_safe_compose_defaults() -> None:
     compose = source("docker-compose.yml")
+    compose_config = yaml.safe_load(compose)
     frontend_config = source("frontend/next.config.mjs")
 
     assert "\n  frontend:\n" in compose
     assert "\n  agent-1:\n" in compose
+    assert "opencli-admin-api:${IMAGE_TAG:-0.4.0}" in compose
     assert "opencli-admin-frontend:${IMAGE_TAG:-0.4.0}" in compose
     assert "opencli-admin-chrome:${IMAGE_TAG:-0.4.0}" in compose
     assert '"127.0.0.1:${NOVNC_PORT:-6080}:6080"' in compose
@@ -24,6 +27,9 @@ def test_public_release_has_a_runnable_frontend_and_safe_compose_defaults() -> N
     assert "${BOOTSTRAP_ADMIN_TOKEN:?" in compose
     assert 'output: "standalone"' in frontend_config
     assert (ROOT / "frontend" / "Dockerfile").is_file()
+    assert "build" not in compose_config["services"]["api"]
+    assert "build" not in compose_config["services"]["frontend"]
+    assert "build" not in compose_config["services"]["worker"]
 
 
 def test_public_release_has_one_ci_frontend_job_and_installers() -> None:
@@ -49,3 +55,4 @@ def test_public_release_has_one_ci_frontend_job_and_installers() -> None:
     assert 'if [ -z "$credential_encryption_key" ]; then' in unix_installer
     assert "packages: write" in release_workflow
     assert "id-token: write" not in release_workflow
+    assert "test -x chrome-extra/entrypoint.sh" in workflow

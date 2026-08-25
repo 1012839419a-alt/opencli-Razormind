@@ -109,7 +109,9 @@ jobs:
           persist-credentials: false
 
       - name: Validate Compose
-        run: docker compose --env-file .env.docker.example -f docker-compose.yml -f docker-compose.build.yml config --quiet
+        run: |
+          test -x chrome-extra/entrypoint.sh
+          docker compose --env-file .env.docker.example -f docker-compose.yml -f docker-compose.build.yml config --quiet
 
       - name: Build and start public stack
         run: docker compose --env-file .env.docker.example -f docker-compose.yml -f docker-compose.build.yml up -d --build --wait api frontend agent-1

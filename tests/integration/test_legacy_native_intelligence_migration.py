@@ -6,7 +6,18 @@ import subprocess
 import sys
 from pathlib import Path
 
+from alembic.config import Config
+from alembic.script import ScriptDirectory
+
 REPO_ROOT = Path(__file__).parents[2]
+
+
+def _current_migration_head() -> str:
+    config = Config()
+    config.set_main_option("script_location", str(REPO_ROOT / "backend" / "migrations"))
+    head = ScriptDirectory.from_config(config).get_current_head()
+    assert head is not None
+    return head
 
 
 def _run_alembic(
@@ -65,7 +76,7 @@ def test_legacy_plugin_head_rejoins_native_intelligence_head(tmp_path: Path) -> 
             )
         }
 
-    assert revision == ("k8l9m0n1o2p3",)
+    assert revision == (_current_migration_head(),)
     assert marker == ("workspace-1", "native-intelligence-workspace")
     assert "intelligence_sessions" in tables
     assert "intelligence_artifacts" in tables

@@ -144,14 +144,7 @@ services:
   # ── Backend API ───────────────────────────────────────────────────────────
   api:
     <<: *backend-common
-    # Build the API from this checkout.  The workflow claimant is dispatched
-    # by this process in local mode, so a published run cannot mix an API from
-    # one revision with collection code from another.
-    build:
-      context: .
-      args:
-        IMAGE_TAG: ${IMAGE_TAG:-0.4.0}
-    image: opencli-admin-api:${API_IMAGE_TAG:-gjx-live}
+    image: ${DOCKER_REGISTRY:-ghcr.io/}${DOCKER_IMAGE_NAMESPACE:-2233admin}/opencli-admin-api:${IMAGE_TAG:-0.4.0}
     # Run as root so the API can manage Docker containers (agent pool) via
     # the mounted socket. Acceptable for a self-hosted admin panel.
     user: root
@@ -229,9 +222,7 @@ services:
 
   # ── Next.js operator console ─────────────────────────────────────────────
   frontend:
-    build:
-      context: ./frontend
-    image: opencli-admin-frontend:${FRONTEND_IMAGE_TAG:-gjx-live}
+    image: ${DOCKER_REGISTRY:-ghcr.io/}${DOCKER_IMAGE_NAMESPACE:-2233admin}/opencli-admin-frontend:${IMAGE_TAG:-0.4.0}
     environment:
       BACKEND_URL: http://api:8000
       OPENCLI_RUNTIME_REVISION: ${OPENCLI_RUNTIME_REVISION:-unidentified}
@@ -256,11 +247,7 @@ services:
   worker:
     profiles: ["celery"]
     <<: *backend-common
-    build:
-      context: .
-      args:
-        IMAGE_TAG: ${IMAGE_TAG:-0.4.0}
-    image: opencli-admin-api:${API_IMAGE_TAG:-gjx-live}
+    image: ${DOCKER_REGISTRY:-ghcr.io/}${DOCKER_IMAGE_NAMESPACE:-2233admin}/opencli-admin-api:${IMAGE_TAG:-0.4.0}
     command: celery -A backend.worker.celery_app worker --loglevel=info --concurrency=4
     environment:
       DATABASE_URL: ${DATABASE_URL:-sqlite+aiosqlite:////data/opencli_admin.db}
@@ -342,6 +329,7 @@ services:
   # noVNC is loopback-only by default; use an SSH tunnel for remote servers.
   agent-1:
     image: ${DOCKER_REGISTRY:-ghcr.io/}${DOCKER_IMAGE_NAMESPACE:-2233admin}/opencli-admin-chrome:${IMAGE_TAG:-0.4.0}
+    entrypoint: ["/bin/bash", "/entrypoint.sh"]
     environment:
       CHROME_HOSTNAME: agent-1
     volumes:

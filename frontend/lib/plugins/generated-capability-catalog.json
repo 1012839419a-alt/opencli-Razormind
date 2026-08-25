@@ -1,11 +1,53 @@
 {
   "capabilityIds": [
+    "provider.feishu-bitable",
     "provider.model-runtime",
     "provider.opencli",
     "provider.rss-reader",
     "provider.workflow-components"
   ],
   "providers": [
+    {
+      "capabilityId": "provider.feishu-bitable",
+      "configurationRoute": "/providers/catalog",
+      "distribution": "builtin",
+      "label": "Feishu Bitable",
+      "lifecycle": "active",
+      "operationIds": [
+        "create_connection_api_v1_delivery_connections_post",
+        "delete_connection_api_v1_delivery_connections__connection_id__delete",
+        "list_connections_api_v1_delivery_connections_get",
+        "probe_connection_api_v1_delivery_connections__connection_id__probe_post",
+        "update_connection_api_v1_delivery_connections__connection_id__patch"
+      ],
+      "owner": "opencli-admin",
+      "pluginTypes": [
+        "extension"
+      ],
+      "primaryCategory": "extension",
+      "projection": "plugin_provider",
+      "providerAliases": [],
+      "providerKey": "opencli-admin/feishu-bitable",
+      "readinessSources": {
+        "optional": [
+          "backend_plugin_catalog"
+        ],
+        "required": [
+          "workflow_capabilities"
+        ]
+      },
+      "targetRoute": "/providers/catalog",
+      "workflowNodeIds": [
+        "intelligence.sink.feishu-bitable"
+      ],
+      "wrapperNames": [
+        "createDeliveryConnection",
+        "deleteDeliveryConnection",
+        "listDeliveryConnections",
+        "probeFeishuBitable",
+        "updateDeliveryConnection"
+      ]
+    },
     {
       "capabilityId": "provider.model-runtime",
       "configurationRoute": "/plugins?provider=model-runtime",
