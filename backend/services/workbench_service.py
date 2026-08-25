@@ -501,10 +501,17 @@ async def dispatch_workbench_turn(turn_id: str) -> None:
             repository = await get_repository(session, turn.workspace_id, thread.repository_id)
             _require_repository_runtime_affinity(repository, binding)
             instructions = _workbench_instructions(version.instructions)
-            runtime_config = {"cwd": turn.worktree_path}
-            timeout = binding.config.get("timeout_seconds")
-            if timeout is not None:
-                runtime_config["timeout_seconds"] = timeout
+            runtime_config = {
+                "cwd": turn.worktree_path,
+                "timeout_seconds": binding.dispatch_timeout_seconds,
+            }
+            configured_timeout = binding.config.get("timeout_seconds")
+            if (
+                isinstance(configured_timeout, (int, float))
+                and not isinstance(configured_timeout, bool)
+                and configured_timeout > binding.dispatch_timeout_seconds
+            ):
+                runtime_config["timeout_seconds"] = configured_timeout
 
         async def on_event(event: dict[str, Any]) -> None:
             event_type = event.get("type")

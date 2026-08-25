@@ -422,6 +422,15 @@ export function useAutomations(workspaceId: string | null) {
   });
 }
 
+export function useInstallAutomationStarters() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ workspaceId }: { workspaceId: string }) => api.installAutomationStarters(workspaceId),
+    onSuccess: (_result, { workspaceId }) =>
+      queryClient.invalidateQueries({ queryKey: ['automations', workspaceId] }),
+  })
+}
+
 export function useCreateAutomation() {
   const queryClient = useQueryClient();
   return useMutation({

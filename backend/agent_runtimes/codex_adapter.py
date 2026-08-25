@@ -1,19 +1,36 @@
-"""Subprocess adapter for the installed ``codex exec --json`` CLI."""
+"""Registered-Agent adapter for the local Codex CLI.
+
+The adapter is deliberately an edge-side subprocess adapter. The control plane
+sends an ``agent_task`` over the authenticated Agent transport; only the
+registered Agent process imports this module and starts the fixed ``codex``
+binary. No shell, caller-selected executable, or caller-selected sandbox is
+accepted, and no provider credential is copied into readiness or runtime events.
+
+Codex ``exec --json`` emits JSONL.  The native protocol has changed names a few
+times, so translation accepts the stable ``thread.*``, ``turn.*`` and
+``item.*`` envelopes while keeping our event envelope closed.
+"""
+
+from __future__ import annotations
 
 import asyncio
 import json
 import logging
+import re
 import shutil
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Any
 
 from backend.agent_runtimes.base import (
     AgentTask,
     RuntimeAdapter,
     RuntimeCapabilities,
+    RuntimeReadiness,
     event_done,
     event_error,
     event_started,
+    event_state,
     event_text,
     event_tool_call,
     event_tool_result,
@@ -22,14 +39,19 @@ from backend.agent_runtimes.registry import register_runtime
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_TIMEOUT_SECONDS = 600
+_DEFAULT_TIMEOUT_SECONDS = 1800
+_MAX_TIMEOUT_SECONDS = 3600
+_VERSION_TIMEOUT_SECONDS = 5
 _KILL_GRACE_SECONDS = 10
-_STDERR_TAIL_BYTES = 2_048
+_STDERR_TAIL_BYTES = 2048
+_PERMISSION_MODES = frozenset({"observe_only", "suggest_changes"})
+_VERSION_RE = re.compile(r"\bcodex(?:[- ]cli)?(?:\s+version)?\s+([0-9][0-9A-Za-z.+-]*)\b", re.I)
+_BARE_VERSION_RE = re.compile(r"\b([0-9]+\.[0-9]+(?:\.[0-9]+)?(?:[-+][0-9A-Za-z.-]+)?)\b")
 
 
 @register_runtime
 class CodexRuntimeAdapter(RuntimeAdapter):
-    """Run Codex with a controller-owned worktree as its writable sandbox."""
+    """Run ``codex exec --json`` on a registered local Agent node."""
 
     runtime_type = "codex"
     capabilities = RuntimeCapabilities(
@@ -42,17 +64,31 @@ class CodexRuntimeAdapter(RuntimeAdapter):
 
     def validate_config(self, config: dict[str, Any]) -> list[str]:
         errors: list[str] = []
-        cwd = config.get("cwd")
-        if not isinstance(cwd, str) or not cwd:
-            errors.append("'cwd' must be a non-empty controller-owned worktree path")
-        timeout = config.get("timeout_seconds")
-        if timeout is not None and (
-            not isinstance(timeout, (int, float)) or isinstance(timeout, bool) or timeout <= 0
-        ):
-            errors.append("'timeout_seconds' must be a positive number when provided")
-        unsupported = sorted(set(config) - {"cwd", "timeout_seconds"})
+        unsupported = sorted(set(config) - {"cwd", "timeout_seconds", "permission_mode"})
         if unsupported:
             errors.append("unsupported controller runtime config: " + ", ".join(unsupported))
+
+        cwd = config.get("cwd")
+        if not isinstance(cwd, str) or not cwd.strip():
+            errors.append("'cwd' must be a non-empty controller-owned worktree path")
+        elif "\x00" in cwd:
+            errors.append("'cwd' must not contain NUL bytes")
+
+        permission_mode = config.get("permission_mode")
+        if permission_mode is not None and permission_mode not in _PERMISSION_MODES:
+            errors.append(
+                "'permission_mode' must be one of " + ", ".join(sorted(_PERMISSION_MODES))
+            )
+        if "timeout_seconds" in config and config["timeout_seconds"] is not None:
+            timeout = config["timeout_seconds"]
+            if (
+                not isinstance(timeout, (int, float))
+                or isinstance(timeout, bool)
+                or not 0 < timeout <= _MAX_TIMEOUT_SECONDS
+            ):
+                errors.append(
+                    f"'timeout_seconds' must be between 0 and {_MAX_TIMEOUT_SECONDS} when provided"
+                )
         return errors
 
     async def health(self) -> bool:
@@ -60,14 +96,81 @@ class CodexRuntimeAdapter(RuntimeAdapter):
 
     @classmethod
     def is_available(cls) -> bool:
+        """Cheap check used by the Agent registration handshake."""
         return shutil.which("codex") is not None
 
+    async def readiness(self, config: dict[str, Any] | None = None) -> RuntimeReadiness:
+        config = config or {}
+        errors = self.validate_config(config)
+        resolved_binary = shutil.which("codex")
+        if errors:
+            return RuntimeReadiness(
+                runtime=self.runtime_type,
+                status="blocked",
+                binary_present=resolved_binary is not None,
+                reason_code="invalid_config",
+                reason="; ".join(errors),
+            )
+
+        if resolved_binary is None:
+            return RuntimeReadiness(
+                runtime=self.runtime_type,
+                status="blocked",
+                binary_present=False,
+                reason_code="missing_binary",
+                reason="codex binary not found",
+            )
+
+        try:
+            cwd = self._resolve_cwd(config)
+        except ValueError as exc:
+            return RuntimeReadiness(
+                runtime=self.runtime_type,
+                status="blocked",
+                binary_present=True,
+                permitted_project_root=self._display_path(config.get("cwd")),
+                working_directory=self._display_path(config.get("cwd")),
+                reason_code="invalid_path",
+                reason=str(exc),
+            )
+
+        version = await self._detect_version(resolved_binary, timeout_seconds=_VERSION_TIMEOUT_SECONDS)
+        return RuntimeReadiness(
+            runtime=self.runtime_type,
+            status="ready",
+            binary_present=True,
+            version=version,
+            permitted_project_root=str(cwd),
+            working_directory=str(cwd),
+        )
+
     @staticmethod
-    def _prompt(task: AgentTask) -> str:
-        message = task.input.get("message") if isinstance(task.input, dict) else ""
+    def _compose_argv(binary: str, cwd: Path, prompt: str = "") -> list[str]:
+        # Operations Agent profiles that may reach this adapter are advisory.
+        # Workbench consumes the returned patch and applies it through its own
+        # guarded pipeline, so the runtime itself never needs write access.
+        return [
+            binary,
+            "exec",
+            "--json",
+            "--color",
+            "never",
+            "--ephemeral",
+            "--sandbox",
+            "read-only",
+            "--cd",
+            str(cwd),
+            prompt,
+        ]
+
+    def _compose_prompt(self, task: AgentTask) -> str:
+        payload = task.input if isinstance(task.input, dict) else {}
+        message = payload.get("message") or payload.get("prompt") or ""
         if not isinstance(message, str):
-            message = ""
-        return f"{task.instructions}\n\n{message}".strip()
+            message = str(message)
+        if task.instructions:
+            return f"{task.instructions}\n\n{message}".strip()
+        return message
 
     async def invoke(self, task: AgentTask) -> AsyncIterator[dict[str, Any]]:
         config = task.config or {}
@@ -76,106 +179,215 @@ class CodexRuntimeAdapter(RuntimeAdapter):
             yield event_error(task.task_id, "; ".join(config_errors), error_type="ConfigError")
             return
 
-        binary = shutil.which("codex")
-        if binary is None:
+        resolved_binary = shutil.which("codex")
+        if resolved_binary is None:
             yield event_error(
-                task.task_id, "Codex binary not found", error_type="FileNotFoundError"
+                task.task_id,
+                "codex binary not found",
+                error_type="FileNotFoundError",
             )
             return
+        try:
+            cwd = self._resolve_cwd(config)
+        except ValueError as exc:
+            yield event_error(task.task_id, str(exc), error_type="PathError")
+            return
+
         timeout_seconds = config.get("timeout_seconds") or _DEFAULT_TIMEOUT_SECONDS
-        proc = await asyncio.create_subprocess_exec(
-            binary,
-            "exec",
-            "--json",
-            "--ephemeral",
-            "--sandbox",
-            "workspace-write",
-            "--cd",
-            config["cwd"],
-            self._prompt(task),
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+        version = await self._detect_version(
+            resolved_binary,
+            timeout_seconds=min(timeout_seconds, _VERSION_TIMEOUT_SECONDS),
         )
-        assert proc.stdout is not None
-        assert proc.stderr is not None
-        stderr_task = asyncio.create_task(proc.stderr.read())
-        accumulated_text: list[str] = []
-        terminal_error: str | None = None
+        argv = self._compose_argv(resolved_binary, cwd, self._compose_prompt(task))
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *argv,
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=str(cwd),
+            )
+        except FileNotFoundError as exc:
+            yield event_error(task.task_id, "codex binary not found", type(exc).__name__)
+            return
+        except OSError as exc:
+            yield event_error(task.task_id, f"failed to spawn codex: {exc}", type(exc).__name__)
+            return
+
         yield event_started(task.task_id)
+        yield event_state(
+            task.task_id,
+            {"runtime": self.runtime_type, "codex_version": version},
+        )
+
+        accumulated_text: list[str] = []
+        native_error: str | None = None
+
+        async def _read_events() -> AsyncIterator[dict[str, Any]]:
+            assert proc.stdout is not None
+            while True:
+                line = await proc.stdout.readline()
+                if not line:
+                    break
+                stripped = line.decode(errors="replace").strip("\r\n")
+                if not stripped:
+                    continue
+                try:
+                    native = json.loads(stripped)
+                except json.JSONDecodeError:
+                    logger.debug("codex_adapter: skipping non-JSON stdout line: %r", stripped[:200])
+                    continue
+                if not isinstance(native, dict):
+                    continue
+                translated = self._translate_event(task.task_id, native)
+                if translated is not None:
+                    yield translated
 
         try:
             async with asyncio.timeout(timeout_seconds):
-                while line := await proc.stdout.readline():
-                    try:
-                        native = json.loads(line)
-                    except json.JSONDecodeError:
-                        logger.debug("codex_adapter: skipping non-JSON stdout line: %r", line[:200])
-                        continue
-                    translated = self._translate_event(task.task_id, native)
-                    if translated is None:
-                        continue
-                    if translated["type"] == "text":
-                        accumulated_text.append(translated["text"])
-                    elif translated["type"] == "error":
-                        terminal_error = translated["message"]
+                async for event in _read_events():
+                    if event["type"] == "text":
+                        accumulated_text.append(event.get("text", ""))
+                    elif event["type"] == "error":
+                        native_error = event.get("message") or "Codex reported an error"
                         break
-                    yield translated
+                    yield event
         except (TimeoutError, asyncio.CancelledError) as exc:
-            proc.terminate()
-            try:
-                await asyncio.wait_for(proc.wait(), timeout=_KILL_GRACE_SECONDS)
-            except TimeoutError:
-                proc.kill()
-                await proc.wait()
+            await self._stop_process(proc)
             if isinstance(exc, asyncio.CancelledError):
                 raise
             yield event_error(
                 task.task_id,
-                f"Codex run timed out after {timeout_seconds}s",
+                f"codex run timed out after {timeout_seconds}s",
                 error_type="TimeoutError",
             )
             return
 
         returncode = await proc.wait()
-        stderr = await stderr_task
-        if terminal_error is not None:
-            yield event_error(task.task_id, terminal_error, error_type="RuntimeInvocationError")
+        if native_error is not None:
+            yield event_error(task.task_id, native_error, error_type="RuntimeInvocationError")
             return
         if returncode != 0:
-            tail = stderr[-_STDERR_TAIL_BYTES:].decode(errors="replace")
+            stderr_tail = b""
+            if proc.stderr is not None:
+                stderr_tail = await proc.stderr.read()
+            tail = stderr_tail[-_STDERR_TAIL_BYTES:].decode(errors="replace")
+            detail = f": {tail}" if tail else ""
             yield event_error(
                 task.task_id,
-                f"Codex exited with code {returncode}: {tail}",
+                f"codex exited with code {returncode}{detail}",
                 error_type="ProcessExitError",
             )
             return
-        yield event_done(task.task_id, result={"text": "".join(accumulated_text)})
+
+        yield event_done(
+            task.task_id,
+            result={
+                "runtime": self.runtime_type,
+                "codex_version": version,
+                "exit_code": returncode,
+                "text": "".join(accumulated_text),
+            },
+        )
+
+    async def _detect_version(
+        self,
+        binary: str,
+        timeout_seconds: float = _VERSION_TIMEOUT_SECONDS,
+    ) -> str | None:
+        proc: asyncio.subprocess.Process | None = None
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                binary,
+                "--version",
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, _stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=timeout_seconds
+            )
+        except TimeoutError:
+            if proc is not None and proc.returncode is None:
+                proc.kill()
+                await proc.wait()
+            return None
+        except OSError:
+            return None
+        except asyncio.CancelledError:
+            if proc is not None and proc.returncode is None:
+                proc.kill()
+                await proc.wait()
+            raise
+        line = stdout.decode(errors="replace").splitlines()[0].strip() if stdout else ""
+        match = _VERSION_RE.search(line) or _BARE_VERSION_RE.search(line)
+        return match.group(0) if match else None
+
+    async def _stop_process(self, proc: asyncio.subprocess.Process) -> None:
+        if proc.returncode is not None:
+            return
+        proc.terminate()
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=_KILL_GRACE_SECONDS)
+        except TimeoutError:
+            proc.kill()
+            await proc.wait()
+
+    @staticmethod
+    def _resolve_cwd(config: dict[str, Any]) -> Path:
+        cwd_raw = config.get("cwd")
+        if not isinstance(cwd_raw, str) or not cwd_raw.strip():
+            raise ValueError("controller-owned working directory is required")
+        cwd = Path(cwd_raw).expanduser().resolve()
+        if not cwd.is_dir():
+            raise ValueError(f"working directory is not a directory: {cwd}")
+        return cwd
+
+    @staticmethod
+    def _display_path(value: object) -> str | None:
+        if not isinstance(value, str) or not value.strip():
+            return None
+        return str(Path(value).expanduser().resolve())
 
     def _translate_event(self, task_id: str, native: dict[str, Any]) -> dict[str, Any] | None:
         native_type = native.get("type")
-        raw_item = native.get("item")
-        item: dict[str, Any] = raw_item if isinstance(raw_item, dict) else {}
-        item_type = item.get("type")
+        if native_type in {"error", "turn.error"}:
+            return event_error(task_id, str(native.get("message") or native.get("error") or "Codex error"))
+        if native_type == "thread.started":
+            return event_state(task_id, {"thread_id": native.get("thread_id")})
+        if native_type == "turn.started":
+            return event_state(task_id, {"turn": "started"})
+        if native_type == "turn.completed":
+            state: dict[str, Any] = {"turn": "completed"}
+            if isinstance(native.get("usage"), dict):
+                state["usage"] = native["usage"]
+            return event_state(task_id, state)
 
-        if native_type == "item.started" and item_type == "command_execution":
+        item = native.get("item") if isinstance(native.get("item"), dict) else native
+        item_type = item.get("type")
+        if item_type in {"agent_message", "assistant_message", "text"}:
+            text = item.get("text") or item.get("content") or native.get("text")
+            return event_text(task_id, text) if isinstance(text, str) and text else None
+        if item_type in {"command_execution", "tool_call", "function_call"}:
+            if native_type in {"item.completed", "tool_result", "function_result"}:
+                output = item.get("aggregated_output", item.get("output", item.get("result")))
+                exit_code = item.get("exit_code")
+                return event_tool_result(
+                    task_id,
+                    name=str(item.get("command") or item.get("name") or "codex_tool"),
+                    result=output,
+                    call_id=item.get("id") or item.get("call_id"),
+                    is_error=bool(item.get("is_error")) or exit_code not in (None, 0),
+                )
             return event_tool_call(
                 task_id,
-                name="command_execution",
-                args={"command": item.get("command", "")},
-                call_id=item.get("id"),
+                name=str(item.get("command") or item.get("name") or "codex_tool"),
+                args=item.get("arguments") if isinstance(item.get("arguments"), dict) else {"command": item.get("command", "")},
+                call_id=item.get("id") or item.get("call_id"),
             )
-        if native_type == "item.completed" and item_type == "command_execution":
-            return event_tool_result(
-                task_id,
-                name="command_execution",
-                result=item.get("aggregated_output", ""),
-                call_id=item.get("id"),
-                is_error=item.get("exit_code") not in {None, 0},
-            )
-        if native_type == "item.completed" and item_type == "agent_message":
-            return event_text(task_id, item.get("text", ""))
-        if native_type == "error":
-            message = native.get("message") or native.get("error") or "Codex reported an error"
-            return event_error(task_id, str(message))
+        if native_type in {"text", "output_text.delta", "response.output_text.delta"}:
+            text = native.get("text") or native.get("delta")
+            return event_text(task_id, text) if isinstance(text, str) and text else None
+        logger.debug("codex_adapter: skipping unmapped native event type %r", native_type)
         return None

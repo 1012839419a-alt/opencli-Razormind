@@ -401,6 +401,13 @@ export const listAutomations = (workspaceId: string) =>
     .get<ApiResponse<Automation[]>>(`/workspaces/${workspaceId}/automations`)
     .then((r) => r.data.data);
 
+export const installAutomationStarters = (workspaceId: string) =>
+  apiClient
+    .post<ApiResponse<{ created_count: number; skipped_count: number }>>(
+      `/workspaces/${workspaceId}/automations/starters/install`,
+    )
+    .then((r) => r.data.data);
+
 export const createAutomation = (
   workspaceId: string,
   data: Omit<
