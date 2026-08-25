@@ -299,6 +299,13 @@ export const startOperationsAgentRun = (
 export const listAutomations = (workspaceId: string) =>
   apiClient.get<ApiResponse<Automation[]>>(`/workspaces/${workspaceId}/automations`).then((r) => r.data.data)
 
+export const installAutomationStarters = (workspaceId: string) =>
+  apiClient
+    .post<ApiResponse<{ created_count: number; skipped_count: number }>>(
+      `/workspaces/${workspaceId}/automations/starters/install`,
+    )
+    .then((r) => r.data.data)
+
 export const createAutomation = (workspaceId: string, data: Omit<Automation, 'id' | 'workspace_id' | 'created_by_user_id' | 'created_at' | 'updated_at'>) =>
   apiClient.post<ApiResponse<Automation>>(`/workspaces/${workspaceId}/automations`, data).then((r) => r.data.data)
 

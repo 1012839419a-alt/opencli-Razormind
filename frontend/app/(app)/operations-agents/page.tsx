@@ -6,7 +6,8 @@ import { ArrowUp, Bell, Bot, CalendarClock, ChevronDown, CircleDot, Cloud, Code2
 import { toast } from 'sonner'
 
 import AgentAvatar from '@/components/smoothui/agent-avatar'
-import { useAutomations, useCreateAutomation, useMyWorkspaces, useOperationsAgentActivity, useOperationsAgentDraft, useOperationsAgents, useOperationsAgentVersions, usePatchAutomation, usePublishOperationsAgentVersion, useStartOperationsAgentRun, useUpdateOperationsAgentDraft } from '@/lib/api/hooks'
+import SwitchboardCard from '@/components/smoothui/switchboard-card'
+import { useAutomations, useCreateAutomation, useInstallAutomationStarters, useMyWorkspaces, useOperationsAgentActivity, useOperationsAgentDraft, useOperationsAgents, useOperationsAgentVersions, usePatchAutomation, usePublishOperationsAgentVersion, useStartOperationsAgentRun, useUpdateOperationsAgentDraft } from '@/lib/api/hooks'
 import type { Automation, OperationsAgent, OperationsAgentMode } from '@/lib/api/types'
 import { cn } from '@/lib/utils'
 import { BACKEND_HINT, EmptyState, ErrorState, LoadingState } from '@/components/shell/data-states'
@@ -20,6 +21,37 @@ const SUGGESTIONS = [
   { name: '每周系统回顾', prompt: '回顾本周系统变化、风险、失败测试和待处理建议。', icon: Repeat2, color: 'text-violet-400', schedule: 'weekly@16:00' },
   { name: '异常跟进监控', prompt: '检查最近的异常活动，并将有证据的问题整理为待处理建议。', icon: FileSearch, color: 'text-emerald-400', schedule: 'weekdays@09:00' },
 ] as const
+
+const AGENT_STARTERS = [
+  {
+    ...SUGGESTIONS[0],
+    name: '运行简报 Agent',
+    subtitle: '每天汇总运行、失败与待批准事项',
+    executor: 'codex',
+    pattern: [0, 1, 2, 18, 19, 20, 36, 37, 38, 54, 55, 56, 72, 73, 74],
+  },
+  {
+    ...SUGGESTIONS[1],
+    name: '系统回顾 Agent',
+    subtitle: '每周整理变化、风险与待处理建议',
+    executor: 'claude',
+    pattern: [4, 5, 6, 22, 23, 24, 40, 41, 42, 58, 59, 60, 76, 77, 78],
+  },
+  {
+    ...SUGGESTIONS[2],
+    name: '异常跟进 Agent',
+    subtitle: '工作日检查异常并生成证据化建议',
+    executor: 'chatcloud',
+    pattern: [8, 9, 10, 26, 27, 28, 44, 45, 46, 62, 63, 64, 80, 81, 82],
+  },
+] as const
+
+type AgentStarterInput = {
+  name: string
+  prompt: string
+  schedule: string
+  executor?: string
+}
 
 const EXECUTORS = [
   { id: 'codex', name: 'Codex', icon: Code2, color: 'text-sky-400' },
@@ -62,7 +94,7 @@ function ContractEditor({ workspaceId, agent }: { workspaceId: string; agent: Op
   const [stateSchema, setStateSchema] = useState('')
   const [agentUrl, setAgentUrl] = useState('')
   const [workflow, setWorkflow] = useState('')
-  const [dispatchTimeout, setDispatchTimeout] = useState(600)
+  const [dispatchTimeout, setDispatchTimeout] = useState(1800)
   const [runtimeConfig, setRuntimeConfig] = useState('')
   const [reason, setReason] = useState('')
 
@@ -76,8 +108,8 @@ function ContractEditor({ workspaceId, agent }: { workspaceId: string; agent: Op
     setStateSchema(JSON.stringify(contract?.state_schema ?? EMPTY_SCHEMA, null, 2))
     setAgentUrl(binding?.agent_url ?? '')
     setWorkflow(binding?.workflow ?? '')
-    setDispatchTimeout(binding?.dispatch_timeout_seconds ?? 600)
-    setRuntimeConfig(JSON.stringify(binding?.config ?? {}, null, 2))
+    setDispatchTimeout(binding?.dispatch_timeout_seconds ?? 1800)
+    setRuntimeConfig(JSON.stringify(binding?.config ?? { timeout_seconds: 1800 }, null, 2))
   }, [draft.data])
 
   async function saveDraft() {
@@ -155,7 +187,7 @@ function ContractEditor({ workspaceId, agent }: { workspaceId: string; agent: Op
               <label className="space-y-1.5 text-xs text-muted-foreground">Agent URL<Input type="url" value={agentUrl} onChange={(event) => setAgentUrl(event.target.value)} placeholder="https://agent.example.com" /></label>
               <label className="space-y-1.5 text-xs text-muted-foreground">Runtime<Input value="pi" readOnly aria-readonly="true" /></label>
               <label className="space-y-1.5 text-xs text-muted-foreground">Workflow<Input value={workflow} onChange={(event) => setWorkflow(event.target.value)} placeholder="default" /></label>
-              <label className="space-y-1.5 text-xs text-muted-foreground">超时（秒）<Input type="number" min={1} max={3600} value={dispatchTimeout} onChange={(event) => setDispatchTimeout(Number(event.target.value))} /></label>
+              <label className="space-y-1.5 text-xs text-muted-foreground">深度执行超时（秒）<Input type="number" min={1} max={3600} value={dispatchTimeout} onChange={(event) => setDispatchTimeout(Number(event.target.value))} /><span className="block text-[11px] leading-4 text-muted-foreground">默认 30 分钟；本地 CLI 不暴露 5 小时额度，因此不伪造剩余额度。</span></label>
             </div>
             <label className="mt-4 block space-y-1.5 text-xs text-muted-foreground">Task config（仅 timeout_seconds）<Textarea value={runtimeConfig} onChange={(event) => setRuntimeConfig(event.target.value)} spellCheck={false} className="min-h-32 resize-y font-mono text-xs text-foreground" /></label>
           </details>
@@ -181,6 +213,7 @@ export default function OperationsAgentsPage() {
   const automations = useAutomations(workspaceId)
   const agents = useOperationsAgents(workspaceId)
   const activity = useOperationsAgentActivity(workspaceId)
+  const installStarterPack = useInstallAutomationStarters()
   const createAutomation = useCreateAutomation()
   const patchAutomation = usePatchAutomation()
   const startRunMutation = useStartOperationsAgentRun()
@@ -198,26 +231,31 @@ export default function OperationsAgentsPage() {
   const [time, setTime] = useState('09:00')
   const [sessionMode, setSessionMode] = useState<'fresh' | 'reuse'>('fresh')
   const [approvalMode, setApprovalMode] = useState<OperationsAgentMode>('suggest_changes')
-  const [runTargetType, setRunTargetType] = useState('manual')
   const [runTargetId, setRunTargetId] = useState('')
   const [runInput, setRunInput] = useState('{}')
   const [runState, setRunState] = useState('{}')
-
-  useEffect(() => {
-    if (!workspaceId && workspaces.data?.length) setWorkspaceId(workspaces.data[0].id)
-  }, [workspaceId, workspaces.data])
-
+  const [runTargetType, setRunTargetType] = useState('manual')
   const latestRun = useMemo(() => new Map(activity.data?.map((run) => [run.operations_agent_id, run]) ?? []), [activity.data])
-
-  function startCreate(preset?: (typeof SUGGESTIONS)[number]) {
+  function startCreate(preset?: AgentStarterInput) {
     setName(preset?.name ?? '')
     setPrompt(preset?.prompt ?? '')
+    setExecutor(preset?.executor ?? 'codex')
     if (preset) {
       const [kind, presetTime] = preset.schedule.split('@')
       setScheduleKind(kind)
       setTime(presetTime)
     }
     setOpen(true)
+  }
+
+  async function installAgentStarters() {
+    if (!workspaceId || installStarterPack.isPending) return
+    try {
+      const result = await installStarterPack.mutateAsync({ workspaceId })
+      toast.success(`已支起 ${result.created_count} 个 Agent Starter，跳过 ${result.skipped_count} 个`)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Agent Starter 创建失败')
+    }
   }
 
   function configureDraft() {
@@ -292,6 +330,33 @@ export default function OperationsAgentsPage() {
           <button type="button" onClick={() => setView('automations')} className={cn('border-b-2 px-4 py-3 text-sm transition-colors', view === 'automations' ? 'border-foreground text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground')}><CalendarClock className="mr-2 inline size-4" />自动化</button>
           <button type="button" onClick={() => setView('agents')} className={cn('border-b-2 px-4 py-3 text-sm transition-colors', view === 'agents' ? 'border-foreground text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground')}><Bot className="mr-2 inline size-4" />智能体</button>
         </div>
+
+        <section className="mt-8" aria-labelledby="agent-starters-title">
+          <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
+            <div>
+              <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-muted-foreground">SmoothUI / Agent starters</p>
+              <h2 id="agent-starters-title" className="mt-1 text-xl font-medium tracking-[-0.015em]">先把这三个 Agent 支起来</h2>
+              <p className="mt-1 text-sm text-muted-foreground">三套可直接创建的自动化模板；创建后会进入我的自动化并按日程执行。</p>
+            </div>
+            <Button size="sm" onClick={() => void installAgentStarters()} disabled={installStarterPack.isPending}>
+              {installStarterPack.isPending ? '正在安装…' : '一键安装三个 Agent'}
+            </Button>
+          </div>
+          <div className="grid gap-3 lg:grid-cols-3">
+            {AGENT_STARTERS.map((starter) => (
+              <SwitchboardCard
+                key={starter.name}
+                title={starter.name}
+                subtitle={`${starter.subtitle} · ${executorMeta(starter.executor).name}`}
+                columns={18}
+                rows={5}
+                gridPattern={[...starter.pattern]}
+                className="h-[260px] p-4"
+                onButtonClick={() => startCreate(starter)}
+              />
+            ))}
+          </div>
+        </section>
 
         {view === 'automations' ? (
           <div>
