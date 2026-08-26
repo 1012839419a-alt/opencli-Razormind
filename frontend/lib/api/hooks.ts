@@ -1,6 +1,6 @@
 'use client'
 
-import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useInfiniteQuery, useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import * as api from './endpoints'
 import type {
@@ -763,6 +763,29 @@ export function useNotificationRules() {
   })
 }
 
+export function useInfiniteNotificationRules(params?: { limit?: number }) {
+  return useInfiniteQuery({
+    queryKey: ['notification-rules', 'infinite', params],
+    initialPageParam: 1,
+    queryFn: ({ pageParam }) => api.listNotificationRules({ ...params, page: pageParam }),
+    getNextPageParam: (lastPage) => {
+      const meta = lastPage.meta
+      return meta && meta.page < meta.pages ? meta.page + 1 : undefined
+    },
+  })
+}
+
+export function useNotificationRulesByIds(ids: string[]) {
+  return useQueries({
+    queries: ids.map((id) => ({
+      queryKey: ['notification-rules', id],
+      queryFn: () => api.getNotificationRule(id),
+      staleTime: 30_000,
+      retry: false,
+    })),
+  })
+}
+
 export function useCreateNotificationRule() {
   const queryClient = useQueryClient()
   return useMutation({
@@ -784,7 +807,12 @@ export function useDeleteNotificationRule() {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: (id: string) => api.deleteNotificationRule(id),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['notification-rules'] }),
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['notification-rules'] }),
+        queryClient.invalidateQueries({ queryKey: ['notification-logs'] }),
+      ])
+    },
   })
 }
 
