@@ -68,6 +68,24 @@ def test_collect_auth_fails_closed_and_accepts_exact_bearer(monkeypatch):
     agent_server._require_collect_auth("Bearer secret")
 
 
+def test_center_proxy_honors_no_proxy_for_center_host(monkeypatch):
+    monkeypatch.setattr(agent_server, "_CENTRAL_API_URL", "http://api:8000")
+    monkeypatch.setattr(agent_server, "_HTTP_PROXY", "http://proxy.test:7897")
+    monkeypatch.setattr(agent_server, "_HTTPS_PROXY", "http://proxy.test:7897")
+    monkeypatch.setattr(agent_server, "proxy_bypass", lambda host: host == "api")
+
+    assert agent_server._center_proxy() is None
+
+
+def test_center_proxy_keeps_proxy_for_external_center(monkeypatch):
+    monkeypatch.setattr(agent_server, "_CENTRAL_API_URL", "https://center.example")
+    monkeypatch.setattr(agent_server, "_HTTP_PROXY", "http://proxy.test:7897")
+    monkeypatch.setattr(agent_server, "_HTTPS_PROXY", "http://secure-proxy.test:7897")
+    monkeypatch.setattr(agent_server, "proxy_bypass", lambda _host: False)
+
+    assert agent_server._center_proxy() == "http://secure-proxy.test:7897"
+
+
 # ── _register_with_center attaches Authorization header ────────────────────
 
 

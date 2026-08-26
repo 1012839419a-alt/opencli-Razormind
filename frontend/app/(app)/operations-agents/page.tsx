@@ -1,17 +1,21 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
-import Link from 'next/link'
-import { ArrowUp, Bell, Bot, CalendarClock, ChevronDown, CircleDot, Cloud, Code2, FileSearch, Pause, Play, Plus, Repeat2, Sparkles, Terminal } from 'lucide-react'
+import { ArrowUp, Bell, Bot, CalendarClock, ChevronDown, CircleDot, FileSearch, Pause, Play, Plus, Repeat2, Terminal } from 'lucide-react'
 import { toast } from 'sonner'
 
 import AgentAvatar from '@/components/smoothui/agent-avatar'
 import SwitchboardCard from '@/components/smoothui/switchboard-card'
-import { useAutomations, useCreateAutomation, useGovernedWorkspaces, useInstallAutomationStarters, useOperationsAgentActivity, useOperationsAgentDraft, useOperationsAgents, useOperationsAgentVersions, usePatchAutomation, usePublishOperationsAgentVersion, useStartOperationsAgentRun, useUpdateOperationsAgentDraft } from '@/lib/api/hooks'
-import type { Automation, OperationsAgent, OperationsAgentMode } from '@/lib/api/types'
+import { useAutomations, useCreateAutomation, useCreateOperationsAgent, useGovernedWorkspaces, useInstallAutomationStarters, useNodes, useOperationsAgentActivity, useOperationsAgentDraft, useOperationsAgents, useOperationsAgentTeams, useOperationsAgentVersions, usePatchAutomation, usePublishOperationsAgentVersion, useStartAutomationRun, useStartOperationsAgentRun, useUpdateOperationsAgentDraft } from '@/lib/api/hooks'
+import type { AgentRuntimeBindingV1, Automation, OperationsAgent, OperationsAgentMode } from '@/lib/api/types'
+import { latestOperationsAgentRuns } from '@/lib/automations/activity'
+import { AUTOMATION_APPROVALS as APPROVALS } from '@/lib/automations/approval'
+import { compatibleOperationsAgents, runnableOperationsAgents } from '@/lib/automations/binding'
+import { automationExecutorMeta as executorMeta } from '@/lib/automations/executors'
+import { automationScheduleText, automationScheduleValue } from '@/lib/automations/schedule'
 import { cn } from '@/lib/utils'
 import { BACKEND_HINT, EmptyState, ErrorState, LoadingState } from '@/components/shell/data-states'
-import { Button, buttonVariants } from '@/components/ui/button'
+import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
@@ -53,27 +57,7 @@ type AgentStarterInput = {
   executor?: string
 }
 
-const EXECUTORS = [
-  { id: 'codex', name: 'Codex', icon: Code2, color: 'text-sky-400' },
-  { id: 'claude', name: 'Claude', icon: Sparkles, color: 'text-orange-400' },
-  { id: 'chatcloud', name: 'ChatCloud', icon: Cloud, color: 'text-violet-400' },
-  { id: 'custom', name: '自定义', icon: Terminal, color: 'text-emerald-400' },
-] as const
 
-const APPROVALS: Array<{ id: OperationsAgentMode; label: string; detail: string }> = [
-  { id: 'observe_only', label: '仅观察', detail: '不提出或执行变更' },
-  { id: 'suggest_changes', label: '建议需批准', detail: '送入 Inbox 后由人决定' },
-  { id: 'low_risk_automatic', label: '低风险自动', detail: '白名单外仍需批准' },
-]
-
-function executorMeta(id: string) {
-  return EXECUTORS.find((item) => item.id === id) ?? EXECUTORS[3]
-}
-
-function scheduleText(value: string) {
-  const [kind, time] = value.split('@')
-  return `${kind === 'daily' ? '每天' : kind === 'weekdays' ? '工作日' : kind === 'weekly' ? '每周' : kind}${time ? ` ${time}` : ''}`
-}
 
 const EMPTY_SCHEMA = { type: 'object', properties: {} }
 
@@ -87,16 +71,26 @@ function ContractEditor({ workspaceId, agent }: { workspaceId: string; agent: Op
   const draft = useOperationsAgentDraft(workspaceId, agent.id)
   const versions = useOperationsAgentVersions(workspaceId, agent.id)
   const updateDraft = useUpdateOperationsAgentDraft()
+  const nodes = useNodes()
   const publishVersion = usePublishOperationsAgentVersion()
   const [instructions, setInstructions] = useState('')
   const [inputSchema, setInputSchema] = useState('')
   const [outputSchema, setOutputSchema] = useState('')
   const [stateSchema, setStateSchema] = useState('')
   const [agentUrl, setAgentUrl] = useState('')
+  const [runtime, setRuntime] = useState<AgentRuntimeBindingV1['runtime']>('codex')
   const [workflow, setWorkflow] = useState('')
   const [dispatchTimeout, setDispatchTimeout] = useState(1800)
   const [runtimeConfig, setRuntimeConfig] = useState('')
   const [reason, setReason] = useState('')
+  const runtimeNodes = useMemo(
+    () => [...(nodes.data?.data ?? [])].reverse().filter(
+      (node) => node.protocol === 'ws' && node.status === 'online' && node.runtimes?.length,
+    ),
+    [nodes.data],
+  )
+  const selectedRuntimeNode = runtimeNodes.find((node) => node.url === agentUrl)
+  const runtimeOptions = selectedRuntimeNode?.runtimes ?? []
 
   useEffect(() => {
     if (!draft.data) return
@@ -107,10 +101,30 @@ function ContractEditor({ workspaceId, agent }: { workspaceId: string; agent: Op
     setOutputSchema(JSON.stringify(contract?.output_schema ?? EMPTY_SCHEMA, null, 2))
     setStateSchema(JSON.stringify(contract?.state_schema ?? EMPTY_SCHEMA, null, 2))
     setAgentUrl(binding?.agent_url ?? '')
+    setRuntime(binding?.runtime ?? 'codex')
     setWorkflow(binding?.workflow ?? '')
     setDispatchTimeout(binding?.dispatch_timeout_seconds ?? 1800)
     setRuntimeConfig(JSON.stringify(binding?.config ?? { timeout_seconds: 1800 }, null, 2))
   }, [draft.data])
+
+  useEffect(() => {
+    if (agentUrl || !runtimeNodes.length) return
+    const node = runtimeNodes[0]
+    const firstRuntime = node.runtimes?.[0]
+    setAgentUrl(node.url)
+    if (firstRuntime) {
+      setRuntime(firstRuntime)
+      if (!workflow) {
+        setWorkflow(
+          firstRuntime === 'miniflow'
+            ? 'builtin.read_only_readiness'
+            : firstRuntime === 'codex'
+              ? 'exec'
+              : 'default',
+        )
+      }
+    }
+  }, [agentUrl, runtimeNodes, workflow])
 
   async function saveDraft() {
     if (!draft.data) return
@@ -132,7 +146,7 @@ function ContractEditor({ workspaceId, agent }: { workspaceId: string; agent: Op
             runtime_binding: {
               schema_version: 'agent.runtime-binding.v1',
               agent_url: agentUrl.trim(),
-              runtime: 'pi',
+              runtime,
               workflow: workflow.trim(),
               dispatch_timeout_seconds: dispatchTimeout,
               config: parseJsonObject(runtimeConfig, 'Runtime config'),
@@ -172,7 +186,7 @@ function ContractEditor({ workspaceId, agent }: { workspaceId: string; agent: Op
       <div className="min-h-0 overflow-y-auto bg-[#090a0b] p-5">
         <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
           <div><h3 className="text-sm font-medium">Agent Contract</h3><p className="mt-1 text-xs text-muted-foreground">Draft r{draft.data?.revision ?? '—'} · 当前发布 v{currentPublishedVersion || '—'}</p></div>
-          <Button size="sm" onClick={() => void saveDraft()} disabled={!instructions.trim() || !agentUrl.trim() || !workflow.trim() || updateDraft.isPending}>保存草稿</Button>
+          <Button size="sm" onClick={() => void saveDraft()} disabled={!instructions.trim() || !selectedRuntimeNode || !runtimeOptions.includes(runtime) || !workflow.trim() || updateDraft.isPending}>保存草稿</Button>
         </div>
         <div className="space-y-5">
           <label className="block space-y-1.5 text-xs text-muted-foreground">Instructions<Textarea value={instructions} onChange={(event) => setInstructions(event.target.value)} className="min-h-36 resize-y text-sm text-foreground" placeholder="描述智能体的职责、边界和执行要求" /></label>
@@ -184,11 +198,12 @@ function ContractEditor({ workspaceId, agent }: { workspaceId: string; agent: Op
           <details className="rounded-lg border border-white/[0.08] px-4 py-3">
             <summary className="cursor-pointer text-sm text-muted-foreground">Runtime Binding 高级配置</summary>
             <div className="mt-4 grid gap-4 sm:grid-cols-4">
-              <label className="space-y-1.5 text-xs text-muted-foreground">Agent URL<Input type="url" value={agentUrl} onChange={(event) => setAgentUrl(event.target.value)} placeholder="https://agent.example.com" /></label>
-              <label className="space-y-1.5 text-xs text-muted-foreground">Runtime<Input value="pi" readOnly aria-readonly="true" /></label>
-              <label className="space-y-1.5 text-xs text-muted-foreground">Workflow<Input value={workflow} onChange={(event) => setWorkflow(event.target.value)} placeholder="default" /></label>
+              <label className="space-y-1.5 text-xs text-muted-foreground">Fleet 节点<select value={agentUrl} onChange={(event) => { const nextUrl = event.target.value; const node = runtimeNodes.find((candidate) => candidate.url === nextUrl); const nextRuntime = node?.runtimes?.[0]; setAgentUrl(nextUrl); if (nextRuntime) { setRuntime(nextRuntime); setWorkflow(nextRuntime === 'miniflow' ? 'builtin.read_only_readiness' : nextRuntime === 'codex' ? 'exec' : 'default') } }} className="h-9 w-full rounded-lg border bg-background px-3 text-sm text-foreground"><option value="">选择已连接节点</option>{runtimeNodes.map((node) => <option key={node.id} value={node.url}>{node.label}</option>)}</select></label>
+              <label className="space-y-1.5 text-xs text-muted-foreground">Runtime<select value={runtime} onChange={(event) => { const nextRuntime = event.target.value as AgentRuntimeBindingV1['runtime']; setRuntime(nextRuntime); setWorkflow(nextRuntime === 'miniflow' ? 'builtin.read_only_readiness' : nextRuntime === 'codex' ? 'exec' : 'default') }} disabled={!selectedRuntimeNode} className="h-9 w-full rounded-lg border bg-background px-3 text-sm text-foreground">{runtimeOptions.map((runtimeName) => <option key={runtimeName} value={runtimeName}>{runtimeName}</option>)}</select></label>
+              <label className="space-y-1.5 text-xs text-muted-foreground">Workflow<Input value={workflow} onChange={(event) => setWorkflow(event.target.value)} placeholder={runtime === 'miniflow' ? 'builtin.read_only_readiness' : 'default'} /></label>
               <label className="space-y-1.5 text-xs text-muted-foreground">深度执行超时（秒）<Input type="number" min={1} max={3600} value={dispatchTimeout} onChange={(event) => setDispatchTimeout(Number(event.target.value))} /><span className="block text-[11px] leading-4 text-muted-foreground">默认 30 分钟；本地 CLI 不暴露 5 小时额度，因此不伪造剩余额度。</span></label>
             </div>
+            {!runtimeNodes.length ? <p className="mt-3 text-xs text-amber-300">没有已连接且报告 Runtime capability 的 Fleet 节点；请先在节点管理中连接 Agent Runtime。</p> : null}
             <label className="mt-4 block space-y-1.5 text-xs text-muted-foreground">Task config（仅 timeout_seconds）<Textarea value={runtimeConfig} onChange={(event) => setRuntimeConfig(event.target.value)} spellCheck={false} className="min-h-32 resize-y font-mono text-xs text-foreground" /></label>
           </details>
         </div>
@@ -212,10 +227,13 @@ export default function OperationsAgentsPage() {
   const [view, setView] = useState<'automations' | 'agents'>('automations')
   const automations = useAutomations(workspaceId)
   const agents = useOperationsAgents(workspaceId)
+  const teams = useOperationsAgentTeams(workspaceId)
   const activity = useOperationsAgentActivity(workspaceId)
   const installStarterPack = useInstallAutomationStarters()
+  const createOperationsAgent = useCreateOperationsAgent()
   const createAutomation = useCreateAutomation()
   const patchAutomation = usePatchAutomation()
+  const startAutomationRun = useStartAutomationRun()
   const startRunMutation = useStartOperationsAgentRun()
   const [open, setOpen] = useState(false)
   const [selectedAgent, setSelectedAgent] = useState<OperationsAgent | null>(null)
@@ -224,7 +242,7 @@ export default function OperationsAgentsPage() {
   const [name, setName] = useState('')
   const [prompt, setPrompt] = useState('')
   const [precheck, setPrecheck] = useState('')
-  const [executor, setExecutor] = useState('codex')
+  const [automationAgentId, setAutomationAgentId] = useState('')
   const [projectPath, setProjectPath] = useState('')
   const [branch, setBranch] = useState('main')
   const [scheduleKind, setScheduleKind] = useState('weekdays')
@@ -235,11 +253,47 @@ export default function OperationsAgentsPage() {
   const [runInput, setRunInput] = useState('{}')
   const [runState, setRunState] = useState('{}')
   const [runTargetType, setRunTargetType] = useState('manual')
-  const latestRun = useMemo(() => new Map(activity.data?.map((run) => [run.operations_agent_id, run]) ?? []), [activity.data])
+  const [agentCreateOpen, setAgentCreateOpen] = useState(false)
+  const [agentName, setAgentName] = useState('')
+  const [agentDescription, setAgentDescription] = useState('')
+  const [owningTeamId, setOwningTeamId] = useState('')
+  const [automationToBind, setAutomationToBind] = useState<Automation | null>(null)
+  const [automationToRun, setAutomationToRun] = useState<Automation | null>(null)
+  const [bindingAgentId, setBindingAgentId] = useState('')
+  const latestRun = useMemo(
+    () => latestOperationsAgentRuns(activity.data ?? []),
+    [activity.data],
+  )
+  const runnableAgents = useMemo(
+    () => runnableOperationsAgents(agents.data ?? []),
+    [agents.data],
+  )
+  const compatibleAgents = useMemo(
+    () => compatibleOperationsAgents(agents.data ?? [], approvalMode),
+    [agents.data, approvalMode],
+  )
+
+  useEffect(() => {
+    if (!workspaceId && workspaces.data?.length) {
+      setWorkspaceId(workspaces.data[0].id)
+    }
+  }, [workspaceId, workspaces.data])
+
+  useEffect(() => {
+    if (agentCreateOpen && teams.data?.length === 1 && !owningTeamId) {
+      setOwningTeamId(teams.data[0].id)
+    }
+  }, [agentCreateOpen, owningTeamId, teams.data])
+
+  useEffect(() => {
+    if (!open) return
+    const selected = compatibleAgents.find((agent) => agent.id === automationAgentId)
+    if (!selected) setAutomationAgentId(compatibleAgents[0]?.id ?? '')
+  }, [automationAgentId, compatibleAgents, open])
   function startCreate(preset?: AgentStarterInput) {
     setName(preset?.name ?? '')
     setPrompt(preset?.prompt ?? '')
-    setExecutor(preset?.executor ?? 'codex')
+    setAutomationAgentId('')
     if (preset) {
       const [kind, presetTime] = preset.schedule.split('@')
       setScheduleKind(kind)
@@ -252,7 +306,7 @@ export default function OperationsAgentsPage() {
     if (!workspaceId || installStarterPack.isPending) return
     try {
       const result = await installStarterPack.mutateAsync({ workspaceId })
-      toast.success(`已支起 ${result.created_count} 个 Agent Starter，跳过 ${result.skipped_count} 个`)
+      toast.success(`已安装 ${result.created_count} 个自动化模板，跳过 ${result.skipped_count} 个`)
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Agent Starter 创建失败')
     }
@@ -266,17 +320,49 @@ export default function OperationsAgentsPage() {
     setOpen(true)
   }
 
+  function startAgentCreate(starter?: AgentStarterInput) {
+    setAgentName(starter?.name ?? '')
+    setAgentDescription(starter?.prompt ?? '')
+    setOwningTeamId(teams.data?.length === 1 ? teams.data[0].id : '')
+    setAgentCreateOpen(true)
+  }
+
+  async function submitAgentCreate() {
+    if (!workspaceId || !agentName.trim() || !owningTeamId) return
+    try {
+      const agent = await createOperationsAgent.mutateAsync({
+        workspaceId,
+        data: {
+          name: agentName.trim(),
+          description: agentDescription.trim() || null,
+          owning_team_id: owningTeamId,
+        },
+      })
+      setAgentCreateOpen(false)
+      setView('agents')
+      setSelectedAgent(agent)
+      setAgentDetailView('contract')
+      toast.success('Operations Agent 已创建；请确认 Runtime Contract 后发布')
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Operations Agent 创建失败')
+    }
+  }
+
   async function submitCreate() {
     if (!workspaceId) return
+    const boundAgent = compatibleAgents.find((agent) => agent.id === automationAgentId)
+    if (!boundAgent?.current_published_version) return
     try {
       await createAutomation.mutateAsync({ workspaceId, data: {
+        operations_agent_id: boundAgent.id,
+        operations_agent_version: boundAgent.current_published_version,
         name: name.trim(), prompt: prompt.trim(), precheck: precheck.trim() || null,
-        executor, schedule: `${scheduleKind}@${time}`, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-        session_mode: sessionMode, approval_mode: approvalMode,
+        executor: 'operations-agent', schedule: automationScheduleValue(scheduleKind, time), timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        session_mode: sessionMode, approval_mode: boundAgent.current_profile.mode,
         project: { path: projectPath.trim() || null, branch: branch.trim() || null }, enabled: true,
       } })
       setOpen(false)
-      toast.success('自动化已创建')
+      toast.success('自动化已创建并绑定已发布智能体')
     } catch (error) {
       toast.error(error instanceof Error ? error.message : '创建失败')
     }
@@ -289,6 +375,60 @@ export default function OperationsAgentsPage() {
       toast.success(automation.enabled ? '自动化已暂停' : '自动化已恢复')
     } catch (error) {
       toast.error(error instanceof Error ? error.message : '操作失败')
+    }
+  }
+
+  function openAutomationRun(automation: Automation) {
+    setAutomationToRun(automation)
+  }
+
+  async function runAutomationNow() {
+    if (!workspaceId || !automationToRun) return
+    try {
+      const run = await startAutomationRun.mutateAsync({
+        workspaceId,
+        automationId: automationToRun.id,
+      })
+      const agent = agents.data?.find(
+        (candidate) => candidate.id === automationToRun.operations_agent_id,
+      )
+      setAutomationToRun(null)
+      if (agent) {
+        setSelectedAgent(agent)
+        setAgentDetailView('activity')
+        setView('agents')
+      }
+      toast.success(`Automation Run ${run.id} 已提交`)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Automation Run 启动失败')
+    }
+  }
+
+  function openAutomationBinding(automation: Automation) {
+    setAutomationToBind(automation)
+    setBindingAgentId(automation.operations_agent_id ?? runnableAgents[0]?.id ?? '')
+  }
+
+  async function bindAutomation() {
+    if (!workspaceId || !automationToBind) return
+    const agent = runnableAgents.find((candidate) => candidate.id === bindingAgentId)
+    if (!agent?.current_published_version) return
+    try {
+      await patchAutomation.mutateAsync({
+        workspaceId,
+        automationId: automationToBind.id,
+        data: {
+          operations_agent_id: agent.id,
+          operations_agent_version: agent.current_published_version,
+          approval_mode: agent.current_profile.mode,
+          executor: 'operations-agent',
+          enabled: true,
+        },
+      })
+      setAutomationToBind(null)
+      toast.success(`已绑定 ${agent.name} v${agent.current_published_version}`)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : '智能体绑定失败')
     }
   }
 
@@ -326,20 +466,20 @@ export default function OperationsAgentsPage() {
           <label className="relative"><select value={workspaceId ?? ''} onChange={(event) => setWorkspaceId(event.target.value)} className="h-9 appearance-none rounded-lg border bg-background py-1 pl-3 pr-8 text-xs" aria-label="选择 Workspace">{workspaces.data.map((workspace) => <option key={workspace.id} value={workspace.id}>{workspace.name}</option>)}</select><ChevronDown className="pointer-events-none absolute right-2.5 top-2.5 size-4 text-muted-foreground" /></label>
         </header>
 
-        <div className="mt-10 flex items-center gap-1 border-b border-white/[0.08]">
-          <button type="button" onClick={() => setView('automations')} className={cn('border-b-2 px-4 py-3 text-sm transition-colors', view === 'automations' ? 'border-foreground text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground')}><CalendarClock className="mr-2 inline size-4" />自动化</button>
-          <button type="button" onClick={() => setView('agents')} className={cn('border-b-2 px-4 py-3 text-sm transition-colors', view === 'agents' ? 'border-foreground text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground')}><Bot className="mr-2 inline size-4" />智能体</button>
+        <div className="mt-10 flex items-center gap-1 border-b border-white/[0.08]" role="tablist" aria-label="自动化与智能体视图">
+          <button type="button" role="tab" aria-selected={view === 'automations'} onClick={() => setView('automations')} className={cn('border-b-2 px-4 py-3 text-sm transition-colors', view === 'automations' ? 'border-foreground text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground')}><CalendarClock className="mr-2 inline size-4" />自动化</button>
+          <button type="button" role="tab" aria-selected={view === 'agents'} onClick={() => setView('agents')} className={cn('border-b-2 px-4 py-3 text-sm transition-colors', view === 'agents' ? 'border-foreground text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground')}><Bot className="mr-2 inline size-4" />智能体</button>
         </div>
 
         <section className="mt-8" aria-labelledby="agent-starters-title">
           <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
             <div>
               <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-muted-foreground">SmoothUI / Agent starters</p>
-              <h2 id="agent-starters-title" className="mt-1 text-xl font-medium tracking-[-0.015em]">先把这三个 Agent 支起来</h2>
-              <p className="mt-1 text-sm text-muted-foreground">三套可直接创建的自动化模板；创建后会进入我的自动化并按日程执行。</p>
+              <h2 id="agent-starters-title" className="mt-1 text-xl font-medium tracking-[-0.015em]">添加 Operations Agent</h2>
+              <p className="mt-1 text-sm text-muted-foreground">Starter 卡片创建真实 Agent 身份；随后确认 Runtime Contract 并发布即可运行。</p>
             </div>
-            <Button size="sm" onClick={() => void installAgentStarters()} disabled={installStarterPack.isPending}>
-              {installStarterPack.isPending ? '正在安装…' : '一键安装三个 Agent'}
+            <Button size="sm" variant="outline" onClick={() => void installAgentStarters()} disabled={installStarterPack.isPending}>
+              {installStarterPack.isPending ? '正在安装…' : '安装三个自动化模板'}
             </Button>
           </div>
           <div className="grid gap-3 lg:grid-cols-3">
@@ -352,7 +492,7 @@ export default function OperationsAgentsPage() {
                 rows={5}
                 gridPattern={[...starter.pattern]}
                 className="h-[260px] p-4"
-                onButtonClick={() => startCreate(starter)}
+                onButtonClick={() => startAgentCreate(starter)}
               />
             ))}
           </div>
@@ -368,17 +508,53 @@ export default function OperationsAgentsPage() {
                   <Textarea value={automationDraft} onChange={(event) => setAutomationDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); configureDraft() } }} placeholder="例如：每个工作日检查失败任务，把需要处理的项目送到 Inbox" aria-label="描述自动化任务" className="min-h-12 resize-none border-0 bg-transparent px-0 py-3 shadow-none focus-visible:ring-0" />
                   <Button size="icon" className="mb-0.5 rounded-full" aria-label="配置自动化" disabled={!automationDraft.trim()} onClick={configureDraft}><ArrowUp /></Button>
                 </div>
-                <div className="mt-7 space-y-1">{SUGGESTIONS.map((item) => { const Icon = item.icon; return <button key={item.name} type="button" onClick={() => startCreate(item)} className="group flex w-full items-start gap-4 rounded-xl px-3 py-3 text-left transition-colors hover:bg-white/[0.04]"><Icon className={`mt-0.5 size-5 ${item.color}`} /><span className="flex-1"><span className="block text-sm font-medium">{item.name} <span className="ml-2 font-normal text-muted-foreground">{scheduleText(item.schedule)}</span></span><span className="mt-1 block text-sm text-muted-foreground">{item.prompt}</span></span><Plus className="mt-2 size-4 opacity-0 transition-opacity group-hover:opacity-100" /></button> })}</div>
+                <div className="mt-7 space-y-1">{SUGGESTIONS.map((item) => { const Icon = item.icon; return <button key={item.name} type="button" onClick={() => startCreate(item)} className="group flex w-full items-start gap-4 rounded-xl px-3 py-3 text-left transition-colors hover:bg-white/[0.04]"><Icon className={`mt-0.5 size-5 ${item.color}`} /><span className="flex-1"><span className="block text-sm font-medium">{item.name} <span className="ml-2 font-normal text-muted-foreground">{automationScheduleText(item.schedule)}</span></span><span className="mt-1 block text-sm text-muted-foreground">{item.prompt}</span></span><Plus className="mt-2 size-4 opacity-0 transition-opacity group-hover:opacity-100" /></button> })}</div>
               </div>
             </section>
             <section className="mt-12">
               <div className="mb-4 flex items-center justify-between"><h2 className="text-sm font-medium text-muted-foreground">我的自动化</h2><Button variant="ghost" size="sm" onClick={() => startCreate()}><Plus />手动配置</Button></div>
-              {automations.isLoading ? <LoadingState rows={3} /> : automations.isError ? <ErrorState message={(automations.error as Error)?.message} hint={BACKEND_HINT} /> : !automations.data?.length ? <EmptyState title="还没有自动化" description="使用模板或创建一个新的定时任务。" /> : <div className="divide-y divide-white/[0.06]">{automations.data.map((automation) => { const meta = executorMeta(automation.executor); const Icon = meta.icon; return <div key={automation.id} className="flex items-start gap-4 rounded-lg px-3 py-4 hover:bg-white/[0.03]"><span className={cn('mt-0.5 flex size-7 items-center justify-center rounded-md bg-white/[0.05]', meta.color)}><Icon className="size-4" /></span><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-3"><span className="text-sm font-medium">{automation.name}</span><span className={cn('rounded-full px-2 py-0.5 text-[11px]', automation.enabled ? 'bg-white/[0.06] text-muted-foreground' : 'bg-amber-400/10 text-amber-300')}>{automation.enabled ? '等待首次运行' : '已暂停'}</span><span className="text-xs text-muted-foreground">{scheduleText(automation.schedule)}</span><span className="text-xs text-muted-foreground">{meta.name}</span></div><p className="mt-1 truncate text-sm text-muted-foreground">{automation.prompt}</p></div><Button size="icon-sm" variant="ghost" aria-label={automation.enabled ? `暂停 ${automation.name}` : `恢复 ${automation.name}`} onClick={() => void toggleAutomation(automation)}>{automation.enabled ? <Pause /> : <Play />}</Button></div> })}</div>}
+              {automations.isLoading ? (
+                <LoadingState rows={3} />
+              ) : automations.isError ? (
+                <ErrorState message={(automations.error as Error)?.message} hint={BACKEND_HINT} />
+              ) : !automations.data?.length ? (
+                <EmptyState title="还没有自动化" description="使用模板或创建一个新的定时任务。" />
+              ) : (
+                <div className="divide-y divide-white/[0.06]">
+                  {automations.data.map((automation) => {
+                    const meta = executorMeta(automation.executor)
+                    const Icon = meta.icon
+                    const boundAgent = agents.data?.find(
+                      (agent) => agent.id === automation.operations_agent_id,
+                    )
+                    return (
+                      <div key={automation.id} className="flex items-start gap-4 rounded-lg px-3 py-4 hover:bg-white/[0.03]">
+                        <span className={cn('mt-0.5 flex size-7 items-center justify-center rounded-md bg-white/[0.05]', meta.color)}><Icon className="size-4" /></span>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex flex-wrap items-center gap-3">
+                            <span className="text-sm font-medium">{automation.name}</span>
+                            <span className={cn('rounded-full px-2 py-0.5 text-[11px]', automation.enabled ? 'bg-white/[0.06] text-muted-foreground' : 'bg-amber-400/10 text-amber-300')}>{automation.enabled ? '已启用' : '已暂停'}</span>
+                            <span className="text-xs text-muted-foreground">{automationScheduleText(automation.schedule)}</span>
+                            <span className="text-xs text-muted-foreground">{meta.name}</span>
+                          </div>
+                          <p className="mt-1 truncate text-sm text-muted-foreground">{automation.prompt}</p>
+                          <p className="mt-1 text-xs text-muted-foreground">{boundAgent ? `绑定 ${boundAgent.name} · Agent v${automation.operations_agent_version} · Automation r${automation.revision}` : '尚未绑定已发布 Operations Agent；调度保持暂停'}</p>
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <Button size="sm" variant="ghost" onClick={() => openAutomationBinding(automation)}>{boundAgent ? '更换绑定' : '绑定智能体'}</Button>
+                          <Button size="sm" variant="outline" disabled={!automation.enabled || !boundAgent} onClick={() => openAutomationRun(automation)}><Play />立即运行</Button>
+                          <Button size="icon-sm" variant="ghost" disabled={!automation.enabled && !boundAgent} aria-label={automation.enabled ? `暂停 ${automation.name}` : `恢复 ${automation.name}`} onClick={() => void toggleAutomation(automation)}>{automation.enabled ? <Pause /> : <Play />}</Button>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
             </section>
           </div>
         ) : (
           <section className="mt-10">
-            <div className="mb-7 flex items-start justify-between gap-4"><div><h2 className="text-xl font-medium tracking-[-0.015em]">智能体正在做什么</h2><p className="mt-1 text-sm text-muted-foreground">状态每 5 秒更新；需要你决定的动作会进入 Inbox。</p></div><Link href="/agents" className={buttonVariants()}><Plus />添加智能体</Link></div>
+            <div className="mb-7 flex items-start justify-between gap-4"><div><h2 className="text-xl font-medium tracking-[-0.015em]">智能体正在做什么</h2><p className="mt-1 text-sm text-muted-foreground">状态每 5 秒更新；需要你决定的动作会进入 Inbox。</p></div><Button onClick={() => startAgentCreate()}><Plus />添加智能体</Button></div>
             {agents.isLoading ? <LoadingState rows={3} /> : agents.isError ? <ErrorState message={(agents.error as Error)?.message} hint={BACKEND_HINT} /> : !agents.data?.length ? <EmptyState title="还没有智能体" description="添加一个智能体后，它的当前任务和最近活动会显示在这里。" /> : <div className="divide-y divide-white/[0.07] border-y border-white/[0.07]">{agents.data.map((agent) => { const run = latestRun.get(agent.id); const working = run?.status === 'running' || run?.status === 'queued'; return <article key={agent.id}><button type="button" onClick={() => { setSelectedAgent(agent); setAgentDetailView('activity') }} className="group flex w-full items-start gap-4 px-2 py-5 text-left transition-colors hover:bg-white/[0.025] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-white/30"><div className="relative size-10 shrink-0"><AgentAvatar seed={agent.id} size={40} />{working ? <span className="absolute -right-0.5 -top-0.5 size-2.5 animate-pulse rounded-full border-2 border-[#0f1012] bg-emerald-400" /> : null}</div><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-x-3 gap-y-1"><h3 className="text-sm font-medium">{agent.name}</h3><span className={cn('text-xs', working ? 'text-emerald-400' : agent.disabled ? 'text-amber-300' : 'text-muted-foreground')}>{agent.disabled ? '已停用' : working ? '工作中' : '空闲'}</span></div><p className="mt-1 text-sm text-muted-foreground">{run ? `${run.target_resource_type} · ${run.target_resource_id}` : agent.description || '等待任务'}</p>{run ? <div className="mt-3 flex items-center gap-2 text-xs text-muted-foreground"><CircleDot className="size-3" />{run.trigger_type} · {run.status}</div> : <div className="mt-3 text-xs text-muted-foreground">暂无进行中的任务</div>}</div><ChevronDown className="mt-2 size-4 -rotate-90 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" /></button></article> })}</div>}
           </section>
         )}
@@ -390,13 +566,66 @@ export default function OperationsAgentsPage() {
           <div className="grid gap-5 py-2">
             <Input value={name} onChange={(event) => setName(event.target.value)} placeholder="自动化名称" className="text-base font-medium" autoFocus />
             <label className="space-y-1.5 text-xs text-muted-foreground">提示词<Textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="每次运行要完成什么？" className="min-h-40 resize-y text-sm" /></label>
-            <fieldset><legend className="mb-2 text-xs text-muted-foreground">选择智能体</legend><div className="grid grid-cols-2 gap-2 sm:grid-cols-4">{EXECUTORS.map((item) => { const Icon = item.icon; return <button key={item.id} type="button" aria-pressed={executor === item.id} onClick={() => setExecutor(item.id)} className={cn('flex items-center gap-2 rounded-lg border px-3 py-3 text-left text-sm', executor === item.id ? 'border-foreground bg-white/[0.06]' : 'border-white/[0.08] hover:bg-white/[0.03]')}><Icon className={cn('size-4', item.color)} />{item.name}</button> })}</div></fieldset>
+            <label className="space-y-1.5 text-xs text-muted-foreground">绑定已发布智能体<select value={automationAgentId} onChange={(event) => setAutomationAgentId(event.target.value)} className="h-10 w-full rounded-lg border bg-background px-3 text-sm text-foreground"><option value="">选择与审批模式兼容的智能体</option>{compatibleAgents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name} · v{agent.current_published_version} · {APPROVALS.find((item) => item.id === agent.current_profile.mode)?.label}</option>)}</select></label>
             <div className="grid gap-4 sm:grid-cols-2"><label className="space-y-1.5 text-xs text-muted-foreground">项目路径<Input value={projectPath} onChange={(event) => setProjectPath(event.target.value)} placeholder="/workspace/project" /></label><label className="space-y-1.5 text-xs text-muted-foreground">基础分支<Input value={branch} onChange={(event) => setBranch(event.target.value)} /></label></div>
             <div className="grid gap-4 sm:grid-cols-3"><label className="space-y-1.5 text-xs text-muted-foreground">日程<select value={scheduleKind} onChange={(event) => setScheduleKind(event.target.value)} className="h-9 w-full rounded-lg border bg-background px-3 text-sm"><option value="hourly">每小时</option><option value="daily">每天</option><option value="weekdays">工作日</option><option value="weekly">每周</option></select></label><label className="space-y-1.5 text-xs text-muted-foreground">时间<Input type="time" value={time} onChange={(event) => setTime(event.target.value)} disabled={scheduleKind === 'hourly'} /></label><label className="space-y-1.5 text-xs text-muted-foreground">会话<select value={sessionMode} onChange={(event) => setSessionMode(event.target.value as 'fresh' | 'reuse')} className="h-9 w-full rounded-lg border bg-background px-3 text-sm"><option value="fresh">每次新会话</option><option value="reuse">重复利用会话</option></select></label></div>
-            <fieldset><legend className="mb-2 text-xs text-muted-foreground">审批方式</legend><div className="grid gap-2 sm:grid-cols-3">{APPROVALS.map((item) => <button key={item.id} type="button" onClick={() => setApprovalMode(item.id)} className={cn('rounded-lg border p-3 text-left', approvalMode === item.id ? 'border-foreground bg-white/[0.06]' : 'border-white/[0.08]')}><span className="block text-sm font-medium">{item.label}</span><span className="mt-1 block text-xs text-muted-foreground">{item.detail}</span></button>)}</div></fieldset>
+            <fieldset><legend className="mb-2 text-xs text-muted-foreground">审批方式</legend><div className="grid gap-2 sm:grid-cols-2">{APPROVALS.filter((item) => item.id !== 'low_risk_automatic').map((item) => <button key={item.id} type="button" aria-pressed={approvalMode === item.id} onClick={() => setApprovalMode(item.id)} className={cn('rounded-lg border p-3 text-left', approvalMode === item.id ? 'border-foreground bg-white/[0.06]' : 'border-white/[0.08]')}><span className="block text-sm font-medium">{item.label}</span><span className="mt-1 block text-xs text-muted-foreground">{item.detail}</span></button>)}</div></fieldset>
             <details className="rounded-lg border border-white/[0.08] px-4 py-3"><summary className="cursor-pointer text-sm text-muted-foreground">高级设置</summary><label className="mt-4 block space-y-1.5 text-xs text-muted-foreground"><Terminal className="mr-1 inline size-3" />预检查<Input value={precheck} onChange={(event) => setPrecheck(event.target.value)} placeholder="可选：运行前检查命令" className="font-mono" /></label></details>
           </div>
-          <DialogFooter><Button variant="outline" onClick={() => setOpen(false)}>取消</Button><Button onClick={() => void submitCreate()} disabled={!name.trim() || !prompt.trim() || createAutomation.isPending}><Plus />创建</Button></DialogFooter>
+          <DialogFooter><Button variant="outline" onClick={() => setOpen(false)}>取消</Button><Button onClick={() => void submitCreate()} disabled={!name.trim() || !prompt.trim() || !automationAgentId || createAutomation.isPending}><Plus />创建并启用</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={agentCreateOpen} onOpenChange={setAgentCreateOpen}>
+        <DialogContent className="sm:max-w-xl">
+          <DialogHeader>
+            <DialogTitle>添加 Operations Agent</DialogTitle>
+            <DialogDescription>创建 Observe Only 身份后，继续配置已连接 Fleet 节点的 Runtime Contract 并发布。</DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4 py-2">
+            <Input value={agentName} onChange={(event) => setAgentName(event.target.value)} placeholder="智能体名称" autoFocus />
+            <Textarea value={agentDescription} onChange={(event) => setAgentDescription(event.target.value)} placeholder="职责与只读边界" className="min-h-32" />
+            <label className="space-y-1.5 text-xs text-muted-foreground">所属 Team<select value={owningTeamId} onChange={(event) => setOwningTeamId(event.target.value)} className="h-10 w-full rounded-lg border bg-background px-3 text-sm text-foreground"><option value="">选择 Team</option>{(teams.data ?? []).map((team) => <option key={team.id} value={team.id}>{team.name}</option>)}</select></label>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setAgentCreateOpen(false)}>取消</Button>
+            <Button onClick={() => void submitAgentCreate()} disabled={!agentName.trim() || !owningTeamId || createOperationsAgent.isPending}><Plus />创建并配置</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={Boolean(automationToRun)} onOpenChange={(nextOpen) => { if (!nextOpen) setAutomationToRun(null) }}>
+        <DialogContent className="sm:max-w-xl">
+          <DialogHeader>
+            <DialogTitle>立即运行自动化</DialogTitle>
+            <DialogDescription>{automationToRun?.name} 将使用已持久化的 Agent/version 绑定执行；Run 会固定 Automation revision 与完整快照。</DialogDescription>
+          </DialogHeader>
+          <p className="rounded-lg border border-white/[0.08] p-3 text-sm text-muted-foreground">
+            Agent {automationToRun?.operations_agent_id} · v{automationToRun?.operations_agent_version} · Automation r{automationToRun?.revision}
+          </p>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setAutomationToRun(null)}>取消</Button>
+            <Button onClick={() => void runAutomationNow()} disabled={startAutomationRun.isPending}><Play />提交 Run</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={Boolean(automationToBind)} onOpenChange={(nextOpen) => { if (!nextOpen) setAutomationToBind(null) }}>
+        <DialogContent className="sm:max-w-xl">
+          <DialogHeader>
+            <DialogTitle>绑定 Operations Agent</DialogTitle>
+            <DialogDescription>绑定会固定当前已发布 Agent 版本；Low-Risk Automatic Agent 不可用于 Automation。</DialogDescription>
+          </DialogHeader>
+          <label className="grid gap-2 text-sm text-muted-foreground">已发布智能体
+            <select value={bindingAgentId} onChange={(event) => setBindingAgentId(event.target.value)} className="h-10 rounded-lg border bg-background px-3 text-foreground">
+              <option value="">选择智能体</option>
+              {runnableAgents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name} · v{agent.current_published_version} · {APPROVALS.find((item) => item.id === agent.current_profile.mode)?.label}</option>)}
+            </select>
+          </label>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setAutomationToBind(null)}>取消</Button>
+            <Button onClick={() => void bindAutomation()} disabled={!bindingAgentId || patchAutomation.isPending}>绑定并启用</Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 
@@ -405,7 +634,7 @@ export default function OperationsAgentsPage() {
           {selectedAgent ? <>
             <DialogHeader className="border-b border-white/[0.08] px-6 py-4">
               <div className="flex items-center gap-3 pr-8"><AgentAvatar seed={selectedAgent.id} size={36} /><div className="min-w-0"><DialogTitle className="flex items-center gap-2 text-base"><span className="truncate">{selectedAgent.name}</span><span className={cn('text-xs font-normal', selectedAgent.disabled ? 'text-amber-300' : latestRun.get(selectedAgent.id)?.status === 'running' ? 'text-emerald-400' : 'text-muted-foreground')}>{selectedAgent.disabled ? '已停用' : latestRun.get(selectedAgent.id)?.status === 'running' ? '工作中' : '空闲'}</span></DialogTitle><DialogDescription className="mt-0.5">CLI Agent 会话 · {APPROVALS.find((item) => item.id === selectedAgent.current_profile.mode)?.label ?? selectedAgent.current_profile.mode}</DialogDescription></div></div>
-              <div className="mt-3 flex gap-1"><button type="button" onClick={() => setAgentDetailView('activity')} className={cn('rounded-md px-3 py-1.5 text-xs', agentDetailView === 'activity' ? 'bg-white/[0.08] text-foreground' : 'text-muted-foreground hover:text-foreground')}>活动</button><button type="button" onClick={() => setAgentDetailView('contract')} className={cn('rounded-md px-3 py-1.5 text-xs', agentDetailView === 'contract' ? 'bg-white/[0.08] text-foreground' : 'text-muted-foreground hover:text-foreground')}>Contract</button></div>
+              <div className="mt-3 flex gap-1" role="tablist" aria-label="智能体详情"><button type="button" role="tab" aria-selected={agentDetailView === 'activity'} onClick={() => setAgentDetailView('activity')} className={cn('rounded-md px-3 py-1.5 text-xs', agentDetailView === 'activity' ? 'bg-white/[0.08] text-foreground' : 'text-muted-foreground hover:text-foreground')}>活动</button><button type="button" role="tab" aria-selected={agentDetailView === 'contract'} onClick={() => setAgentDetailView('contract')} className={cn('rounded-md px-3 py-1.5 text-xs', agentDetailView === 'contract' ? 'bg-white/[0.08] text-foreground' : 'text-muted-foreground hover:text-foreground')}>Contract</button></div>
             </DialogHeader>
             {agentDetailView === 'activity' ? <div className="grid min-h-0 flex-1 md:grid-cols-[minmax(0,1fr)_250px]">
               <div className="flex min-h-0 flex-col bg-[#090a0b]">
@@ -426,7 +655,7 @@ export default function OperationsAgentsPage() {
                   </details>
                 </div>
               </div>
-              <aside className="border-l border-white/[0.08] bg-white/[0.015] p-5 text-xs"><div className="text-muted-foreground">职责</div><p className="mt-2 text-sm leading-6 text-foreground">{selectedAgent.description || '尚未填写职责说明'}</p><div className="mt-6 text-muted-foreground">权限模式</div><p className="mt-2 text-sm text-foreground">{APPROVALS.find((item) => item.id === selectedAgent.current_profile.mode)?.label}</p><p className="mt-1 leading-5 text-muted-foreground">Profile v{selectedAgent.current_profile.version} · {selectedAgent.current_profile.reason}</p><Link href="/agents" className={cn(buttonVariants({ variant: 'outline', size: 'sm' }), 'mt-6 w-full')}>配置智能体</Link></aside>
+              <aside className="border-l border-white/[0.08] bg-white/[0.015] p-5 text-xs"><div className="text-muted-foreground">职责</div><p className="mt-2 text-sm leading-6 text-foreground">{selectedAgent.description || '尚未填写职责说明'}</p><div className="mt-6 text-muted-foreground">权限模式</div><p className="mt-2 text-sm text-foreground">{APPROVALS.find((item) => item.id === selectedAgent.current_profile.mode)?.label}</p><p className="mt-1 leading-5 text-muted-foreground">Profile v{selectedAgent.current_profile.version} · {selectedAgent.current_profile.reason}</p><Button variant="outline" size="sm" className="mt-6 w-full" onClick={() => setAgentDetailView('contract')}>配置智能体</Button></aside>
             </div> : workspaceId ? <ContractEditor workspaceId={workspaceId} agent={selectedAgent} /> : null}
           </> : null}
         </DialogContent>

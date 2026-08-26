@@ -33,6 +33,7 @@ services:
       dockerfile: Dockerfile
       args:
         BACKEND_URL: http://api:8000
+        NEXT_PUBLIC_ENABLE_VERCEL_ANALYTICS: ${NEXT_PUBLIC_ENABLE_VERCEL_ANALYTICS:-}
 
   api:
     <<: *backend-build

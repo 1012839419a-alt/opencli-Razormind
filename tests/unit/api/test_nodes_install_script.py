@@ -1,5 +1,11 @@
 """Install-script rendering tests for edge node bootstrap."""
 
+import io
+import os
+import subprocess
+import sys
+import tarfile
+
 import pytest
 
 from backend.api.v1.nodes import _install_script_template
@@ -140,3 +146,68 @@ async def test_managed_opencli_patch_is_served_to_native_agents(client):
     assert "OPENCLI_ADMIN_REMOTE_DAEMON_ROUTE_V1" in response.text
     assert "'dist', 'src', 'daemon.js'" in response.text
     assert "'dist', 'src', 'browser', 'daemon-transport.js'" in response.text
+
+
+def test_native_installer_downloads_and_extracts_runtime_bundle():
+    body = (
+        __import__("pathlib").Path(__file__).parents[3]
+        / "scripts"
+        / "install-agent.sh"
+    ).read_text(encoding="utf-8")
+
+    assert "/api/v1/nodes/install/agent-runtime.tar.gz" in body
+    assert 'tar --no-same-owner --no-same-permissions -xzf "$RUNTIME_BUNDLE"' in body
+    assert 'backend/agent_runtimes/*.py' in body
+    assert 'backend/miniflow/*.py' in body
+    assert 'backend/security/*.py' in body
+
+
+@pytest.mark.asyncio
+async def test_runtime_bundle_contains_native_agent_packages(client):
+    response = await client.get("/api/v1/nodes/install/agent-runtime.tar.gz")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/gzip")
+    with tarfile.open(fileobj=io.BytesIO(response.content), mode="r:gz") as archive:
+        names = set(archive.getnames())
+
+    assert "backend/agent_runtimes/registry.py" in names
+    assert "backend/agent_runtimes/opentabs_adapter.py" in names
+    assert "backend/miniflow/runner.py" in names
+    assert "backend/security/url_guard.py" in names
+    assert all(
+        name.startswith(("backend/agent_runtimes/", "backend/miniflow/", "backend/security/"))
+        for name in names
+    )
+
+
+@pytest.mark.asyncio
+async def test_runtime_bundle_imports_in_native_agent_layout(client, tmp_path):
+    response = await client.get("/api/v1/nodes/install/agent-runtime.tar.gz")
+    assert response.status_code == 200
+
+    backend_root = tmp_path / "backend"
+    backend_root.mkdir()
+    (backend_root / "__init__.py").touch()
+    with tarfile.open(fileobj=io.BytesIO(response.content), mode="r:gz") as archive:
+        archive.extractall(tmp_path, filter="data")
+
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(tmp_path)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "from backend.agent_runtimes.registry import list_runtime_types; "
+                "assert {'bbx', 'miniflow', 'opentabs', 'pi'} <= set(list_runtime_types())"
+            ),
+        ],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr

@@ -1,11 +1,17 @@
 'use client'
 
+
 import { useQueryClient } from '@tanstack/react-query'
-import { Bot, Check, Loader2, Send, ShieldCheck, X } from 'lucide-react'
+import { Bot, ShieldCheck } from 'lucide-react'
 import { usePathname } from 'next/navigation'
 import { FormEvent, KeyboardEvent, useEffect, useState } from 'react'
 
-import { Button } from '@/components/ui/button'
+import {
+  AgentPromptBar,
+  ApprovalCard,
+  ThinkingTrace,
+  ToolChip,
+} from '@/components/agent-native/agent-primitives'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import {
   Dialog,
@@ -14,10 +20,10 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import { Textarea } from '@/components/ui/textarea'
 import { apiClient } from '@/lib/api/client'
 import type { ApiResponse } from '@/lib/api/types'
 import { ROUTE_LABELS } from '@/lib/navigation'
+
 
 type AgentMessage = {
   role: 'user' | 'assistant'
@@ -157,12 +163,16 @@ export function GlobalAgentDock({
             当前上下文：{ROUTE_LABELS[pathname] ?? pathname}。读取可直接执行，写入操作先生成确认提案。
             未明确指定 Workspace 时，仅在后端能解析出唯一授权范围时允许确认写操作。
           </DialogDescription>
+          <div className="flex flex-wrap gap-1.5 pt-1" aria-label="Agent 能力状态">
+            <ToolChip icon={Bot} label="当前页面" detail={ROUTE_LABELS[pathname] ?? pathname} />
+            <ToolChip icon={ShieldCheck} label="写入保护" detail="需确认" tone="warning" />
+          </div>
         </DialogHeader>
 
         <ScrollArea className="min-h-0 flex-1">
           <div className="space-y-3 p-4" aria-live="polite">
             {messages.length === 0 ? (
-              <div className="rounded-md border border-dashed p-4">
+              <div className="rounded-lg border border-dashed p-4">
                 <div className="flex items-center gap-2 text-sm font-medium">
                   <ShieldCheck className="size-4 text-success" aria-hidden />
                   所有页面共用一个操作入口
@@ -176,78 +186,51 @@ export function GlobalAgentDock({
               <div
                 key={`${message.role}-${index}`}
                 className={message.role === 'user'
-                  ? 'ml-8 rounded-md bg-primary px-3 py-2 text-sm text-primary-foreground'
-                  : 'mr-8 rounded-md border bg-muted/30 px-3 py-2 text-sm'}
+                  ? 'ml-8 rounded-lg bg-primary px-3 py-2 text-sm text-primary-foreground'
+                  : 'mr-8 rounded-lg border bg-muted/30 px-3 py-2 text-sm'}
               >
                 {message.content}
               </div>
             ))}
             {sending ? (
-              <div className="flex items-center gap-2 text-xs text-muted-foreground" role="status">
-                <Loader2 className="size-3.5 animate-spin" aria-hidden />
-                Agent 正在处理
-              </div>
+              <ThinkingTrace
+                steps={['读取当前页面上下文', '整理可执行建议', '等待 Agent 回复']}
+              />
             ) : null}
             {proposal ? (
-              <div className="rounded-md border border-warning/40 bg-warning/10 p-3">
-                <div className="text-sm font-medium">待确认操作</div>
-                <p className="mt-1 text-xs text-muted-foreground">{proposal.summary}</p>
-                <div className="mt-3 rounded-xs border bg-background/70 p-2 font-mono text-2xs">
-                  {proposal.diff}
-                </div>
-                <div className="mt-2 space-y-1 font-mono text-3xs text-muted-foreground">
-                  <div>工作项：{proposal.work_item_id ?? '未生成'}</div>
-                  <div>工作区：{proposal.workspace_id ?? '未绑定'}</div>
-                  <div>提案版本：{proposal.proposal_version ?? '未生成'}</div>
-                </div>
-                <div className="mt-3 flex justify-end gap-2">
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    disabled={confirming}
-                    onClick={() => setProposal(null)}
-                  >
-                    <X aria-hidden />
-                    拒绝
-                  </Button>
-                  <Button
-                    size="sm"
-                    disabled={
-                      confirming
-                      || !proposal.work_item_id
-                      || !proposal.workspace_id
-                      || !proposal.proposal_version
-                    }
-                    onClick={() => void confirmProposal()}
-                  >
-                    {confirming ? <Loader2 className="animate-spin" aria-hidden /> : <Check aria-hidden />}
-                    确认执行
-                  </Button>
-                </div>
-              </div>
+              <ApprovalCard
+                summary={proposal.summary}
+                diff={proposal.diff}
+                metadata={[
+                  { label: '工具', value: proposal.tool },
+                  { label: '工作项', value: proposal.work_item_id ?? '未生成' },
+                  { label: '工作区', value: proposal.workspace_id ?? '未绑定' },
+                  { label: '提案版本', value: proposal.proposal_version ?? '未生成' },
+                ]}
+                confirming={confirming}
+                disabled={
+                  !proposal.work_item_id
+                  || !proposal.workspace_id
+                  || !proposal.proposal_version
+                }
+                onReject={() => setProposal(null)}
+                onConfirm={() => void confirmProposal()}
+              />
             ) : null}
             {error ? <p className="text-xs text-destructive" role="alert">{error}</p> : null}
           </div>
         </ScrollArea>
 
-        <form className="border-t p-4" onSubmit={(event) => void sendMessage(event)}>
-          <Textarea
-            value={input}
-            onChange={(event) => setInput(event.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder="告诉 Agent 你要查询或执行什么…"
-            aria-label="给全局 Agent 的消息"
-            className="max-h-36 min-h-20 resize-none rounded-xs"
-            disabled={sending || confirming}
-          />
-          <div className="mt-2 flex items-center justify-between gap-3">
-            <span className="text-3xs text-muted-foreground">Enter 发送 · Shift+Enter 换行</span>
-            <Button type="submit" size="sm" disabled={!input.trim() || sending || confirming || Boolean(proposal)}>
-              {sending ? <Loader2 className="animate-spin" aria-hidden /> : <Send aria-hidden />}
-              发送
-            </Button>
-          </div>
-        </form>
+        <AgentPromptBar
+          value={input}
+          onChange={setInput}
+          onKeyDown={handleKeyDown}
+          onSubmit={(event) => void sendMessage(event)}
+          placeholder="描述你要查询或执行的事情…"
+          disabled={sending || confirming || Boolean(proposal)}
+          submitting={sending}
+          footer={<>Enter 发送 · Shift+Enter 换行</>}
+        />
       </DialogContent>
     </Dialog>
   )

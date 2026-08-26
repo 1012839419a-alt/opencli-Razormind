@@ -16,6 +16,7 @@ const APP_ROUTES = [
   '/schedules',
   '/notifications',
   '/agents',
+  '/operations-agents',
   '/skills',
   '/providers',
   '/nodes',

@@ -158,7 +158,7 @@ def validate_agent_contract_payload(
 class OperationsAgentCreate(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     description: str | None = Field(default=None, max_length=4000)
-    owning_team_id: str
+    owning_team_id: str | None = None
 
 
 class OperationsAgentPatch(BaseModel):
@@ -220,6 +220,11 @@ class OperationsAgentRunRead(UTCModel):
     profile_version: int
     trigger_type: str
     trigger_reference: str | None
+    automation_id: str | None
+    automation_revision: int | None
+    automation_snapshot: dict[str, JsonValue] | None
+    scheduled_for: datetime | None
+    schedule_timezone: str | None
     target_resource_type: str
     target_resource_id: str
     input_payload: dict[str, JsonValue]
@@ -261,6 +266,16 @@ class AgentProfileRead(UTCModel):
     action_scope: list[str]
     assigned_by_user_id: str
     reason: str
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class OperationsAgentTeamRead(UTCModel):
+    id: str
+    workspace_id: str
+    name: str
+    slug: str
     created_at: datetime
 
     model_config = {"from_attributes": True}

@@ -138,7 +138,6 @@ async def lifespan(app: FastAPI):
     # Mark stale pending/running tasks as failed (lost on previous restart)
     from sqlalchemy import update
 
-    from backend.models.operations_agent import OperationsAgentRun
     from backend.models.task import CollectionTask
     async with AsyncSessionLocal() as session:
         await session.execute(
@@ -146,15 +145,12 @@ async def lifespan(app: FastAPI):
             .where(CollectionTask.status.in_(["pending", "running", "ai_processing"]))
             .values(status="failed", error_message="Task lost on server restart")
         )
-        await session.execute(
-            update(OperationsAgentRun)
-            .where(OperationsAgentRun.status.in_(["queued", "running"]))
-            .values(
-                status="failed",
-                error_message="Operations Agent run interrupted by server restart",
-            )
-        )
         await session.commit()
+    from backend.services.scheduled_run_recovery import (
+        recover_operations_agent_runs_on_startup,
+    )
+
+    await recover_operations_agent_runs_on_startup()
     logger.info("Recovered stale tasks on startup")
 
     # Managed acquisitions are durable submit-and-observe work. Unlike legacy

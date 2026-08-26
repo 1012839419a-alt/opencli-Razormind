@@ -62,6 +62,25 @@ def test_miniflow_runtime_registered_and_available_by_default():
     assert "miniflow" in available_runtimes()
 
 
+
+async def test_builtin_readiness_workflow_is_deployment_independent(monkeypatch):
+    monkeypatch.delenv("MINIFLOW_WORKFLOW_ROOT", raising=False)
+    adapter = MiniFlowRuntimeAdapter()
+    task = AgentTask(
+        task_id="t-builtin",
+        workflow="builtin.read_only_readiness",
+        config={"_clock": _clock(), "_sleep": _no_sleep},
+    )
+
+    events = [event async for event in adapter.invoke(task)]
+
+    assert events[-1]["type"] == "done"
+    assert events[-1]["result"]["workflow"] == "operations-read-only-readiness"
+    assert [step["name"] for step in events[-1]["result"]["steps"]] == [
+        "inspect-runtime-root",
+        "verify-runtime-bundle",
+    ]
+
 def test_validate_config_rejects_bad_values():
     adapter = MiniFlowRuntimeAdapter()
 

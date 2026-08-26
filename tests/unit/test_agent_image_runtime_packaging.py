@@ -10,6 +10,8 @@ def test_agent_image_packages_runtime_adapter_modules():
     assert "COPY backend/agent_runtimes/ ./backend/agent_runtimes/" in dockerfile
     assert "COPY backend/miniflow/ ./backend/miniflow/" in dockerfile
 
+    assert "COPY backend/security/ ./backend/security/" in dockerfile
+
 
 def test_public_images_package_opencli_without_a_private_checkout():
     main_image = (ROOT / "Dockerfile").read_text(encoding="utf-8")
@@ -21,6 +23,8 @@ def test_public_images_package_opencli_without_a_private_checkout():
         assert "node /tmp/patch-opencli.js" in dockerfile
         assert "2233admin/OhMyOpenCLI" not in dockerfile
         assert "git clone ${OHMYOPENCLI_REPO}" not in dockerfile
+
+    assert "command -v npm" in agent_image
 
 
 def test_native_adapter_pack_install_requires_an_explicit_repository():

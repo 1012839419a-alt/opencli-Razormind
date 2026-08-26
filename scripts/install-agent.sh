@@ -296,6 +296,33 @@ install_python() {
   fi
   touch "$AGENT_DIR/backend/__init__.py"
 
+  # ── Download runtime adapters and MiniFlow for native Agents ──────────────
+  RUNTIME_BUNDLE="$AGENT_DIR/agent-runtime.tar.gz"
+  RUNTIME_BUNDLE_URL="${CENTRAL_API_URL%/}/api/v1/nodes/install/agent-runtime.tar.gz"
+  command -v tar >/dev/null 2>&1 || die "tar is required to install Agent runtime packages"
+  info "Downloading Agent runtime packages from center..."
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL "${AUTH_HEADER[@]}" "$RUNTIME_BUNDLE_URL" -o "$RUNTIME_BUNDLE"
+  elif command -v wget >/dev/null 2>&1; then
+    if [[ -n "$AGENT_API_TOKEN" ]]; then
+      wget --header="Authorization: Bearer $AGENT_API_TOKEN" \
+        -qO "$RUNTIME_BUNDLE" "$RUNTIME_BUNDLE_URL"
+    else
+      wget -qO "$RUNTIME_BUNDLE" "$RUNTIME_BUNDLE_URL"
+    fi
+  else
+    die "Neither curl nor wget found — cannot download Agent runtime packages"
+  fi
+  tar -tzf "$RUNTIME_BUNDLE" | while IFS= read -r entry; do
+    [[ "$entry" == backend/agent_runtimes/*.py \
+      || "$entry" == backend/miniflow/*.py \
+      || "$entry" == backend/security/*.py ]] || \
+      die "Unexpected path in Agent runtime package: $entry"
+  done
+  tar --no-same-owner --no-same-permissions -xzf "$RUNTIME_BUNDLE" -C "$AGENT_DIR"
+  rm -f "$RUNTIME_BUNDLE"
+  info "Installed Agent runtime packages under $AGENT_DIR/backend"
+
   # ── Install Python dependencies ───────────────────────────────────────────
   info "Installing Python dependencies..."
   VENV_DIR="$AGENT_DIR/venv"

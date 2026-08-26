@@ -23,7 +23,7 @@ from backend.agent_runtimes.base import (
 from backend.agent_runtimes.registry import register_runtime
 from backend.miniflow.audit import AuditLog
 from backend.miniflow.loader import confine_to_workflow_root, load_workflow_file
-from backend.miniflow.model import Outcome
+from backend.miniflow.model import Outcome, Workflow, get_builtin_workflow
 from backend.miniflow.runner import RunResult, run_workflow
 
 _RUN_WORKFLOWS = {"run", "workflow.run", "miniflow.run"}
@@ -133,7 +133,11 @@ class MiniFlowRuntimeAdapter(RuntimeAdapter):
         queue: asyncio.Queue[dict[str, Any]],
         loop: asyncio.AbstractEventLoop,
     ) -> RunResult:
-        workflow = load_workflow_file(request.workflow_path)
+        workflow = (
+            request.builtin_workflow
+            if request.builtin_workflow is not None
+            else load_workflow_file(request.workflow_path)
+        )
 
         def emit(entry: dict[str, Any]) -> None:
             loop.call_soon_threadsafe(queue.put_nowait, entry)
@@ -154,7 +158,8 @@ class _RunRequest:
     def __init__(
         self,
         *,
-        workflow_path: Path,
+        workflow_path: Path | None,
+        builtin_workflow: Workflow | None,
         audit_log: Path | None,
         max_attempts: int,
         breaker_threshold: int,
@@ -163,6 +168,7 @@ class _RunRequest:
         sleep: Callable[[float], Any],
     ) -> None:
         self.workflow_path = workflow_path
+        self.builtin_workflow = builtin_workflow
         self.audit_log = audit_log
         self.max_attempts = max_attempts
         self.breaker_threshold = breaker_threshold
@@ -187,12 +193,15 @@ def _build_run_request(task: AgentTask) -> _RunRequest:
     audit_ref = _string(payload.get("audit_log")) or _string(config.get("audit_log"))
     clock = config.get("_clock") if callable(config.get("_clock")) else time.monotonic
     sleep = config.get("_sleep") if callable(config.get("_sleep")) else time.sleep
-    # Confine both to the MiniFlow allowlist root: workflow_path is executed
-    # by loader.load_workflow_file (RCE surface) and audit_log is opened for
-    # append with parents auto-created (arbitrary-file-write surface). Both
-    # are attacker-influenced via task.input/task.config.
-    workflow_path = confine_to_workflow_root(
-        _resolve_path(workflow_ref, cwd), label="workflow_path"
+    # Stable built-ins ship inside backend.miniflow on Docker and shell Agents;
+    # caller-provided files retain the existing allowlisted-root confinement.
+    builtin_workflow = get_builtin_workflow(workflow_ref)
+    workflow_path = (
+        None
+        if builtin_workflow is not None
+        else confine_to_workflow_root(
+            _resolve_path(workflow_ref, cwd), label="workflow_path"
+        )
     )
     audit_log = (
         confine_to_workflow_root(_resolve_path(audit_ref, cwd), label="audit_log")
@@ -201,6 +210,7 @@ def _build_run_request(task: AgentTask) -> _RunRequest:
     )
     return _RunRequest(
         workflow_path=workflow_path,
+        builtin_workflow=builtin_workflow,
         audit_log=audit_log,
         max_attempts=_positive_int(payload, config, "max_attempts", _DEFAULT_MAX_ATTEMPTS),
         breaker_threshold=_positive_int(

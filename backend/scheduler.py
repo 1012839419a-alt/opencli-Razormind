@@ -144,6 +144,36 @@ async def _scheduler_loop() -> None:
                         "schedule %s dispatch failed: %s", sched["schedule_id"], exc,
                     )
 
+            try:
+                from backend.services.automation_schedule_service import (
+                    dispatch_due_automations,
+                )
+
+                automation_runs = await dispatch_due_automations(last_tick, now)
+                if automation_runs:
+                    logger.info(
+                        "Dispatched %d scheduled Automation occurrence(s): %s",
+                        len(automation_runs),
+                        [run.id for run in automation_runs],
+                    )
+            except Exception as exc:
+                logger.warning("Automation scheduler tick failed: %s", exc)
+
+            try:
+                from backend.services.scheduled_run_recovery import (
+                    recover_queued_scheduled_runs_local,
+                )
+
+                queued_run_ids = await recover_queued_scheduled_runs_local()
+                if queued_run_ids:
+                    logger.info(
+                        "Recovered %d queued scheduled Operations Agent run(s): %s",
+                        len(queued_run_ids),
+                        queued_run_ids,
+                    )
+            except Exception as exc:
+                logger.warning("Scheduled Operations Agent recovery failed: %s", exc)
+
             last_tick = now
         except asyncio.CancelledError:
             break

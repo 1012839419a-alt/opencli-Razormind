@@ -3,7 +3,7 @@
 - [ ] 1.1 Link `docs/ptt-acceptance.md` to this deployment compass.
 - [ ] 1.2 Split PTT into deployment gates D0-D7 and product workflow gates P0-P6.
 - [ ] 1.3 Add deployment support states: proposed, dry-run, ptt-ready, supported, blocked, deprecated.
-- [ ] 1.4 Document the current blocker: shell/systemd Agent installs only `agent_server.py` and not runtime packages.
+- [ ] 1.4 Document the shell/systemd package-distribution status and remaining real-host PTT gap.
 
 ## 2. Deployment Profiles
 
@@ -23,7 +23,7 @@
 
 - [x] 4.1 Package `backend/agent_runtimes` and `backend/miniflow` into the Docker Agent image.
 - [x] 4.2 Add a unit test that prevents Docker Agent runtime packaging regression.
-- [ ] 4.3 Fix shell/systemd Python installer to distribute runtime adapter packages with `agent_server.py`.
+- [x] 4.3 Fix shell/systemd Python installer to distribute runtime adapter packages with `agent_server.py`. (Installer downloads and validates the authenticated runtime bundle before extraction; focused packaging/API tests pass.)
 - [ ] 4.4 Add runtime version reporting and health probes for MiniFlow, OpenTabs, OpenCLI, and future profiles.
 - [ ] 4.5 Add runtime allowlist and workflow directory allowlist for NAS/MiniFlow execution.
 - [ ] 4.6 Add Agent log tail, failure count, current task, deployed image/tag, and deploy type to inventory/status.

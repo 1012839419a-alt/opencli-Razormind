@@ -12,6 +12,7 @@ class CollectedRecordRead(UTCModel):
     source_id: str
     workflow_id: str | None
     workflow_run_id: str | None
+    lineage: dict[str, Any] | None
     raw_data: dict[str, Any]
     normalized_data: dict[str, Any]
     ai_enrichment: dict[str, Any] | None
@@ -20,7 +21,6 @@ class CollectedRecordRead(UTCModel):
     error_message: str | None
     created_at: datetime
     updated_at: datetime
-
     model_config = {"from_attributes": True}
 
 

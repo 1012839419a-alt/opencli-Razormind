@@ -144,6 +144,47 @@ async def test_dispatch_uses_existing_runtime_protocol_and_validates_result(
     assert run.error_message is None
 
 
+async def test_duplicate_dispatch_is_harmless_after_queued_claim(
+    db_engine,
+    db_session,
+    monkeypatch,
+):
+    run = await _seed_run(db_session)
+    session_factory = async_sessionmaker(
+        db_engine,
+        class_=AsyncSession,
+        expire_on_commit=False,
+    )
+    monkeypatch.setattr(operations_agent_runtime_service, "AsyncSessionLocal", session_factory)
+    started = asyncio.Event()
+    release = asyncio.Event()
+    calls = 0
+
+    async def send_agent_task(agent_url, task, on_event, timeout):
+        nonlocal calls
+        calls += 1
+        started.set()
+        await release.wait()
+        return {"type": "done", "result": {"summary": "Target inspected"}}
+
+    monkeypatch.setattr(
+        operations_agent_runtime_service,
+        "send_agent_task",
+        send_agent_task,
+    )
+    first = asyncio.create_task(
+        operations_agent_runtime_service.dispatch_operations_agent_run(run.id)
+    )
+    await started.wait()
+    await operations_agent_runtime_service.dispatch_operations_agent_run(run.id)
+    release.set()
+    await first
+
+    await db_session.refresh(run)
+    assert calls == 1
+    assert run.status == "completed"
+
+
 async def test_dispatch_fails_closed_when_runtime_output_breaks_contract(
     db_engine, db_session, monkeypatch
 ):

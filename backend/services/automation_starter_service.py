@@ -43,13 +43,13 @@ STARTER_DEFINITIONS: tuple[StarterDefinition, ...] = (
         key="weekly-system-review",
         name="系统回顾 Agent",
         prompt="Review the workspace system state, summarize trends, and identify actionable improvements.",
-        schedule="weekly@monday@09:00",
+        schedule="weekly@09:00",
     ),
     StarterDefinition(
         key="anomaly-follow-up",
         name="异常跟进 Agent",
         prompt="Review unresolved anomalies, gather evidence, and propose the next safe follow-up actions.",
-        schedule="on_anomaly",
+        schedule="weekdays@09:00",
     ),
 )
 
@@ -144,7 +144,7 @@ async def install_starters(
                 session_mode=definition.session_mode,
                 approval_mode=definition.approval_mode,
                 project=definition.project(),
-                enabled=True,
+                enabled=False,
                 created_by_user_id=created_by_user_id,
             )
             session.add(row)

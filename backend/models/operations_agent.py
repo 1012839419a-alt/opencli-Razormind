@@ -1,8 +1,10 @@
+from datetime import datetime
 from enum import StrEnum
 
 from sqlalchemy import (
     JSON,
     Boolean,
+    DateTime,
     CheckConstraint,
     ForeignKey,
     Integer,
@@ -121,6 +123,11 @@ class OperationsAgentRun(TimestampMixin):
             "trigger_type IN ('manual', 'scheduled', 'event')",
             name="ck_operations_agent_runs_trigger_type",
         ),
+        UniqueConstraint(
+            "automation_id",
+            "scheduled_for",
+            name="uq_operations_agent_runs_automation_occurrence",
+        ),
     )
 
     workspace_id: Mapped[str] = mapped_column(
@@ -135,6 +142,15 @@ class OperationsAgentRun(TimestampMixin):
     profile_version: Mapped[int] = mapped_column(Integer, nullable=False)
     trigger_type: Mapped[str] = mapped_column(String(16), nullable=False)
     trigger_reference: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    automation_id: Mapped[str | None] = mapped_column(
+        ForeignKey("automations.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
+    automation_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    automation_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    scheduled_for: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    schedule_timezone: Mapped[str | None] = mapped_column(String(64), nullable=True)
     target_resource_type: Mapped[str] = mapped_column(String(100), nullable=False)
     target_resource_id: Mapped[str] = mapped_column(String(255), nullable=False)
     input_payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)

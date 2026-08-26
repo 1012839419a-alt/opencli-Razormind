@@ -29,6 +29,7 @@ from backend.schemas.operations_agent import (
     OperationsAgentRead,
     OperationsAgentRunCreate,
     OperationsAgentRunRead,
+    OperationsAgentTeamRead,
     PublishedOperationsAgentVersionRead,
     agent_contract_from_model_configuration,
     agent_runtime_binding_from_model_configuration,
@@ -120,6 +121,24 @@ def _read_agent(
     )
 
 
+@router.get("/teams", response_model=ApiResponse[list[OperationsAgentTeamRead]])
+async def list_operations_agent_teams(
+    workspace_id: str,
+    identity: RequestIdentity = Depends(get_request_identity),
+    db: AsyncSession = Depends(get_db),
+) -> ApiResponse:
+    access = await get_workspace_access(db, workspace_id, identity)
+    require_permission(access, WorkspacePermission.READ)
+    teams = (
+        await db.execute(
+            select(Team).where(Team.workspace_id == workspace_id).order_by(Team.name)
+        )
+    ).scalars().all()
+    return ApiResponse.ok(
+        [OperationsAgentTeamRead.model_validate(team) for team in teams]
+    )
+
+
 @router.get("", response_model=ApiResponse[list[OperationsAgentRead]])
 async def list_operations_agents(
     workspace_id: str,
@@ -151,14 +170,20 @@ async def create_operations_agent(
 ) -> ApiResponse:
     access = await get_workspace_access(db, workspace_id, identity)
     require_permission(access, WorkspacePermission.MANAGE_AGENT_IDENTITIES)
-    team = await db.scalar(
-        select(Team).where(Team.id == body.owning_team_id).where(Team.workspace_id == workspace_id)
-    )
+    team_query = select(Team).where(Team.workspace_id == workspace_id)
+    if body.owning_team_id is not None:
+        team_query = team_query.where(Team.id == body.owning_team_id)
+        team = await db.scalar(team_query)
+    else:
+        teams = (await db.execute(team_query.limit(2))).scalars().all()
+        team = teams[0] if len(teams) == 1 else None
     if team is None:
-        raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_CONTENT,
-            "Owning Team must belong to Workspace",
+        detail = (
+            "Owning Team must belong to Workspace"
+            if body.owning_team_id is not None
+            else "owning_team_id is required unless Workspace has exactly one Team"
         )
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail)
 
     agent = OperationsAgentIdentity(
         workspace_id=workspace_id,
@@ -575,3 +600,4 @@ async def assign_agent_profile(
     agent.current_profile_version = profile.version
     await db.flush()
     return ApiResponse.ok(AgentProfileRead.model_validate(profile))
+

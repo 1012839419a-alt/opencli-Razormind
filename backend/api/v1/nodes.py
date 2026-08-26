@@ -4,10 +4,11 @@ Handles registration, lifecycle events, and management of remote agent nodes.
 Both HTTP-mode agents (center calls agent) and WS-mode agents (agent initiates
 reverse channel) register here and have their online/offline history tracked.
 """
-
+import io
 import logging
 import re
 import shlex
+import tarfile
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -21,7 +22,7 @@ from fastapi import (
     WebSocket,
     WebSocketDisconnect,
 )
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, Response
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -393,6 +394,52 @@ async def get_opencli_runtime_patch() -> PlainTextResponse:
                 media_type="application/javascript",
             )
     raise HTTPException(status_code=404, detail="OpenCLI runtime patch not packaged")
+
+@router.get("/install/agent-runtime.tar.gz")
+async def get_agent_runtime_bundle() -> Response:
+    """Serve the Python packages required by non-Docker Agents."""
+    source_roots = [
+        Path(__file__).parent.parent.parent.parent,
+        Path("/app"),
+    ]
+    source_root = next(
+        (
+            root
+            for root in source_roots
+            if (root / "backend" / "agent_runtimes").is_dir()
+        ),
+        None,
+    )
+    if source_root is None:
+        raise HTTPException(status_code=404, detail="Agent runtime package not packaged")
+
+    package_dirs = (
+        Path("backend/agent_runtimes"),
+        Path("backend/miniflow"),
+        Path("backend/security"),
+    )
+    archive = io.BytesIO()
+    with tarfile.open(fileobj=archive, mode="w:gz") as tar:
+        for package_dir in package_dirs:
+            package_root = source_root / package_dir
+            for path in sorted(package_root.rglob("*.py")):
+                info = tar.gettarinfo(
+                    str(path),
+                    arcname=path.relative_to(source_root).as_posix(),
+                )
+                info.mtime = 0
+                info.uid = 0
+                info.gid = 0
+                info.uname = ""
+                info.gname = ""
+                with path.open("rb") as stream:
+                    tar.addfile(info, stream)
+
+    return Response(
+        content=archive.getvalue(),
+        media_type="application/gzip",
+        headers={"Content-Disposition": 'attachment; filename="opencli-agent-runtime.tar.gz"'},
+    )
 
 
 @router.get("/install/agent.sh", response_class=PlainTextResponse)

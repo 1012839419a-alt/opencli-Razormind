@@ -244,6 +244,7 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENCLI_CDP_ENDPOINT: ${OPENCLI_CDP_ENDPOINT:-http://agent-1:19222}
       AGENT_POOL_ENDPOINTS: ${AGENT_POOL_ENDPOINTS:-}
+      CONTROL_PLANE_URL: ${CONTROL_PLANE_URL:-http://api:8000}
       KATS_RUNTIME_URL: ${KATS_RUNTIME_URL:-http://kats-runtime:8096}
       INVOKEAI_ENABLED: ${INVOKEAI_ENABLED:-false}
       INVOKEAI_BASE_URL: http://invokeai:9090
@@ -344,17 +345,19 @@ services:
     profiles: ["agent"]
     image: ${DOCKER_REGISTRY:-ghcr.io/}${DOCKER_IMAGE_NAMESPACE:-2233admin}/opencli-admin-agent:${IMAGE_TAG:-0.4.0}${CHROME_SUFFIX:-}
     environment:
-      CENTRAL_API_URL: ${CENTRAL_API_URL:-}
-      AGENT_ADVERTISE_URL: ${AGENT_ADVERTISE_URL:-}
+      CENTRAL_API_URL: ${CENTRAL_API_URL:-http://api:8000}
+      AGENT_ADVERTISE_URL: ${AGENT_ADVERTISE_URL:-http://agent:19823}
       AGENT_PORT: ${AGENT_PORT:-19823}
       AGENT_MODE: ${AGENT_MODE:-cdp}
-      AGENT_LABEL: ${AGENT_LABEL:-}
-      AGENT_REGISTER: ${AGENT_REGISTER:-http}
+      AGENT_LABEL: ${AGENT_LABEL:-OpenCLI Local Operations Runtime}
+      AGENT_REGISTER: ${AGENT_REGISTER:-ws}
       OPENCLI_TIMEOUT: ${OPENCLI_TIMEOUT:-120}
       API_AUTH_TOKEN: ${API_AUTH_TOKEN:-}
       AGENT_API_TOKEN: ${AGENT_API_TOKEN:-}
+      MINIFLOW_WORKFLOW_ROOT: ${MINIFLOW_WORKFLOW_ROOT:-/app/workflows}
       HTTP_PROXY: ${HTTP_PROXY:-}
       HTTPS_PROXY: ${HTTPS_PROXY:-}
+      NO_PROXY: api,localhost,127.0.0.1,${NO_PROXY:-}
     volumes:
       - agent_profile:/home/agent/.config/chromium
     ports:

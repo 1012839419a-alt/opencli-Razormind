@@ -36,11 +36,14 @@ import type { FailureItem, StreamTask, ThroughputPoint, WorkerView } from '@/lib
 import { formatNumber, formatRelative } from '@/lib/format'
 import { notificationChannelLabel } from '@/lib/notification-channels'
 import { cn } from '@/lib/utils'
+import { AgentTaskRow, ToolChip } from '@/components/agent-native/agent-primitives'
+import type { AgentTaskStatus } from '@/components/agent-native/agent-primitives'
 import { MatrixClock } from '@/components/monitor/matrix-clock'
 import { FailureFeed, TaskStream } from '@/components/monitor/task-stream'
 import { ThroughputChart } from '@/components/monitor/throughput-chart'
 import { OperationalAnalytics } from '@/components/monitor/operational-analytics'
 import { WorkerAllocation } from '@/components/monitor/worker-allocation'
+import { FancyTestimonialsSlider, type Testimonial } from '@/components/eldoraui/testimonal-slider'
 import { BACKEND_HINT, ErrorState, LoadingState } from '@/components/shell/data-states'
 import { PageContainer } from '@/components/shell/page-container'
 import { Badge } from '@/components/ui/badge'
@@ -200,6 +203,48 @@ function SignalFlow({
   )
 }
 
+function taskStatus(phase: StreamTask['phase']): AgentTaskStatus {
+  if (phase === 'running') return 'running'
+  if (phase === 'failed') return 'failed'
+  if (phase === 'success') return 'completed'
+  return 'queued'
+}
+
+function AgentRunQueue({ tasks }: { tasks: StreamTask[] }) {
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-start justify-between gap-3">
+        <div>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Bot className="size-4 text-primary" aria-hidden />
+            Agent 运行队列
+          </CardTitle>
+          <p className="mt-1 text-sm text-muted-foreground">把正在执行、已完成和需要关注的工作集中在一条轻量时间线上。</p>
+        </div>
+        <ToolChip icon={Activity} label="实时任务" detail={`${tasks.length} 条`} tone={tasks.some((task) => task.phase === 'failed') ? 'warning' : 'success'} />
+      </CardHeader>
+      <CardContent className="space-y-2">
+        {tasks.length ? (
+          tasks.slice(0, 4).map((task) => (
+            <AgentTaskRow
+              key={task.id}
+              title={task.title}
+              detail={`${task.endpoint} · ${task.records ? `${formatNumber(task.records)} 条记录` : '等待数据'}`}
+              meta={`${task.workerName || '本地执行器'} · ${formatRelative(new Date(task.startedAt).toISOString())}`}
+              status={taskStatus(task.phase)}
+              progress={task.phase === 'running' ? 62 : task.phase === 'success' ? 100 : undefined}
+            />
+          ))
+        ) : (
+          <div className="rounded-lg border border-dashed p-5 text-sm text-muted-foreground">
+            当前没有最近运行记录。
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
 function AgentDeliveryPanel({
   agents,
   notificationLogs,
@@ -234,6 +279,11 @@ function AgentDeliveryPanel({
         </Badge>
       </CardHeader>
       <CardContent className="grid gap-4 md:grid-cols-[1.2fr_0.8fr]">
+        <div className="flex flex-wrap gap-1.5 md:col-span-2" aria-label="Agent 交付摘要">
+          <ToolChip icon={Bot} label="活动 Agent" detail={agentsLoading ? '同步中' : `${enabledAgents.length} 个`} tone={enabledAgents.length ? 'success' : 'neutral'} />
+          <ToolChip icon={Send} label="交付渠道" detail={rulesLoading ? '同步中' : `${notificationChannels.length} 个`} />
+          <ToolChip icon={Radio} label="最近送达" detail={logsLoading ? '同步中' : `${delivered} 条`} tone={failed ? 'warning' : 'success'} />
+        </div>
         <div className="space-y-2">
           {agentsLoading ? (
             <p className="text-sm text-muted-foreground">正在同步 Agent…</p>
@@ -538,7 +588,30 @@ export default function DashboardPage() {
   const nextSchedule = [...(schedulesQuery.data?.data ?? [])]
     .filter((schedule) => schedule.enabled && schedule.next_run_at && !Number.isNaN(new Date(schedule.next_run_at).getTime()))
     .sort((left, right) => new Date(left.next_run_at as string).getTime() - new Date(right.next_run_at as string).getTime())[0]
-
+  const insights: Testimonial[] = [
+    {
+      quote: hasAttention
+        ? `${formatNumber(s.tasks.failed)} 个失败任务正在等待处理，建议先检查最近一次运行记录。`
+        : '当前运行链路没有阻塞，可以继续推进工作流和数据源配置。',
+      name: '运行态势',
+      role: hasAttention ? '需要关注' : '运行正常',
+    },
+    {
+      quote: agents.length ? `${agents.length} 个 Agent 已接入当前控制面，结果会按通知规则继续交付。` : '还没有启用 Agent，接入一个执行能力后即可开始自动化。',
+      name: 'Agent 交付',
+      role: `${activeDeliveryChannels.length} 个渠道`,
+    },
+    {
+      quote: `累计采集 ${formatNumber(s.records.total)} 条记录，其中 ${formatNumber(s.records.ai_processed)} 条已经完成 AI 处理。`,
+      name: '数据链路',
+      role: `${normalizedSuccessRate(s.runs.success_rate ?? 0)}% 成功率`,
+    },
+    {
+      quote: nextSchedule ? `下一次调度将在 ${countdownLabel(nextSchedule.next_run_at as string, Date.now())} 后执行。` : '当前没有已启用的下一次调度，可以从自动化与智能体开始配置。',
+      name: '下一步',
+      role: nextSchedule?.name ?? '调度配置',
+    },
+  ]
   return (
     <PageContainer
       eyebrow="Control plane"
@@ -681,6 +754,17 @@ export default function DashboardPage() {
         logsLoading={notificationLogsQuery.isLoading}
         rulesLoading={notificationRulesQuery.isLoading}
       />
+
+      <AgentRunQueue tasks={stream} />
+
+      <section className="overflow-hidden rounded-xl border border-cyan-500/20 bg-gradient-to-br from-cyan-500/[0.06] via-card to-blue-500/[0.05] py-5" aria-labelledby="agent-insights-title">
+        <div className="mb-2 px-5">
+          <p className="eyebrow-mono">Agent insights / 自动轮播</p>
+          <h2 id="agent-insights-title" className="mt-1 text-lg font-semibold">把系统状态变成下一步建议</h2>
+          <p className="mt-1 text-sm text-muted-foreground">来自 Eldora UI 的 Testimonial Slider 交互，用于浏览运行态势、交付和调度建议。</p>
+        </div>
+        <FancyTestimonialsSlider testimonials={insights} autorotateTiming={6000} />
+      </section>
 
       <section className="grid gap-4" aria-label="运行与异常">
         <FailureFeed failures={failures} />

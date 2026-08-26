@@ -20,6 +20,11 @@ const ibmPlexMono = IBM_Plex_Mono({
   display: 'swap',
 })
 
+const analyticsFlag = process.env.NEXT_PUBLIC_ENABLE_VERCEL_ANALYTICS?.trim().toLowerCase()
+const analyticsEnabled = analyticsFlag
+  ? analyticsFlag === 'true'
+  : process.env.VERCEL === '1'
+
 export const metadata: Metadata = {
   title: 'OpenCLI Admin',
   description: '采集编排控制台 — 以节点工作流为核心的数据采集管理平台',
@@ -44,7 +49,7 @@ export default function RootLayout({
       <body className="font-sans antialiased bg-background text-foreground">
         <Providers>{children}</Providers>
         <Toaster />
-        {process.env.NODE_ENV === 'production' && <Analytics />}
+        {analyticsEnabled ? <Analytics /> : null}
       </body>
     </html>
   )

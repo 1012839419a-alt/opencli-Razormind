@@ -62,6 +62,12 @@ async def test_install_starters_is_idempotent_and_stores_metadata(db_session):
     assert all(row.project["starter_key"] == row.starter_key for row in rows)
     assert all(row.project["lineage"] == "first-party-agent-starter" for row in rows)
     assert all(row.created_by_user_id == user.id for row in rows)
+    assert all(row.enabled is False for row in rows)
+    assert {row.schedule for row in rows} == {
+        "daily@09:00",
+        "weekly@09:00",
+        "weekdays@09:00",
+    }
 
 
 @pytest.mark.asyncio

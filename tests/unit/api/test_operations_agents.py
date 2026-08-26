@@ -1,7 +1,6 @@
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
-
 from backend import ws_agent_manager
 from backend.api.v1.operations_agents import router
 from backend.database import get_db
@@ -117,6 +116,49 @@ async def test_maintainer_creates_agent_with_observe_only_profile(db_session):
     assert data["current_profile"]["mode"] == AgentProfileMode.OBSERVE_ONLY
     assert data["disabled"] is False
 
+
+
+async def test_maintainer_creates_agent_in_only_workspace_team_when_owner_is_omitted(
+    db_session,
+):
+    _, workspace, team = await _seed_member(db_session, WorkspaceRole.MAINTAINER)
+    client = await _client(db_session, "maintainer-primary")
+
+    async with client:
+        response = await client.post(
+            f"/workspaces/{workspace.id}/operations-agents",
+            json={"name": "Runtime readiness advisor"},
+        )
+
+    assert response.status_code == 201
+    assert response.json()["data"]["owning_team_id"] == team.id
+
+
+async def test_multi_team_workspace_lists_choices_and_requires_explicit_owner(db_session):
+    _, workspace, first_team = await _seed_member(
+        db_session,
+        WorkspaceRole.MAINTAINER,
+    )
+    second_team = Team(workspace_id=workspace.id, name="Research", slug="research")
+    db_session.add(second_team)
+    await db_session.commit()
+    client = await _client(db_session, "maintainer-primary")
+
+    async with client:
+        teams = await client.get(
+            f"/workspaces/{workspace.id}/operations-agents/teams"
+        )
+        omitted = await client.post(
+            f"/workspaces/{workspace.id}/operations-agents",
+            json={"name": "Needs explicit Team"},
+        )
+
+    assert teams.status_code == 200
+    assert {row["id"] for row in teams.json()["data"]} == {
+        first_team.id,
+        second_team.id,
+    }
+    assert omitted.status_code == 422
 
 async def test_maintainer_can_assign_suggest_but_not_automatic(db_session):
     _, workspace, team = await _seed_member(db_session, WorkspaceRole.MAINTAINER)
@@ -845,3 +887,5 @@ async def test_agent_without_published_version_cannot_run(db_session):
         )
 
     assert response.status_code == 409
+
+

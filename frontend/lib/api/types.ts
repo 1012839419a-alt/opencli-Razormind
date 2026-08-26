@@ -408,6 +408,7 @@ export interface EdgeNode {
   status: 'online' | 'offline'
   last_seen_at?: string | null
   ip?: string | null
+  runtimes?: Array<'miniflow' | 'pi' | 'codex'>
   created_at: string
   updated_at: string
 }
@@ -436,6 +437,7 @@ export interface SystemConfig {
   netbird_mode: 'off' | 'host' | 'docker'
   opencli_cdp_endpoint: string
   agent_pool_endpoints: string[]
+  effective_cdp_endpoints: string[]
   llm_request_timeout_seconds: number
   llm_max_concurrency: number
   control_mode: 'advisory' | 'automatic'
@@ -1234,6 +1236,14 @@ export interface OperationsAgent {
   updated_at: string
 }
 
+export interface OperationsAgentTeam {
+  id: string
+  workspace_id: string
+  name: string
+  slug: string
+  created_at: string
+}
+
 export interface AgentContractV1 {
   schema_version: 'agent.contract.v1'
   input_schema: Record<string, unknown>
@@ -1244,7 +1254,7 @@ export interface AgentContractV1 {
 export interface AgentRuntimeBindingV1 {
   schema_version: 'agent.runtime-binding.v1'
   agent_url: string
-  runtime: 'pi'
+  runtime: 'miniflow' | 'pi' | 'codex'
   workflow: string
   config: Record<string, unknown>
   dispatch_timeout_seconds: number
@@ -1281,6 +1291,11 @@ export interface OperationsAgentRun {
   profile_version: number
   trigger_type: string
   trigger_reference: string | null
+  automation_id: string | null
+  automation_revision: number | null
+  automation_snapshot: Record<string, unknown> | null
+  scheduled_for: string | null
+  schedule_timezone: string | null
   target_resource_type: string
   target_resource_id: string
   input_payload: Record<string, unknown>
@@ -1296,6 +1311,9 @@ export interface OperationsAgentRun {
 export interface Automation {
   id: string
   workspace_id: string
+  revision: number
+  operations_agent_id: string | null
+  operations_agent_version: number | null
   name: string
   prompt: string
   precheck: string | null

@@ -7,7 +7,7 @@ from backend.models.identity import User, Workspace, WorkspaceMembership, Worksp
 from backend.security.identity import RequestIdentity, get_request_identity
 
 
-async def test_admin_can_create_list_and_pause_automation(db_session):
+async def test_admin_can_create_list_and_update_disabled_automation_draft(db_session):
     user = User(subject="automation-admin")
     workspace = Workspace(name="Automation", slug="automation")
     db_session.add_all((user, workspace))
@@ -33,11 +33,14 @@ async def test_admin_can_create_list_and_pause_automation(db_session):
             "executor": "codex",
             "schedule": "daily@09:00",
             "timezone": "Asia/Shanghai",
+            "enabled": False,
         })
         automation_id = created.json()["data"]["id"]
         listed = await client.get(f"/workspaces/{workspace.id}/automations")
-        paused = await client.patch(f"/workspaces/{workspace.id}/automations/{automation_id}", json={"enabled": False})
+        updated = await client.patch(f"/workspaces/{workspace.id}/automations/{automation_id}", json={"name": "Updated review"})
 
     assert created.status_code == 201
     assert listed.json()["data"][0]["name"] == "Daily review"
-    assert paused.json()["data"]["enabled"] is False
+    assert updated.json()["data"]["name"] == "Updated review"
+    assert updated.json()["data"]["enabled"] is False
+    assert updated.json()["data"]["revision"] == 2

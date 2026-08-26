@@ -48,6 +48,8 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
     celery_broker_url: str = "redis://localhost:6379/0"
     celery_result_backend: str = "redis://localhost:6379/1"
+    # Internal API URL used by Celery workers for API-owned WS Agent dispatch.
+    control_plane_url: str = "http://api:8000"
 
     # API Security
     # (api_key_enabled/api_key predate fleet auth and were never enforced by
