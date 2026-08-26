@@ -22,17 +22,12 @@ def test_conversation_url_extracts_chat_id():
         '[{"Status": "Connected", "Url": '
         '"https://www.doubao.com/chat/38436240748612354", "Title": "x"}]'
     )
-    assert (
-        _conversation_url(status)
-        == "https://www.doubao.com/chat/38436240748612354"
-    )
+    assert _conversation_url(status) == "https://www.doubao.com/chat/38436240748612354"
 
 
 def test_conversation_url_ignores_root_chat():
     # A freshly opened /chat page has no conversation id yet — must not be picked up.
-    status = (
-        '[{"Status": "Connected", "Url": "https://www.doubao.com/chat", "Title": "x"}]'
-    )
+    status = '[{"Status": "Connected", "Url": "https://www.doubao.com/chat", "Title": "x"}]'
     assert _conversation_url(status) == ""
 
 
@@ -84,10 +79,14 @@ async def test_collect_captures_conversation_url(monkeypatch):
         if command[2] == "ask":
             return 0, '[{"Role":"assistant","Text":"回答"}]', ""
         if command[2] == "status":
-            return 0, (
-                '[{"Status": "Connected", "Url": '
-                '"https://www.doubao.com/chat/12345", "Title": "t"}]'
-            ), ""
+            return (
+                0,
+                (
+                    '[{"Status": "Connected", "Url": '
+                    '"https://www.doubao.com/chat/12345", "Title": "t"}]'
+                ),
+                "",
+            )
         return 0, "", ""
 
     monkeypatch.setattr("backend.channels.doubao_research_channel._run_doubao_command", fake_run)
@@ -117,10 +116,14 @@ async def test_collect_tolerates_status_failure(monkeypatch):
 @pytest.mark.asyncio
 async def test_collect_classifies_captcha_block(monkeypatch):
     async def fake_run(command):
-        return 1, "", (
-            "ok: false\nerror:\n  code: COMMAND_EXEC\n"
-            "  message: Doubao blocked the request with a verification challenge\n"
-            "  help: 'Detected challenge signal: iframe[src*=\"captcha\"]'"
+        return (
+            1,
+            "",
+            (
+                "ok: false\nerror:\n  code: COMMAND_EXEC\n"
+                "  message: Doubao blocked the request with a verification challenge\n"
+                "  help: 'Detected challenge signal: iframe[src*=\"captcha\"]'"
+            ),
         )
 
     monkeypatch.setattr("backend.channels.doubao_research_channel._run_doubao_command", fake_run)
@@ -148,3 +151,97 @@ def test_source_schema_accepts_doubao_research_channel():
     )
     assert source.channel_type == "doubao_research"
 
+
+@pytest.mark.asyncio
+async def test_health_check_accepts_unknown_login_with_authenticated_provider_probe(monkeypatch):
+    calls = []
+
+    async def fake_run(command):
+        calls.append(command)
+        if command[2] == "status":
+            return (
+                0,
+                (
+                    '[{"Status":"Connected","Login":"Unknown","Title":"豆包工作 - '
+                    '字节跳动旗下 AI 智能助手","Url":"https://www.doubao.com/chat/?from_login=1"}]'
+                ),
+                "",
+            )
+        return 0, '[{"Name":"authenticated account","Email":"user@example.com"}]', ""
+
+    monkeypatch.setattr("backend.channels.doubao_research_channel._run_doubao_command", fake_run)
+
+    assert await DoubaoResearchChannel().health_check({"site_session": "persistent"})
+    assert [command[2] for command in calls] == ["status", "whoami"]
+    assert all(command[-2:] == ["--site-session", "persistent"] for command in calls)
+
+
+@pytest.mark.asyncio
+async def test_health_check_rejects_explicitly_logged_out_status(monkeypatch):
+    async def fake_run(command):
+        return 0, '[{"Status":"Connected","Login":"false"}]', ""
+
+    monkeypatch.setattr("backend.channels.doubao_research_channel._run_doubao_command", fake_run)
+
+    assert not await DoubaoResearchChannel().health_check()
+
+
+@pytest.mark.asyncio
+async def test_health_check_rejects_captcha_status(monkeypatch):
+    async def fake_run(command):
+        return 1, "", "Doubao blocked the request with a verification challenge"
+
+    monkeypatch.setattr("backend.channels.doubao_research_channel._run_doubao_command", fake_run)
+
+    assert not await DoubaoResearchChannel().health_check()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "status",
+    [
+        '[{"Status":"Connected","Login":"Unknown","Title":"Other provider","Url":"https://example.com/chat"}]',
+        '[{"Status":"Connected","Login":"Unknown","Title":"豆包工作","Url":"https://www.doubao.com/chat/"},'
+        '{"Status":"Connected","Login":"Unknown","Title":"豆包工作","Url":"https://www.doubao.com/chat/"}]',
+    ],
+)
+async def test_health_check_rejects_wrong_or_ambiguous_workspace(monkeypatch, status):
+    async def fake_run(command):
+        return 0, status, ""
+
+    monkeypatch.setattr("backend.channels.doubao_research_channel._run_doubao_command", fake_run)
+
+    assert not await DoubaoResearchChannel().health_check()
+
+
+@pytest.mark.asyncio
+async def test_health_check_rejects_provider_probe_error(monkeypatch):
+    async def fake_run(command):
+        if command[2] == "status":
+            return (
+                0,
+                (
+                    '[{"Status":"Connected","Login":"Unknown","Title":"豆包工作 - '
+                    '字节跳动旗下 AI 智能助手","Url":"https://www.doubao.com/chat/"}]'
+                ),
+                "",
+            )
+        return 1, "", "whoami failed"
+
+    monkeypatch.setattr("backend.channels.doubao_research_channel._run_doubao_command", fake_run)
+
+    assert not await DoubaoResearchChannel().health_check()
+
+
+@pytest.mark.asyncio
+async def test_health_check_preserves_explicit_logged_in_path(monkeypatch):
+    calls = []
+
+    async def fake_run(command):
+        calls.append(command)
+        return 0, '[{"Status":"Connected","Login":"authenticated"}]', ""
+
+    monkeypatch.setattr("backend.channels.doubao_research_channel._run_doubao_command", fake_run)
+
+    assert await DoubaoResearchChannel().health_check()
+    assert [command[2] for command in calls] == ["status"]

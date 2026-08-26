@@ -33,8 +33,7 @@ async def _create_studio_workflow(client, *, graph: dict | None = None) -> dict:
     project = result["project"]
     workflow = result["primary_workflow"]
     base_url = (
-        f"/api/v1/workspaces/{workspace_id}/projects/{project['id']}"
-        f"/workflows/{workflow['id']}"
+        f"/api/v1/workspaces/{workspace_id}/projects/{project['id']}/workflows/{workflow['id']}"
     )
     return {"workflow": workflow, "base_url": base_url}
 
@@ -76,8 +75,8 @@ async def test_studio_legacy_graph_extensions_and_nested_nulls_round_trip(client
     first_draft = first.json()["data"]
     first_graph = first_draft["graph"]
     assert first_graph["legacyExtension"] == graph["legacyExtension"]
-    assert first_graph["nodes"][0]["legacyNodeExtension"] == (
-        graph["nodes"][0]["legacyNodeExtension"]
+    assert (
+        first_graph["nodes"][0]["legacyNodeExtension"] == (graph["nodes"][0]["legacyNodeExtension"])
     )
     assert "sourceAnchor" not in first_graph["nodes"][0]
 
@@ -91,8 +90,9 @@ async def test_studio_legacy_graph_extensions_and_nested_nulls_round_trip(client
     assert updated.status_code == 200, updated.text
     updated_graph = updated.json()["data"]["graph"]
     assert updated_graph["legacyExtension"] == first_graph["legacyExtension"]
-    assert updated_graph["nodes"][0]["legacyNodeExtension"] == (
-        first_graph["nodes"][0]["legacyNodeExtension"]
+    assert (
+        updated_graph["nodes"][0]["legacyNodeExtension"]
+        == (first_graph["nodes"][0]["legacyNodeExtension"])
     )
 
     reloaded = await client.get(draft_url)
@@ -160,8 +160,7 @@ async def test_studio_validation_rejects_an_isolated_source_node(client):
         {
             "code": "isolated_source_node",
             "message": (
-                'Workflow source node "isolated-http-source" is not connected '
-                "to a downstream node"
+                'Workflow source node "isolated-http-source" is not connected to a downstream node'
             ),
             "node_id": "isolated-http-source",
             "edge_id": None,
@@ -226,7 +225,7 @@ async def test_studio_api_run_is_version_bound_idempotent_and_visible_in_logs(
     request = {
         "inputs": {"topic": "OpenCLI ecosystem"},
         "response_mode": "async",
-        "user": "server-worker",
+        "initiated_by": "server-worker",
     }
     headers = {
         "Idempotency-Key": "nightly-project-job",
@@ -251,7 +250,7 @@ async def test_studio_api_run_is_version_bound_idempotent_and_visible_in_logs(
     ).model_dump(mode="json")
     assert row.request["input"]["payload"] == request["inputs"]
     assert row.request["input"]["source"] == "external"
-    assert row.request["input"]["sourceId"] == request["user"]
+    assert row.request["input"]["sourceId"] == request["initiated_by"]
     assert row.request["trigger"]["requestId"] == headers["X-Request-ID"]
 
     project_url = created["base_url"].split("/workflows/", 1)[0]
@@ -274,7 +273,7 @@ async def test_studio_api_run_is_version_bound_idempotent_and_visible_in_logs(
     trace_data = trace.json()["data"]
     assert trace_data["workflow_version"] == published["version"]
     assert trace_data["inputs"] == request["inputs"]
-    assert trace_data["user"] == request["user"]
+    assert trace_data["user"] == request["initiated_by"]
     assert trace_data["trace"]["projection"]["runId"] == projection["runId"]
     paged_trace = await client.get(
         f"{created['base_url']}/runs/{projection['runId']}/trace",
@@ -287,10 +286,36 @@ async def test_studio_api_run_is_version_bound_idempotent_and_visible_in_logs(
         "afterSequence": 0,
         "limit": 1,
     }
-    assert (
-        paged_trace.json()["data"]["trace"]["nextAfterSequence"]
-        == paged_events[0]["sequence"]
-    )
+    assert paged_trace.json()["data"]["trace"]["nextAfterSequence"] == paged_events[0]["sequence"]
+
+    scoped_run_url = f"{created['base_url']}/runs/{projection['runId']}"
+    scoped_projection = await client.get(scoped_run_url)
+    scoped_events = await client.get(f"{scoped_run_url}/events")
+    scoped_batches = await client.get(f"{scoped_run_url}/evidence-batches")
+    scoped_evidence = await client.get(f"{scoped_run_url}/projection")
+    assert scoped_projection.status_code == 200, scoped_projection.text
+    assert scoped_projection.json()["data"]["runId"] == projection["runId"]
+    assert scoped_events.status_code == 200, scoped_events.text
+    assert scoped_events.json()["data"] == trace_data["trace"]["events"]
+    assert scoped_batches.status_code == 200, scoped_batches.text
+    assert scoped_evidence.status_code == 200, scoped_evidence.text
+
+    workspace_url = project_url.rsplit("/projects/", 1)[0]
+    for wrong_path in (
+        scoped_run_url.replace(workspace_url, f"{workspace_url}-other", 1),
+        scoped_run_url.replace(
+            project_url,
+            f"{workspace_url}/projects/not-the-owning-project/workflows/{created['workflow']['id']}",
+            1,
+        ),
+        scoped_run_url.replace(
+            created["base_url"],
+            f"{project_url}/workflows/not-the-owning-workflow",
+            1,
+        ),
+    ):
+        denied = await client.get(wrong_path)
+        assert denied.status_code == 404, (wrong_path, denied.text)
 
     generic_run_url = f"/api/v1/workflows/runs/{projection['runId']}"
     for suffix in (
@@ -482,9 +507,7 @@ async def test_image_canvas_document_is_fixed_to_snapshot_during_validation_and_
     )
     assert updated.status_code == 200, updated.text
 
-    validation = await client.post(
-        f"{created['base_url']}/draft/validation-runs", json={}
-    )
+    validation = await client.post(f"{created['base_url']}/draft/validation-runs", json={})
     assert validation.status_code == 201, validation.text
     assert validation.json()["data"]["valid"] is True
     published = await client.post(

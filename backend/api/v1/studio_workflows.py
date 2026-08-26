@@ -23,7 +23,13 @@ from backend.api.v1.studio_schemas import (
     WorkflowCreate,
     WorkflowRead,
 )
-from backend.api.v1.workflows import dispatch_materialized_image_jobs
+from backend.api.v1.workflows import (
+    build_evidence_projection,
+    dispatch_materialized_image_jobs,
+    get_evidence_batch,
+    list_evidence_batches,
+    parse_projection_includes,
+)
 from backend.database import get_db
 from backend.models.studio import (
     StudioProject,
@@ -38,6 +44,7 @@ from backend.workflow.opencli_hda_tracer import (
     get_workflow_run_checkpoint,
     get_workflow_run_projection,
     list_workflow_run_events,
+    replay_downstream_from_persisted_gaojixing_source,
     start_workflow_run,
 )
 
@@ -105,6 +112,35 @@ async def _project_runtime_scope(
         .all()
     )
     return workflow_names, {version.id: version.version for version in versions}
+
+
+async def _get_project_workflow_run(
+    db: AsyncSession,
+    *,
+    workspace_id: str,
+    project_id: str,
+    workflow_id: str,
+    run_id: str,
+) -> tuple[WorkflowRun, int]:
+    """Load one published run only through its owning project and version."""
+
+    await get_workflow(db, workspace_id, project_id, workflow_id)
+    result = await db.execute(
+        select(WorkflowRun, StudioWorkflowVersion.version)
+        .join(
+            StudioWorkflowVersion,
+            WorkflowRun.studio_workflow_version_id == StudioWorkflowVersion.id,
+        )
+        .where(
+            WorkflowRun.id == run_id,
+            WorkflowRun.workflow_id == workflow_id,
+            StudioWorkflowVersion.workflow_id == workflow_id,
+        )
+    )
+    scoped_run = result.one_or_none()
+    if scoped_run is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Workflow run not found")
+    return scoped_run
 
 
 @router.get(
@@ -197,8 +233,7 @@ async def get_project_runtime_summary(
             blocked_runs=sum(1 for row in aggregate_rows if row.status in blocked),
             running_runs=sum(1 for row in aggregate_rows if row.status in running),
             total_events=sum(
-                int((row.projection or {}).get("eventCount", 0))
-                for row in aggregate_rows
+                int((row.projection or {}).get("eventCount", 0)) for row in aggregate_rows
             ),
             recent_logs=[
                 _runtime_log(
@@ -254,12 +289,7 @@ async def list_project_runtime_logs(
             )
         )
 
-    total = int(
-        await db.scalar(
-            select(func.count()).select_from(WorkflowRun).where(*filters)
-        )
-        or 0
-    )
+    total = int(await db.scalar(select(func.count()).select_from(WorkflowRun).where(*filters)) or 0)
     rows = list(
         (
             await db.execute(
@@ -292,10 +322,7 @@ async def list_project_runtime_logs(
 
 
 @router.post(
-    (
-        "/workspaces/{workspace_id}/projects/{project_id}/workflows/{workflow_id}"
-        "/runs"
-    ),
+    ("/workspaces/{workspace_id}/projects/{project_id}/workflows/{workflow_id}/runs"),
     response_model=ApiResponse[workflow_schemas.WorkflowRunProjection],
     status_code=202,
 )
@@ -379,6 +406,55 @@ async def start_published_workflow_run(
     return ApiResponse.ok(projection)
 
 
+@router.post(
+    (
+        "/workspaces/{workspace_id}/projects/{project_id}/workflows/{workflow_id}"
+        "/runs/{run_id}/downstream-replay"
+    ),
+    response_model=ApiResponse[workflow_schemas.WorkflowRunProjection],
+    status_code=202,
+)
+async def replay_persisted_gaojixing_source_downstream(
+    workspace_id: str,
+    project_id: str,
+    workflow_id: str,
+    run_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> ApiResponse:
+    """Replay normalization through sink from completed persisted Gaojixing evidence."""
+
+    workflow = await get_workflow(db, workspace_id, project_id, workflow_id)
+    if workflow.current_published_version is None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "Workflow must be published before downstream replay"
+        )
+    version = await db.scalar(
+        select(StudioWorkflowVersion).where(
+            StudioWorkflowVersion.workflow_id == workflow_id,
+            StudioWorkflowVersion.version == workflow.current_published_version,
+        )
+    )
+    if version is None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "Published workflow version is unavailable")
+    await _get_project_workflow_run(
+        db,
+        workspace_id=workspace_id,
+        project_id=project_id,
+        workflow_id=workflow_id,
+        run_id=run_id,
+    )
+    try:
+        projection = await replay_downstream_from_persisted_gaojixing_source(
+            run_id,
+            expected_workflow_id=workflow_id,
+            expected_studio_workflow_version_id=version.id,
+            session=db,
+        )
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    return ApiResponse.ok(projection)
+
+
 @router.get(
     (
         "/workspaces/{workspace_id}/projects/{project_id}/workflows/{workflow_id}"
@@ -397,10 +473,13 @@ async def get_project_runtime_trace(
 ) -> ApiResponse:
     """Return one project-owned run trace without opening generic run access."""
 
-    await get_workflow(db, workspace_id, project_id, workflow_id)
-    row = await db.get(WorkflowRun, run_id)
-    if row is None or row.workflow_id != workflow_id:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Workflow run not found")
+    row, workflow_version = await _get_project_workflow_run(
+        db,
+        workspace_id=workspace_id,
+        project_id=project_id,
+        workflow_id=workflow_id,
+        run_id=run_id,
+    )
     projection = await get_workflow_run_projection(run_id, session=db)
     checkpoint = await get_workflow_run_checkpoint(run_id, session=db)
     events = await list_workflow_run_events(
@@ -413,13 +492,6 @@ async def get_project_runtime_trace(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Workflow run not found")
     request = row.request or {}
     input_payload = request.get("input") or {}
-    workflow_version = None
-    if row.studio_workflow_version_id:
-        workflow_version = await db.scalar(
-            select(StudioWorkflowVersion.version).where(
-                StudioWorkflowVersion.id == row.studio_workflow_version_id
-            )
-        )
     return ApiResponse.ok(
         ProjectRuntimeTraceRead(
             workflow_version=workflow_version,
@@ -436,6 +508,187 @@ async def get_project_runtime_trace(
                     default=after_sequence or 0,
                 ),
             ),
+        )
+    )
+
+
+@router.get(
+    ("/workspaces/{workspace_id}/projects/{project_id}/workflows/{workflow_id}/runs/{run_id}"),
+    response_model=ApiResponse[workflow_schemas.WorkflowRunProjection],
+)
+async def get_project_workflow_run_projection(
+    workspace_id: str,
+    project_id: str,
+    workflow_id: str,
+    run_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> ApiResponse:
+    """Return a projection through the owning published workflow."""
+
+    await _get_project_workflow_run(
+        db,
+        workspace_id=workspace_id,
+        project_id=project_id,
+        workflow_id=workflow_id,
+        run_id=run_id,
+    )
+    projection = await get_workflow_run_projection(run_id, session=db)
+    if projection is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Workflow run not found")
+    return ApiResponse.ok(projection)
+
+
+@router.get(
+    (
+        "/workspaces/{workspace_id}/projects/{project_id}/workflows/{workflow_id}"
+        "/runs/{run_id}/events"
+    ),
+    response_model=ApiResponse[list[workflow_schemas.WorkflowNodeRunEvent]],
+)
+async def list_project_workflow_run_events(
+    workspace_id: str,
+    project_id: str,
+    workflow_id: str,
+    run_id: str,
+    after_sequence: int | None = Query(default=None, ge=0, alias="afterSequence"),
+    limit: int | None = Query(default=None, ge=1, le=500),
+    db: AsyncSession = Depends(get_db),
+) -> ApiResponse:
+    """Replay persisted events through the owning published workflow."""
+
+    await _get_project_workflow_run(
+        db,
+        workspace_id=workspace_id,
+        project_id=project_id,
+        workflow_id=workflow_id,
+        run_id=run_id,
+    )
+    events = await list_workflow_run_events(
+        run_id,
+        session=db,
+        after_sequence=after_sequence,
+        limit=limit,
+    )
+    if events is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Workflow run not found")
+    return ApiResponse.ok(events)
+
+
+@router.get(
+    (
+        "/workspaces/{workspace_id}/projects/{project_id}/workflows/{workflow_id}"
+        "/runs/{run_id}/evidence-batches"
+    ),
+    response_model=ApiResponse[workflow_schemas.WorkflowEvidenceBatchListResponse],
+)
+async def list_project_workflow_evidence_batches(
+    workspace_id: str,
+    project_id: str,
+    workflow_id: str,
+    run_id: str,
+    node_id: str | None = Query(default=None),
+    source_group: str | None = Query(default=None),
+    cursor: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+) -> ApiResponse:
+    """List compact evidence metadata through the owning published workflow."""
+
+    await _get_project_workflow_run(
+        db,
+        workspace_id=workspace_id,
+        project_id=project_id,
+        workflow_id=workflow_id,
+        run_id=run_id,
+    )
+    projection = await get_workflow_run_projection(run_id, session=db)
+    if projection is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Workflow run not found")
+    try:
+        batches = list_evidence_batches(
+            projection,
+            node_id=node_id,
+            source_group=source_group,
+            cursor=cursor,
+            limit=limit,
+        )
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    return ApiResponse.ok(batches)
+
+
+@router.get(
+    (
+        "/workspaces/{workspace_id}/projects/{project_id}/workflows/{workflow_id}"
+        "/runs/{run_id}/evidence-batches/{batch_id}"
+    ),
+    response_model=ApiResponse[workflow_schemas.WorkflowEvidenceBatchDetail],
+)
+async def get_project_workflow_evidence_batch(
+    workspace_id: str,
+    project_id: str,
+    workflow_id: str,
+    run_id: str,
+    batch_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> ApiResponse:
+    """Return one evidence manifest through the owning published workflow."""
+
+    await _get_project_workflow_run(
+        db,
+        workspace_id=workspace_id,
+        project_id=project_id,
+        workflow_id=workflow_id,
+        run_id=run_id,
+    )
+    projection = await get_workflow_run_projection(run_id, session=db)
+    if projection is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Workflow run not found")
+    batch = get_evidence_batch(projection, batch_id)
+    if batch is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Evidence batch not found")
+    return ApiResponse.ok(batch)
+
+
+@router.get(
+    (
+        "/workspaces/{workspace_id}/projects/{project_id}/workflows/{workflow_id}"
+        "/runs/{run_id}/projection"
+    ),
+    response_model=ApiResponse[workflow_schemas.WorkflowEvidenceProjection],
+)
+async def get_project_workflow_evidence_projection(
+    workspace_id: str,
+    project_id: str,
+    workflow_id: str,
+    run_id: str,
+    node_id: str | None = Query(default=None),
+    source_group: str | None = Query(default=None),
+    include: str | None = Query(default=None),
+    db: AsyncSession = Depends(get_db),
+) -> ApiResponse:
+    """Project evidence through the owning published workflow."""
+
+    await _get_project_workflow_run(
+        db,
+        workspace_id=workspace_id,
+        project_id=project_id,
+        workflow_id=workflow_id,
+        run_id=run_id,
+    )
+    projection = await get_workflow_run_projection(run_id, session=db)
+    if projection is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Workflow run not found")
+    try:
+        includes = parse_projection_includes(include)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    return ApiResponse.ok(
+        build_evidence_projection(
+            projection,
+            node_id=node_id,
+            source_group=source_group,
+            includes=includes,
         )
     )
 

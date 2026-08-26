@@ -5,7 +5,8 @@ Define Gaojixing as an attributable live business workflow rather than an unqual
 ## ADDED Requirements
 
 ### Requirement: Live capability readiness is explicit and fail-closed
-A Gaojixing run claiming live execution SHALL require a published capability with an executable adapter, an explicitly live mode, a valid authenticated session binding, a passing session health check, and permitted network access. Capability publication, configuration, authentication, session health, network permission, and executable readiness SHALL be represented as distinct states. A catalog entry or configured channel alone SHALL NOT imply live readiness.
+A Gaojixing run claiming live execution SHALL require a published capability with an executable adapter, an explicitly live mode, a valid authenticated persistent-session binding, a passing session health check (using provider `whoami` when the primary identity lookup is unavailable), and permitted network access. Capability publication, configuration, authentication, session health, network permission, and executable readiness SHALL be represented as distinct states. CAPTCHA detection SHALL fail closed. A catalog entry or configured channel alone SHALL NOT imply live readiness.
+
 
 #### Scenario: Capability is published but not executable
 - **WHEN** the catalog contains Gaojixing/Doubao metadata but no executable adapter or live mode
@@ -107,3 +108,24 @@ The Gaojixing acceptance surface SHALL state whether capability publication, aut
 - **WHEN** any required live prerequisite is unavailable or not observed
 - **THEN** the acceptance result identifies the exact missing prerequisite and remains blocked, failed, partial, unconfirmed, or unknown as appropriate
 - **AND** it MUST NOT be upgraded to completed live business success by a mock, fixture, transport response, or inferred state.
+
+### Requirement: Workflow v2 and project-scoped projections are explicit
+Accepted Gaojixing execution SHALL follow the Workflow v2 stages `source → normalize → accept → sink`. The service SHALL expose project-scoped APIs for run detail, run events, evidence, and projections, and every response SHALL preserve the run, project, source, package-digest, and execution lineage.
+
+#### Scenario: Project requests run evidence
+- **WHEN** an authorized project-scoped client requests run detail, events, evidence, or projections
+- **THEN** the response is limited to that project and retains complete source-to-sink lineage
+- **AND** cross-project records are not disclosed.
+
+### Requirement: Canonical dedupe and downstream replay are deterministic and idempotent
+The chain SHALL compute dedupe identity from a deterministic canonical representation and SHALL distinguish stored sink references from duplicate-skipped sink references. Downstream replay SHALL consume persisted source evidence and its lineage without invoking the provider again; repeated replay of the same canonical input SHALL be idempotent.
+
+#### Scenario: Replay an accepted source evidence artifact
+- **WHEN** a downstream replay is requested for persisted source evidence
+- **THEN** normalization, acceptance, and sink processing reuse the canonical package and evidence lineage without another provider call
+- **AND** the result records whether the sink reference was stored or skipped as a duplicate.
+
+#### Scenario: Equivalent canonical inputs are replayed twice
+- **WHEN** equivalent inputs produce the same canonical dedupe identity
+- **THEN** the first sink reference is stored and the later reference is marked duplicate-skipped
+- **AND** both outcomes retain complete links to the source evidence, run, project, package digest, and replay execution.

@@ -84,6 +84,10 @@ _PORT_CONTRACTS: dict[str, tuple[list[_PortContract], list[_PortContract]]] = {
         [_PortContract("in", "input", "trigger", required=False)],
         [_PortContract("out", "output", "items[]")],
     ),
+    "intelligence.source.doubao-research": (
+        [_PortContract("in", "input", "trigger", required=False)],
+        [_PortContract("out", "output", "items[]")],
+    ),
     "intelligence.source.pool": (
         [_PortContract("in", "input", "trigger", required=False)],
         [_PortContract("out", "output", "trigger")],
@@ -506,9 +510,7 @@ def _validate_data_operator_node(
     catalog_id = _read_string((node.ui or {}).get("catalogId"))
     prefix = "intelligence.data."
     expected_kind = (
-        catalog_id.removeprefix(prefix)
-        if catalog_id and catalog_id.startswith(prefix)
-        else None
+        catalog_id.removeprefix(prefix) if catalog_id and catalog_id.startswith(prefix) else None
     )
     operator_id = _read_string(node.params.get("operatorId"))
     if expected_kind not in {"generate", "filter", "evaluate", "refine"}:
@@ -549,15 +551,10 @@ def _validate_data_operator_node(
                 path=[*path_prefix, "params", "packVersion"],
             )
         ]
-    resolved_pack_version = (
-        requested_pack_version or _LEGACY_DATA_OPERATOR_PACK_VERSION
-    )
+    resolved_pack_version = requested_pack_version or _LEGACY_DATA_OPERATOR_PACK_VERSION
     spec = resolve_data_operator(operator_id, resolved_pack_version)
     if spec is None:
-        if any(
-            registered.id == operator_id
-            for registered in list_data_operator_specs()
-        ):
+        if any(registered.id == operator_id for registered in list_data_operator_specs()):
             return [
                 WorkflowCompileError(
                     code="unsupported_data_operator_version",
@@ -574,8 +571,7 @@ def _validate_data_operator_node(
             WorkflowCompileError(
                 code="unknown_data_operator",
                 message=(
-                    f'Workflow data node "{node.id}" references unknown operator '
-                    f'"{operator_id}"'
+                    f'Workflow data node "{node.id}" references unknown operator "{operator_id}"'
                 ),
                 node_id=node.id,
                 path=[*path_prefix, "params", "operatorId"],
@@ -594,6 +590,8 @@ def _validate_data_operator_node(
             )
         ]
     return []
+
+
 def _validate_node_capability_gaps(
     node: WorkflowProjectNode,
     path_prefix: list[str],
@@ -658,8 +656,7 @@ def _validate_typed_edges(
         target_port = _resolve_input_port(target_contract[0], edge.targetPort)
         if (
             target_port is None
-            and _read_string((target_node.ui or {}).get("catalogId"))
-            == "intelligence.flow.merge"
+            and _read_string((target_node.ui or {}).get("catalogId")) == "intelligence.flow.merge"
             and edge.targetPort
             and re.fullmatch(r"in\d+", edge.targetPort)
         ):
@@ -825,14 +822,8 @@ def _native_intelligence_port_contracts(
     if contract is None:
         return None
     return (
-        [
-            _PortContract(name, "input", type_)
-            for name, type_ in contract.input_ports
-        ],
-        [
-            _PortContract(name, "output", type_)
-            for name, type_ in contract.output_ports
-        ],
+        [_PortContract(name, "input", type_) for name, type_ in contract.input_ports],
+        [_PortContract(name, "output", type_) for name, type_ in contract.output_ports],
     )
 
 
@@ -1551,11 +1542,7 @@ def _compile_node(
         "capability": node.capability,
         "dispatch": "preview",
         "origin": resolve_node_origin(node).model_dump(exclude_none=True),
-        **(
-            {"proposal_state": node.proposalState}
-            if node.proposalState is not None
-            else {}
-        ),
+        **({"proposal_state": node.proposalState} if node.proposalState is not None else {}),
     }
     if runtime:
         runtime_metadata.update(runtime)
@@ -1591,7 +1578,6 @@ def _compile_node(
     )
 
 
-
 def _widen_merge_fan_in(plan: PlanGraph) -> None:
     """Grow merge nodes' declared inputs to cover every in<N> edge that
     actually targets them. The static contract names only in1/in2, but the
@@ -1618,8 +1604,7 @@ def _to_plan_ir(project: WorkflowProject) -> PlanGraph:
         name=project.name,
         draft=True,
         nodes=[
-            _to_plan_node(node, merge_fan_in=fan_in_by_node.get(node.id))
-            for node in project.nodes
+            _to_plan_node(node, merge_fan_in=fan_in_by_node.get(node.id)) for node in project.nodes
         ],
         edges=[
             PlanEdge(

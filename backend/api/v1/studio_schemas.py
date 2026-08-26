@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_serializer
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_serializer
 
 from backend.schemas import workflow as workflow_schemas
 from backend.schemas.common import UTCModel
@@ -84,9 +84,7 @@ class DraftRead(UTCModel):
     updated_at: datetime
 
     @field_serializer("graph")
-    def serialize_graph(
-        self, graph: workflow_schemas.WorkflowProject
-    ) -> dict[str, object]:
+    def serialize_graph(self, graph: workflow_schemas.WorkflowProject) -> dict[str, object]:
         return graph.model_dump(mode="json", exclude_none=True)
 
 
@@ -162,6 +160,10 @@ class PublishedWorkflowRunStart(BaseModel):
 
     inputs: dict = Field(default_factory=dict)
     response_mode: Literal["async"] = "async"
-    user: str = Field(min_length=1, max_length=255)
+    user: str = Field(
+        min_length=1,
+        max_length=255,
+        validation_alias=AliasChoices("user", "initiated_by"),
+    )
     request_id: str | None = Field(default=None, max_length=255)
     idempotency_key: str | None = Field(default=None, max_length=255)

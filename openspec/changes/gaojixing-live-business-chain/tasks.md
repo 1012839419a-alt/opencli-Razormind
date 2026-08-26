@@ -7,19 +7,20 @@
 
 ## 2. Capability and execution
 
-- [ ] 2.1 Publish Gaojixing/Doubao as a capability only when its executable adapter and declared live mode are available; expose publication, configuration, authentication, network, and executable readiness separately.
-- [ ] 2.2 Resolve and health-check the authenticated Doubao/OpenCLI session immediately before execution; bind the session identity and scope to the run without persisting secrets.
-- [ ] 2.3 Persist the canonical question package snapshot and deterministic digest before dispatch, and use that snapshot for the prompt, evidence, lineage, replay, and audit views.
-- [ ] 2.4 Capture the raw answer, extracted citations, conversation reference, adapter/request metadata, and capture status as separate evidence objects; preserve unknown or unavailable fields as unknown/null.
-- [ ] 2.5 Reject empty/malformed answers, missing required evidence, capability/session/network blockers, or question-package digest mismatches without creating a live-success result.
+- [x] 2.1 Publish Gaojixing/Doubao as a capability only when its executable adapter and declared live mode are available; expose publication, configuration, authentication, network, and executable readiness separately.
+- [x] 2.2 Resolve and health-check the authenticated Doubao/OpenCLI session immediately before execution; use provider `whoami` as the identity fallback, bind the session identity and scope to the run without persisting secrets, and fail closed on CAPTCHA.
+- [x] 2.3 Persist the canonical question package snapshot and deterministic digest before dispatch, and use that snapshot for the prompt, evidence, lineage, replay, and audit views.
+- [x] 2.4 Capture the raw answer, extracted citations, conversation reference, adapter/request metadata, and capture status as separate evidence objects; preserve unknown or unavailable fields as unknown/null.
+- [x] 2.5 Reject empty/malformed answers, missing required evidence, capability/session/network blockers, or question-package digest mismatches without creating a live-success result.
 
 ## 3. Normalize, record, and delivery
 
-- [ ] 3.1 Route the accepted live answer through the shared normalize and dedupe boundary, retaining package digest, run/execution, worker/runtime, source/binding, and raw-artifact references.
-- [ ] 3.2 Persist a normalized record and its evidence links so every record can be traced back to the exact question, answer artifact, citation capture, conversation reference, and execution lineage.
-- [ ] 3.3 Add delivery attempt state that records transport outcome independently from business outcome, with idempotent delivery identity and retry lineage.
-- [ ] 3.4 Mark business outcome `confirmed` only from a documented destination ACK/equivalent confirmation tied to the delivery attempt; otherwise expose `unconfirmed` or `unknown` even when transport is accepted.
-- [ ] 3.5 Ensure delivery failure, timeout, mixed outcomes, and missing ACK are visible as partial/blocked states and never silently promoted to completed business success.
+- [x] 3.1 Route the accepted live answer through the Workflow v2 `source → normalize → accept → sink` pipeline and shared canonical dedupe boundary, retaining package digest, run/execution, worker/runtime, source/binding, and raw-artifact references.
+- [x] 3.2 Persist a normalized record and its evidence links so every record can be traced back to the exact question, answer artifact, citation capture, conversation reference, and execution lineage; expose project-scoped run detail, events, evidence, and projection APIs.
+- [x] 3.3 Add delivery attempt state that records transport outcome independently from business outcome, with deterministic canonical dedupe identity and retry lineage.
+- [x] 3.4 Mark business outcome `confirmed` only from a documented destination ACK/equivalent confirmation tied to the delivery attempt; otherwise expose `unconfirmed` or `unknown` even when transport is accepted.
+- [x] 3.5 Ensure delivery failure, timeout, mixed outcomes, and missing ACK are visible as partial/blocked states and never silently promoted to completed business success.
+- [x] 3.6 Support idempotent downstream replay from persisted source evidence without another provider call; retain sink references for stored and duplicate-skipped outcomes with complete lineage.
 
 ## 4. Fixture and mock boundaries
 

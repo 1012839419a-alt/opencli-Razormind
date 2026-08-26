@@ -18,6 +18,34 @@ _CAPTCHA_MARKERS = (
     "验证码",
 )
 
+_AUTHENTICATED_LOGIN_VALUES = {"true", "yes", "logged_in", "authenticated"}
+_LOGGED_OUT_LOGIN_VALUES = {"false", "no", "logged_out", "unauthenticated"}
+_DOUBAO_WORKSPACE_URL_RE = re.compile(r"^https://(?:www\.)?doubao\.com/chat(?:[/?#]|$)", re.I)
+_ACCOUNT_IDENTITY_KEYS = ("id", "uid", "user_id", "email", "phone", "name", "nickname", "account")
+
+
+def _row_value(row: dict[str, Any], *keys: str) -> str:
+    """Read an OpenCLI table key without depending on its display casing."""
+    values = {str(key).lower(): value for key, value in row.items()}
+    return next((str(values[key]).strip() for key in keys if values.get(key) is not None), "")
+
+
+def _is_authenticated_doubao_workspace(row: dict[str, Any]) -> bool:
+    """Require an unambiguous Doubao chat workspace, never just a login redirect."""
+    url = _row_value(row, "url")
+    title = _row_value(row, "title")
+    return bool(_DOUBAO_WORKSPACE_URL_RE.match(url) and "豆包" in title)
+
+
+def _has_authenticated_account(rows: list[dict[str, Any]]) -> bool:
+    """Accept exactly one non-empty identity from the provider's read-only whoami output."""
+    identities = {
+        _row_value(row, *_ACCOUNT_IDENTITY_KEYS)
+        for row in rows
+        if _row_value(row, *_ACCOUNT_IDENTITY_KEYS)
+    }
+    return len(identities) == 1
+
 
 def _citations(text: str) -> list[dict[str, str]]:
     """Extract and de-duplicate URLs while preserving the answer's order."""
@@ -194,8 +222,15 @@ class DoubaoResearchChannel(AbstractChannel):
         config: dict[str, Any] | None = None,
         source_id: str | None = None,
     ) -> bool:
-        """Probe the same persistent browser session used by live capture."""
+        """Probe the same persistent browser session used by live capture.
+
+        ``status`` can only report ``Login=Unknown`` for a live authenticated
+        workspace.  Keep its explicit logged-in result for compatibility, but
+        require a provider-scoped workspace and read-only ``whoami`` evidence
+        before treating that indeterminate state as ready.
+        """
         del source_id
+        session = str((config or {}).get("site_session", "persistent"))
         status_command = [
             _opencli_binary(),
             "doubao",
@@ -203,29 +238,62 @@ class DoubaoResearchChannel(AbstractChannel):
             "-f",
             "json",
             "--site-session",
-            str((config or {}).get("site_session", "persistent")),
+            session,
         ]
         try:
-            returncode, stdout, _ = await _run_doubao_command(status_command)
+            returncode, stdout, stderr = await _run_doubao_command(status_command)
         except (FileNotFoundError, TimeoutError, OSError):
             return False
-        if returncode:
+        if returncode or _is_captcha_block(stderr, stdout):
             return False
         try:
             rows = _parse_opencli_rows(stdout)
         except Exception:
             return False
-        for row in rows:
-            status = str(row.get("Status", row.get("status", ""))).strip().lower()
-            login = str(row.get("Login", row.get("login", ""))).strip().lower()
-            if status in {"connected", "ready", "available"} and login in {
-                "true",
-                "yes",
-                "logged_in",
-                "authenticated",
-            }:
-                return True
-        return False
+
+        connected_rows = [
+            row
+            for row in rows
+            if _row_value(row, "status").lower() in {"connected", "ready", "available"}
+        ]
+        if not connected_rows:
+            return False
+        logins = [_row_value(row, "login").lower() for row in connected_rows]
+        if any(login in _LOGGED_OUT_LOGIN_VALUES for login in logins):
+            return False
+        for row, login in zip(connected_rows, logins, strict=True):
+            if login not in _AUTHENTICATED_LOGIN_VALUES:
+                continue
+            if _row_value(row, "url", "title") and not _is_authenticated_doubao_workspace(row):
+                return False
+            return True
+
+        workspace_rows = [
+            row
+            for row, login in zip(connected_rows, logins, strict=True)
+            if login in {"", "unknown"} and _is_authenticated_doubao_workspace(row)
+        ]
+        if len(workspace_rows) != 1:
+            return False
+        whoami_command = [
+            _opencli_binary(),
+            "doubao",
+            "whoami",
+            "-f",
+            "json",
+            "--site-session",
+            session,
+        ]
+        try:
+            returncode, stdout, stderr = await _run_doubao_command(whoami_command)
+        except (FileNotFoundError, TimeoutError, OSError):
+            return False
+        if returncode or _is_captcha_block(stderr, stdout):
+            return False
+        try:
+            return _has_authenticated_account(_parse_opencli_rows(stdout))
+        except Exception:
+            return False
 
     async def validate_config(self, config: dict[str, Any]) -> list[str]:
         return (

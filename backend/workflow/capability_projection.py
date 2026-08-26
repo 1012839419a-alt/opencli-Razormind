@@ -113,9 +113,7 @@ def _capability(
     )
 
 
-def _catalog_capabilities(
-    *, dify_runtime_ready: bool = False
-) -> list[WorkflowRuntimeCapability]:
+def _catalog_capabilities(*, dify_runtime_ready: bool = False) -> list[WorkflowRuntimeCapability]:
     expected_native_children = {
         action: f"tool.intelligence.native.{action}"
         for action in NATIVE_INTELLIGENCE_LIFECYCLE_ACTIONS
@@ -131,9 +129,7 @@ def _catalog_capabilities(
         )
     ]
     native_actions = [
-        action
-        if isinstance(action := tool.executor.params.get("action"), str)
-        else "<missing>"
+        action if isinstance(action := tool.executor.params.get("action"), str) else "<missing>"
         for tool in native_tools
     ]
     native_ids = [tool.id for tool in native_tools]
@@ -141,17 +137,11 @@ def _catalog_capabilities(
     id_counts = Counter(native_ids)
     missing_actions = sorted(set(expected_native_children) - set(native_actions))
     extra_actions = sorted(set(native_actions) - set(expected_native_children))
-    duplicate_actions = sorted(
-        action for action, count in action_counts.items() if count > 1
-    )
+    duplicate_actions = sorted(action for action, count in action_counts.items() if count > 1)
     missing_tool_ids = sorted(expected_native_ids - set(native_ids))
     extra_tool_ids = sorted(set(native_ids) - expected_native_ids)
-    duplicate_tool_ids = sorted(
-        tool_id for tool_id, count in id_counts.items() if count > 1
-    )
-    expected_pairs = {
-        (tool_id, action) for action, tool_id in expected_native_children.items()
-    }
+    duplicate_tool_ids = sorted(tool_id for tool_id, count in id_counts.items() if count > 1)
+    expected_pairs = {(tool_id, action) for action, tool_id in expected_native_children.items()}
     actual_pairs = set(zip(native_ids, native_actions, strict=True))
     missing_children = [
         {"id": tool_id, "action": action}
@@ -173,9 +163,7 @@ def _catalog_capabilities(
         or extra_children
     )
     native_package_status: WorkflowCapabilityStatus = (
-        "runnable"
-        if not native_action_set_invalid and not native_blocked
-        else "blocked"
+        "runnable" if not native_action_set_invalid and not native_blocked else "blocked"
     )
     native_package_missing = [
         reason
@@ -337,6 +325,72 @@ def _catalog_capabilities(
             ),
         ),
         _capability(
+            id="intelligence.source.doubao-research",
+            label="Doubao Research Capture",
+            surface="catalog",
+            status="runnable",
+            backend_available=True,
+            kind="source",
+            capability="fetch",
+            provider="doubao_research",
+            channel_type="doubao_research",
+            runtime_binding=SOURCE_FETCH_BINDING_ID,
+            reason=(
+                "Canvas Run captures a live Doubao answer through the existing "
+                "session-bound doubao_research channel and preserves its evidence."
+            ),
+            tags=["source", "doubao", "research", "chat-ai.capture", "live"],
+            source="backend.workflow.gaojixing_runtime",
+            manifest={
+                **_manifest(
+                    schema="capability.source.doubao-research.v1",
+                    input_ports=[_port("in", "trigger")],
+                    output_ports=[_port("out", "items[]")],
+                    resources=["opencli_session", "browser_profile"],
+                    permissions=["network.fetch", "canFetchNetwork"],
+                    runtime_binding=SOURCE_FETCH_BINDING_ID,
+                    trace_events=["partial:gaojixing.capture", "completed"],
+                    probes=["doubao_research_channel_available", "session_authenticated"],
+                ),
+                "canvas": {"node": True},
+                "nodeCatalog": {
+                    "authority": "backend",
+                    "origin": "source-preset",
+                    "category": "source",
+                    "kind": "source",
+                    "capability": "fetch",
+                    "adapter": {
+                        "id": "source-doubao-research-capture",
+                        "type": "source",
+                        "provider": "doubao_research",
+                        "mode": "live",
+                        "config": {
+                            "channelType": "doubao_research",
+                            "liveMode": "live",
+                        },
+                    },
+                },
+                "presentation": {
+                    "icon": "Search",
+                    "description": "通过已认证的豆包研究会话捕获问题回答与证据。",
+                    "parameters": [
+                        {
+                            "name": "question",
+                            "label": "研究问题 / Research question",
+                            "type": "string",
+                            "required": True,
+                        },
+                        {
+                            "name": "sourceGroup",
+                            "label": "来源分组 / Source group",
+                            "type": "string",
+                            "default": "doubao-research",
+                        },
+                    ],
+                },
+            },
+        ),
+        _capability(
             id="intelligence.source.searxng",
             label="SearXNG 元搜索 / Metasearch",
             surface="catalog",
@@ -472,8 +526,7 @@ def _catalog_capabilities(
                 "presentation": {
                     "icon": "Rss",
                     "description": (
-                        "读取自托管 RSSHub 路由或已登记的 Feed Provider，"
-                        "保留来源分组与运行血缘。"
+                        "读取自托管 RSSHub 路由或已登记的 Feed Provider，保留来源分组与运行血缘。"
                     ),
                     "parameters": [
                         {
@@ -1077,7 +1130,7 @@ def _catalog_capabilities(
                     "duplicateToolIds": duplicate_tool_ids,
                     "missingChildren": missing_children,
                     "extraChildren": extra_children,
-                }
+                },
             },
         ),
         _blocked_catalog(
@@ -1189,15 +1242,11 @@ def _data_operator_capabilities() -> list[WorkflowRuntimeCapability]:
                         ],
                         probes=["data_operator_registry"],
                     ),
-                    "operatorIds": list(
-                        dict.fromkeys(operator["id"] for operator in operators)
-                    ),
+                    "operatorIds": list(dict.fromkeys(operator["id"] for operator in operators)),
                     "operators": operators,
                     "packs": sorted({operator["packId"] for operator in operators}),
                     "params": list(
-                        dict.fromkeys(
-                            key for spec in specs for key in spec.config_keys
-                        )
+                        dict.fromkeys(key for spec in specs for key in spec.config_keys)
                     ),
                     "artifacts": [
                         "recordCandidate[]",
@@ -1208,6 +1257,8 @@ def _data_operator_capabilities() -> list[WorkflowRuntimeCapability]:
             )
         )
     return rows
+
+
 def _dify_runtime_ready(installations: list[PluginInstallationRead]) -> bool:
     return any(
         installation.id == "bundled:dify-graphon-runtime" and installation.runtime_status == "READY"
@@ -1350,8 +1401,7 @@ def _primitive_capabilities() -> list[WorkflowRuntimeCapability]:
             kind="schedule",
             capability="trigger",
             runtime_binding=WEBHOOK_TRIGGER_BINDING_ID,
-            reason="The workflow webhook input contract has HTTP ingress "
-            "and run dispatch.",
+            reason="The workflow webhook input contract has HTTP ingress and run dispatch.",
             missing=[],
             tags=["primitive", "webhook", "trigger"],
         ),
@@ -1364,8 +1414,7 @@ def _primitive_capabilities() -> list[WorkflowRuntimeCapability]:
             kind="schedule",
             capability="trigger",
             runtime_binding=WEBHOOK_TRIGGER_BINDING_ID,
-            reason="The workflow webhook input contract has HTTP ingress "
-            "and run dispatch.",
+            reason="The workflow webhook input contract has HTTP ingress and run dispatch.",
             missing=[],
             tags=["primitive", "webhook", "trigger"],
         ),
@@ -1536,8 +1585,7 @@ def _trigger_capabilities() -> list[WorkflowRuntimeCapability]:
             kind="schedule",
             capability="trigger",
             runtime_binding=WEBHOOK_TRIGGER_BINDING_ID,
-            reason="The workflow webhook input contract has HTTP ingress "
-            "and run dispatch.",
+            reason="The workflow webhook input contract has HTTP ingress and run dispatch.",
             missing=[],
             tags=["trigger", "webhook"],
         ),
@@ -1774,11 +1822,7 @@ def _tool_catalog_capabilities() -> list[WorkflowRuntimeCapability]:
                 provider=tool.provider,
                 runtime_binding=_read_manifest_runtime_binding(tool.manifest),
                 reason=tool.description,
-                missing=(
-                    []
-                    if tool.status == "runnable"
-                    else ["tool_capability_unavailable"]
-                ),
+                missing=([] if tool.status == "runnable" else ["tool_capability_unavailable"]),
                 tags=["catalog", "tool-capability", *tool.tags],
                 source="backend.workflow.tool_capabilities",
                 manifest=manifest,

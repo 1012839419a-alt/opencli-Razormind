@@ -51,7 +51,11 @@ def build_question_package(
 ) -> GaojixingQuestionPackage:
     """Resolve the effective question once and hash its canonical snapshot."""
 
-    question = _string(runtime_payload.get("question")) or _string(node_params.get("question"))
+    question = (
+        _string(runtime_payload.get("question"))
+        or _string(runtime_payload.get("query"))
+        or _string(node_params.get("question"))
+    )
     if question is None:
         question = _string(adapter_config.get("question"))
     if question is None:
@@ -71,11 +75,15 @@ def build_question_package(
     options = {
         key: value
         for key in option_keys
-        for value in [_json_safe(runtime_payload.get(key, node_params.get(key, adapter_config.get(key))))]
+        for value in [
+            _json_safe(runtime_payload.get(key, node_params.get(key, adapter_config.get(key))))
+        ]
         if value is not None
     }
     canonical = {"schema": GAOJIXING_PACKAGE_SCHEMA, "question": question, "options": options}
-    encoded = json.dumps(canonical, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    encoded = json.dumps(
+        canonical, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode()
     return GaojixingQuestionPackage(
         schema=GAOJIXING_PACKAGE_SCHEMA,
         question=question,
@@ -93,16 +101,21 @@ async def capture_live_doubao(
 ) -> ChannelResult:
     """Preflight and execute the existing Doubao channel; never use fixtures."""
 
-    capability_id = _string(node_params.get("capabilityId")) or _string(
-        adapter_config.get("capabilityId")
-    ) or GAOJIXING_CAPABILITY_ID
+    capability_id = (
+        _string(node_params.get("capabilityId"))
+        or _string(adapter_config.get("capabilityId"))
+        or GAOJIXING_CAPABILITY_ID
+    )
     if capability_id not in {GAOJIXING_CAPABILITY_ID, "doubao.ask"}:
         raise GaojixingReadinessError(
             "gaojixing_capability_missing",
             f'Live Gaojixing capability "{capability_id}" is not registered.',
             details={"capabilityId": capability_id},
         )
-    if node_params.get("capabilityAvailable") is False or adapter_config.get("capabilityAvailable") is False:
+    if (
+        node_params.get("capabilityAvailable") is False
+        or adapter_config.get("capabilityAvailable") is False
+    ):
         raise GaojixingReadinessError(
             "gaojixing_capability_missing",
             "The live Gaojixing chat-ai.capture/Doubao capability is unavailable.",
@@ -156,16 +169,23 @@ def map_capture_item(
         "runId": run_id,
         "workflowId": workflow_id,
         "nodeId": node_id,
-        "answer": {"status": "captured" if answer else "unavailable", "artifactId": artifact_id, "text": answer},
+        "answer": {
+            "status": "captured" if answer else "unavailable",
+            "artifactId": artifact_id,
+            "text": answer,
+        },
         "citations": {
             "status": "captured" if citations else "empty",
             "capture": item.get("citation_capture", "answer_url_extraction"),
             "verified": False,
             "items": citations,
         },
-        "conversation": {"status": "captured" if conversation_url else "unknown", "url": conversation_url},
+        "conversation": {
+            "status": "captured" if conversation_url else "unknown",
+            "url": conversation_url,
+        },
     }
-    return {
+    mapped = {
         **item,
         "gaojixing": {
             "mode": "live",
@@ -178,6 +198,14 @@ def map_capture_item(
         "questionPackage": package.to_dict(),
         "answerArtifactId": artifact_id,
     }
+    if conversation_url:
+        mapped["dedupe"] = {
+            "type": "source-identity",
+            "field": "conversation_url",
+            "value": conversation_url,
+            "status": "unique",
+        }
+    return mapped
 
 
 def _string(value: Any) -> str | None:

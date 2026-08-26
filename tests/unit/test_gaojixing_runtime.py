@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -13,8 +14,8 @@ from backend.workflow.gaojixing_runtime import (
 )
 from backend.workflow.opencli_hda_tracer import (
     _execute_gaojixing_source,
-    _record_lineage_envelope,
     _store_record_sink_outputs,
+    replay_downstream_from_persisted_gaojixing_source,
 )
 
 
@@ -33,6 +34,16 @@ def test_question_package_uses_runtime_question_and_stable_digest():
     assert first.question == "runtime"
     assert first.digest == second.digest
     assert len(first.digest) == 64
+
+
+def test_question_package_accepts_published_run_query_input():
+    package = build_question_package(
+        node_params={},
+        adapter_config={},
+        runtime_payload={"query": "高吉星燕窝酸 DHA 藻油"},
+    )
+
+    assert package.question == "高吉星燕窝酸 DHA 藻油"
 
 
 def test_question_package_requires_effective_question():
@@ -62,6 +73,7 @@ async def test_capture_fails_closed_when_capability_missing(monkeypatch):
 
     assert error.value.code == "gaojixing_capability_missing"
 
+
 @pytest.mark.asyncio
 async def test_capture_uses_live_channel_after_health_probe(monkeypatch):
     package = build_question_package(
@@ -75,9 +87,7 @@ async def test_capture_uses_live_channel_after_health_probe(monkeypatch):
 
     async def collect(self, config, parameters):
         calls.append((config["question"], parameters["question"]))
-        return ChannelResult.ok(
-            [{"content": "answer", "citations": [], "conversation_url": ""}]
-        )
+        return ChannelResult.ok([{"content": "answer", "citations": [], "conversation_url": ""}])
 
     monkeypatch.setattr(runtime.DoubaoResearchChannel, "health_check", healthy)
     monkeypatch.setattr(runtime.DoubaoResearchChannel, "collect", collect)
@@ -115,6 +125,12 @@ def test_capture_mapping_keeps_package_and_independent_evidence():
     assert evidence["answer"]["artifactId"] == "artifact"
     assert evidence["citations"]["verified"] is False
     assert evidence["conversation"]["status"] == "captured"
+    assert mapped["dedupe"] == {
+        "type": "source-identity",
+        "field": "conversation_url",
+        "value": "https://www.doubao.com/chat/123",
+        "status": "unique",
+    }
 
 
 class _Emitter:
@@ -166,9 +182,7 @@ async def test_hda_live_source_branch_maps_capture_output(monkeypatch):
             ]
         )
 
-    monkeypatch.setattr(
-        "backend.workflow.opencli_hda_tracer.capture_live_doubao", fake_capture
-    )
+    monkeypatch.setattr("backend.workflow.opencli_hda_tracer.capture_live_doubao", fake_capture)
     await _execute_gaojixing_source(
         node,
         body=body,
@@ -186,6 +200,98 @@ async def test_hda_live_source_branch_maps_capture_output(monkeypatch):
     assert raw["gaojixing"]["evidence"]["packageDigest"] == raw["packageDigest"]
     assert item["lineage"][0]["artifact"] == "gaojixing.capture"
     assert [event[1] for event in emitter.events] == ["partial", "completed"]
+
+
+@pytest.mark.asyncio
+async def test_downstream_replay_uses_only_persisted_gaojixing_evidence(monkeypatch):
+    source_node = SimpleNamespace(
+        id="source",
+        kind="source",
+        params={},
+        adapter=None,
+        runtime={"binding": {"input": {"channelType": "doubao_research", "liveMode": "live"}}},
+    )
+    source_input = SimpleNamespace(
+        sourceId=None,
+        model_copy=lambda *, update: SimpleNamespace(**{**source_input.__dict__, **update}),
+    )
+    source_request = SimpleNamespace(
+        project=object(),
+        input=source_input,
+        model_copy=lambda *, update, deep: SimpleNamespace(**{**source_request.__dict__, **update}),
+    )
+    source_run = SimpleNamespace(
+        projection=SimpleNamespace(status="completed", workflowId="workflow"),
+        studio_workflow_version_id="version",
+        workflow_version_id=None,
+        request=source_request,
+        events=[
+            SimpleNamespace(
+                nodeId="source",
+                eventType="partial",
+                details={
+                    "channelType": "doubao_research",
+                    "capabilityId": "chat-ai.capture",
+                    "package": {"digest": "digest"},
+                    "artifactId": "artifact",
+                    "evidence": {
+                        "mode": "live",
+                        "packageDigest": "digest",
+                        "runId": "source-run",
+                        "workflowId": "workflow",
+                        "nodeId": "source",
+                        "answer": {"artifactId": "artifact", "text": "persisted answer"},
+                        "citations": {"items": []},
+                        "conversation": {"url": "https://example.test/conversation"},
+                    },
+                },
+            ),
+            SimpleNamespace(nodeId="source", eventType="completed"),
+        ],
+    )
+    record = SimpleNamespace(
+        raw_data={
+            "gaojixing": {"artifactId": "artifact", "package": {"digest": "digest"}},
+            "_workflowLineage": [
+                {
+                    "nodeId": "source",
+                    "artifact": "gaojixing.capture",
+                    "artifactId": "artifact",
+                    "packageDigest": "digest",
+                }
+            ],
+        }
+    )
+    session = SimpleNamespace(
+        execute=AsyncMock(
+            return_value=SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: [record]))
+        )
+    )
+    monkeypatch.setattr(
+        "backend.workflow.opencli_hda_tracer._load_workflow_run",
+        AsyncMock(side_effect=[source_run, None]),
+    )
+    monkeypatch.setattr(
+        "backend.workflow.opencli_hda_tracer.compile_workflow_project",
+        lambda _project: SimpleNamespace(
+            valid=True, plan=SimpleNamespace(runtime=SimpleNamespace(nodes=[source_node]))
+        ),
+    )
+    start = AsyncMock(return_value=SimpleNamespace(runId="replay-run"))
+    monkeypatch.setattr("backend.workflow.opencli_hda_tracer.start_workflow_run", start)
+
+    replay = await replay_downstream_from_persisted_gaojixing_source(
+        "source-run",
+        expected_workflow_id="workflow",
+        expected_studio_workflow_version_id="version",
+        session=session,
+    )
+
+    assert replay.runId == "replay-run"
+    request = start.await_args.args[0]
+    assert request.input.sourceId == "source-run"
+    assert request.sourceOutputs["source"][0]["raw"]["gaojixing"]["artifactId"] == "artifact"
+    assert start.await_args.kwargs["replay_source_node_ids"] == {"source"}
 
 
 @pytest.mark.asyncio
@@ -228,6 +334,11 @@ async def test_record_sink_persists_gaojixing_refs_and_collection_lineage(monkey
     )
 
     class _Session:
+        async def execute(self, _statement):
+            return SimpleNamespace(
+                scalars=lambda: [SimpleNamespace(id="record-id", content_hash=captured["hash"])]
+            )
+
         async def flush(self):
             return None
 
@@ -237,6 +348,7 @@ async def test_record_sink_persists_gaojixing_refs_and_collection_lineage(monkey
         return "source-id", "task-id"
 
     async def fake_store(*args, **kwargs):
+        captured["hash"] = args[3][0][2]
         captured["lineage"] = kwargs["lineage"]
         return [SimpleNamespace(id="record-id")], 0
 

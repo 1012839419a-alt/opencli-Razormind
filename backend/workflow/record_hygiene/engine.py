@@ -132,6 +132,9 @@ def _normalize(
             "quality": _quality(item, normalized),
             "lineage": lineage,
         }
+        if canonical_dedupe := _canonical_source_dedupe(raw, normalized):
+            candidate["dedupe"] = canonical_dedupe
+            candidate["evidence"] = [canonical_dedupe]
         if language:
             candidate["normalization"] = {"language": language}
         if preserve_source_refs:
@@ -178,6 +181,7 @@ def _dedupe(
             "window": window_label,
             "windowHours": window_hours,
         }
+        dedupe_evidence = _canonical_dedupe_evidence(item, evidence)
         updated = deepcopy(item)
         updated["lineage"] = [
             *_lineage(item, index),
@@ -188,12 +192,16 @@ def _dedupe(
         if winner is not None:
             duplicate_of = _record_identity(winner)
             updated["duplicateOf"] = duplicate_of
-            updated["dedupe"] = {**evidence, "status": "duplicate", "duplicateOf": duplicate_of}
+            updated["dedupe"] = {
+                **dedupe_evidence,
+                "status": "duplicate",
+                "duplicateOf": duplicate_of,
+            }
             updated["rejection"] = {"code": "duplicate", "duplicateOf": duplicate_of}
             rejected.append(updated)
             continue
 
-        updated["dedupe"] = {**evidence, "status": "unique"}
+        updated["dedupe"] = {**dedupe_evidence, "status": "unique"}
         records.append(updated)
         canonical.append((updated, identity, published_at, published_raw))
 
@@ -483,7 +491,87 @@ def _quality(item: Mapping[str, Any], normalized: Mapping[str, Any]) -> float:
 
 def _has_unique_dedupe_evidence(item: Mapping[str, Any]) -> bool:
     dedupe = item.get("dedupe")
-    return isinstance(dedupe, Mapping) and dedupe.get("status") == "unique"
+    return (
+        isinstance(dedupe, Mapping)
+        and dedupe.get("status") == "unique"
+        and isinstance(dedupe.get("identity"), str)
+        and bool(dedupe["identity"])
+        and isinstance(dedupe.get("fingerprint"), str)
+        and bool(dedupe["fingerprint"])
+    )
+
+
+def _canonical_source_dedupe(
+    raw: Mapping[str, Any], normalized: Mapping[str, Any]
+) -> dict[str, Any] | None:
+    source_dedupe = raw.get("dedupe")
+    package_digest = _package_digest(raw)
+    artifact_id = _artifact_id(raw)
+    if (
+        not isinstance(source_dedupe, Mapping)
+        or source_dedupe.get("type") != "source-identity"
+        or source_dedupe.get("status") != "unique"
+        or not isinstance(source_dedupe.get("field"), str)
+        or not source_dedupe["field"].strip()
+        or not isinstance(source_dedupe.get("value"), str)
+        or not source_dedupe["value"].strip()
+        or package_digest is None
+        or artifact_id is None
+    ):
+        return None
+    business = {
+        "sourceId": normalized.get("source_id", ""),
+        "sourceIdentity": {
+            "field": source_dedupe["field"].strip(),
+            "value": source_dedupe["value"].strip(),
+        },
+        "url": normalized.get("url", ""),
+        "title": normalized.get("title", ""),
+        "publishedAt": normalized.get("published_at", ""),
+    }
+    basis = {"business": business, "packageDigest": package_digest}
+    fingerprint = _stable_json_hash(basis)
+    return {
+        "type": "canonical-dedupe",
+        "status": "unique",
+        "identity": f"dedupe-{fingerprint[:24]}",
+        "fingerprint": fingerprint,
+        "basis": basis,
+        "artifact": {"artifactId": artifact_id, "packageDigest": package_digest},
+    }
+
+
+def _canonical_dedupe_evidence(
+    item: Mapping[str, Any], operation: Mapping[str, Any]
+) -> dict[str, Any]:
+    existing = item.get("dedupe")
+    if _has_unique_dedupe_evidence({"dedupe": existing}):
+        return {**dict(existing), "operation": dict(operation)}
+    basis = {"key": operation["key"], "values": operation["values"]}
+    fingerprint = _stable_json_hash(basis)
+    return {
+        **dict(operation),
+        "identity": f"dedupe-{fingerprint[:24]}",
+        "fingerprint": fingerprint,
+        "basis": basis,
+    }
+
+
+def _package_digest(raw: Mapping[str, Any]) -> str | None:
+    package = raw.get("questionPackage")
+    if not isinstance(package, Mapping):
+        gaojixing = raw.get("gaojixing")
+        package = gaojixing.get("package") if isinstance(gaojixing, Mapping) else None
+    digest = package.get("digest") if isinstance(package, Mapping) else raw.get("packageDigest")
+    return digest.strip() if isinstance(digest, str) and digest.strip() else None
+
+
+def _artifact_id(raw: Mapping[str, Any]) -> str | None:
+    artifact_id = raw.get("answerArtifactId")
+    if not isinstance(artifact_id, str):
+        gaojixing = raw.get("gaojixing")
+        artifact_id = gaojixing.get("artifactId") if isinstance(gaojixing, Mapping) else None
+    return artifact_id.strip() if isinstance(artifact_id, str) and artifact_id.strip() else None
 
 
 def _record_identity(item: Mapping[str, Any]) -> str:
