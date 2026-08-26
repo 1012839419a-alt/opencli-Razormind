@@ -6,6 +6,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl ca-certificates git procps \
     && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
+    && if ! command -v npm >/dev/null 2>&1; then \
+        apt-get install -y --no-install-recommends npm; \
+    fi \
     && rm -rf /var/lib/apt/lists/*
 
 # ── Optional: headless Chrome + virtual display ───────────────────────────────
@@ -48,6 +51,7 @@ WORKDIR /app
 COPY backend/agent_server.py ./backend/agent_server.py
 COPY backend/agent_runtimes/ ./backend/agent_runtimes/
 COPY backend/miniflow/ ./backend/miniflow/
+COPY backend/security/ ./backend/security/
 RUN touch ./backend/__init__.py
 
 COPY agent/entrypoint.sh /entrypoint.sh
@@ -61,6 +65,8 @@ ARG INSTALL_CHROME=false
 ENV PYTHONPATH=/app \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
+    # MiniFlow executes only workflows packaged under this allowlisted root.
+    MINIFLOW_WORKFLOW_ROOT=/app/workflows \
     # Bridge daemon port (used when Chrome is embedded OR daemon runs on host)
     OPENCLI_DAEMON_PORT=19825 \
     # Baked at build time so agent_server knows whether Chrome is bundled.
