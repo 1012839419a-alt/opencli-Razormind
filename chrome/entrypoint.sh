@@ -30,7 +30,7 @@ websockify --web /usr/share/novnc 6080 localhost:5900 &
 # Start Browser Bridge daemon (always enabled).
 # Listens on 0.0.0.0 so the API/worker containers can reach it via chrome-{N}:19825.
 # The extension connects to ws://localhost:19825/ext.
-DAEMON_JS="$(npm root -g)/@jackwener/opencli/dist/daemon.js"
+DAEMON_JS="$(npm root -g)/@jackwener/opencli/dist/src/daemon.js"
 if [ -f "$DAEMON_JS" ]; then
   (while true; do
     OPENCLI_DAEMON_LISTEN=0.0.0.0 node "$DAEMON_JS"

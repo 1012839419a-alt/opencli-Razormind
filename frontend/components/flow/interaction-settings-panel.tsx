@@ -12,6 +12,18 @@ import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 
+// Base UI's SelectValue shows the raw value string unless told how to format
+// it — see the note on the schedule-agent Select in schedule-form-dialog.tsx.
+const LANGUAGE_LABEL: Record<CanvasSettings["language"], string> = {
+  "zh-CN": "中文",
+  "en-US": "English",
+}
+
+const COLLAB_PROVIDER_LABEL: Partial<Record<CanvasSettings["collabProvider"], string>> = {
+  off: "关闭",
+  yjs: "Yjs + y-websocket",
+}
+
 function SectionCaption({ children }: { children: React.ReactNode }) {
   return (
     <p className="font-mono text-[9px] uppercase tracking-[0.2em] text-muted-foreground/70">
@@ -90,7 +102,9 @@ export function InteractionSettingsPanel() {
                 onValueChange={(v) => v && s.set("language", v as CanvasSettings["language"])}
               >
                 <SelectTrigger>
-                  <SelectValue />
+                  <SelectValue>
+                    {(value: CanvasSettings["language"] | null) => (value ? LANGUAGE_LABEL[value] : "选择语言")}
+                  </SelectValue>
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="zh-CN">中文</SelectItem>
@@ -173,7 +187,11 @@ export function InteractionSettingsPanel() {
                 onValueChange={(v) => v && s.set("collabProvider", v as CanvasSettings["collabProvider"])}
               >
                 <SelectTrigger>
-                  <SelectValue />
+                  <SelectValue>
+                    {(value: CanvasSettings["collabProvider"] | null) =>
+                      value ? (COLLAB_PROVIDER_LABEL[value] ?? value) : "选择 Provider"
+                    }
+                  </SelectValue>
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="off">关闭</SelectItem>

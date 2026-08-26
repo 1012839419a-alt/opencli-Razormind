@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hmac
-import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -11,6 +10,8 @@ from typing import Any
 import httpx
 from fastapi import HTTPException, Request, status
 from jose import JWTError, jwt
+
+from backend.config import get_settings
 
 
 @dataclass(frozen=True)

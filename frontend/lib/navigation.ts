@@ -61,7 +61,7 @@ export const NAV_GROUPS: NavGroup[] = [
         href: '/nodes',
         label: '执行资源',
         icon: Activity,
-        match: ['/nodes', '/workers'],
+        match: ['/nodes', '/workers', '/browsers'],
       },
     ],
   },
@@ -72,7 +72,25 @@ export const NAV_GROUPS: NavGroup[] = [
         href: '/providers',
         label: '模型与连接',
         icon: ShieldCheck,
-        match: ['/providers', '/control/actions'],
+        match: ['/providers'],
+      },
+      {
+        href: '/control/actions',
+        label: '控制与安全',
+        icon: ShieldAlert,
+        match: ['/control'],
+      },
+      {
+        href: '/system',
+        label: '系统与运维',
+        icon: Settings2,
+        match: ['/system'],
+      },
+      {
+        href: '/settings',
+        label: '工作区设置',
+        icon: Settings,
+        match: ['/settings'],
       },
       {
         href: '/system',
@@ -102,6 +120,7 @@ export const ROUTE_LABELS: Record<string, string> = {
   '/skills': '技能',
   '/providers': '模型与连接',
   '/workers': 'Worker',
+  '/browsers': 'Chrome 池',
   '/control/actions': '控制与审计',
   '/settings': '系统设置',
 }

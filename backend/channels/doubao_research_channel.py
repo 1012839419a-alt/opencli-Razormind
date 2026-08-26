@@ -189,6 +189,44 @@ class DoubaoResearchChannel(AbstractChannel):
             citation_capture="answer_url_extraction" if extract_citations else "disabled",
         )
 
+    async def health_check(
+        self,
+        config: dict[str, Any] | None = None,
+        source_id: str | None = None,
+    ) -> bool:
+        """Probe the same persistent browser session used by live capture."""
+        del source_id
+        status_command = [
+            _opencli_binary(),
+            "doubao",
+            "status",
+            "-f",
+            "json",
+            "--site-session",
+            str((config or {}).get("site_session", "persistent")),
+        ]
+        try:
+            returncode, stdout, _ = await _run_doubao_command(status_command)
+        except (FileNotFoundError, TimeoutError, OSError):
+            return False
+        if returncode:
+            return False
+        try:
+            rows = _parse_opencli_rows(stdout)
+        except Exception:
+            return False
+        for row in rows:
+            status = str(row.get("Status", row.get("status", ""))).strip().lower()
+            login = str(row.get("Login", row.get("login", ""))).strip().lower()
+            if status in {"connected", "ready", "available"} and login in {
+                "true",
+                "yes",
+                "logged_in",
+                "authenticated",
+            }:
+                return True
+        return False
+
     async def validate_config(self, config: dict[str, Any]) -> list[str]:
         return (
             []

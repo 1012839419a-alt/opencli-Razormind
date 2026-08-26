@@ -75,9 +75,17 @@ export const DATA_EXPLORER_TABS: RouteTab[] = [
 export const COMPUTE_TABS: RouteTab[] = [
   { href: '/nodes', label: '浏览器节点' },
   { href: '/workers', label: 'Worker' },
+  { href: '/browsers', label: 'Chrome 池' },
 ]
 
 export const MODEL_SETTINGS_TABS: RouteTab[] = [
   { href: '/providers', label: '快速设置', exact: true },
   { href: '/providers/catalog', label: 'Provider 目录' },
+]
+
+export const CONTROL_TABS: RouteTab[] = [
+  { href: '/control/actions', label: '控制记录' },
+  { href: '/control/kill-switch', label: '熔断开关' },
+  { href: '/control/advisory-report', label: '建议报告' },
+  { href: '/control/odp-state', label: 'ODP 状态' },
 ]

@@ -141,7 +141,7 @@ function RoleEditor({
         >
           <SelectTrigger size="sm" className="w-40">
             <SelectValue>
-              {() => providerName(pickerProviderId) || '选择供应商'}
+              {(value: string | null) => (value ? providerName(value) : '选择供应商')}
             </SelectValue>
           </SelectTrigger>
           <SelectContent>
