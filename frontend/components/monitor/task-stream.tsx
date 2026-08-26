@@ -106,27 +106,30 @@ export function TaskStream({ tasks }: { tasks: StreamTask[] }) {
   )
 }
 
-export function FailureFeed({ failures }: { failures: FailureItem[] }) {
+export function FailureFeed({ failures, totalFailed = failures.length }: { failures: FailureItem[]; totalFailed?: number }) {
   const groupedFailures = groupFailures(failures)
 
   if (groupedFailures.length === 0) {
+    const hasUnlistedFailures = totalFailed > 0
     return (
       <Card size="sm" aria-label="失败与重试">
         <CardContent className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex min-w-0 items-center gap-3">
-            <span className="grid size-9 shrink-0 place-items-center rounded-md bg-success/10 text-success">
-              <CheckCircle2 className="size-4" aria-hidden />
+            <span className={`grid size-9 shrink-0 place-items-center rounded-md ${hasUnlistedFailures ? 'bg-destructive/10 text-destructive' : 'bg-success/10 text-success'}`}>
+              {hasUnlistedFailures ? <AlertTriangle className="size-4" aria-hidden /> : <CheckCircle2 className="size-4" aria-hidden />}
             </span>
             <div className="min-w-0">
-              <p className="text-sm font-medium">当前没有失败任务</p>
-              <p className="mt-0.5 text-xs text-muted-foreground">最近运行未发现需要重试或人工处理的异常。</p>
+              <p className="text-sm font-medium">{hasUnlistedFailures ? `${totalFailed} 个失败任务需要处理` : '当前没有失败任务'}</p>
+              <p className="mt-0.5 text-xs text-muted-foreground">
+                {hasUnlistedFailures ? '这些任务不在最近 10 条运行中，请打开失败任务列表继续排查。' : '最近运行未发现需要重试或人工处理的异常。'}
+              </p>
             </div>
           </div>
           <Link
-            href="/tasks"
+            href={hasUnlistedFailures ? '/tasks?status=failed' : '/tasks'}
             className="inline-flex shrink-0 items-center gap-1 text-xs font-medium text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
           >
-            查看运行历史
+            {hasUnlistedFailures ? '查看失败任务' : '查看运行历史'}
             <ArrowRight className="size-3" aria-hidden />
           </Link>
         </CardContent>

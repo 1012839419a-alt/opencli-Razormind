@@ -686,7 +686,7 @@ export default function DashboardPage() {
       />
 
       <section className="grid gap-4" aria-label="运行与异常">
-        <FailureFeed failures={failures} />
+        <FailureFeed failures={failures} totalFailed={s.tasks.failed} />
         <TaskStream tasks={stream} />
       </section>
 
