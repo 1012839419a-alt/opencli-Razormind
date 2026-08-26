@@ -5,6 +5,7 @@ import { AlertTriangle, ArrowRight, CheckCircle2 } from 'lucide-react'
 
 import type { FailureItem, StreamTask } from '@/lib/demo/monitor'
 import { formatDuration, formatRelative } from '@/lib/format'
+import { groupFailures, groupStreamTasks } from '@/lib/monitor/task-grouping'
 import { StatusBadge } from '@/components/shell/status-badge'
 import { Badge } from '@/components/ui/badge'
 import {
@@ -29,42 +30,6 @@ const PHASE_STATUS: Record<StreamTask['phase'], string> = {
   running: 'running',
   success: 'success',
   failed: 'failed',
-}
-
-type GroupedStreamTask = StreamTask & { occurrences: number }
-type GroupedFailure = FailureItem & { occurrences: number }
-
-function groupStreamTasks(tasks: StreamTask[]): GroupedStreamTask[] {
-  const grouped = new Map<string, GroupedStreamTask>()
-
-  for (const task of tasks) {
-    const key = [task.title, task.lane, task.workerName, task.phase].join('\u0000')
-    const existing = grouped.get(key)
-    if (existing) {
-      existing.occurrences += 1
-      existing.records += task.records
-      continue
-    }
-    grouped.set(key, { ...task, occurrences: 1 })
-  }
-
-  return Array.from(grouped.values()).slice(0, 6)
-}
-
-function groupFailures(failures: FailureItem[]): GroupedFailure[] {
-  const grouped = new Map<string, GroupedFailure>()
-
-  for (const failure of failures) {
-    const key = [failure.title, failure.workerName, failure.error].join('\u0000')
-    const existing = grouped.get(key)
-    if (existing) {
-      existing.occurrences += 1
-      continue
-    }
-    grouped.set(key, { ...failure, occurrences: 1 })
-  }
-
-  return Array.from(grouped.values()).slice(0, 5)
 }
 
 export function TaskStream({ tasks }: { tasks: StreamTask[] }) {
