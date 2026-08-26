@@ -93,7 +93,13 @@ export function TaskStream({ tasks }: { tasks: StreamTask[] }) {
               <TableRow key={`${t.id}-${t.phase}`}>
                 <TableCell className="max-w-52">
                   <span className="flex items-center gap-2">
-                    <span className="block min-w-0 truncate font-medium">{t.title}</span>
+                    {t.href ? (
+                      <Link href={t.href} className="block min-w-0 truncate font-medium hover:underline">
+                        {t.title}
+                      </Link>
+                    ) : (
+                      <span className="block min-w-0 truncate font-medium">{t.title}</span>
+                    )}
                     {t.occurrences > 1 ? (
                       <Badge variant="secondary" className="shrink-0 font-mono text-[10px]">
                         ×{t.occurrences}
@@ -174,7 +180,7 @@ export function FailureFeed({ failures }: { failures: FailureItem[] }) {
         <CardAction className="flex items-center gap-2">
           <Badge variant="destructive">{groupedFailures.length} 类异常</Badge>
           <Link
-            href="/tasks"
+            href="/tasks?status=failed"
             className="inline-flex items-center gap-1 text-xs font-medium text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
           >
             查看全部
@@ -191,7 +197,13 @@ export function FailureFeed({ failures }: { failures: FailureItem[] }) {
             >
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
-                  <span className="truncate text-sm font-medium">{f.title}</span>
+                  {f.href ? (
+                    <Link href={f.href} className="min-w-0 truncate text-sm font-medium hover:underline">
+                      {f.title}
+                    </Link>
+                  ) : (
+                    <span className="truncate text-sm font-medium">{f.title}</span>
+                  )}
                   <span className="shrink-0 text-xs text-muted-foreground">
                     {formatRelative(new Date(f.at).toISOString())}
                   </span>

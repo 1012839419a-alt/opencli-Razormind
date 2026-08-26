@@ -409,6 +409,7 @@ function OpinionMonitorPanel({ data, isLoading, isError }: { data?: OpinionMonit
 function runsToStream(
   runs: Array<{
     id: string
+    task_id: string
     source_name: string
     task_trigger_type: string
     status: string
@@ -419,6 +420,7 @@ function runsToStream(
 ): StreamTask[] {
   return runs.map((r) => ({
     id: r.id,
+    href: `/tasks/${r.task_id}`,
     lane: 'collect' as const,
     title: `${r.source_name} 采集`,
     endpoint: r.source_name,
@@ -521,6 +523,7 @@ export default function DashboardPage() {
     .filter((task) => task.phase === 'failed')
     .map((task) => ({
       id: `f-${task.id}`,
+      href: task.href,
       lane: task.lane,
       title: task.title,
       workerName: task.workerName,
@@ -582,7 +585,7 @@ export default function DashboardPage() {
             </div>
             <div className="flex flex-wrap items-center gap-2 md:justify-end">
               <Link
-                href="/tasks"
+                href={hasAttention ? '/tasks?status=failed' : '/tasks'}
                 className={buttonVariants({
                   variant: hasAttention ? 'destructive' : 'default',
                   size: 'sm',

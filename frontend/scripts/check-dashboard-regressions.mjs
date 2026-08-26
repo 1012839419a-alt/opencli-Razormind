@@ -129,3 +129,29 @@ test('dashboard restores the next schedule countdown from backend next_run_at', 
     /queryKey:\s*\[["']schedules["'],\s*params\][\s\S]*?refetchInterval:\s*30_000/,
   )
 })
+
+test('failure triage deep-links from dashboard to filtered and authoritative task context', async () => {
+  const [dashboard, taskStream, tasksPage] = await Promise.all([
+    read('app/(app)/dashboard/page.tsx'),
+    read('components/monitor/task-stream.tsx'),
+    read('app/(app)/tasks/page.tsx'),
+  ])
+
+  assert.match(dashboard, /href: `\/tasks\/\$\{r\.task_id\}`/)
+  assert.match(dashboard, /href: task\.href/)
+  assert.match(dashboard, /hasAttention \? '\/tasks\?status=failed' : '\/tasks'/)
+  assert.match(taskStream, /href="\/tasks\?status=failed"/)
+  assert.match(taskStream, /<Link href=\{t\.href\}/)
+  assert.match(taskStream, /<Link href=\{f\.href\}/)
+  assert.match(tasksPage, /useSearchParams\(\)/)
+  assert.match(tasksPage, /normalizeTaskStatus\(searchParams\.get\('status'\)\)/)
+  assert.match(tasksPage, /queryForTaskStatus\(searchParams\.toString\(\), nextStatus\)/)
+  assert.match(tasksPage, /router\.replace\(pathWithQuery\(pathname, query\), \{ scroll: false \}\)/)
+  assert.match(tasksPage, /useTasks\(\{[\s\S]*page,[\s\S]*limit: TASKS_PER_PAGE/)
+  assert.match(tasksPage, /aria-pressed=\{status === f\.key\}/)
+  assert.match(tasksPage, /暂无\$\{activeFilter\.label\}任务/)
+  assert.match(tasksPage, /normalizeTaskPage\(searchParams\.get\('page'\)\)/)
+  assert.match(tasksPage, /queryForTaskPage\(searchParams\.toString\(\), nextPage\)/)
+  assert.match(tasksPage, /aria-label="任务分页"/)
+  assert.match(tasksPage, /disabled=\{currentPage >= totalPages\}/)
+})
