@@ -128,9 +128,10 @@ test('dashboard restores the next schedule countdown from backend next_run_at', 
 })
 
 test('failure triage deep-links from dashboard to filtered and authoritative task context', async () => {
-  const [dashboard, taskStream, tasksPage] = await Promise.all([
+  const [dashboard, taskStream, taskGrouping, tasksPage] = await Promise.all([
     read('app/(app)/dashboard/page.tsx'),
     read('components/monitor/task-stream.tsx'),
+    read('lib/monitor/task-grouping.ts'),
     read('app/(app)/tasks/page.tsx'),
   ])
 
@@ -140,6 +141,8 @@ test('failure triage deep-links from dashboard to filtered and authoritative tas
   assert.match(taskStream, /href="\/tasks\?status=failed"/)
   assert.match(taskStream, /<Link href=\{t\.href\}/)
   assert.match(taskStream, /<Link href=\{f\.href\}/)
+  assert.match(taskGrouping, /\[task\.href \?\? '', task\.title, task\.lane, task\.workerName, task\.phase\]/)
+  assert.match(taskGrouping, /\[failure\.href \?\? '', failure\.title, failure\.workerName, failure\.error\]/)
   assert.match(tasksPage, /useSearchParams\(\)/)
   assert.match(tasksPage, /normalizeTaskStatus\(searchParams\.get\('status'\)\)/)
   assert.match(tasksPage, /queryForTaskStatus\(searchParams\.toString\(\), nextStatus\)/)
