@@ -128,11 +128,12 @@ test('dashboard restores the next schedule countdown from backend next_run_at', 
 })
 
 test('failure triage deep-links from dashboard to filtered and authoritative task context', async () => {
-  const [dashboard, taskStream, taskGrouping, tasksPage] = await Promise.all([
+  const [dashboard, taskStream, taskGrouping, tasksPage, taskDetailPage] = await Promise.all([
     read('app/(app)/dashboard/page.tsx'),
     read('components/monitor/task-stream.tsx'),
     read('lib/monitor/task-grouping.ts'),
     read('app/(app)/tasks/page.tsx'),
+    read('app/(app)/tasks/[id]/page.tsx'),
   ])
 
   assert.match(dashboard, /href: `\/tasks\/\$\{r\.task_id\}`/)
@@ -154,4 +155,7 @@ test('failure triage deep-links from dashboard to filtered and authoritative tas
   assert.match(tasksPage, /queryForTaskPage\(searchParams\.toString\(\), nextPage\)/)
   assert.match(tasksPage, /aria-label="任务分页"/)
   assert.match(tasksPage, /disabled=\{currentPage >= totalPages\}/)
+  assert.match(tasksPage, /taskDetailPath\(t\.id, returnTo\)/)
+  assert.match(taskDetailPage, /normalizeTaskReturnPath\(typeof query\.returnTo === 'string' \? query\.returnTo : null\)/)
+  assert.match(taskDetailPage, /<Link href=\{returnTo\}/)
 })

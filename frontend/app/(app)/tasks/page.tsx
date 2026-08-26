@@ -13,6 +13,7 @@ import {
   pathWithQuery,
   queryForTaskPage,
   queryForTaskStatus,
+  taskDetailPath,
 } from '@/lib/tasks/query'
 import { BACKEND_HINT, EmptyState, ErrorState, LoadingState } from '@/components/shell/data-states'
 import { PageContainer } from '@/components/shell/page-container'
@@ -75,6 +76,7 @@ function TasksPageContent() {
   const currentPage = data?.meta?.page ?? page
   const totalPages = Math.max(data?.meta?.pages ?? 1, 1)
   const totalTasks = data?.meta?.total ?? tasks.length
+  const returnTo = pathWithQuery(pathname, searchParams.toString())
 
   function selectStatus(nextStatus: string) {
     const query = queryForTaskStatus(searchParams.toString(), nextStatus)
@@ -138,7 +140,7 @@ function TasksPageContent() {
                 {tasks.map((t) => (
                   <TableRow key={t.id} className="group">
                     <TableCell className="font-medium">
-                      <Link href={`/tasks/${t.id}`} className="flex items-center gap-2 hover:underline">
+                      <Link href={taskDetailPath(t.id, returnTo)} className="flex items-center gap-2 hover:underline">
                         <span>{t.source_name ?? t.source_id}</span>
                         <ArrowUpRight className="size-3.5 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" />
                       </Link>

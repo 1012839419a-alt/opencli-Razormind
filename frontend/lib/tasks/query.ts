@@ -29,3 +29,16 @@ export function queryForTaskPage(currentQuery: string, nextPage: number): string
 export function pathWithQuery(pathname: string, query: string): string {
   return query ? `${pathname}?${query}` : pathname
 }
+
+export function taskDetailPath(taskId: string, returnTo: string): string {
+  const params = new URLSearchParams({ returnTo: normalizeTaskReturnPath(returnTo) })
+  return `/tasks/${encodeURIComponent(taskId)}?${params.toString()}`
+}
+
+export function normalizeTaskReturnPath(value: string | null): string {
+  if (!value?.startsWith('/')) return '/tasks'
+  const base = new URL('https://opencli.local/tasks')
+  const target = new URL(value, base)
+  if (target.origin !== base.origin || target.pathname !== '/tasks') return '/tasks'
+  return `${target.pathname}${target.search}`
+}
