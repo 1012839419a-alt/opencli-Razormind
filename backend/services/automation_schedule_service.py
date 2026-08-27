@@ -1,7 +1,7 @@
 """Durable Automation-to-Operations-Agent scheduling and run lineage."""
 
-from datetime import UTC, datetime, timedelta
 import logging
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from pydantic import ValidationError
@@ -9,11 +9,9 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend import ws_agent_manager
 from backend.automation_schedule import automation_fire_times
 from backend.database import AsyncSessionLocal, commit_session, queue_after_commit
 from backend.models.automation import Automation
-from backend.models.edge_node import EdgeNode
 from backend.models.operations_agent import (
     AgentPermissionProfile,
     AgentProfileMode,
@@ -25,6 +23,10 @@ from backend.schemas.operations_agent import (
     agent_contract_from_model_configuration,
     agent_runtime_binding_from_model_configuration,
     validate_agent_contract_payload,
+)
+from backend.services.agent_runtime_selection import (
+    RuntimeSelectionError,
+    select_agent_runtime,
 )
 from backend.services.operations_agent_runtime_service import schedule_operations_agent_run
 
@@ -74,7 +76,12 @@ async def validate_automation_binding(
     *,
     scheduled_for: datetime | None = None,
     require_online: bool = False,
-) -> tuple[OperationsAgentIdentity, PublishedOperationsAgentVersion, AgentPermissionProfile]:
+) -> tuple[
+    OperationsAgentIdentity,
+    PublishedOperationsAgentVersion,
+    AgentPermissionProfile,
+    dict[str, Any],
+]:
     """Resolve and validate the exact Agent/version/profile/runtime contract."""
     if automation.operations_agent_id is None or automation.operations_agent_version is None:
         raise AutomationBindingError("Automation requires a pinned Operations Agent version")
@@ -119,33 +126,32 @@ async def validate_automation_binding(
         contract = agent_contract_from_model_configuration(version.model_configuration)
     except ValidationError as exc:
         raise AutomationBindingError("Bound Operations Agent contract is invalid") from exc
-    if binding is None:
-        raise AutomationBindingError("Bound Operations Agent version has no Runtime Binding")
-
-    node = await session.scalar(select(EdgeNode).where(EdgeNode.url == binding.agent_url))
-    if node is None or node.protocol != "ws" or binding.runtime not in (node.runtimes or []):
+    if binding is None or contract is None:
         raise AutomationBindingError(
-            "Bound Operations Agent Runtime is not advertised by its Fleet node"
+            "Bound Operations Agent version requires contract and Runtime Binding"
         )
-    if require_online and (
-        node.status != "online"
-        or not ws_agent_manager.is_connected(binding.agent_url)
-    ):
-        raise AutomationBindingError("Bound Operations Agent Runtime is not connected")
+    try:
+        execution_binding = await select_agent_runtime(
+            session,
+            contract=contract,
+            binding=binding,
+            require_connected=require_online,
+        )
+    except RuntimeSelectionError as exc:
+        raise AutomationBindingError(str(exc)) from exc
 
-    if contract is not None:
-        try:
-            validate_agent_contract_payload(
-                contract,
-                "input_schema",
-                automation_run_input(automation, scheduled_for=scheduled_for),
-            )
-            validate_agent_contract_payload(contract, "state_schema", {})
-        except ValueError as exc:
-            raise AutomationBindingError(
-                f"Automation payload is incompatible with bound AgentContractV1: {exc}"
-            ) from exc
-    return agent, version, profile
+    try:
+        validate_agent_contract_payload(
+            contract,
+            "input_schema",
+            automation_run_input(automation, scheduled_for=scheduled_for),
+        )
+        validate_agent_contract_payload(contract, "state_schema", {})
+    except ValueError as exc:
+        raise AutomationBindingError(
+            f"Automation payload is incompatible with bound AgentContractV2: {exc}"
+        ) from exc
+    return agent, version, profile, execution_binding
 
 
 async def create_bound_automation_run(
@@ -157,7 +163,7 @@ async def create_bound_automation_run(
     scheduled_for: datetime | None = None,
 ) -> tuple[OperationsAgentRun, bool]:
     """Create one pinned run, deduplicating scheduled occurrences in the DB."""
-    agent, version, profile = await validate_automation_binding(
+    agent, version, profile, execution_binding = await validate_automation_binding(
         session,
         automation,
         scheduled_for=scheduled_for,
@@ -189,6 +195,8 @@ async def create_bound_automation_run(
         target_resource_id=automation.id,
         input_payload=automation_run_input(automation, scheduled_for=normalized_fire),
         state_payload={},
+        execution_binding=execution_binding,
+        evidence_payload=None,
         status="queued",
         started_by_user_id=started_by_user_id,
     )

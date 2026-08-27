@@ -43,6 +43,7 @@ class MiniFlowRuntimeAdapter(RuntimeAdapter):
         resume_by_id=False,
         checkpoint="none",
         concurrent_sessions=True,
+        features=frozenset({"tool_events"}),
     )
 
     def validate_config(self, config: dict[str, Any]) -> list[str]:

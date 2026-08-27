@@ -70,7 +70,11 @@ from pydantic import BaseModel
 # dependency set (see module docstring); this avoids depending on the package
 # __init__ staying lightweight as more adapters are added later.
 from backend.agent_runtimes.base import AgentTask, RuntimeInvocationError
-from backend.agent_runtimes.registry import available_runtimes, get_runtime
+from backend.agent_runtimes.registry import (
+    available_runtime_capabilities,
+    available_runtimes,
+    get_runtime,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s [%(name)s] %(message)s")
 logger = logging.getLogger("agent_server")
@@ -234,6 +238,7 @@ async def _register_with_center(advertise_url: str) -> None:
         "label": _AGENT_LABEL,
         "agent_protocol": "http",
         "runtimes": available_runtimes(),
+        "runtime_capabilities": available_runtime_capabilities(),
         "profile_kind": _BROWSER_PROFILE_KIND,
     }
     proxies = _build_proxies()
@@ -350,6 +355,12 @@ async def _handle_ws_agent_task(ws, msg: dict) -> None:
             input=msg.get("input") or {},
             config=msg.get("config") or {},
             session_id=msg.get("session_id"),
+            provider=msg.get("provider"),
+            model=msg.get("model"),
+            required_capabilities=tuple(msg.get("required_capabilities") or ()),
+            permissions=msg.get("permissions") or {},
+            budget=msg.get("budget") or {},
+            evidence_requirements=tuple(msg.get("evidence_requirements") or ()),
         )
         config_errors = adapter.validate_config(task.config)
         if config_errors:
@@ -455,6 +466,7 @@ async def _register_via_ws(advertise_url: str) -> None:
         "node_type": _AGENT_DEPLOY_TYPE,
         "label": _AGENT_LABEL,
         "runtimes": available_runtimes(),
+        "runtime_capabilities": available_runtime_capabilities(),
         "profile_kind": _BROWSER_PROFILE_KIND,
     })
 

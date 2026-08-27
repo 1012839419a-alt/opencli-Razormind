@@ -7,7 +7,7 @@ import { toast } from 'sonner'
 import AgentAvatar from '@/components/smoothui/agent-avatar'
 import SwitchboardCard from '@/components/smoothui/switchboard-card'
 import { useAutomations, useCreateAutomation, useCreateOperationsAgent, useGovernedWorkspaces, useInstallAutomationStarters, useNodes, useOperationsAgentActivity, useOperationsAgentDraft, useOperationsAgents, useOperationsAgentTeams, useOperationsAgentVersions, usePatchAutomation, usePublishOperationsAgentVersion, useStartAutomationRun, useStartOperationsAgentRun, useUpdateOperationsAgentDraft } from '@/lib/api/hooks'
-import type { AgentRuntimeBindingV1, Automation, OperationsAgent, OperationsAgentMode } from '@/lib/api/types'
+import type { AgentRuntimeBindingV2, Automation, OperationsAgent, OperationsAgentMode } from '@/lib/api/types'
 import { latestOperationsAgentRuns } from '@/lib/automations/activity'
 import { AUTOMATION_APPROVALS as APPROVALS } from '@/lib/automations/approval'
 import { compatibleOperationsAgents, runnableOperationsAgents } from '@/lib/automations/binding'
@@ -31,21 +31,18 @@ const AGENT_STARTERS = [
     ...SUGGESTIONS[0],
     name: '运行简报 Agent',
     subtitle: '每天汇总运行、失败与待批准事项',
-    executor: 'codex',
     pattern: [0, 1, 2, 18, 19, 20, 36, 37, 38, 54, 55, 56, 72, 73, 74],
   },
   {
     ...SUGGESTIONS[1],
     name: '系统回顾 Agent',
     subtitle: '每周整理变化、风险与待处理建议',
-    executor: 'claude',
     pattern: [4, 5, 6, 22, 23, 24, 40, 41, 42, 58, 59, 60, 76, 77, 78],
   },
   {
     ...SUGGESTIONS[2],
     name: '异常跟进 Agent',
     subtitle: '工作日检查异常并生成证据化建议',
-    executor: 'chatcloud',
     pattern: [8, 9, 10, 26, 27, 28, 44, 45, 46, 62, 63, 64, 80, 81, 82],
   },
 ] as const
@@ -54,7 +51,6 @@ type AgentStarterInput = {
   name: string
   prompt: string
   schedule: string
-  executor?: string
 }
 
 
@@ -67,6 +63,18 @@ function parseJsonObject(value: string, label: string) {
   return parsed as Record<string, unknown>
 }
 
+function parseJsonArray(value: string, label: string) {
+  const parsed = JSON.parse(value)
+  if (!Array.isArray(parsed) || parsed.some((item) => !item || Array.isArray(item) || typeof item !== 'object')) {
+    throw new Error(`${label} 必须是 JSON 对象数组`)
+  }
+  return parsed as Array<Record<string, unknown>>
+}
+
+function parseIdentifierList(value: string) {
+  return [...new Set(value.split(',').map((item) => item.trim()).filter(Boolean))]
+}
+
 function ContractEditor({ workspaceId, agent }: { workspaceId: string; agent: OperationsAgent }) {
   const draft = useOperationsAgentDraft(workspaceId, agent.id)
   const versions = useOperationsAgentVersions(workspaceId, agent.id)
@@ -74,60 +82,65 @@ function ContractEditor({ workspaceId, agent }: { workspaceId: string; agent: Op
   const nodes = useNodes()
   const publishVersion = usePublishOperationsAgentVersion()
   const [instructions, setInstructions] = useState('')
+  const [role, setRole] = useState('operations_agent')
+  const [requiredCapabilities, setRequiredCapabilities] = useState('streaming')
+  const [toolPolicy, setToolPolicy] = useState('{}')
+  const [budget, setBudget] = useState('{}')
+  const [qualityGates, setQualityGates] = useState('[]')
+  const [evidenceRequirements, setEvidenceRequirements] = useState('')
   const [inputSchema, setInputSchema] = useState('')
   const [outputSchema, setOutputSchema] = useState('')
   const [stateSchema, setStateSchema] = useState('')
   const [agentUrl, setAgentUrl] = useState('')
-  const [runtime, setRuntime] = useState<AgentRuntimeBindingV1['runtime']>('codex')
+  const [runtime, setRuntime] = useState<AgentRuntimeBindingV2['preferred_runtimes'][number]>('')
   const [workflow, setWorkflow] = useState('')
   const [dispatchTimeout, setDispatchTimeout] = useState(1800)
   const [runtimeConfig, setRuntimeConfig] = useState('')
+  const [provider, setProvider] = useState('')
+  const [model, setModel] = useState('')
+  const [authProfile, setAuthProfile] = useState('')
   const [reason, setReason] = useState('')
   const runtimeNodes = useMemo(
     () => [...(nodes.data?.data ?? [])].reverse().filter(
-      (node) => node.protocol === 'ws' && node.status === 'online' && node.runtimes?.length,
+      (node) => node.protocol === 'ws' && node.status === 'online' && Object.keys(node.runtime_capabilities ?? {}).length,
     ),
     [nodes.data],
   )
   const selectedRuntimeNode = runtimeNodes.find((node) => node.url === agentUrl)
-  const runtimeOptions = selectedRuntimeNode?.runtimes ?? []
-
+  const runtimeOptions = selectedRuntimeNode
+    ? Object.keys(selectedRuntimeNode.runtime_capabilities ?? {})
+    : [...new Set(runtimeNodes.flatMap((node) => Object.keys(node.runtime_capabilities ?? {})))]
   useEffect(() => {
     if (!draft.data) return
     const contract = draft.data.model_configuration.agent_contract
     const binding = draft.data.model_configuration.runtime_binding
     setInstructions(draft.data.instructions)
+    setRole(contract?.role ?? 'operations_agent')
+    setRequiredCapabilities((contract?.required_capabilities ?? ['streaming']).join(', '))
+    setToolPolicy(JSON.stringify(contract?.tool_policy ?? {}, null, 2))
+    setBudget(JSON.stringify(contract?.budget ?? {}, null, 2))
+    setQualityGates(JSON.stringify(contract?.quality_gates ?? [], null, 2))
+    setEvidenceRequirements((contract?.evidence_requirements ?? []).join(', '))
     setInputSchema(JSON.stringify(contract?.input_schema ?? EMPTY_SCHEMA, null, 2))
     setOutputSchema(JSON.stringify(contract?.output_schema ?? EMPTY_SCHEMA, null, 2))
     setStateSchema(JSON.stringify(contract?.state_schema ?? EMPTY_SCHEMA, null, 2))
-    setAgentUrl(binding?.agent_url ?? '')
-    setRuntime(binding?.runtime ?? 'codex')
+    setAgentUrl(binding?.preferred_agent_urls[0] ?? '')
+    setRuntime(binding?.preferred_runtimes[0] ?? '')
     setWorkflow(binding?.workflow ?? '')
     setDispatchTimeout(binding?.dispatch_timeout_seconds ?? 1800)
     setRuntimeConfig(JSON.stringify(binding?.config ?? { timeout_seconds: 1800 }, null, 2))
+    setProvider(binding?.model_binding?.provider ?? '')
+    setModel(binding?.model_binding?.model ?? '')
+    setAuthProfile(binding?.model_binding?.auth_profile ?? '')
   }, [draft.data])
 
-  useEffect(() => {
-    if (agentUrl || !runtimeNodes.length) return
-    const node = runtimeNodes[0]
-    const firstRuntime = node.runtimes?.[0]
-    setAgentUrl(node.url)
-    if (firstRuntime) {
-      setRuntime(firstRuntime)
-      if (!workflow) {
-        setWorkflow(
-          firstRuntime === 'miniflow'
-            ? 'builtin.read_only_readiness'
-            : firstRuntime === 'codex'
-              ? 'exec'
-              : 'default',
-        )
-      }
-    }
-  }, [agentUrl, runtimeNodes, workflow])
 
   async function saveDraft() {
     if (!draft.data) return
+    if (Boolean(provider.trim()) !== Boolean(model.trim())) {
+      toast.error('Provider 与 Model 必须同时填写或同时留空')
+      return
+    }
     try {
       await updateDraft.mutateAsync({
         workspaceId,
@@ -138,16 +151,28 @@ function ContractEditor({ workspaceId, agent }: { workspaceId: string; agent: Op
           model_configuration: {
             ...draft.data.model_configuration,
             agent_contract: {
-              schema_version: 'agent.contract.v1',
+              schema_version: 'agent.contract.v2',
+              role: role.trim(),
               input_schema: parseJsonObject(inputSchema, 'Input schema'),
               output_schema: parseJsonObject(outputSchema, 'Output schema'),
               state_schema: parseJsonObject(stateSchema, 'State schema'),
+              required_capabilities: parseIdentifierList(requiredCapabilities),
+              tool_policy: parseJsonObject(toolPolicy, 'Tool policy'),
+              budget: parseJsonObject(budget, 'Budget'),
+              quality_gates: parseJsonArray(qualityGates, 'Quality gates'),
+              evidence_requirements: parseIdentifierList(evidenceRequirements),
             },
             runtime_binding: {
-              schema_version: 'agent.runtime-binding.v1',
-              agent_url: agentUrl.trim(),
-              runtime,
+              schema_version: 'agent.runtime-binding.v2',
               workflow: workflow.trim(),
+              preferred_agent_urls: agentUrl ? [agentUrl.trim()] : [],
+              preferred_runtimes: runtime ? [runtime] : [],
+              model_binding: provider.trim() && model.trim() ? {
+                schema_version: 'agent.model-binding.v1',
+                provider: provider.trim(),
+                model: model.trim(),
+                auth_profile: authProfile.trim() || null,
+              } : null,
               dispatch_timeout_seconds: dispatchTimeout,
               config: parseJsonObject(runtimeConfig, 'Runtime config'),
             },
@@ -186,25 +211,44 @@ function ContractEditor({ workspaceId, agent }: { workspaceId: string; agent: Op
       <div className="min-h-0 overflow-y-auto bg-[#090a0b] p-5">
         <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
           <div><h3 className="text-sm font-medium">Agent Contract</h3><p className="mt-1 text-xs text-muted-foreground">Draft r{draft.data?.revision ?? '—'} · 当前发布 v{currentPublishedVersion || '—'}</p></div>
-          <Button size="sm" onClick={() => void saveDraft()} disabled={!instructions.trim() || !selectedRuntimeNode || !runtimeOptions.includes(runtime) || !workflow.trim() || updateDraft.isPending}>保存草稿</Button>
+          <Button size="sm" onClick={() => void saveDraft()} disabled={!instructions.trim() || !role.trim() || !workflow.trim() || updateDraft.isPending}>保存草稿</Button>
         </div>
         <div className="space-y-5">
           <label className="block space-y-1.5 text-xs text-muted-foreground">Instructions<Textarea value={instructions} onChange={(event) => setInstructions(event.target.value)} className="min-h-36 resize-y text-sm text-foreground" placeholder="描述智能体的职责、边界和执行要求" /></label>
+          <div className="grid gap-4 lg:grid-cols-3">
+            <label className="block space-y-1.5 text-xs text-muted-foreground">业务角色<Input value={role} onChange={(event) => setRole(event.target.value)} placeholder="sales_researcher" /></label>
+            <label className="block space-y-1.5 text-xs text-muted-foreground">必需 Capability（逗号分隔）<Input value={requiredCapabilities} onChange={(event) => setRequiredCapabilities(event.target.value)} placeholder="streaming, browser" /></label>
+            <label className="block space-y-1.5 text-xs text-muted-foreground">证据要求（逗号分隔）<Input value={evidenceRequirements} onChange={(event) => setEvidenceRequirements(event.target.value)} placeholder="citations, lineage" /></label>
+          </div>
           <div className="grid gap-4 lg:grid-cols-3">
             <label className="block space-y-1.5 text-xs text-muted-foreground">Input schema<Textarea value={inputSchema} onChange={(event) => setInputSchema(event.target.value)} spellCheck={false} className="min-h-64 resize-y font-mono text-xs text-foreground" /></label>
             <label className="block space-y-1.5 text-xs text-muted-foreground">Output schema<Textarea value={outputSchema} onChange={(event) => setOutputSchema(event.target.value)} spellCheck={false} className="min-h-64 resize-y font-mono text-xs text-foreground" /></label>
             <label className="block space-y-1.5 text-xs text-muted-foreground">State schema<Textarea value={stateSchema} onChange={(event) => setStateSchema(event.target.value)} spellCheck={false} className="min-h-64 resize-y font-mono text-xs text-foreground" /></label>
           </div>
           <details className="rounded-lg border border-white/[0.08] px-4 py-3">
-            <summary className="cursor-pointer text-sm text-muted-foreground">Runtime Binding 高级配置</summary>
-            <div className="mt-4 grid gap-4 sm:grid-cols-4">
-              <label className="space-y-1.5 text-xs text-muted-foreground">Fleet 节点<select value={agentUrl} onChange={(event) => { const nextUrl = event.target.value; const node = runtimeNodes.find((candidate) => candidate.url === nextUrl); const nextRuntime = node?.runtimes?.[0]; setAgentUrl(nextUrl); if (nextRuntime) { setRuntime(nextRuntime); setWorkflow(nextRuntime === 'miniflow' ? 'builtin.read_only_readiness' : nextRuntime === 'codex' ? 'exec' : 'default') } }} className="h-9 w-full rounded-lg border bg-background px-3 text-sm text-foreground"><option value="">选择已连接节点</option>{runtimeNodes.map((node) => <option key={node.id} value={node.url}>{node.label}</option>)}</select></label>
-              <label className="space-y-1.5 text-xs text-muted-foreground">Runtime<select value={runtime} onChange={(event) => { const nextRuntime = event.target.value as AgentRuntimeBindingV1['runtime']; setRuntime(nextRuntime); setWorkflow(nextRuntime === 'miniflow' ? 'builtin.read_only_readiness' : nextRuntime === 'codex' ? 'exec' : 'default') }} disabled={!selectedRuntimeNode} className="h-9 w-full rounded-lg border bg-background px-3 text-sm text-foreground">{runtimeOptions.map((runtimeName) => <option key={runtimeName} value={runtimeName}>{runtimeName}</option>)}</select></label>
-              <label className="space-y-1.5 text-xs text-muted-foreground">Workflow<Input value={workflow} onChange={(event) => setWorkflow(event.target.value)} placeholder={runtime === 'miniflow' ? 'builtin.read_only_readiness' : 'default'} /></label>
-              <label className="space-y-1.5 text-xs text-muted-foreground">深度执行超时（秒）<Input type="number" min={1} max={3600} value={dispatchTimeout} onChange={(event) => setDispatchTimeout(Number(event.target.value))} /><span className="block text-[11px] leading-4 text-muted-foreground">默认 30 分钟；本地 CLI 不暴露 5 小时额度，因此不伪造剩余额度。</span></label>
+            <summary className="cursor-pointer text-sm text-muted-foreground">Contract 策略与质量门禁</summary>
+            <div className="mt-4 grid gap-4 lg:grid-cols-3">
+              <label className="block space-y-1.5 text-xs text-muted-foreground">Tool policy<Textarea value={toolPolicy} onChange={(event) => setToolPolicy(event.target.value)} spellCheck={false} className="min-h-32 resize-y font-mono text-xs text-foreground" /></label>
+              <label className="block space-y-1.5 text-xs text-muted-foreground">Budget<Textarea value={budget} onChange={(event) => setBudget(event.target.value)} spellCheck={false} className="min-h-32 resize-y font-mono text-xs text-foreground" /></label>
+              <label className="block space-y-1.5 text-xs text-muted-foreground">Quality gates<Textarea value={qualityGates} onChange={(event) => setQualityGates(event.target.value)} spellCheck={false} className="min-h-32 resize-y font-mono text-xs text-foreground" /></label>
             </div>
-            {!runtimeNodes.length ? <p className="mt-3 text-xs text-amber-300">没有已连接且报告 Runtime capability 的 Fleet 节点；请先在节点管理中连接 Agent Runtime。</p> : null}
-            <label className="mt-4 block space-y-1.5 text-xs text-muted-foreground">Task config（仅 timeout_seconds）<Textarea value={runtimeConfig} onChange={(event) => setRuntimeConfig(event.target.value)} spellCheck={false} className="min-h-32 resize-y font-mono text-xs text-foreground" /></label>
+          </details>
+          <details className="rounded-lg border border-white/[0.08] px-4 py-3">
+            <summary className="cursor-pointer text-sm text-muted-foreground">Runtime / Provider / Model 高级配置</summary>
+            <p className="mt-2 text-xs leading-5 text-muted-foreground">节点和 Runtime 仅作为调度偏好；最终执行器按 Capability 匹配。Provider 凭据保留在 Fleet 节点，控制面只保存 auth profile 引用。</p>
+            <div className="mt-4 grid gap-4 sm:grid-cols-4">
+              <label className="space-y-1.5 text-xs text-muted-foreground">Fleet 节点偏好<select value={agentUrl} onChange={(event) => { const nextUrl = event.target.value; const node = runtimeNodes.find((candidate) => candidate.url === nextUrl); setAgentUrl(nextUrl); if (runtime && node && !Object.hasOwn(node.runtime_capabilities ?? {}, runtime)) setRuntime('') }} className="h-9 w-full rounded-lg border bg-background px-3 text-sm text-foreground"><option value="">无节点偏好</option>{runtimeNodes.map((node) => <option key={node.id} value={node.url}>{node.label}</option>)}</select></label>
+              <label className="space-y-1.5 text-xs text-muted-foreground">Runtime 偏好<select value={runtime} onChange={(event) => setRuntime(event.target.value)} className="h-9 w-full rounded-lg border bg-background px-3 text-sm text-foreground"><option value="">无 Runtime 偏好</option>{runtimeOptions.map((runtimeName) => <option key={runtimeName} value={runtimeName}>{runtimeName}</option>)}</select></label>
+              <label className="space-y-1.5 text-xs text-muted-foreground">Workflow<Input value={workflow} onChange={(event) => setWorkflow(event.target.value)} placeholder="operations-agent" /></label>
+              <label className="space-y-1.5 text-xs text-muted-foreground">深度执行超时（秒）<Input type="number" min={1} max={3600} value={dispatchTimeout} onChange={(event) => setDispatchTimeout(Number(event.target.value))} /></label>
+            </div>
+            <div className="mt-4 grid gap-4 sm:grid-cols-4">
+              <label className="space-y-1.5 text-xs text-muted-foreground">Provider<Input value={provider} onChange={(event) => setProvider(event.target.value)} placeholder="openrouter" /></label>
+              <label className="space-y-1.5 text-xs text-muted-foreground">Model<Input value={model} onChange={(event) => setModel(event.target.value)} placeholder="anthropic/claude-sonnet" /></label>
+              <label className="space-y-1.5 text-xs text-muted-foreground">Auth profile 引用<Input value={authProfile} onChange={(event) => setAuthProfile(event.target.value)} placeholder="sales-production" /></label>
+            </div>
+            {!runtimeNodes.length ? <p className="mt-3 text-xs text-amber-300">没有已连接并报告 Capability manifest 的 Fleet 节点；草稿可以保存，但运行会按 Contract 要求失败关闭。</p> : null}
+            <label className="mt-4 block space-y-1.5 text-xs text-muted-foreground">Task config（仅 timeout_seconds）<Textarea value={runtimeConfig} onChange={(event) => setRuntimeConfig(event.target.value)} spellCheck={false} className="min-h-24 resize-y font-mono text-xs text-foreground" /></label>
           </details>
         </div>
       </div>
@@ -487,7 +531,7 @@ export default function OperationsAgentsPage() {
               <SwitchboardCard
                 key={starter.name}
                 title={starter.name}
-                subtitle={`${starter.subtitle} · ${executorMeta(starter.executor).name}`}
+                subtitle={starter.subtitle}
                 columns={18}
                 rows={5}
                 gridPattern={[...starter.pattern]}

@@ -43,7 +43,7 @@ test('sidebar keeps automation separate from Agent surfaces', async () => {
     '任务与通知',
     '项目',
     '插件中心',
-    '自动化',
+    '自动化与智能体',
     '执行资源',
     '成果与数据',
     '模型与连接',
@@ -53,13 +53,13 @@ test('sidebar keeps automation separate from Agent surfaces', async () => {
 
   assert.match(navigation, /href: '\/inbox'/)
   assert.match(navigation, /match: \['\/inbox', '\/tasks', '\/notifications'\]/)
-  assert.match(navigation, /match: \['\/schedules'\]/)
+  assert.match(navigation, /match: \['\/operations-agents', '\/schedules'\]/)
   assert.doesNotMatch(navigation, /label: '自动化与 Agent'/)
   assert.doesNotMatch(navigation, /match: \[[^\]]*'\/agents'/)
   assert.doesNotMatch(navigation, /match: \[[^\]]*'\/skills'/)
-  assert.match(navigation, /'\/operations-agents': 'Agent 管理'/)
-  assert.match(navigation, /match: \['\/nodes', '\/workers'\]/)
-  assert.match(navigation, /match: \['\/providers', '\/control\/actions'\]/)
+  assert.match(navigation, /'\/operations-agents': '自动化与智能体'/)
+  assert.match(navigation, /match: \['\/nodes', '\/workers', '\/browsers'\]/)
+  assert.match(navigation, /match: \['\/providers'\]/)
   for (const group of ['工作台', '构建', '运行与数据', '管理']) {
     assert.match(navigation, new RegExp(`label: '${group}'`))
   }
@@ -73,12 +73,11 @@ test('sidebar keeps automation separate from Agent surfaces', async () => {
 test('records use a scalable source-to-table explorer with pagination and raw evidence detail', async () => {
   const records = await read('app/(app)/records/page.tsx')
 
-  assert.match(records, /lg:grid-cols-\[15rem_minmax\(0,1fr\)\]/)
+  assert.match(records, /lg:grid-cols-\[minmax\(0,1fr\)_auto\]/)
   assert.doesNotMatch(records, /grid min-h-\[38rem\] overflow-hidden/)
-  assert.match(records, /min-h-\[20rem\]/)
-  assert.match(records, /min-h-\[32rem\]/)
-  assert.match(records, /aria-label="成果数据集"/)
-  assert.match(records, /useSources\(\{ page: 1, limit: 100 \}\)/)
+  assert.match(records, /min-h-80/)
+  assert.match(records, /aria-label="当前数据字段"/)
+  assert.match(records, /useRecords\(\{[\s\S]{0,200}page,[\s\S]{0,100}limit: PAGE_SIZE/)
   assert.match(records, /limit: PAGE_SIZE/)
   assert.match(records, /visibleFields/)
   assert.match(records, /第 \{page\.toLocaleString/)
@@ -99,15 +98,17 @@ test('task and automation sibling routes share their consolidated route tabs', a
     read('app/(app)/skills/page.tsx'),
   ])
 
-  for (const label of ['待处理', '工作项', '通知规则', '调度', 'Agent', '技能']) {
+  for (const label of ['待处理', '工作项', '通知规则', '自动化与智能体', 'Agent', '技能']) {
     assert.match(tabs, new RegExp(`label: '${label}'`))
   }
   for (const page of [inbox, tasks, notifications]) {
     assert.match(page, /ACTION_CENTER_TABS/)
   }
-  for (const page of [sources, schedules, agents, skills]) {
+  for (const page of [agents, skills]) {
     assert.match(page, /AUTOMATION_TABS/)
   }
+  assert.match(sources, /redirect\('\/records'\)/)
+  assert.match(schedules, /redirect\('\/operations-agents'\)/)
 })
 
 test('studio keeps Agent conversation global while management has its own entry', async () => {
@@ -132,7 +133,7 @@ test('studio keeps Agent conversation global while management has its own entry'
   assert.match(templates, /搜索模板、节点或用途/)
   assert.match(templates, /可复用的执行链路/)
   assert.doesNotMatch(templates, /改用 Agent 创建/)
-  assert.match(shell, /<GlobalAgentBubble onClick=\{\(\) => setAgentOpen\(true\)\} \/>/)
+  assert.match(shell, /<GlobalAgentBubble onClick=\{\(\) => \{ setAgentPrompt\(''\); setAgentOpen\(true\) \}\} \/>/)
   assert.match(shell, /<GlobalAgentDock open=\{agentOpen\}/)
   assert.match(header, /href="\/operations-agents"/)
   assert.doesNotMatch(header, /onOpenAgent/)

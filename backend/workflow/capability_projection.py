@@ -367,6 +367,7 @@ def _catalog_capabilities(*, dify_runtime_ready: bool = False) -> list[WorkflowR
                         "config": {
                             "channelType": "doubao_research",
                             "liveMode": "live",
+                            "settle_seconds": 150,
                         },
                     },
                 },

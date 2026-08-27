@@ -6,6 +6,8 @@ import {
   PanelsTopLeft,
   Settings2,
   ShieldCheck,
+  ShieldAlert,
+  Settings,
   Workflow,
   type LucideIcon,
 } from 'lucide-react'

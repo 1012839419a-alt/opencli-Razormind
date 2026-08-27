@@ -439,7 +439,8 @@ export interface EdgeNode {
   status: 'online' | 'offline'
   last_seen_at?: string | null
   ip?: string | null
-  runtimes?: Array<'miniflow' | 'pi' | 'codex'>
+  runtimes?: string[]
+  runtime_capabilities?: Record<string, string[]>
   created_at: string
   updated_at: string
 }
@@ -1275,18 +1276,32 @@ export interface OperationsAgentTeam {
   created_at: string
 }
 
-export interface AgentContractV1 {
-  schema_version: 'agent.contract.v1'
+export interface AgentContractV2 {
+  schema_version: 'agent.contract.v2'
+  role: string
   input_schema: Record<string, unknown>
   output_schema: Record<string, unknown>
   state_schema: Record<string, unknown>
+  required_capabilities: string[]
+  tool_policy: Record<string, unknown>
+  budget: Record<string, unknown>
+  quality_gates: Array<Record<string, unknown>>
+  evidence_requirements: string[]
 }
 
-export interface AgentRuntimeBindingV1 {
-  schema_version: 'agent.runtime-binding.v1'
-  agent_url: string
-  runtime: 'miniflow' | 'pi' | 'codex'
+export interface AgentModelBindingV1 {
+  schema_version: 'agent.model-binding.v1'
+  provider: string
+  model: string
+  auth_profile: string | null
+}
+
+export interface AgentRuntimeBindingV2 {
+  schema_version: 'agent.runtime-binding.v2'
   workflow: string
+  preferred_agent_urls: string[]
+  preferred_runtimes: string[]
+  model_binding: AgentModelBindingV1 | null
   config: Record<string, unknown>
   dispatch_timeout_seconds: number
 }
@@ -1295,8 +1310,8 @@ export interface OperationsAgentDraft {
   revision: number
   instructions: string
   model_configuration: Record<string, unknown> & {
-    agent_contract?: AgentContractV1
-    runtime_binding?: AgentRuntimeBindingV1
+    agent_contract?: AgentContractV2
+    runtime_binding?: AgentRuntimeBindingV2
   }
   tool_configuration: Record<string, unknown>
   updated_by_user_id: string
@@ -1332,6 +1347,16 @@ export interface OperationsAgentRun {
   input_payload: Record<string, unknown>
   state_payload: Record<string, unknown>
   output_payload: Record<string, unknown> | null
+  execution_binding: Record<string, unknown> | null
+  evidence_payload: {
+    schema_version: 'agent.run-evidence.v1'
+    runtime: Record<string, unknown>
+    events: Array<Record<string, unknown>>
+    artifacts: Array<Record<string, unknown>>
+    evidence: Array<Record<string, unknown>>
+    lineage: Array<Record<string, unknown>>
+    audit: Array<Record<string, unknown>>
+  } | null
   error_message: string | null
   status: 'queued' | 'running' | 'paused' | 'completed' | 'failed' | 'cancelled'
   started_by_user_id: string

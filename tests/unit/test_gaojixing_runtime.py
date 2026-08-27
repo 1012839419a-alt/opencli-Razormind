@@ -22,18 +22,19 @@ from backend.workflow.opencli_hda_tracer import (
 def test_question_package_uses_runtime_question_and_stable_digest():
     first = build_question_package(
         node_params={"question": "configured", "sourceGroup": "research"},
-        adapter_config={"site_session": "persistent"},
+        adapter_config={"site_session": "persistent", "settle_seconds": 35},
         runtime_payload={"question": "runtime"},
     )
     second = build_question_package(
         node_params={"question": "other", "sourceGroup": "research"},
-        adapter_config={"site_session": "persistent"},
+        adapter_config={"site_session": "persistent", "settle_seconds": 35},
         runtime_payload={"question": "runtime"},
     )
 
     assert first.question == "runtime"
     assert first.digest == second.digest
     assert len(first.digest) == 64
+    assert first.options["settle_seconds"] == 35
 
 
 def test_question_package_accepts_published_run_query_input():

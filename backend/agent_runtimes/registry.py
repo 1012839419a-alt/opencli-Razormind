@@ -43,6 +43,17 @@ def available_runtimes() -> list[str]:
     return available
 
 
+def available_runtime_capabilities() -> dict[str, list[str]]:
+    """Capability manifests for runtimes that are usable on this node."""
+
+    capabilities: dict[str, list[str]] = {}
+    for runtime_type, instance in _REGISTRY.items():
+        is_available = getattr(type(instance), "is_available", None)
+        if is_available is not None and is_available():
+            capabilities[runtime_type] = sorted(instance.capabilities.names())
+    return capabilities
+
+
 def _load_all_runtimes() -> None:
     """Import all agent-runtime adapter modules to trigger registration."""
     from backend.agent_runtimes import (  # noqa: F401
@@ -51,6 +62,7 @@ def _load_all_runtimes() -> None:
         miniflow_adapter,
         opentabs_adapter,
         pi_adapter,
+        prime_agent_adapter,
     )
 
 

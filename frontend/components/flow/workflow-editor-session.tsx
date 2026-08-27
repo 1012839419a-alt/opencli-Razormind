@@ -15,34 +15,18 @@ import { getProjectWorkflowDraft, publishProjectWorkflow, updateProjectWorkflowD
 import { useCreateProjectWorkflow, useWorkspaceProjects } from '@/lib/api/hooks'
 import type { WorkflowAssetSummary } from '@/lib/api/types'
 import { useFlowStore } from '@/lib/flow/store'
+import { resolveYjsUrl, useSettingsStore } from '@/lib/flow/settings-store'
+import { IMAGE_ASSET_CATALOG_ID } from '@/lib/workflow/node-catalog'
+import { persistableWorkflowProject } from '@/lib/workflow/persistence'
+import { parseWorkflowProject, type WorkflowProject } from '@/lib/workflow/schema'
 import { studioGraphForTemplate } from '@/lib/workflow/studio-templates'
 import { useWorkflowCapabilities } from '@/lib/workflow/use-workflow-capabilities'
-import { parseWorkflowProject, type WorkflowProject, type WorkflowProjectNode } from '@/lib/workflow/schema'
-import { IMAGE_ASSET_CATALOG_ID } from '@/lib/workflow/node-catalog'
 
 import { WorkflowEditor } from './workflow-editor'
 
-function persistableProject(project: WorkflowProject): WorkflowProject {
-  const persistableNode = (node: WorkflowProjectNode): WorkflowProjectNode => {
-    const ui = { ...(node.ui ?? {}) }
-    delete ui.runtimeCapability
-    return {
-      ...node,
-      ...(node.ui ? { ui } : {}),
-      ...(node.internals
-        ? {
-            internals: {
-              ...node.internals,
-              nodes: node.internals.nodes.map((item) => persistableNode(item as WorkflowProjectNode)),
-            },
-          }
-        : {}),
-    }
-  }
-  return { ...project, nodes: project.nodes.map(persistableNode) }
-}
 
-const projectFingerprint = (project: WorkflowProject) => JSON.stringify(persistableProject(project))
+const projectFingerprint = (project: WorkflowProject) =>
+  JSON.stringify(persistableWorkflowProject(project))
 
 type WorkflowEditorSessionProps = {
   forceStandalone?: boolean
@@ -64,6 +48,8 @@ export function WorkflowEditorSession({ forceStandalone = false }: WorkflowEdito
   const workflowProject = useFlowStore((state) => state.workflowProject)
   const importWorkflowProject = useFlowStore((state) => state.importWorkflowProject)
   const updateWorkflowNodeParams = useFlowStore((state) => state.updateWorkflowNodeParams)
+  const yjsConnected = useSettingsStore((state) => state.yjsConnected)
+  const yjsEnabled = useSettingsStore((state) => state.yjsEnabled)
   const [workflowId, setWorkflowId] = useState<string | null>(null)
   const [loadState, setLoadState] = useState<WorkflowLoadState>('loading')
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -88,11 +74,22 @@ export function WorkflowEditorSession({ forceStandalone = false }: WorkflowEdito
   const missingProjectContext = !standalone && (!workspaceId || !projectId)
   const projectHref = workspaceId && projectId ? `/studio/projects/${projectId}?workspace=${workspaceId}` : '/studio'
 
+  useEffect(() => {
+    return () => {
+      useSettingsStore.getState().patch({ collabProvider: 'off', yjsEnabled: false, yjsConnected: false })
+    }
+  }, [])
+
   const saveDraft = useCallback(
-    (graph: typeof workflowProject) => {
-      if (!workspaceId || !projectId || !workflowId || revision.current === null || saveBlocked.current) return Promise.reject(new Error('草稿尚未就绪'))
-      const persistableGraph = persistableProject(graph)
-      if (lastSavedFingerprint.current === projectFingerprint(persistableGraph)) return Promise.resolve()
+    async (graph: typeof workflowProject) => {
+      if (!workspaceId || !projectId || !workflowId || revision.current === null || saveBlocked.current) throw new Error('草稿尚未就绪')
+      const persistableGraph = persistableWorkflowProject(graph)
+      if (lastSavedFingerprint.current === projectFingerprint(persistableGraph)) return
+      if (yjsEnabled) {
+        const latestDraft = await getProjectWorkflowDraft(workspaceId, projectId, workflowId)
+        revision.current = latestDraft.revision
+        setSavedRevision(latestDraft.revision)
+      }
       pendingGraph.current = persistableGraph
       setDocumentState('saving')
       if (!saveQueuePromise.current) {
@@ -120,12 +117,13 @@ export function WorkflowEditorSession({ forceStandalone = false }: WorkflowEdito
       }
       return saveQueuePromise.current
     },
-    [projectId, workflowId, workspaceId],
+    [projectId, workflowId, workspaceId, yjsEnabled],
   )
 
   useEffect(() => {
     if (!workspaceId || !projectId) return
     if (primaryWorkflowPending) return
+    useSettingsStore.getState().patch({ collabProvider: 'off', yjsEnabled: false, yjsConnected: false })
     let active = true
     loaded.current = false
     revision.current = null
@@ -160,6 +158,13 @@ export function WorkflowEditorSession({ forceStandalone = false }: WorkflowEdito
         setSavedRevision(draft.revision)
         lastSavedFingerprint.current = projectFingerprint(graph)
         setWorkflowId(resolvedWorkflowId)
+        useSettingsStore.getState().patch({
+          collabProvider: 'yjs',
+          yjsEnabled: true,
+          yjsConnected: false,
+          yjsRoom: `workspace:${workspaceId}:project:${projectId}:workflow:${resolvedWorkflowId}`,
+          yjsUrl: resolveYjsUrl(),
+        })
         loaded.current = true
         setDocumentState('saved')
         setLoadState('ready')
@@ -184,12 +189,47 @@ export function WorkflowEditorSession({ forceStandalone = false }: WorkflowEdito
   }, [importWorkflowProject, primaryWorkflowPending, project, projectId, requestedWorkflowId, resolvedWorkflowId, workspaceId, workspaceProjects.error, workspaceProjects.isError])
 
   useEffect(() => {
-    if (!loaded.current || !workspaceId || !projectId || !workflowId) return
+    if (!loaded.current || !workspaceId || !projectId || !workflowId || yjsConnected) return
     const timer = window.setTimeout(() => {
       saveDraft(workflowProject).catch((reason: Error) => toast.error(`自动保存失败：${reason.message}`))
     }, 800)
     return () => window.clearTimeout(timer)
-  }, [projectId, saveDraft, workflowId, workflowProject, workspaceId])
+  }, [projectId, saveDraft, workflowId, workflowProject, workspaceId, yjsConnected])
+
+  useEffect(() => {
+    if (!loaded.current || !workspaceId || !projectId || !workflowId || !yjsConnected) return
+    const fingerprint = projectFingerprint(workflowProject)
+    if (lastSavedFingerprint.current === fingerprint) return
+    const expectedRevision = revision.current ?? 0
+    setDocumentState('saving')
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        try {
+          const latest = await getProjectWorkflowDraft(workspaceId, projectId, workflowId)
+          if (latest.revision <= expectedRevision) {
+            await saveDraft(workflowProject)
+            return
+          }
+          revision.current = latest.revision
+          setSavedRevision(latest.revision)
+          lastSavedFingerprint.current = fingerprint
+          setDocumentState('saved')
+        } catch (reason) {
+          try {
+            await saveDraft(workflowProject)
+          } catch {
+            setDocumentState('error')
+            toast.error(
+              reason instanceof Error
+                ? `协同快照确认失败：${reason.message}`
+                : '协同快照确认失败',
+            )
+          }
+        }
+      })()
+    }, 1_000)
+    return () => window.clearTimeout(timer)
+  }, [projectId, saveDraft, workflowId, workflowProject, workspaceId, yjsConnected])
 
   useEffect(() => {
     if (!loaded.current) return
@@ -284,6 +324,7 @@ export function WorkflowEditorSession({ forceStandalone = false }: WorkflowEdito
     }
     setReleaseState('publishing')
     try {
+      await saveDraft(workflowProject)
       const version = await publishProjectWorkflow(workspaceId, projectId, workflowId, {
         reason: '通过工作区画布发布',
         expectedRevision: revision.current,

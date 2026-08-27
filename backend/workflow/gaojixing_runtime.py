@@ -69,6 +69,7 @@ def build_question_package(
         "extract_citations",
         "capture_conversation_url",
         "site_session",
+        "settle_seconds",
         "capabilityId",
         "sourceGroup",
     )

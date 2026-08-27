@@ -120,6 +120,11 @@ async def test_register_with_center_attaches_authorization_header(monkeypatch):
     monkeypatch.setattr(agent_server, "_AGENT_API_TOKEN", "secret-token")
     monkeypatch.setattr(agent_server, "_CENTRAL_API_URL", "http://center.example")
     monkeypatch.setattr(agent_server, "available_runtimes", lambda: ["opentabs"])
+    monkeypatch.setattr(
+        agent_server,
+        "available_runtime_capabilities",
+        lambda: {"opentabs": ["browser", "tool_events"]},
+    )
 
     import httpx
     monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
@@ -130,6 +135,9 @@ async def test_register_with_center_attaches_authorization_header(monkeypatch):
         "Authorization": "Bearer secret-token"
     }
     assert _FakeAsyncClient.last_post_kwargs["json"]["runtimes"] == ["opentabs"]
+    assert _FakeAsyncClient.last_post_kwargs["json"]["runtime_capabilities"] == {
+        "opentabs": ["browser", "tool_events"]
+    }
     assert _FakeAsyncClient.last_post_args == ("http://center.example/api/v1/nodes/register",)
 
 
@@ -138,6 +146,7 @@ async def test_register_with_center_sends_empty_headers_without_token(monkeypatc
     monkeypatch.setattr(agent_server, "_AGENT_API_TOKEN", "")
     monkeypatch.setattr(agent_server, "_CENTRAL_API_URL", "http://center.example")
     monkeypatch.setattr(agent_server, "available_runtimes", lambda: [])
+    monkeypatch.setattr(agent_server, "available_runtime_capabilities", lambda: {})
 
     import httpx
     monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)

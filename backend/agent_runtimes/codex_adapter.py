@@ -60,6 +60,9 @@ class CodexRuntimeAdapter(RuntimeAdapter):
         resume_by_id=False,
         checkpoint="none",
         concurrent_sessions=True,
+        features=frozenset(
+            {"tool_events", "model_selection", "workspace_read", "workspace_write"}
+        ),
     )
 
     def validate_config(self, config: dict[str, Any]) -> list[str]:
@@ -91,9 +94,6 @@ class CodexRuntimeAdapter(RuntimeAdapter):
         sandbox_mode = config.get("sandbox_mode")
         if sandbox_mode is not None and sandbox_mode not in _SANDBOX_MODES:
             errors.append("'sandbox_mode' must be one of " + ", ".join(sorted(_SANDBOX_MODES)))
-        if "model" in config and config["model"] is not None:
-            if not isinstance(config["model"], str) or not config["model"].strip():
-                errors.append("'model' must be a non-empty string when provided")
 
         if "timeout_seconds" in config and config["timeout_seconds"] is not None:
             timeout = config["timeout_seconds"]
@@ -165,7 +165,13 @@ class CodexRuntimeAdapter(RuntimeAdapter):
             working_directory=str(cwd),
         )
 
-    def _compose_argv(self, config: dict[str, Any], prompt: str = "") -> list[str]:
+    def _compose_argv(
+        self,
+        config: dict[str, Any],
+        prompt: str = "",
+        *,
+        model: str | None = None,
+    ) -> list[str]:
         binary = config.get("binary") or "codex"
         argv = [binary, *(config.get("args") or []), "exec", "--json", "--color", "never"]
         permission_mode = config.get("permission_mode")
@@ -183,7 +189,6 @@ class CodexRuntimeAdapter(RuntimeAdapter):
         sandbox_mode = config.get("sandbox_mode")
         if sandbox_mode is not None and permission_mode not in {"read_only", "full_auto"}:
             argv.extend(("--sandbox", sandbox_mode))
-        model = config.get("model")
         if model:
             argv.extend(("--model", model))
         argv.append(prompt)
@@ -203,6 +208,13 @@ class CodexRuntimeAdapter(RuntimeAdapter):
         config_errors = self.validate_config(config)
         if config_errors:
             yield event_error(task.task_id, "; ".join(config_errors), error_type="ConfigError")
+            return
+        if task.provider not in {None, "openai", "openai-codex"}:
+            yield event_error(
+                task.task_id,
+                f"codex runtime does not support provider {task.provider!r}",
+                error_type="ConfigError",
+            )
             return
 
         binary = config.get("binary") or "codex"
@@ -226,7 +238,11 @@ class CodexRuntimeAdapter(RuntimeAdapter):
             config.get("args") or [],
             timeout_seconds=min(timeout_seconds, _VERSION_TIMEOUT_SECONDS),
         )
-        argv = self._compose_argv(config, self._compose_prompt(task))
+        argv = self._compose_argv(
+            config,
+            self._compose_prompt(task),
+            model=task.model,
+        )
 
         try:
             proc = await asyncio.create_subprocess_exec(

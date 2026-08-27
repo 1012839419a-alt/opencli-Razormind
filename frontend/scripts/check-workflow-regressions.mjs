@@ -524,7 +524,7 @@ test('node workflow lives inside a project shell while the legacy canvas route r
     readSource('app/page.tsx'),
   ])
 
-  for (const label of ['概览', '项目', '自动化与 Agent', '任务与通知', '执行资源']) {
+  for (const label of ['概览', '项目', '自动化与智能体', '任务与通知', '执行资源']) {
     assert.match(navigation, new RegExp(`label:\\s*['"]${label}['"]`))
   }
   assert.doesNotMatch(navigation, /href:\s*['"]\/canvas['"][\s\S]{0,80}label:\s*['"]节点工作流['"]/) 
@@ -1404,7 +1404,7 @@ test('the right inspector uses graph contracts instead of manual keys and field 
   assert.match(inspector, /onReconnect\(currentEdge, connection\)/)
   assert.match(inspector, /connectNodes\(connection\)/)
   assert.match(inspector, /removeEdgesByIds\(currentEdges\.map\(\(edge\) => edge\.id\)\)/)
-  assert.match(inspector, /<SelectValue placeholder=\{copy\.inputUnbound\}/)
+  assert.match(inspector, /<SelectValue>[\s\S]{0,500}copy\.inputUnbound/)
   assert.doesNotMatch(inspector, /placeholder=["']data\.source["']/)
   assert.doesNotMatch(inspector, /placeholder=["']data\.target["']/)
   assert.doesNotMatch(parameterInterface, /Config \(JSON\)/)

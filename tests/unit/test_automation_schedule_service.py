@@ -23,7 +23,7 @@ async def _seed_bound_automation(
     db_session,
     *,
     profile_mode: AgentProfileMode = AgentProfileMode.OBSERVE_ONLY,
-    advertised_runtimes: list[str] | None = None,
+    runtime_capabilities: dict[str, list[str]] | None = None,
     input_schema: dict | None = None,
 ):
     user = User(subject=f"scheduler-{profile_mode.value}")
@@ -56,16 +56,23 @@ async def _seed_bound_automation(
         instructions="Read only",
         model_configuration={
             "agent_contract": {
-                "schema_version": "agent.contract.v1",
+                "schema_version": "agent.contract.v2",
+                "role": "operations_reviewer",
                 "input_schema": input_schema or {"type": "object"},
                 "output_schema": {"type": "object"},
                 "state_schema": {"type": "object"},
+                "required_capabilities": ["streaming"],
+                "tool_policy": {},
+                "budget": {},
+                "quality_gates": [],
+                "evidence_requirements": [],
             },
             "runtime_binding": {
-                "schema_version": "agent.runtime-binding.v1",
-                "agent_url": "http://scheduler-agent:19823",
-                "runtime": "miniflow",
+                "schema_version": "agent.runtime-binding.v2",
                 "workflow": "builtin.read_only_readiness",
+                "preferred_agent_urls": ["http://scheduler-agent:19823"],
+                "preferred_runtimes": ["miniflow"],
+                "model_binding": None,
                 "config": {"timeout_seconds": 60},
                 "dispatch_timeout_seconds": 60,
             },
@@ -81,7 +88,8 @@ async def _seed_bound_automation(
         mode="cdp",
         node_type="docker",
         status="online",
-        runtimes=advertised_runtimes or ["miniflow"],
+        runtimes=list((runtime_capabilities or {"miniflow": ["streaming"]}).keys()),
+        runtime_capabilities=runtime_capabilities or {"miniflow": ["streaming"]},
     )
     automation = Automation(
         workspace_id=workspace.id,
@@ -141,6 +149,7 @@ async def test_duplicate_scans_claim_one_durable_occurrence(
     assert first.schedule_timezone == "UTC"
     assert first.operations_agent_id == agent.id
     assert await recovery.list_queued_scheduled_run_ids() == [first.id]
+    assert first.execution_binding["runtime"] == "miniflow"
     await recovery.recover_operations_agent_runs_on_startup()
     persisted = await db_session.get(OperationsAgentRun, first.id)
     assert persisted is not None and persisted.status == "queued"
@@ -180,7 +189,7 @@ async def test_manual_run_rejects_offline_bound_runtime(
     automation, _, _ = await _seed_bound_automation(db_session)
     monkeypatch.setattr(ws_agent_manager, "is_connected", lambda _url: False)
 
-    with pytest.raises(service.AutomationBindingError, match="not connected"):
+    with pytest.raises(service.AutomationBindingError, match="no connected"):
         await service.create_bound_automation_run(
             db_session,
             automation,
@@ -220,7 +229,7 @@ async def test_structural_binding_failure_persists_one_failed_occurrence(
 ):
     automation, agent, profile = await _seed_bound_automation(
         db_session,
-        advertised_runtimes=["pi"],
+        runtime_capabilities={"pi": []},
     )
     scheduled_for = datetime(2026, 8, 24, 12, 0, tzinfo=UTC)
 
@@ -238,7 +247,7 @@ async def test_structural_binding_failure_persists_one_failed_occurrence(
     assert second_created is False
     assert first.id == second.id
     assert first.status == "failed"
-    assert "not advertised" in first.error_message
+    assert "required capabilities" in first.error_message
     assert first.trigger_reference == f"automation:{automation.id}:20260824T1200Z"
     assert first.scheduled_for == scheduled_for
     assert first.automation_revision == automation.revision
@@ -263,13 +272,13 @@ async def test_low_risk_automatic_profile_is_incompatible(db_session):
         await service.validate_automation_binding(db_session, automation)
 
 
-async def test_runtime_must_be_advertised_by_bound_node(db_session):
+async def test_runtime_must_satisfy_agent_capabilities(db_session):
     automation, _, _ = await _seed_bound_automation(
         db_session,
-        advertised_runtimes=["pi"],
+        runtime_capabilities={"pi": []},
     )
 
-    with pytest.raises(service.AutomationBindingError, match="not advertised"):
+    with pytest.raises(service.AutomationBindingError, match="required capabilities"):
         await service.validate_automation_binding(db_session, automation)
 
 

@@ -48,6 +48,39 @@ async def test_collect_stores_answer_and_citations(monkeypatch):
     assert result.success
     assert result.items[0]["title"] == "麻将机"
     assert result.items[0]["citations"] == [{"url": "https://example.com/source"}]
+
+
+@pytest.mark.asyncio
+async def test_collect_reads_settled_research_answer(monkeypatch):
+    calls = []
+    sleeps = []
+
+    async def fake_run(command):
+        calls.append(command[2])
+        if command[2] == "ask":
+            return 0, '[{"Role":"assistant","Text":"正在理解任务要求"}]', ""
+        return 0, '[{"Role":"assistant","Text":"最终报告 https://example.com/source"}]', ""
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+
+    monkeypatch.setattr("backend.channels.doubao_research_channel._run_doubao_command", fake_run)
+    monkeypatch.setattr("backend.channels.doubao_research_channel.asyncio.sleep", fake_sleep)
+
+    result = await DoubaoResearchChannel().collect(
+        {
+            "question": "测试",
+            "settle_seconds": 35,
+            "capture_conversation_url": False,
+        },
+        {},
+    )
+
+    assert result.success
+    assert calls == ["ask", "read"]
+    assert sleeps == [35]
+    assert result.items[0]["content"] == "最终报告 https://example.com/source"
+    assert result.items[0]["citations"] == [{"url": "https://example.com/source"}]
     assert result.metadata["citation_count"] == 1
 
 

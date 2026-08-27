@@ -3,6 +3,7 @@ from fastapi import HTTPException
 from backend import ws_agent_manager
 from backend.api.v1 import internal_agent_runs
 from backend.models import (
+    EdgeNode,
     OperationsAgentIdentity,
     OperationsAgentRun,
     PublishedOperationsAgentVersion,
@@ -36,18 +37,43 @@ async def _seed_run(db_session, *, status: str) -> OperationsAgentRun:
             draft_revision=1,
             instructions="Read only",
             model_configuration={
+                "agent_contract": {
+                    "schema_version": "agent.contract.v2",
+                    "role": "scheduled_reviewer",
+                    "input_schema": {"type": "object"},
+                    "output_schema": {"type": "object"},
+                    "state_schema": {"type": "object"},
+                    "required_capabilities": ["streaming"],
+                    "tool_policy": {},
+                    "budget": {},
+                    "quality_gates": [],
+                    "evidence_requirements": [],
+                },
                 "runtime_binding": {
-                    "schema_version": "agent.runtime-binding.v1",
-                    "agent_url": "http://internal-agent:19823",
-                    "runtime": "miniflow",
+                    "schema_version": "agent.runtime-binding.v2",
                     "workflow": "builtin.read_only_readiness",
+                    "preferred_agent_urls": ["http://internal-agent:19823"],
+                    "preferred_runtimes": ["miniflow"],
+                    "model_binding": None,
                     "config": {"timeout_seconds": 60},
                     "dispatch_timeout_seconds": 60,
-                }
+                },
             },
             tool_configuration={},
             published_by_user_id=user.id,
             reason="Internal dispatch test",
+        )
+    )
+    db_session.add(
+        EdgeNode(
+            url="http://internal-agent:19823",
+            label="Internal runtime",
+            protocol="ws",
+            mode="cdp",
+            node_type="docker",
+            status="online",
+            runtimes=["miniflow"],
+            runtime_capabilities={"miniflow": ["streaming"]},
         )
     )
     run = OperationsAgentRun(
@@ -134,3 +160,4 @@ async def test_connected_queued_run_is_scheduled_without_waiting(db_session, mon
 
     assert response.data.status == "queued"
     assert scheduled == [run.id]
+    assert response.data.execution_binding["runtime"] == "miniflow"

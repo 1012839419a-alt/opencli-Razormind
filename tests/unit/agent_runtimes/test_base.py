@@ -11,8 +11,11 @@ from backend.agent_runtimes.base import (
     RuntimeAdapter,
     RuntimeCapabilities,
     RuntimeInvocationError,
+    event_artifact,
+    event_audit,
     event_done,
     event_error,
+    event_evidence,
     event_started,
     event_state,
     event_text,
@@ -21,6 +24,7 @@ from backend.agent_runtimes.base import (
 )
 from backend.agent_runtimes.registry import (
     _REGISTRY,
+    available_runtime_capabilities,
     available_runtimes,
     get_runtime,
     list_runtime_types,
@@ -100,6 +104,12 @@ def test_event_error_default_error_type_none():
     assert ev["error_type"] is None
 
 
+def test_evidence_event_shapes_are_in_closed_protocol():
+    assert event_artifact("t1", {"kind": "report"})["type"] == "artifact"
+    assert event_evidence("t1", {"kind": "citation"})["type"] == "evidence"
+    assert event_audit("t1", {"action": "read"})["type"] == "audit"
+
+
 @pytest.mark.parametrize(
     "builder,args",
     [
@@ -108,6 +118,9 @@ def test_event_error_default_error_type_none():
         (event_tool_call, ("t1", "n")),
         (event_tool_result, ("t1", "n")),
         (event_state, ("t1", {})),
+        (event_artifact, ("t1", {})),
+        (event_evidence, ("t1", {})),
+        (event_audit, ("t1", {})),
         (event_done, ("t1",)),
         (event_error, ("t1", "m")),
     ],
@@ -260,6 +273,8 @@ def test_pi_adapter_registered_by_default_discovery():
     assert get_runtime("pi").runtime_type == "pi"
     assert "miniflow" in list_runtime_types()
     assert get_runtime("miniflow").runtime_type == "miniflow"
+    assert "prime-agent" in list_runtime_types()
+    assert get_runtime("prime-agent").runtime_type == "prime-agent"
 
 
 def test_available_runtimes_filters_by_is_available(monkeypatch):
@@ -282,6 +297,9 @@ def test_available_runtimes_filters_by_is_available(monkeypatch):
     available = available_runtimes()
     assert "available_runtime" in available
     assert "unavailable_runtime" not in available
+    capabilities = available_runtime_capabilities()
+    assert capabilities["available_runtime"] == ["streaming"]
+    assert "unavailable_runtime" not in capabilities
 
 
 def test_available_runtimes_excludes_adapters_without_is_available():

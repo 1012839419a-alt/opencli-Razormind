@@ -1,0 +1,30 @@
+{
+  "schema": "design-pipeline.toolchain-request.v1",
+  "framework": "react",
+  "brief": "Refine the existing Next.js OpenCLI workflow editor with immediate React Flow node authoring, scoped Yjs collaboration, durable Studio revisions, demand provenance, grounded Evidence, accessible recovery states, and the existing Dark Ops Console design system.",
+  "existing": {
+    "framework": "Next.js 16",
+    "canvas": "@xyflow/react 12.11.2",
+    "state": "zustand 5.0.14",
+    "collaboration": "yjs 13.6.31 + y-websocket 3.0.0",
+    "styles": "project CSS tokens and existing UI primitives",
+    "motion": "CSS, WAAPI, Motion One where already present"
+  },
+  "requested": {
+    "mode": "refine",
+    "componentOrigin": "project-owned",
+    "runtimeAdoption": "reuse-installed-only"
+  },
+  "capabilities": [
+    "node-canvas",
+    "typed-connections",
+    "incremental-collaboration",
+    "durable-save-acknowledgement",
+    "workflow-lifecycle",
+    "demand-provenance",
+    "grounded-evidence",
+    "offline-recovery",
+    "keyboard-authoring",
+    "reduced-motion"
+  ]
+}

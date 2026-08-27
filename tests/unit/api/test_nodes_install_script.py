@@ -173,6 +173,7 @@ async def test_runtime_bundle_contains_native_agent_packages(client):
 
     assert "backend/agent_runtimes/registry.py" in names
     assert "backend/agent_runtimes/opentabs_adapter.py" in names
+    assert "backend/agent_runtimes/prime_agent_adapter.py" in names
     assert "backend/miniflow/runner.py" in names
     assert "backend/security/url_guard.py" in names
     assert all(
@@ -200,7 +201,8 @@ async def test_runtime_bundle_imports_in_native_agent_layout(client, tmp_path):
             "-c",
             (
                 "from backend.agent_runtimes.registry import list_runtime_types; "
-                "assert {'bbx', 'miniflow', 'opentabs', 'pi'} <= set(list_runtime_types())"
+                "assert {'bbx', 'miniflow', 'opentabs', 'pi', 'prime-agent'} "
+                "<= set(list_runtime_types())"
             ),
         ],
         cwd=tmp_path,

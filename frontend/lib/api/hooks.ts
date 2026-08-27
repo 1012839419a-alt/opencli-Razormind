@@ -24,18 +24,6 @@ export function useMyWorkspaces() {
   return useQuery({ queryKey: ['workspaces'], queryFn: api.listMyWorkspaces })
 }
 
-export function useSystemConfig() {
-  return useQuery({ queryKey: ['system-config'], queryFn: api.getSystemConfig })
-}
-
-export function useUpdateSystemConfig() {
-  const queryClient = useQueryClient()
-  return useMutation({
-    mutationFn: (data: Parameters<typeof api.updateSystemConfig>[0]) =>
-      api.updateSystemConfig(data),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['system-config'] }),
-  })
-}
 
 export function useWorkspaceProjects(workspaceId: string | null) {
   return useQuery({
@@ -766,7 +754,8 @@ export function useWorkspaceSettings() {
 export function useUpdateWorkspaceSettings() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (data: Partial<WorkspaceSettingsValues>) => api.updateWorkspaceSettings(data),
+    mutationFn: (data: Parameters<typeof api.updateWorkspaceSettings>[0]) =>
+      api.updateWorkspaceSettings(data),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['workspace-settings'] }),
   })
 }
@@ -1073,7 +1062,8 @@ export function useSystemConfig() {
 export function useUpdateSystemConfig() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (data: Partial<SystemConfig>) => api.updateSystemConfig(data),
+    mutationFn: (data: Parameters<typeof api.updateSystemConfig>[0]) =>
+      api.updateSystemConfig(data),
     onSuccess: (result) => queryClient.setQueryData(['system-config'], result),
   })
 }

@@ -5,9 +5,7 @@ from pydantic import ValidationError
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend import ws_agent_manager
 from backend.database import get_db, queue_after_commit
-from backend.models.edge_node import EdgeNode
 from backend.models.identity import Team, WorkspaceRole
 from backend.models.operations_agent import (
     AgentPermissionProfile,
@@ -41,6 +39,10 @@ from backend.security.workspace_rbac import (
     WorkspacePermission,
     get_workspace_access,
     require_permission,
+)
+from backend.services.agent_runtime_selection import (
+    RuntimeSelectionError,
+    select_agent_runtime,
 )
 from backend.services.operations_agent_runtime_service import (
     cancel_operations_agent_run,
@@ -470,36 +472,37 @@ async def start_agent_run(
     except ValidationError as exc:
         raise HTTPException(
             status.HTTP_409_CONFLICT,
-            "Published Agent Version contains an invalid AgentContractV1",
+            "Published Agent Version contains an invalid AgentContractV2",
         ) from exc
+    if contract is None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "Published Agent Version requires an AgentContractV2",
+        )
     if runtime_binding is None:
         raise HTTPException(
             status.HTTP_409_CONFLICT,
-            "Published Agent Version requires an AgentRuntimeBindingV1",
+            "Published Agent Version requires an AgentRuntimeBindingV2",
         )
-    runtime_node = await db.scalar(
-        select(EdgeNode).where(EdgeNode.url == runtime_binding.agent_url)
-    )
-    if (
-        runtime_node is None
-        or runtime_node.status != "online"
-        or runtime_node.protocol != "ws"
-        or runtime_binding.runtime not in (runtime_node.runtimes or [])
-        or not ws_agent_manager.is_connected(runtime_binding.agent_url)
-    ):
+    try:
+        execution_binding = await select_agent_runtime(
+            db,
+            contract=contract,
+            binding=runtime_binding,
+        )
+    except RuntimeSelectionError as exc:
         raise HTTPException(
             status.HTTP_409_CONFLICT,
-            "Agent Runtime Fleet precheck failed",
-        )
-    if contract is not None:
-        try:
-            validate_agent_contract_payload(contract, "input_schema", body.input_payload)
-            validate_agent_contract_payload(contract, "state_schema", body.state_payload)
-        except ValueError as exc:
-            raise HTTPException(
-                status.HTTP_422_UNPROCESSABLE_CONTENT,
-                f"Operations Agent run payload violates AgentContractV1: {exc}",
-            ) from exc
+            f"Agent Runtime Fleet precheck failed: {exc}",
+        ) from exc
+    try:
+        validate_agent_contract_payload(contract, "input_schema", body.input_payload)
+        validate_agent_contract_payload(contract, "state_schema", body.state_payload)
+    except ValueError as exc:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            f"Operations Agent run payload violates AgentContractV2: {exc}",
+        ) from exc
     profile = await _get_profile(db, agent)
     if profile.mode == AgentProfileMode.LOW_RISK_AUTOMATIC:
         raise HTTPException(
@@ -516,6 +519,8 @@ async def start_agent_run(
         target_resource_id=body.target_resource_id,
         input_payload=body.input_payload,
         state_payload=body.state_payload,
+        execution_binding=execution_binding,
+        evidence_payload=None,
         status="queued",
         started_by_user_id=access.user_id,
     )

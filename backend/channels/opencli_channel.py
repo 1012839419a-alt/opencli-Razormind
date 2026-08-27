@@ -522,7 +522,9 @@ async def _cleanup_cdp_tabs(cdp_endpoint: str, pre_existing_ids: set[str]) -> No
         logger.warning("cleanup: could not close CDP tabs at %s: %s", cdp_endpoint, exc)
 
 
-async def _run_opencli(cmd: list[str], env: dict) -> tuple[int, str, str]:
+async def _run_opencli(
+    cmd: list[str], env: dict[str, str] | None = None
+) -> tuple[int, str, str]:
     """Run opencli subprocess, return (returncode, stdout, stderr).
 
     Kills the process on timeout before re-raising so it doesn't linger.
@@ -533,7 +535,7 @@ async def _run_opencli(cmd: list[str], env: dict) -> tuple[int, str, str]:
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            env=env,
+            env=env if env is not None else os.environ.copy(),
             **_process_group_kwargs(),
         )
         from backend.config import get_settings

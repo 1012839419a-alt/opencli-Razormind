@@ -58,7 +58,8 @@ async def _add_member(db_session, workspace: Workspace, role: WorkspaceRole, suf
 
 def _agent_contract() -> dict:
     return {
-        "schema_version": "agent.contract.v1",
+        "schema_version": "agent.contract.v2",
+        "role": "operations_reviewer",
         "input_schema": {
             "type": "object",
             "properties": {"target_id": {"type": "string"}},
@@ -73,6 +74,11 @@ def _agent_contract() -> dict:
             "type": "object",
             "properties": {"last_target_id": {"type": "string"}},
         },
+        "required_capabilities": ["streaming"],
+        "tool_policy": {},
+        "budget": {},
+        "quality_gates": [],
+        "evidence_requirements": [],
     }
 
 
@@ -87,15 +93,17 @@ async def _runtime_binding(db_session, monkeypatch) -> dict:
             node_type="shell",
             status="online",
             runtimes=["pi"],
+            runtime_capabilities={"pi": ["streaming", "tool_events"]},
         )
     )
     await db_session.commit()
     monkeypatch.setattr(ws_agent_manager, "is_connected", lambda url: url == agent_url)
     return {
-        "schema_version": "agent.runtime-binding.v1",
-        "agent_url": agent_url,
-        "runtime": "pi",
+        "schema_version": "agent.runtime-binding.v2",
         "workflow": "operations-agent",
+        "preferred_agent_urls": [agent_url],
+        "preferred_runtimes": ["pi"],
+        "model_binding": None,
         "config": {},
     }
 
@@ -292,7 +300,10 @@ async def test_disabling_agent_revokes_profile_and_prevents_new_assignments(
             json={
                 "revision": 1,
                 "instructions": "Observe one target",
-                "model_configuration": {"runtime_binding": runtime_binding},
+                "model_configuration": {
+                    "agent_contract": _agent_contract(),
+                    "runtime_binding": runtime_binding,
+                },
             },
         )
         await client.post(
@@ -301,7 +312,11 @@ async def test_disabling_agent_revokes_profile_and_prevents_new_assignments(
         )
         started = await client.post(
             f"/workspaces/{workspace.id}/operations-agents/{agent_id}/runs",
-            json={"target_resource_type": "plan", "target_resource_id": "daily-news"},
+            json={
+                "target_resource_type": "plan",
+                "target_resource_id": "daily-news",
+                "input_payload": {"target_id": "daily-news"},
+            },
         )
         disabled = await client.patch(
             f"/workspaces/{workspace.id}/operations-agents/{agent_id}",
@@ -462,7 +477,7 @@ async def test_agent_draft_reads_and_rejects_stale_revision(db_session):
     assert current.json()["data"]["instructions"] == "First reviewed draft"
 
 
-async def test_agent_contract_v1_is_validated_and_published_in_versioned_configuration(db_session):
+async def test_agent_contract_v2_is_validated_and_published_in_versioned_configuration(db_session):
     _, workspace, team = await _seed_member(db_session, WorkspaceRole.MAINTAINER)
     client = await _client(db_session, "maintainer-primary")
     contract = _agent_contract()
@@ -508,7 +523,7 @@ async def test_agent_contract_v1_is_validated_and_published_in_versioned_configu
     assert selected_version.json()["data"] == published.json()["data"]
 
 
-async def test_agent_contract_v1_rejects_invalid_json_schema_before_draft_write(db_session):
+async def test_agent_contract_v2_rejects_invalid_json_schema_before_draft_write(db_session):
     _, workspace, team = await _seed_member(db_session, WorkspaceRole.MAINTAINER)
     client = await _client(db_session, "maintainer-primary")
     contract = _agent_contract()
@@ -546,11 +561,11 @@ async def test_agent_contract_v1_rejects_invalid_json_schema_before_draft_write(
                 "model_configuration": {"agent_contract": contract},
             },
         )
-        unsupported_runtime = await client.put(
+        legacy_runtime_binding = await client.put(
             f"/workspaces/{workspace.id}/operations-agents/{agent_id}/draft",
             json={
                 "revision": 1,
-                "instructions": "V1 instructions must be consumed",
+                "instructions": "Legacy bindings must be migrated before use",
                 "model_configuration": {
                     "runtime_binding": {
                         "schema_version": "agent.runtime-binding.v1",
@@ -569,10 +584,11 @@ async def test_agent_contract_v1_rejects_invalid_json_schema_before_draft_write(
                 "instructions": "Workspace config must not choose the edge process",
                 "model_configuration": {
                     "runtime_binding": {
-                        "schema_version": "agent.runtime-binding.v1",
-                        "agent_url": "http://agent.test:19823",
-                        "runtime": "pi",
+                        "schema_version": "agent.runtime-binding.v2",
                         "workflow": "status",
+                        "preferred_agent_urls": ["http://agent.test:19823"],
+                        "preferred_runtimes": ["pi"],
+                        "model_binding": None,
                         "config": {
                             "binary": "python",
                             "args": ["-c", "print('unsafe')"],
@@ -585,7 +601,7 @@ async def test_agent_contract_v1_rejects_invalid_json_schema_before_draft_write(
     assert response.status_code == 422
     assert remote_reference.status_code == 422
     assert remote_dynamic_reference.status_code == 422
-    assert unsupported_runtime.status_code == 422
+    assert legacy_runtime_binding.status_code == 422
     assert unsafe_launch_config.status_code == 422
     draft = await db_session.scalar(
         select(OperationsAgentDraft).where(OperationsAgentDraft.operations_agent_id == agent_id)
@@ -594,7 +610,7 @@ async def test_agent_contract_v1_rejects_invalid_json_schema_before_draft_write(
     assert draft.instructions == ""
 
 
-async def test_publish_revalidates_persisted_agent_contract_v1(db_session):
+async def test_publish_revalidates_persisted_agent_contract_v2(db_session):
     _, workspace, team = await _seed_member(db_session, WorkspaceRole.MAINTAINER)
     client = await _client(db_session, "maintainer-primary")
 
@@ -612,7 +628,7 @@ async def test_publish_revalidates_persisted_agent_contract_v1(db_session):
     draft.model_configuration = {
         "agent_contract": {
             **_agent_contract(),
-            "schema_version": "agent.contract.v2",
+            "schema_version": "agent.contract.v3",
         }
     }
     await db_session.commit()
@@ -685,6 +701,8 @@ async def test_agent_run_validates_and_persists_contract_input_and_state(db_sess
     assert started.status_code == 201
     assert started.json()["data"]["input_payload"] == {"target_id": "daily-news"}
     assert started.json()["data"]["state_payload"] == {"last_target_id": "yesterday"}
+    assert started.json()["data"]["execution_binding"]["runtime"] == "pi"
+    assert started.json()["data"]["evidence_payload"] is None
     stored = await db_session.get(OperationsAgentRun, started.json()["data"]["id"])
     assert stored.input_payload == {"target_id": "daily-news"}
     assert stored.state_payload == {"last_target_id": "yesterday"}
@@ -702,7 +720,11 @@ async def test_agent_run_requires_published_runtime_binding(db_session):
         agent_id = created.json()["data"]["id"]
         await client.put(
             f"/workspaces/{workspace.id}/operations-agents/{agent_id}/draft",
-            json={"revision": 1, "instructions": "Inspect one target"},
+            json={
+                "revision": 1,
+                "instructions": "Inspect one target",
+                "model_configuration": {"agent_contract": _agent_contract()},
+            },
         )
         await client.post(
             f"/workspaces/{workspace.id}/operations-agents/{agent_id}/versions",
@@ -718,7 +740,7 @@ async def test_agent_run_requires_published_runtime_binding(db_session):
 
     assert response.status_code == 409
     assert response.json()["detail"] == (
-        "Published Agent Version requires an AgentRuntimeBindingV1"
+        "Published Agent Version requires an AgentRuntimeBindingV2"
     )
 
 
@@ -740,7 +762,10 @@ async def test_automatic_agent_behavior_release_requires_admin_and_governed_gate
             json={
                 "revision": 1,
                 "instructions": "Adjust qualified schedules",
-                "model_configuration": {"runtime_binding": runtime_binding},
+                "model_configuration": {
+                    "agent_contract": _agent_contract(),
+                    "runtime_binding": runtime_binding,
+                },
             },
         )
         await admin_client.post(
@@ -768,7 +793,11 @@ async def test_automatic_agent_behavior_release_requires_admin_and_governed_gate
         )
         blocked_run = await admin_publish_client.post(
             f"/workspaces/{workspace.id}/operations-agents/{agent_id}/runs",
-            json={"target_resource_type": "plan", "target_resource_id": "daily-news"},
+            json={
+                "target_resource_type": "plan",
+                "target_resource_id": "daily-news",
+                "input_payload": {"target_id": "daily-news"},
+            },
         )
 
     assert denied.status_code == 403
@@ -797,7 +826,10 @@ async def test_operator_run_binds_published_and_profile_versions_then_pauses(
             json={
                 "revision": 1,
                 "instructions": "Inspect one target",
-                "model_configuration": {"runtime_binding": runtime_binding},
+                "model_configuration": {
+                    "agent_contract": _agent_contract(),
+                    "runtime_binding": runtime_binding,
+                },
             },
         )
         await admin_client.post(
@@ -809,7 +841,11 @@ async def test_operator_run_binds_published_and_profile_versions_then_pauses(
     async with operator_client:
         started = await operator_client.post(
             f"/workspaces/{workspace.id}/operations-agents/{agent_id}/runs",
-            json={"target_resource_type": "plan", "target_resource_id": "daily-news"},
+            json={
+                "target_resource_type": "plan",
+                "target_resource_id": "daily-news",
+                "input_payload": {"target_id": "daily-news"},
+            },
         )
         run_id = started.json()["data"]["id"]
     admin_profile_client = await _client(db_session, "admin-primary")
@@ -823,7 +859,10 @@ async def test_operator_run_binds_published_and_profile_versions_then_pauses(
             json={
                 "revision": 2,
                 "instructions": "Inspect two targets",
-                "model_configuration": {"runtime_binding": runtime_binding},
+                "model_configuration": {
+                    "agent_contract": _agent_contract(),
+                    "runtime_binding": runtime_binding,
+                },
             },
         )
         await admin_profile_client.post(

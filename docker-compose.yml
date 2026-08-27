@@ -205,6 +205,33 @@ services:
       agent-1:
         condition: service_healthy
 
+  # ── Studio Yjs collaboration sidecar ─────────────────────────────────────
+  collaboration:
+    image: ${DOCKER_REGISTRY:-ghcr.io/}${DOCKER_IMAGE_NAMESPACE:-2233admin}/opencli-admin-collaboration:${IMAGE_TAG:-0.4.0}
+    environment:
+      PORT: "1234"
+      COLLABORATION_API_URL: http://api:8000
+      API_AUTH_TOKEN: ${API_AUTH_TOKEN:?Set API_AUTH_TOKEN in .env or run scripts/install.sh}
+      SNAPSHOT_DEBOUNCE_MS: ${SNAPSHOT_DEBOUNCE_MS:-250}
+      MAX_SNAPSHOT_BYTES: ${MAX_SNAPSHOT_BYTES:-1048576}
+      API_REQUEST_TIMEOUT_MS: ${COLLABORATION_API_REQUEST_TIMEOUT_MS:-5000}
+    ports:
+      - "127.0.0.1:1234:1234"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://localhost:1234/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
   # ── Next.js operator console ─────────────────────────────────────────────
   frontend:
     image: ${DOCKER_REGISTRY:-ghcr.io/}${DOCKER_IMAGE_NAMESPACE:-2233admin}/opencli-admin-frontend:${IMAGE_TAG:-0.4.0}

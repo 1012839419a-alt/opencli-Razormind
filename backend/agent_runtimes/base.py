@@ -21,6 +21,19 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+RUNTIME_CAPABILITY_STREAMING = "streaming"
+RUNTIME_CAPABILITY_TOOL_EVENTS = "tool_events"
+RUNTIME_CAPABILITY_PERSISTENT_SESSION = "persistent_session"
+RUNTIME_CAPABILITY_RESUMABLE = "resumable"
+RUNTIME_CAPABILITY_BROWSER = "browser"
+RUNTIME_CAPABILITY_SUBAGENTS = "subagents"
+RUNTIME_CAPABILITY_WORKSPACE_READ = "workspace_read"
+RUNTIME_CAPABILITY_WORKSPACE_WRITE = "workspace_write"
+RUNTIME_CAPABILITY_SCHEDULES = "schedules"
+RUNTIME_CAPABILITY_HEARTBEATS = "heartbeats"
+RUNTIME_CAPABILITY_AGENT_MESSAGING = "agent_messaging"
+RUNTIME_CAPABILITY_MODEL_SELECTION = "model_selection"
+
 
 @dataclass(frozen=True)
 class RuntimeReadiness:
@@ -42,37 +55,63 @@ class RuntimeReadiness:
     reason: str | None = None
 
 #: Closed tagged-union of runtime event types. Adapters MUST NOT emit any
-#: `type` outside this set — an unrecognized native event from the underlying
-#: framework is either mapped onto one of these or dropped (with a debug log),
-#: never passed through verbatim.
+#: ``type`` outside this set. Artifact, evidence, and audit events use the
+#: same envelope across every runtime so callers never parse native shapes.
 EVENT_TYPES: frozenset[str] = frozenset(
-    {"started", "text", "tool_call", "tool_result", "state", "done", "error"}
+    {
+        "started",
+        "text",
+        "tool_call",
+        "tool_result",
+        "state",
+        "artifact",
+        "evidence",
+        "audit",
+        "done",
+        "error",
+    }
 )
 
 
 @dataclass(frozen=True)
 class RuntimeCapabilities:
-    """What an agent runtime adapter can do; callers branch on this
-    declaration, exactly like ``channels.base.Capabilities``."""
+    """Stable capability advertisement used by Fleet selection."""
 
     transport: str  # "stdio" | "http" | "inprocess"
     streaming: bool = True
-    resume_by_id: bool = False  # can reopen a session by launcher-assigned id
+    resume_by_id: bool = False
     checkpoint: str = "none"  # none | memory | sqlite | postgres
     concurrent_sessions: bool = True
+    features: frozenset[str] = frozenset()
 
+    def names(self) -> frozenset[str]:
+        names = set(self.features)
+        if self.streaming:
+            names.add(RUNTIME_CAPABILITY_STREAMING)
+        if self.resume_by_id:
+            names.add(RUNTIME_CAPABILITY_RESUMABLE)
+        if self.checkpoint != "none":
+            names.add(RUNTIME_CAPABILITY_PERSISTENT_SESSION)
+        return frozenset(names)
 
 @dataclass
 class AgentTask:
-    """One agent run request handed to a ``RuntimeAdapter.invoke()``."""
+    """Runtime-neutral task handed to one selected ``RuntimeAdapter``."""
 
     task_id: str
-    workflow: str  # runtime-native workflow/agent identifier
+    workflow: str
     instructions: str = ""
     input: dict[str, Any] = field(default_factory=dict)
-    # Runtime-specific settings such as model, tools, cwd, or sidecar config.
+    # Only task-scoped policy belongs here. Binary paths, provider credentials,
+    # launch environment, and other Fleet-owned settings stay on the edge.
     config: dict[str, Any] = field(default_factory=dict)
-    session_id: str | None = None  # resume handle
+    session_id: str | None = None
+    provider: str | None = None
+    model: str | None = None
+    required_capabilities: tuple[str, ...] = ()
+    permissions: dict[str, Any] = field(default_factory=dict)
+    budget: dict[str, Any] = field(default_factory=dict)
+    evidence_requirements: tuple[str, ...] = ()
 
 
 # ── Event constructors ───────────────────────────────────────────────────────
@@ -121,6 +160,18 @@ def event_tool_result(
 
 def event_state(task_id: str, state: dict[str, Any]) -> dict[str, Any]:
     return {"type": "state", "task_id": task_id, "state": state}
+
+
+def event_artifact(task_id: str, artifact: dict[str, Any]) -> dict[str, Any]:
+    return {"type": "artifact", "task_id": task_id, "artifact": artifact}
+
+
+def event_evidence(task_id: str, evidence: dict[str, Any]) -> dict[str, Any]:
+    return {"type": "evidence", "task_id": task_id, "evidence": evidence}
+
+
+def event_audit(task_id: str, audit: dict[str, Any]) -> dict[str, Any]:
+    return {"type": "audit", "task_id": task_id, "audit": audit}
 
 
 def event_done(task_id: str, result: dict[str, Any] | None = None) -> dict[str, Any]:

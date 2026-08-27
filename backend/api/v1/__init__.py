@@ -15,9 +15,10 @@ from backend.api.v1 import (
     dify_imports,
     geo_acquisition,
     identity,
+    image_studio,
     internal_agent_runs,
     internal_automations,
-    image_studio,
+    internal_collaboration,
     model_defaults,
     nodes,
     notifications,
@@ -52,6 +53,7 @@ v1_router.include_router(geo_acquisition.router)
 v1_router.include_router(automations.router)
 v1_router.include_router(internal_automations.router)
 v1_router.include_router(internal_agent_runs.router)
+v1_router.include_router(internal_collaboration.router)
 v1_router.include_router(image_studio.router)
 v1_router.include_router(browser_act.router)
 v1_router.include_router(browsers.router)

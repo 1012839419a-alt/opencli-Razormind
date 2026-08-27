@@ -1,6 +1,6 @@
 """Collect a cited Doubao research answer through the installed OpenCLI adapter."""
 
-import os
+import asyncio
 import re
 from typing import Any
 
@@ -98,7 +98,7 @@ async def _run_doubao_command(command: list[str]) -> tuple[int, str, str]:
     """Late import avoids the channel registry's legacy OpenCLI import cycle."""
     from backend.channels.opencli_channel import _run_opencli
 
-    return await _run_opencli(command, os.environ.copy())
+    return await _run_opencli(command)
 
 
 def _opencli_binary() -> str:
@@ -133,6 +133,13 @@ class DoubaoResearchChannel(AbstractChannel):
             return ChannelResult.fail("'question' is required for doubao_research channel")
 
         extract_citations = bool(config.get("extract_citations", True))
+        try:
+            settle_seconds = float(config.get("settle_seconds", 0))
+        except (TypeError, ValueError):
+            return ChannelResult.fail("'settle_seconds' must be a non-negative number")
+        if settle_seconds < 0:
+            return ChannelResult.fail("'settle_seconds' must be a non-negative number")
+        site_session = str(config.get("site_session", "ephemeral"))
         # Prompt wording belongs to the research brief.  Appending a fixed
         # instruction made the browser adapter lose its active conversation;
         # extract URLs from the returned answer without altering the query.
@@ -145,7 +152,7 @@ class DoubaoResearchChannel(AbstractChannel):
             "-f",
             "json",
             "--site-session",
-            str(config.get("site_session", "ephemeral")),
+            site_session,
         ]
         try:
             returncode, stdout, stderr = await _run_doubao_command(command)
@@ -175,6 +182,31 @@ class DoubaoResearchChannel(AbstractChannel):
         if not answer:
             return ChannelResult.fail("Doubao returned no assistant text")
 
+        # OpenCLI 1.8.5 can return after Doubao creates its first progress
+        # message while deep research continues in the same conversation.
+        # The Gaojixing capability opts into one delayed, read-only snapshot so
+        # evidence stores the completed answer instead of that progress text.
+        if settle_seconds:
+            await asyncio.sleep(settle_seconds)
+            read_command = [
+                _opencli_binary(),
+                "doubao",
+                "read",
+                "-f",
+                "json",
+                "--site-session",
+                site_session,
+            ]
+            try:
+                read_rc, read_stdout, _ = await _run_doubao_command(read_command)
+                settled_answer = (
+                    _answer(_parse_opencli_rows(read_stdout)) if read_rc == 0 else ""
+                )
+                if len(settled_answer) > len(answer):
+                    answer = settled_answer
+            except Exception:
+                pass
+
         # Best-effort conversation URL: `doubao status -f json` exposes the
         # active chat id (https://www.doubao.com/chat/<id>).  This is a
         # read-only query against the same browser session; a failure here
@@ -188,7 +220,7 @@ class DoubaoResearchChannel(AbstractChannel):
                 "-f",
                 "json",
                 "--site-session",
-                str(config.get("site_session", "ephemeral")),
+                site_session,
             ]
             try:
                 rc, so, se = await _run_doubao_command(status_command)
