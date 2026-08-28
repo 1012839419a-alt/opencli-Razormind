@@ -181,6 +181,21 @@ def _is_captcha_block(stderr: str, stdout: str) -> bool:
                 or parsed.get("share_urls")
                 or []
             )
+            response_data = (
+                parsed.get("data")
+                or parsed.get("details")
+                or parsed.get("answer_data")
+                or parsed.get("result")
+                or parsed.get("key_points")
+                or []
+            )
+            links = (
+                parsed.get("links")
+                or parsed.get("references")
+                or parsed.get("sources")
+                or parsed.get("urls")
+                or []
+            )
             suggested = (
                 parsed.get("suggested_keywords")
                 or parsed.get("suggested_keys")
@@ -190,6 +205,10 @@ def _is_captcha_block(stderr: str, stdout: str) -> bool:
             )
             if not isinstance(share_data, (list, dict, str)):
                 share_data = []
+            if not isinstance(response_data, (list, dict, str)):
+                response_data = []
+            if not isinstance(links, (list, dict, str)):
+                links = []
             if not isinstance(suggested, list):
                 suggested = [suggested] if suggested else []
             data = parsed.get("data") or parsed.get("details") or parsed.get("answer_data") or parsed.get("result") or parsed.get("key_points") or []
@@ -200,7 +219,9 @@ def _is_captcha_block(stderr: str, stdout: str) -> bool:
                 links = []
             return {
                 "answer": str(answer).strip(),
+# merge marker
                 "data": data,
+# end merge marker
                 "links": links,
                 "response_data": parsed,
                 "session_share_data": share_data,
@@ -372,6 +393,7 @@ class DoubaoResearchChannel(AbstractChannel):
             "answer": content,
             "links": citations,
         }
+# merge marker
 # merge-base marker
         citations = _citations(answer) if extract_citations else []
 # incoming marker
@@ -385,6 +407,7 @@ class DoubaoResearchChannel(AbstractChannel):
         )
         citations = _citations(citations_text) if extract_citations else []
 # end marker
+# end merge marker
         return ChannelResult.ok(
             [
                 {
@@ -398,10 +421,12 @@ class DoubaoResearchChannel(AbstractChannel):
                     "data": structured["data"],
                     "links": links,
                     "response_data": response_data,
+# merge marker
 # merge-base marker
 # incoming marker
                     "answer": content,
 # end marker
+# end merge marker
                     "raw_answer": structured["raw_answer"],
                     "session_share_data": structured["session_share_data"],
                     "suggested_keywords": structured["suggested_keywords"],

@@ -55,6 +55,18 @@ def test_structured_response_preserves_share_data_and_keywords():
 # end marker
 
 
+def test_structured_response_preserves_data_and_links():
+    response = _structured_response(
+        '{"answer":"结论", "data":{"items":["一","二"]}, '
+        '"links":[{"title":"来源","url":"https://example.com/source"}], '
+        '"session_share_data":[], "suggested_keywords":[]}'
+    )
+
+    assert response["data"] == {"items": ["一", "二"]}
+    assert response["links"] == [{"title": "来源", "url": "https://example.com/source"}]
+    assert response["response_data"]["data"] == {"items": ["一", "二"]}
+
+
 def test_structured_response_accepts_doubao_suggested_keys_alias():
     response = _structured_response(
         '{"answer":"结论", "session_share_data":"", '
@@ -130,6 +142,9 @@ async def test_collect_stores_structured_share_data_and_suggested_keywords(monke
 
     assert result.success
     assert result.items[0]["content"] == "研究结论"
+    assert result.items[0]["data"] == []
+    assert result.items[0]["links"] == [{"url": "https://doubao.com/share/1"}]
+    assert result.items[0]["response_data"]["answer"] == "研究结论"
     assert result.items[0]["session_share_data"] == [{"url": "https://doubao.com/share/1"}]
     assert result.items[0]["suggested_keywords"] == ["DHA 食物"]
     assert result.items[0]["citations"] == [{"url": "https://doubao.com/share/1"}]
