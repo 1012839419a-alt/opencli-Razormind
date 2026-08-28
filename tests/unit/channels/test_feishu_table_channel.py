@@ -2,7 +2,7 @@ import httpx
 import pytest
 
 from backend.channels.base import AuthContext, FetchContext
-from backend.channels.feishu_table_channel import FeishuTableChannel
+from backend.channels.feishu_table_channel import FeishuTableChannel, _cli_rows
 from backend.schemas.source import DataSourceCreate
 
 
@@ -95,3 +95,19 @@ def test_source_schema_accepts_feishu_table_channel():
         name="Feishu keywords", channel_type="feishu_table", channel_config=_config()
     )
     assert source.channel_type == "feishu_table"
+
+
+def test_cli_matrix_response_becomes_record_rows():
+    rows = _cli_rows(
+        {
+            "data": {
+                "fields": ["序号", "关键词"],
+                "data": [["1", "高吉星"], ["2", "DHA"]],
+                "record_id_list": ["rec-1", "rec-2"],
+            }
+        }
+    )
+    assert rows == [
+        {"record_id": "rec-1", "fields": {"序号": "1", "关键词": "高吉星"}},
+        {"record_id": "rec-2", "fields": {"序号": "2", "关键词": "DHA"}},
+    ]

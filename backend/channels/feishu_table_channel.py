@@ -57,6 +57,25 @@ def _cli_rows(payload: Any) -> list[dict[str, Any]]:
         return [row for row in payload if isinstance(row, dict)]
     if not isinstance(payload, dict):
         return []
+    data = payload.get("data")
+    if isinstance(data, dict) and isinstance(data.get("data"), list):
+        columns = data.get("fields")
+        record_ids = data.get("record_id_list")
+        if isinstance(columns, list):
+            return [
+                {
+                    "record_id": record_ids[index]
+                    if isinstance(record_ids, list) and index < len(record_ids)
+                    else str(index),
+                    "fields": {
+                        str(column): row[column_index]
+                        for column_index, column in enumerate(columns)
+                        if column_index < len(row)
+                    },
+                }
+                for index, row in enumerate(data["data"])
+                if isinstance(row, list)
+            ]
     for candidate in (
         payload.get("records"),
         payload.get("items"),
@@ -269,7 +288,9 @@ class FeishuTableChannel(AbstractChannel):
         rows = _cli_rows(payload)
         result = await self._rows_to_result(ctx, rows)
         max_rows = _positive_int(config.get("max_rows"), _DEFAULT_MAX_ROWS, 5000)
-        has_more = len(rows) >= limit and len(rows) < max_rows
+        cli_data = payload.get("data") if isinstance(payload, dict) else None
+        cli_has_more = bool(cli_data.get("has_more")) if isinstance(cli_data, dict) else False
+        has_more = cli_has_more and len(rows) < max_rows
         next_cursor = {"offset": offset + len(rows)} if has_more and rows else None
         return FetchResult(
             items=result,
