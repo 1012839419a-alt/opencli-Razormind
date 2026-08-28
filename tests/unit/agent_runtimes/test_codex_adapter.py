@@ -10,7 +10,7 @@ from backend.agent_runtimes.base import AgentTask
 from backend.agent_runtimes.codex_adapter import CodexRuntimeAdapter
 from backend.agent_runtimes.registry import get_runtime, list_runtime_types
 
-_FAKE_CODEX = r'''
+_FAKE_CODEX = r"""
 import json
 import sys
 import time
@@ -27,16 +27,16 @@ emit({"type": "item.started", "item": {"id": "call-1", "type": "command_executio
 emit({"type": "item.completed", "item": {"id": "call-1", "type": "command_execution", "command": "ls", "aggregated_output": "README", "exit_code": 0}})
 emit({"type": "item.completed", "item": {"type": "agent_message", "text": "hello"}})
 emit({"type": "turn.completed", "usage": {"input_tokens": 1}})
-'''
+"""
 
-_FAKE_CODEX_HANG = r'''
+_FAKE_CODEX_HANG = r"""
 import sys
 import time
 if "--version" in sys.argv:
     print("codex-cli 1.2.3", flush=True)
     raise SystemExit(0)
 time.sleep(30)
-'''
+"""
 
 
 def _write_fake(tmp_path, source: str) -> str:
@@ -96,6 +96,21 @@ def test_validate_config_accepts_registered_agent_config(tmp_path):
         }
     )
     assert errors == []
+
+
+def test_full_auto_does_not_combine_approve_and_sandbox_flags(tmp_path):
+    argv = CodexRuntimeAdapter()._compose_argv(
+        {
+            "binary": "codex",
+            "permission_mode": "full_auto",
+            "project_root": str(tmp_path),
+            "cwd": str(tmp_path),
+        },
+        "collect the answer",
+    )
+
+    assert "--approve-for-me" in argv
+    assert "--sandbox" not in argv
 
 
 async def test_invalid_working_directory_is_blocked(tmp_path):

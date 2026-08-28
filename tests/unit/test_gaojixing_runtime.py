@@ -189,6 +189,86 @@ async def test_capture_uses_live_channel_after_health_probe(monkeypatch):
     assert calls == ["health", ("q", "q")]
 
 
+@pytest.mark.asyncio
+async def test_capture_agent_mode_dispatches_native_runtime_and_maps_browser_evidence(monkeypatch):
+    package = build_question_package(
+        node_params={"question": "q"},
+        adapter_config={"executionMode": "agent", "agentRuntime": "codex"},
+        runtime_payload={},
+    )
+
+    class _Rows:
+        def scalars(self):
+            return self
+
+        def all(self):
+            return [
+                SimpleNamespace(
+                    url="http://host.docker.internal:19824",
+                    protocol="ws",
+                    status="online",
+                    runtime_capabilities={
+                        "codex": ["streaming", "tool_events", "workspace_read"]
+                    },
+                )
+            ]
+
+    class _Session:
+        async def execute(self, _query):
+            return _Rows()
+
+    captured = {}
+
+    async def fake_send(agent_url, task, on_event, timeout):
+        captured.update({"agent_url": agent_url, "task": task, "timeout": timeout})
+        await on_event({"type": "text", "text": "working"})
+        return {
+            "type": "done",
+            "result": {
+                "text": (
+                    '{"status":"completed","answer":"answer",'
+                    '"data":[{"point":"value"}],'
+                    '"links":[{"url":"https://example.test/source"}],'
+                    '"conversation_url":"https://www.doubao.com/chat/123",'
+                    '"session_share_data":{"url":"https://www.doubao.com/chat/123"},'
+                    '"suggested_keywords":["follow-up"]}'
+                )
+            },
+        }
+
+    monkeypatch.setattr(runtime.ws_agent_manager, "list_connected", lambda: [
+        "http://host.docker.internal:19824"
+    ])
+    monkeypatch.setattr("backend.ws_agent_manager.send_agent_task", fake_send)
+
+    result = await capture_live_doubao(
+        package=package,
+        node_params={},
+        adapter_config={
+            "capabilityId": GAOJIXING_CAPABILITY_ID,
+            "executionMode": "agent",
+            "agentRuntime": "codex",
+        },
+        network_allowed=True,
+        external_mutation_allowed=True,
+        session=_Session(),
+        workflow_id="workflow",
+        run_id="run",
+    )
+
+    assert result.success
+    assert captured["agent_url"] == "http://host.docker.internal:19824"
+    assert captured["task"]["runtime"] == "codex"
+    assert captured["task"]["input"]["message"].endswith("\nq")
+    assert "Doubao CLI" in captured["task"]["instructions"]
+    item = result.items[0]
+    assert item["content"] == "answer"
+    assert item["links"] == [{"url": "https://example.test/source"}]
+    assert item["conversation_url"] == "https://www.doubao.com/chat/123"
+    assert item["suggested_keywords"] == ["follow-up"]
+    assert item["provenance"] == "agent:codex:browser:opencli"
+
+
 def test_capture_mapping_keeps_package_and_independent_evidence():
     package = build_question_package(
         node_params={"question": "q"}, adapter_config={}, runtime_payload={}

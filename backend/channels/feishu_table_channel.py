@@ -84,6 +84,8 @@ def _cli_rows(payload: Any) -> list[dict[str, Any]]:
         if isinstance(candidate, list):
             return [row for row in candidate if isinstance(row, dict)]
     return []
+
+
 @register_channel
 class FeishuTableChannel(AbstractChannel):
     """Fetch eligible keyword rows from a Feishu Bitable table."""
@@ -97,9 +99,7 @@ class FeishuTableChannel(AbstractChannel):
         default_rate="30/min",
     )
 
-    async def collect(
-        self, config: dict[str, Any], parameters: dict[str, Any]
-    ) -> ChannelResult:
+    async def collect(self, config: dict[str, Any], parameters: dict[str, Any]) -> ChannelResult:
         """Keep direct calls useful for validation/tests; production uses fetch()."""
         return ChannelResult.fail(
             "feishu_table requires the source runner so its encrypted token can be injected",
@@ -111,6 +111,13 @@ class FeishuTableChannel(AbstractChannel):
         errors = await self.validate_config(config)
         if errors:
             raise ChannelFetchError("; ".join(errors), error_type="InvalidSourceConfig")
+
+        # The CLI transport owns its authentication through the local lark-cli
+        # session.  Do not require the HTTP connector's encrypted bearer token
+        # for this mode; the token check below is only for the HTTP API path.
+        if _text(config.get("transport")).lower() == "cli":
+            return await self._fetch_with_lark_cli(ctx)
+
         token = (ctx.auth.token if ctx.auth else None) or ""
         if not token:
             raise ChannelFetchError(
@@ -123,8 +130,7 @@ class FeishuTableChannel(AbstractChannel):
         # added only through an explicit, allowlisted implementation change.
         base_url = _DEFAULT_BASE_URL
         endpoint = (
-            f"{base_url}/bitable/v1/apps/{config['app_token']}"
-            f"/tables/{config['table_id']}/records"
+            f"{base_url}/bitable/v1/apps/{config['app_token']}/tables/{config['table_id']}/records"
         )
         page_size = _positive_int(config.get("page_size"), _DEFAULT_PAGE_SIZE, _MAX_PAGE_SIZE)
         max_rows = _positive_int(config.get("max_rows"), _DEFAULT_MAX_ROWS, 5000)
@@ -171,9 +177,7 @@ class FeishuTableChannel(AbstractChannel):
         if not isinstance(payload, dict) or payload.get("code", 0) not in (0, None):
             code = payload.get("code") if isinstance(payload, dict) else None
             message = payload.get("msg") if isinstance(payload, dict) else "invalid response"
-            raise ChannelFetchError(
-                f"Feishu table API error {code}: {message}", "FeishuAPIError"
-            )
+            raise ChannelFetchError(f"Feishu table API error {code}: {message}", "FeishuAPIError")
 
         data = payload.get("data") if isinstance(payload, dict) else None
         data = data if isinstance(data, dict) else {}
@@ -231,10 +235,14 @@ class FeishuTableChannel(AbstractChannel):
             metadata={"source": "feishu_table", "rowCount": len(items), "bounded": True},
         )
 
-# Legacy pre-matrix implementation retained below only as an intermediate merge
-# artifact; the matrix-aware implementation later in the class is authoritative.
+    # Legacy pre-matrix implementation retained below only as an intermediate merge
+    # artifact; the matrix-aware implementation later in the class is authoritative.
     async def _fetch_with_lark_cli(self, ctx: FetchContext) -> FetchResult:
         config = ctx.config
+        bridge_url = _text(config.get("cli_bridge_url") or os.getenv("LARK_CLI_BRIDGE_URL"))
+        if bridge_url:
+            return await self._fetch_with_lark_cli_bridge(ctx, bridge_url)
+
         binary = shutil.which(str(config.get("cli_binary") or "lark-cli"))
         if not binary:
             raise ChannelFetchError("lark-cli binary was not found", "FileNotFoundError")
@@ -294,6 +302,63 @@ class FeishuTableChannel(AbstractChannel):
             metadata={"source": "feishu_table", "transport": "lark-cli", "rowCount": len(result)},
         )
 
+    async def _fetch_with_lark_cli_bridge(self, ctx: FetchContext, bridge_url: str) -> FetchResult:
+        """Run the local Windows CLI through the opt-in host bridge.
+
+        Docker cannot read the Windows credential manager used by lark-cli.
+        The bridge keeps that credential boundary on the host and returns only
+        the read-only CLI response to this container.
+        """
+        config = ctx.config
+        limit = _positive_int(config.get("page_size"), _DEFAULT_PAGE_SIZE, 200)
+        offset = _positive_int((ctx.cursor or {}).get("offset"), 0, 5_000_000)
+        payload = {
+            "app_token": config.get("app_token"),
+            "table_id": config.get("table_id"),
+            "view_id": config.get("view_id"),
+            "profile": config.get("profile"),
+            "limit": limit,
+            "offset": offset,
+        }
+        headers = {}
+        bridge_token = _text(os.getenv("LARK_CLI_BRIDGE_TOKEN"))
+        if bridge_token:
+            headers["X-Lark-CLI-Bridge-Token"] = bridge_token
+        try:
+            async with httpx.AsyncClient(timeout=130, follow_redirects=False) as client:
+                response = await client.post(bridge_url, json=payload, headers=headers)
+                response.raise_for_status()
+                cli_payload = response.json()
+        except httpx.TimeoutException as exc:
+            raise ChannelFetchError("lark-cli bridge timed out", type(exc).__name__) from exc
+        except httpx.HTTPStatusError as exc:
+            raise ChannelFetchError(
+                f"lark-cli bridge returned HTTP {exc.response.status_code}",
+                type(exc).__name__,
+            ) from exc
+        except (httpx.HTTPError, ValueError, TypeError) as exc:
+            raise ChannelFetchError(
+                f"lark-cli bridge response was invalid: {exc}", type(exc).__name__
+            ) from exc
+
+        rows = _cli_rows(cli_payload)
+        result = await self._rows_to_result(ctx, rows)
+        max_rows = _positive_int(config.get("max_rows"), _DEFAULT_MAX_ROWS, 5000)
+        cli_data = cli_payload.get("data") if isinstance(cli_payload, dict) else None
+        cli_has_more = bool(cli_data.get("has_more")) if isinstance(cli_data, dict) else False
+        has_more = cli_has_more and len(rows) < max_rows
+        next_cursor = {"offset": offset + len(rows)} if has_more and rows else None
+        return FetchResult(
+            items=result,
+            next_cursor=next_cursor,
+            has_more=bool(next_cursor),
+            metadata={
+                "source": "feishu_table",
+                "transport": "lark-cli-bridge",
+                "rowCount": len(result),
+            },
+        )
+
     async def _rows_to_result(
         self, ctx: FetchContext, records: list[dict[str, Any]]
     ) -> list[dict[str, Any]]:
@@ -338,9 +403,13 @@ class FeishuTableChannel(AbstractChannel):
             )
         return items
 
-# Matrix-aware implementation.
+    # Matrix-aware implementation.
     async def _fetch_with_lark_cli(self, ctx: FetchContext) -> FetchResult:
         config = ctx.config
+        bridge_url = _text(config.get("cli_bridge_url") or os.getenv("LARK_CLI_BRIDGE_URL"))
+        if bridge_url:
+            return await self._fetch_with_lark_cli_bridge(ctx, bridge_url)
+
         binary = shutil.which(str(config.get("cli_binary") or "lark-cli"))
         if not binary:
             raise ChannelFetchError("lark-cli binary was not found", "FileNotFoundError")

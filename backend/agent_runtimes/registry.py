@@ -16,8 +16,7 @@ def register_runtime(cls: type) -> type:
 def get_runtime(runtime_type: str) -> "RuntimeAdapter":
     if runtime_type not in _REGISTRY:
         raise ValueError(
-            f"Unknown runtime type: {runtime_type!r}. "
-            f"Available: {list(_REGISTRY.keys())}"
+            f"Unknown runtime type: {runtime_type!r}. Available: {list(_REGISTRY.keys())}"
         )
     return _REGISTRY[runtime_type]
 
@@ -58,6 +57,7 @@ def _load_all_runtimes() -> None:
     """Import all agent-runtime adapter modules to trigger registration."""
     from backend.agent_runtimes import (  # noqa: F401
         bbx_adapter,
+        claude_code_adapter,
         codex_adapter,
         miniflow_adapter,
         opentabs_adapter,

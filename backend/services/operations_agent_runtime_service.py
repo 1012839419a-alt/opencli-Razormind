@@ -15,8 +15,8 @@ from backend.models.operations_agent import (
     PublishedOperationsAgentVersion,
 )
 from backend.schemas.operations_agent import (
-    AgentRunEvidenceEnvelopeV1,
     AgentContractV2,
+    AgentRunEvidenceEnvelopeV1,
     agent_contract_from_model_configuration,
     agent_runtime_binding_from_model_configuration,
     validate_agent_contract_payload,
@@ -81,6 +81,17 @@ def cancel_operations_agent_run(run_id: str) -> None:
         task.cancel()
 
 
+def _runtime_permission_mode(runtime: str, profile_mode: str) -> str:
+    """Translate the governed profile vocabulary to a CLI vocabulary.
+
+    Permission profiles are product-level and intentionally shared by every
+    Agent runtime.  Codex uses ``read_only`` for the same contract that the
+    product calls ``observe_only``; passing the product value through verbatim
+    makes an otherwise healthy Codex node reject the task as invalid config.
+    """
+    if runtime == "codex" and profile_mode == "observe_only":
+        return "read_only"
+    return profile_mode
 
 
 def _forget_dispatch(run_id: str, task: asyncio.Task[None]) -> None:
@@ -110,8 +121,7 @@ async def dispatch_operations_agent_run(run_id: str) -> None:
             version = await session.scalar(
                 select(PublishedOperationsAgentVersion)
                 .where(
-                    PublishedOperationsAgentVersion.operations_agent_id
-                    == run.operations_agent_id
+                    PublishedOperationsAgentVersion.operations_agent_id == run.operations_agent_id
                 )
                 .where(PublishedOperationsAgentVersion.version == run.published_version)
             )
@@ -164,7 +174,9 @@ async def dispatch_operations_agent_run(run_id: str) -> None:
                 or configured_timeout < binding.dispatch_timeout_seconds
             ):
                 runtime_config["timeout_seconds"] = binding.dispatch_timeout_seconds
-            runtime_config["permission_mode"] = profile.mode
+            runtime_config["permission_mode"] = _runtime_permission_mode(
+                str(selection["runtime"]), profile.mode
+            )
             permissions = {
                 "mode": profile.mode,
                 "tool_scope": list(profile.tool_scope),
@@ -268,8 +280,7 @@ async def dispatch_operations_agent_run(run_id: str) -> None:
         if gate_failures:
             await _fail_run(
                 run_id,
-                "Runtime output failed required quality gates: "
-                + ", ".join(gate_failures),
+                "Runtime output failed required quality gates: " + ", ".join(gate_failures),
                 evidence_payload=evidence_payload,
             )
             return
@@ -280,8 +291,7 @@ async def dispatch_operations_agent_run(run_id: str) -> None:
         if missing_evidence:
             await _fail_run(
                 run_id,
-                "Runtime output is missing required evidence: "
-                + ", ".join(missing_evidence),
+                "Runtime output is missing required evidence: " + ", ".join(missing_evidence),
                 evidence_payload=evidence_payload,
             )
             return
@@ -323,8 +333,7 @@ def _quality_gate_failures(
             continue
         result = results.get(gate.id)
         if result is None or not (
-            result.get("passed") is True
-            or result.get("status") in {"passed", "completed"}
+            result.get("passed") is True or result.get("status") in {"passed", "completed"}
         ):
             failures.append(gate.id)
     return failures

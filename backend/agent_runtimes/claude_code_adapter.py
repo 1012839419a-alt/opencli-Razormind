@@ -1,13 +1,8 @@
-"""Registered-Agent adapter for the local Codex CLI.
+"""Registered-Agent adapter for the local Claude Code CLI.
 
-The adapter is deliberately an edge-side subprocess adapter.  The control
-plane sends an ``agent_task`` over the authenticated Agent transport; only the
-registered Agent process imports this module and starts ``codex``.  No shell is
-used and no provider credential is copied into readiness or runtime events.
-
-Codex ``exec --json`` emits JSONL.  The native protocol has changed names a few
-times, so translation accepts the stable ``thread.*``, ``turn.*`` and
-``item.*`` envelopes while keeping our event envelope closed.
+Claude Code is launched only on the edge machine that owns the operator's
+local login and browser tools.  The control plane receives the normalized
+runtime event stream; it never receives provider credentials.
 """
 
 from __future__ import annotations
@@ -43,17 +38,21 @@ _MAX_TIMEOUT_SECONDS = 3600
 _VERSION_TIMEOUT_SECONDS = 5
 _KILL_GRACE_SECONDS = 10
 _STDERR_TAIL_BYTES = 2048
-_PERMISSION_MODES = frozenset({"approval_required", "full_auto", "read_only", "suggest_changes"})
-_SANDBOX_MODES = frozenset({"read-only", "workspace-write", "danger-full-access"})
-_VERSION_RE = re.compile(r"\bcodex(?:[- ]cli)?(?:\s+version)?\s+([0-9][0-9A-Za-z.+-]*)\b", re.I)
-_BARE_VERSION_RE = re.compile(r"\b([0-9]+\.[0-9]+(?:\.[0-9]+)?(?:[-+][0-9A-Za-z.-]+)?)\b")
+_PERMISSION_MODES = frozenset({"observe_only", "suggest_changes", "approval_required", "full_auto"})
+_CLAUDE_PERMISSION_MODES = {
+    "observe_only": "plan",
+    "suggest_changes": "plan",
+    "approval_required": "manual",
+    "full_auto": "auto",
+}
+_VERSION_RE = re.compile(r"(?:Claude Code\s+)?([0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?)")
 
 
 @register_runtime
-class CodexRuntimeAdapter(RuntimeAdapter):
-    """Run ``codex exec --json`` on a registered local Agent node."""
+class ClaudeCodeRuntimeAdapter(RuntimeAdapter):
+    """Run ``claude -p --output-format stream-json`` on a local Agent node."""
 
-    runtime_type = "codex"
+    runtime_type = "claude-code"
     capabilities = RuntimeCapabilities(
         transport="stdio",
         streaming=True,
@@ -65,7 +64,7 @@ class CodexRuntimeAdapter(RuntimeAdapter):
 
     def validate_config(self, config: dict[str, Any]) -> list[str]:
         errors: list[str] = []
-        binary = config.get("binary", "codex")
+        binary = config.get("binary", "claude")
         if not isinstance(binary, str) or not binary.strip():
             errors.append("'binary' must be a non-empty string")
         elif "\x00" in binary:
@@ -83,16 +82,13 @@ class CodexRuntimeAdapter(RuntimeAdapter):
             args = config["args"]
             if not isinstance(args, list) or not all(isinstance(arg, str) for arg in args):
                 errors.append("'args' must be a list of strings when provided")
-
+        if "chrome" in config and not isinstance(config["chrome"], bool):
+            errors.append("'chrome' must be a boolean when provided")
         permission_mode = config.get("permission_mode")
         if permission_mode is not None and permission_mode not in _PERMISSION_MODES:
             errors.append(
                 "'permission_mode' must be one of " + ", ".join(sorted(_PERMISSION_MODES))
             )
-        sandbox_mode = config.get("sandbox_mode")
-        if sandbox_mode is not None and sandbox_mode not in _SANDBOX_MODES:
-            errors.append("'sandbox_mode' must be one of " + ", ".join(sorted(_SANDBOX_MODES)))
-
         if "timeout_seconds" in config and config["timeout_seconds"] is not None:
             timeout = config["timeout_seconds"]
             if (
@@ -109,8 +105,7 @@ class CodexRuntimeAdapter(RuntimeAdapter):
         return self.is_available()
 
     @classmethod
-    def is_available(cls, binary: str = "codex") -> bool:
-        """Cheap check used by the Agent registration handshake."""
+    def is_available(cls, binary: str = "claude") -> bool:
         if not isinstance(binary, str) or not binary or "\x00" in binary:
             return False
         return shutil.which(binary) is not None
@@ -127,7 +122,7 @@ class CodexRuntimeAdapter(RuntimeAdapter):
                 reason="; ".join(errors),
             )
 
-        binary = config.get("binary") or "codex"
+        binary = config.get("binary") or "claude"
         resolved_binary = shutil.which(binary)
         if resolved_binary is None:
             return RuntimeReadiness(
@@ -135,9 +130,8 @@ class CodexRuntimeAdapter(RuntimeAdapter):
                 status="blocked",
                 binary_present=False,
                 reason_code="missing_binary",
-                reason=f"codex binary not found: {binary!r}",
+                reason=f"Claude Code binary not found: {binary!r}",
             )
-
         try:
             project_root, cwd = self._resolve_paths(config)
         except ValueError as exc:
@@ -150,10 +144,7 @@ class CodexRuntimeAdapter(RuntimeAdapter):
                 reason_code="invalid_path",
                 reason=str(exc),
             )
-
-        version = await self._detect_version(
-            resolved_binary, config.get("args") or [], timeout_seconds=_VERSION_TIMEOUT_SECONDS
-        )
+        version = await self._detect_version(resolved_binary, config.get("args") or [])
         return RuntimeReadiness(
             runtime=self.runtime_type,
             status="ready",
@@ -163,6 +154,13 @@ class CodexRuntimeAdapter(RuntimeAdapter):
             working_directory=str(cwd),
         )
 
+    def _compose_prompt(self, task: AgentTask) -> str:
+        payload = task.input if isinstance(task.input, dict) else {}
+        message = payload.get("message") or payload.get("prompt") or ""
+        if not isinstance(message, str):
+            message = str(message)
+        return f"{task.instructions}\n\n{message}".strip() if task.instructions else message
+
     def _compose_argv(
         self,
         config: dict[str, Any],
@@ -170,60 +168,47 @@ class CodexRuntimeAdapter(RuntimeAdapter):
         *,
         model: str | None = None,
     ) -> list[str]:
-        binary = config.get("binary") or "codex"
-        argv = [binary, *(config.get("args") or []), "exec", "--json", "--color", "never"]
+        binary = config.get("binary") or "claude"
+        argv = [
+            binary,
+            *(config.get("args") or []),
+            "--print",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--no-session-persistence",
+        ]
         permission_mode = config.get("permission_mode")
-        if permission_mode == "full_auto":
-            # Codex exposes automatic review, not the old generic approval flag.
-            # ``--approve-for-me`` already selects Codex's workspace-write
-            # automatic-review mode.  Codex rejects it when an explicit
-            # ``--sandbox`` flag is supplied, so do not append both.
-            # The dangerous bypass flag is never selected by the Agent runtime.
-            argv.append("--approve-for-me")
-        elif permission_mode == "read_only":
-            argv.extend(("--sandbox", "read-only"))
-        elif permission_mode in {"suggest_changes", "approval_required"}:
-            # Default Codex approval flow is the governed on-request mode.
-            pass
-
-        sandbox_mode = config.get("sandbox_mode")
-        if sandbox_mode is not None and permission_mode not in {"read_only", "full_auto"}:
-            argv.extend(("--sandbox", sandbox_mode))
+        if permission_mode in _CLAUDE_PERMISSION_MODES:
+            argv.extend(("--permission-mode", _CLAUDE_PERMISSION_MODES[permission_mode]))
+        if config.get("chrome") is True:
+            argv.append("--chrome")
         if model:
             argv.extend(("--model", model))
         argv.append(prompt)
         return argv
 
-    def _compose_prompt(self, task: AgentTask) -> str:
-        payload = task.input if isinstance(task.input, dict) else {}
-        message = payload.get("message") or payload.get("prompt") or ""
-        if not isinstance(message, str):
-            message = str(message)
-        if task.instructions:
-            return f"{task.instructions}\n\n{message}".strip()
-        return message
-
     async def invoke(self, task: AgentTask) -> AsyncIterator[dict[str, Any]]:
         config = task.config or {}
-        config_errors = self.validate_config(config)
-        if config_errors:
-            yield event_error(task.task_id, "; ".join(config_errors), error_type="ConfigError")
-            return
-        if task.provider not in {None, "openai", "openai-codex"}:
-            yield event_error(
-                task.task_id,
-                f"codex runtime does not support provider {task.provider!r}",
-                error_type="ConfigError",
-            )
+        errors = self.validate_config(config)
+        if errors:
+            yield event_error(task.task_id, "; ".join(errors), error_type="ConfigError")
             return
 
-        binary = config.get("binary") or "codex"
+        binary = config.get("binary") or "claude"
         resolved_binary = shutil.which(binary)
         if resolved_binary is None:
             yield event_error(
                 task.task_id,
-                f"codex binary not found: {binary!r}",
+                f"Claude Code binary not found: {binary!r}",
                 error_type="FileNotFoundError",
+            )
+            return
+        if task.provider not in {None, "anthropic", "claude", "claude-code"}:
+            yield event_error(
+                task.task_id,
+                f"Claude Code runtime does not support provider {task.provider!r}",
+                error_type="ConfigError",
             )
             return
         try:
@@ -238,11 +223,7 @@ class CodexRuntimeAdapter(RuntimeAdapter):
             config.get("args") or [],
             timeout_seconds=min(timeout_seconds, _VERSION_TIMEOUT_SECONDS),
         )
-        argv = self._compose_argv(
-            config,
-            self._compose_prompt(task),
-            model=task.model,
-        )
+        argv = self._compose_argv(config, self._compose_prompt(task), model=task.model)
 
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -254,58 +235,62 @@ class CodexRuntimeAdapter(RuntimeAdapter):
             )
         except FileNotFoundError as exc:
             yield event_error(
-                task.task_id, f"codex binary not found: {binary!r}", type(exc).__name__
+                task.task_id, f"Claude Code binary not found: {binary!r}", type(exc).__name__
             )
             return
         except OSError as exc:
-            yield event_error(task.task_id, f"failed to spawn codex: {exc}", type(exc).__name__)
+            yield event_error(
+                task.task_id, f"failed to spawn Claude Code: {exc}", type(exc).__name__
+            )
             return
 
         yield event_started(task.task_id)
         yield event_state(
             task.task_id,
-            {"runtime": self.runtime_type, "codex_version": version, "working_directory": str(cwd)},
+            {
+                "runtime": self.runtime_type,
+                "claude_code_version": version,
+                "working_directory": str(cwd),
+            },
         )
-
         accumulated_text: list[str] = []
         native_error: str | None = None
 
-        async def _read_events() -> AsyncIterator[dict[str, Any]]:
-            assert proc.stdout is not None
-            while True:
-                line = await proc.stdout.readline()
-                if not line:
-                    break
-                stripped = line.decode(errors="replace").strip("\r\n")
-                if not stripped:
-                    continue
-                try:
-                    native = json.loads(stripped)
-                except json.JSONDecodeError:
-                    logger.debug("codex_adapter: skipping non-JSON stdout line: %r", stripped[:200])
-                    continue
-                if not isinstance(native, dict):
-                    continue
-                translated = self._translate_event(task.task_id, native)
-                if translated is not None:
-                    yield translated
-
         try:
+            assert proc.stdout is not None
             async with asyncio.timeout(timeout_seconds):
-                async for event in _read_events():
-                    if event["type"] == "text":
-                        accumulated_text.append(event.get("text", ""))
-                    elif event["type"] == "error":
-                        native_error = event.get("message") or "Codex reported an error"
+                while True:
+                    line = await proc.stdout.readline()
+                    if not line:
                         break
-                    yield event
+                    stripped = line.decode(errors="replace").strip("\r\n")
+                    if not stripped:
+                        continue
+                    try:
+                        native = json.loads(stripped)
+                    except json.JSONDecodeError:
+                        logger.debug(
+                            "claude_code_adapter: skipping non-JSON stdout line: %r", stripped[:200]
+                        )
+                        continue
+                    if not isinstance(native, dict):
+                        continue
+                    for event in self._translate_event(task.task_id, native, accumulated_text):
+                        if event["type"] == "error":
+                            native_error = str(
+                                event.get("message") or "Claude Code reported an error"
+                            )
+                            break
+                        yield event
+                    if native_error is not None:
+                        break
         except (TimeoutError, asyncio.CancelledError) as exc:
             await self._stop_process(proc)
             if isinstance(exc, asyncio.CancelledError):
                 raise
             yield event_error(
                 task.task_id,
-                f"codex run timed out after {timeout_seconds}s",
+                f"Claude Code run timed out after {timeout_seconds}s",
                 error_type="TimeoutError",
             )
             return
@@ -322,20 +307,93 @@ class CodexRuntimeAdapter(RuntimeAdapter):
             detail = f": {tail}" if tail else ""
             yield event_error(
                 task.task_id,
-                f"codex exited with code {returncode}{detail}",
+                f"Claude Code exited with code {returncode}{detail}",
                 error_type="ProcessExitError",
             )
             return
-
         yield event_done(
             task.task_id,
             result={
                 "runtime": self.runtime_type,
-                "codex_version": version,
+                "claude_code_version": version,
                 "exit_code": returncode,
                 "text": "".join(accumulated_text),
             },
         )
+
+    def _translate_event(
+        self,
+        task_id: str,
+        native: dict[str, Any],
+        accumulated_text: list[str],
+    ) -> list[dict[str, Any]]:
+        events: list[dict[str, Any]] = []
+        native_type = native.get("type")
+        if native_type == "system":
+            subtype = native.get("subtype")
+            if subtype == "init":
+                state = {
+                    key: native[key]
+                    for key in ("model", "cwd", "session_id", "permissionMode")
+                    if key in native
+                }
+                if state:
+                    events.append(event_state(task_id, state))
+            return events
+
+        if native_type == "assistant":
+            message = native.get("message")
+            content = message.get("content") if isinstance(message, dict) else None
+            if not isinstance(content, list):
+                return events
+            for item in content:
+                if not isinstance(item, dict):
+                    continue
+                item_type = item.get("type")
+                if item_type == "text" and isinstance(item.get("text"), str):
+                    text = item["text"]
+                    accumulated_text.append(text)
+                    events.append(event_text(task_id, text))
+                elif item_type == "tool_use":
+                    events.append(
+                        event_tool_call(
+                            task_id,
+                            name=str(item.get("name") or "claude_tool"),
+                            args=item.get("input") if isinstance(item.get("input"), dict) else {},
+                            call_id=item.get("id"),
+                        )
+                    )
+            return events
+
+        if native_type == "user":
+            message = native.get("message")
+            content = message.get("content") if isinstance(message, dict) else None
+            if not isinstance(content, list):
+                return events
+            for item in content:
+                if not isinstance(item, dict) or item.get("type") != "tool_result":
+                    continue
+                result = item.get("content")
+                events.append(
+                    event_tool_result(
+                        task_id,
+                        name=str(item.get("tool_name") or "claude_tool"),
+                        result=result,
+                        call_id=item.get("tool_use_id"),
+                        is_error=bool(item.get("is_error")),
+                    )
+                )
+            return events
+
+        if native_type == "result" and native.get("is_error"):
+            events.append(
+                event_error(
+                    task_id,
+                    str(native.get("result") or native.get("subtype") or "Claude Code failed"),
+                    error_type="RuntimeInvocationError",
+                )
+            )
+        return events
 
     async def _detect_version(
         self,
@@ -366,9 +424,9 @@ class CodexRuntimeAdapter(RuntimeAdapter):
                 proc.kill()
                 await proc.wait()
             raise
-        line = stdout.decode(errors="replace").splitlines()[0].strip() if stdout else ""
-        match = _VERSION_RE.search(line) or _BARE_VERSION_RE.search(line)
-        return match.group(0) if match else None
+        text = stdout.decode(errors="replace") if stdout else ""
+        match = _VERSION_RE.search(text)
+        return match.group(1) if match else None
 
     async def _stop_process(self, proc: asyncio.subprocess.Process) -> None:
         if proc.returncode is not None:
@@ -403,48 +461,5 @@ class CodexRuntimeAdapter(RuntimeAdapter):
             return None
         return str(Path(value).expanduser().resolve())
 
-    def _translate_event(self, task_id: str, native: dict[str, Any]) -> dict[str, Any] | None:
-        native_type = native.get("type")
-        if native_type in {"error", "turn.error"}:
-            return event_error(
-                task_id, str(native.get("message") or native.get("error") or "Codex error")
-            )
-        if native_type == "thread.started":
-            return event_state(task_id, {"thread_id": native.get("thread_id")})
-        if native_type == "turn.started":
-            return event_state(task_id, {"turn": "started"})
-        if native_type == "turn.completed":
-            state: dict[str, Any] = {"turn": "completed"}
-            if isinstance(native.get("usage"), dict):
-                state["usage"] = native["usage"]
-            return event_state(task_id, state)
 
-        item = native.get("item") if isinstance(native.get("item"), dict) else native
-        item_type = item.get("type")
-        if item_type in {"agent_message", "assistant_message", "text"}:
-            text = item.get("text") or item.get("content") or native.get("text")
-            return event_text(task_id, text) if isinstance(text, str) and text else None
-        if item_type in {"command_execution", "tool_call", "function_call"}:
-            if native_type in {"item.completed", "tool_result", "function_result"}:
-                output = item.get("aggregated_output", item.get("output", item.get("result")))
-                exit_code = item.get("exit_code")
-                return event_tool_result(
-                    task_id,
-                    name=str(item.get("command") or item.get("name") or "codex_tool"),
-                    result=output,
-                    call_id=item.get("id") or item.get("call_id"),
-                    is_error=bool(item.get("is_error")) or exit_code not in (None, 0),
-                )
-            return event_tool_call(
-                task_id,
-                name=str(item.get("command") or item.get("name") or "codex_tool"),
-                args=item.get("arguments")
-                if isinstance(item.get("arguments"), dict)
-                else {"command": item.get("command", "")},
-                call_id=item.get("id") or item.get("call_id"),
-            )
-        if native_type in {"text", "output_text.delta", "response.output_text.delta"}:
-            text = native.get("text") or native.get("delta")
-            return event_text(task_id, text) if isinstance(text, str) and text else None
-        logger.debug("codex_adapter: skipping unmapped native event type %r", native_type)
-        return None
+__all__ = ["ClaudeCodeRuntimeAdapter"]

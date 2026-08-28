@@ -13,6 +13,17 @@ from backend.models.operations_agent import (
 from backend.services import operations_agent_runtime_service
 
 
+def test_runtime_permission_mode_maps_observe_only_for_codex():
+    assert (
+        operations_agent_runtime_service._runtime_permission_mode("codex", "observe_only")
+        == "read_only"
+    )
+    assert (
+        operations_agent_runtime_service._runtime_permission_mode("claude-code", "observe_only")
+        == "observe_only"
+    )
+
+
 def _model_configuration() -> dict:
     return {
         "agent_contract": {
@@ -263,8 +274,7 @@ async def test_dispatch_fails_closed_when_required_evidence_is_missing(
     run = await _seed_run(db_session)
     version = await db_session.scalar(
         select(PublishedOperationsAgentVersion).where(
-            PublishedOperationsAgentVersion.operations_agent_id
-            == run.operations_agent_id
+            PublishedOperationsAgentVersion.operations_agent_id == run.operations_agent_id
         )
     )
     configuration = _model_configuration()

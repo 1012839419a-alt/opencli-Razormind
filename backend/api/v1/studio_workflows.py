@@ -78,6 +78,48 @@ def _runtime_log(
     )
 
 
+def _default_published_trigger_kind(
+    project: workflow_schemas.WorkflowProject,
+    trigger_node_id: str | None,
+) -> workflow_schemas.WorkflowRunTriggerKind:
+    """Choose the graph's real trigger when Studio Run omits one.
+
+    The authoring UI historically posted ``manual`` unconditionally.  That
+    silently makes schedule-only workflows fail before any node executes.  A
+    direct Studio/CLI run is still an explicit run, but it must enter through
+    the trigger entry that actually exists in the published graph.
+    """
+    nodes = project.nodes
+    if trigger_node_id:
+        selected = next((node for node in nodes if node.id == trigger_node_id), None)
+        if selected is not None:
+            if selected.kind == "webhook":
+                return "webhook"
+            if selected.kind == "schedule":
+                params = selected.params
+                builder = params.get("builder")
+                if params.get("mode") == "manual" or (
+                    isinstance(builder, dict) and builder.get("nodeType") == "manual-trigger"
+                ):
+                    return "manual"
+                return "schedule"
+
+    for node in nodes:
+        if node.kind == "schedule" and (
+            node.params.get("mode") == "manual"
+            or (
+                isinstance(node.params.get("builder"), dict)
+                and node.params["builder"].get("nodeType") == "manual-trigger"
+            )
+        ):
+            return "manual"
+    if any(node.kind == "schedule" for node in nodes):
+        return "schedule"
+    if any(node.kind == "webhook" for node in nodes):
+        return "webhook"
+    return "manual"
+
+
 async def _project_runtime_scope(
     db: AsyncSession,
     *,
@@ -383,12 +425,16 @@ async def start_published_workflow_run(
                 return ApiResponse.ok(projection)
 
     project = workflow_schemas.WorkflowProject.model_validate(version.graph)
+    trigger_kind = body.trigger_kind or _default_published_trigger_kind(
+        project, body.trigger_node_id
+    )
     projection = await start_workflow_run(
         workflow_schemas.WorkflowRunStartRequest(
             project=project,
             runId=run_id,
             trigger=workflow_schemas.WorkflowRunTrigger(
-                kind="manual",
+                kind=trigger_kind,
+                triggerNodeId=body.trigger_node_id,
                 requestId=request_id,
                 idempotencyKey=idempotency_key,
             ),

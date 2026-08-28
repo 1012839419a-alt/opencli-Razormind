@@ -10,8 +10,17 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any
 
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from backend import ws_agent_manager
 from backend.channels.base import ChannelResult
-from backend.channels.doubao_research_channel import DoubaoResearchChannel
+from backend.channels.doubao_research_channel import (
+    DoubaoResearchChannel,
+    _citations,
+    _structured_response,
+)
+from backend.models.edge_node import EdgeNode
 
 GAOJIXING_CAPABILITY_ID = "chat-ai.capture"
 GAOJIXING_CHANNEL_TYPE = "doubao_research"
@@ -83,6 +92,11 @@ def build_question_package(
         "settle_seconds",
         "capabilityId",
         "sourceGroup",
+        "executionMode",
+        "agentRuntime",
+        "agentUrl",
+        "agentTimeout",
+        "agentChrome",
     )
     options = {
         key: value
@@ -110,8 +124,19 @@ async def capture_live_doubao(
     node_params: dict[str, Any],
     adapter_config: dict[str, Any],
     network_allowed: bool,
+    external_mutation_allowed: bool = False,
+    session: AsyncSession | None = None,
+    workflow_id: str | None = None,
+    run_id: str | None = None,
 ) -> ChannelResult:
-    """Preflight and execute the existing Doubao channel; never use fixtures."""
+    """Preflight and execute one live Doubao question.
+
+    ``executionMode=agent`` is the workflow-native path: the control plane
+    selects a connected local Codex/Claude Code runtime and the edge Agent
+    operates the real browser.  The legacy OpenCLI Doubao channel remains
+    available when no Agent mode is selected so old published workflows keep
+    their behavior.
+    """
 
     capability_id = (
         _string(node_params.get("capabilityId"))
@@ -141,6 +166,45 @@ async def capture_live_doubao(
             details={"requiredPermission": "canFetchNetwork"},
         )
 
+    execution_mode = _execution_mode(node_params, adapter_config)
+    if execution_mode == "agent":
+        if not external_mutation_allowed:
+            raise GaojixingReadinessError(
+                "gaojixing_external_write_permission_required",
+                (
+                    "Agent-mode Gaojixing capture sends a question to Doubao through a "
+                    "browser and requires workflow canMutateExternalSites permission."
+                ),
+                details={"requiredPermission": "canMutateExternalSites"},
+            )
+        if session is None:
+            raise GaojixingReadinessError(
+                "gaojixing_agent_runtime_required",
+                "Agent-mode Gaojixing capture requires a database session to select a local Agent.",
+                details={"requiredRuntime": "codex or claude-code"},
+            )
+        agent_config = {
+            **adapter_config,
+            **{
+                key: node_params[key]
+                for key in (
+                    "agentRuntime",
+                    "agentUrl",
+                    "agentModel",
+                    "agentTimeout",
+                    "agentChrome",
+                )
+                if key in node_params
+            },
+        }
+        return await _capture_live_doubao_via_agent(
+            package=package,
+            adapter_config=agent_config,
+            session=session,
+            workflow_id=workflow_id,
+            run_id=run_id,
+        )
+
     channel = DoubaoResearchChannel()
     healthy = await channel.health_check(adapter_config)
     if not healthy:
@@ -159,6 +223,322 @@ async def capture_live_doubao(
         "capture_conversation_url": adapter_config.get("capture_conversation_url", True),
     }
     return await channel.collect(config, {"question": package.question})
+
+
+async def _capture_live_doubao_via_agent(
+    *,
+    package: GaojixingQuestionPackage,
+    adapter_config: dict[str, Any],
+    session: AsyncSession,
+    workflow_id: str | None,
+    run_id: str | None,
+) -> ChannelResult:
+    """Ask one connected native Agent to perform the browser interaction.
+
+    The center never launches Codex/Claude and never receives their provider
+    credentials.  It only sends a bounded task over the authenticated reverse
+    WebSocket; the local Agent owns the installed CLI and browser session.
+    """
+    agent_url, runtime = await _select_local_agent(session, adapter_config)
+    timeout_seconds = _agent_timeout(adapter_config)
+    chrome = adapter_config.get("agentChrome")
+    config: dict[str, Any] = {
+        "timeout_seconds": timeout_seconds,
+        "permission_mode": "full_auto",
+    }
+    if isinstance(chrome, bool):
+        config["chrome"] = chrome
+
+    instructions = (
+        "You are the browser execution worker for a workflow. This is an exact, "
+        "bounded research task. Do not use a Doubao CLI, Doubao HTTP/API request, "
+        "curl, requests, or any provider SDK. Use the locally installed OpenCLI "
+        "browser capability and the real logged-in browser session only. Read the "
+        "local opencli-browser instructions if needed. Open or reuse Doubao, submit "
+        "the exact question, wait for the final answer, and inspect the visible page. "
+        "If a CAPTCHA or human verification appears, do not bypass it: return the "
+        "blocked JSON below immediately. Do not invent URLs or data. Return ONLY one "
+        "JSON object, with no Markdown fence or commentary, using this shape: "
+        '{"status":"completed","answer":"...","data":[],"links":[],'
+        '"conversation_url":"https://www.doubao.com/chat/<id>",'
+        '"session_share_data":[],"suggested_keywords":[]}. '
+        'For a verification wall use {"status":"blocked","error_type":"captcha_challenge",'
+        '"message":"human verification is required","answer":"","data":[],"links":[],'
+        '"conversation_url":"","session_share_data":[],"suggested_keywords":[]}. '
+        "The conversation_url must be the actual current Doubao chat URL, if visible. "
+        "links must contain only observed source URLs. suggested_keywords must contain "
+        "the follow-up questions/keywords actually shown by Doubao."
+    )
+    task = {
+        "runtime": runtime,
+        "workflow": "workflow.gaojixing.doubao.browser",
+        "instructions": instructions,
+        "input": {
+            "message": (
+                f"Research this exact question and capture the complete visible result:\n"
+                f"{package.question}"
+            )
+        },
+        "config": config,
+        "session_id": None,
+        "provider": None,
+        "model": _string(adapter_config.get("agentModel")),
+        "required_capabilities": ["streaming", "tool_events"],
+        "permissions": {
+            "mode": "full_auto",
+            "tool_scope": ["opencli.browser"],
+            "action_scope": ["doubao.ask", "doubao.read"],
+            "workflow_id": workflow_id,
+            "run_id": run_id,
+        },
+        "budget": {"timeout_seconds": timeout_seconds, "max_questions": 1},
+        "evidence_requirements": [
+            "answer",
+            "links",
+            "conversation_url",
+            "suggested_keywords",
+        ],
+    }
+
+    events: list[dict[str, Any]] = []
+
+    async def on_event(event: dict[str, Any]) -> None:
+        events.append(event)
+
+    try:
+        from backend.ws_agent_manager import send_agent_task
+
+        terminal = await send_agent_task(
+            agent_url,
+            task,
+            on_event,
+            timeout=float(timeout_seconds),
+        )
+    except TimeoutError:
+        return _agent_failure(
+            "Local Agent browser task timed out",
+            "TimeoutError",
+            agent_url=agent_url,
+            agent_runtime=runtime,
+        )
+    except (RuntimeError, OSError) as exc:
+        return _agent_failure(
+            f"Local Agent browser task failed: {exc}",
+            type(exc).__name__,
+            agent_url=agent_url,
+            agent_runtime=runtime,
+        )
+
+    if terminal.get("type") == "error":
+        message = str(terminal.get("message") or "Local Agent browser task failed")
+        error_type = str(terminal.get("error_type") or "agent_runtime_failed")
+        if _contains_captcha(message):
+            error_type = "captcha_challenge"
+        return _agent_failure(
+            message,
+            error_type,
+            agent_url=agent_url,
+            agent_runtime=runtime,
+        )
+    if terminal.get("type") != "done":
+        return _agent_failure(
+            "Local Agent returned no terminal result",
+            "agent_runtime_failed",
+            agent_url=agent_url,
+            agent_runtime=runtime,
+        )
+
+    result = terminal.get("result")
+    result = result if isinstance(result, dict) else {}
+    text = _string(result.get("text")) or ""
+    structured = _structured_response(text)
+    response_data = structured.get("response_data")
+    response_data = response_data if isinstance(response_data, dict) else {}
+    if str(response_data.get("status") or "").lower() == "blocked":
+        error_type = _string(response_data.get("error_type")) or "agent_runtime_blocked"
+        if _contains_captcha(json.dumps(response_data, ensure_ascii=False)):
+            error_type = "captcha_challenge"
+        return _agent_failure(
+            _string(response_data.get("message")) or "Local Agent reported a blocked browser task",
+            error_type,
+            agent_url=agent_url,
+            agent_runtime=runtime,
+        )
+    answer = _string(structured.get("answer"))
+    if not answer:
+        return _agent_failure(
+            "Local Agent returned no Doubao answer",
+            "gaojixing_answer_missing",
+            agent_url=agent_url,
+            agent_runtime=runtime,
+        )
+
+    conversation_url = _conversation_url_from_response(response_data)
+    share_data = structured.get("session_share_data")
+    if not share_data and conversation_url:
+        share_data = {"url": conversation_url, "type": "conversation"}
+    citations = _citations(text)
+    links = _normalize_links(structured.get("links"))
+    if links:
+        citations = _merge_links(citations, links)
+    normalized_links = links or citations
+    item = {
+        "title": package.question,
+        "content": answer,
+        "author": "doubao",
+        "question": package.question,
+        "conversation_url": conversation_url,
+        "answer": answer,
+        "data": structured.get("data", []),
+        "links": normalized_links,
+        "response_data": response_data,
+        "raw_answer": text,
+        "session_share_data": share_data or [],
+        "suggested_keywords": structured.get("suggested_keywords", []),
+        "citations": citations,
+        "citation_count": len(citations),
+        "citation_capture": "agent_browser_observation",
+        "provenance": f"agent:{runtime}:browser:opencli",
+        "agent_runtime": runtime,
+        "agent_url": agent_url,
+    }
+    return ChannelResult.ok(
+        [item],
+        citation_count=len(citations),
+        citation_capture="agent_browser_observation",
+        agent_url=agent_url,
+        agent_runtime=runtime,
+        runtime_event_count=len(events),
+    )
+
+
+async def _select_local_agent(
+    session: AsyncSession,
+    adapter_config: dict[str, Any],
+) -> tuple[str, str]:
+    preferred_runtime = _string(adapter_config.get("agentRuntime"))
+    preferred_runtimes = [preferred_runtime] if preferred_runtime else ["codex", "claude-code"]
+    preferred_url = _string(adapter_config.get("agentUrl"))
+    nodes = list(
+        (
+            await session.execute(
+                select(EdgeNode).where(
+                    EdgeNode.protocol == "ws",
+                    EdgeNode.status == "online",
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    connected = set(ws_agent_manager.list_connected())
+    candidates: list[tuple[tuple[int, int], tuple[int, int], str, str]] = []
+    required = {"streaming", "tool_events"}
+    for node in nodes:
+        if node.url not in connected or (preferred_url and node.url != preferred_url):
+            continue
+        manifests = node.runtime_capabilities
+        if not isinstance(manifests, dict):
+            continue
+        for runtime_index, runtime in enumerate(preferred_runtimes):
+            capabilities = manifests.get(runtime)
+            if not isinstance(capabilities, list) or not required.issubset(
+                {value for value in capabilities if isinstance(value, str)}
+            ):
+                continue
+            url_rank = 0 if preferred_url and node.url == preferred_url else 1
+            candidates.append(((url_rank, runtime_index), (0, runtime_index), node.url, runtime))
+    if not candidates:
+        raise GaojixingReadinessError(
+            "gaojixing_agent_runtime_unavailable",
+            "No connected local Agent advertises the requested Codex/Claude Code runtime.",
+            details={
+                "preferredRuntimes": preferred_runtimes,
+                "preferredAgentUrl": preferred_url,
+                "requiredCapabilities": sorted(required),
+            },
+        )
+    _, _, agent_url, runtime = min(candidates, key=lambda item: item[:2] + item[2:])
+    return agent_url, runtime
+
+
+def _execution_mode(node_params: dict[str, Any], adapter_config: dict[str, Any]) -> str:
+    value = _string(node_params.get("executionMode")) or _string(
+        adapter_config.get("executionMode")
+    )
+    return "agent" if value in {"agent", "local_agent", "native_agent"} else "channel"
+
+
+def _agent_timeout(adapter_config: dict[str, Any]) -> int:
+    value = adapter_config.get("agentTimeout", 900)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 900
+    return max(30, min(int(value), 3600))
+
+
+def _conversation_url_from_response(response: dict[str, Any]) -> str:
+    for key in ("conversation_url", "conversationUrl", "session_share_url", "share_url"):
+        value = _string(response.get(key))
+        if value and "doubao.com/chat/" in value:
+            return value
+    for key in ("session_share_data", "conversation_share_data", "share_data"):
+        value = response.get(key)
+        for url in _urls_in_value(value):
+            if "doubao.com/chat/" in url:
+                return url
+    return ""
+
+
+def _normalize_links(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, dict):
+        value = [value]
+    if not isinstance(value, list):
+        value = [value] if isinstance(value, str) else []
+    links: list[dict[str, Any]] = []
+    for item in value:
+        if isinstance(item, dict):
+            url = _string(item.get("url") or item.get("href"))
+            if url:
+                links.append({**item, "url": url})
+        elif isinstance(item, str) and item.strip().startswith(("http://", "https://")):
+            links.append({"url": item.strip()})
+    return _merge_links([], links)
+
+
+def _merge_links(first: list[dict[str, Any]], second: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in [*first, *second]:
+        url = _string(item.get("url"))
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        merged.append(item)
+    return merged
+
+
+def _urls_in_value(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [item["url"] for item in _citations(value)]
+    if isinstance(value, dict):
+        return [url for child in value.values() for url in _urls_in_value(child)]
+    if isinstance(value, list):
+        return [url for child in value for url in _urls_in_value(child)]
+    return []
+
+
+def _contains_captcha(value: str) -> bool:
+    lowered = value.lower()
+    return any(marker in lowered for marker in ("captcha", "verification", "验证码", "人机验证"))
+
+
+def _agent_failure(error: str, error_type: str, **metadata: Any) -> ChannelResult:
+    return ChannelResult(
+        success=False,
+        error=error,
+        error_type=error_type,
+        metadata=metadata,
+    )
 
 
 def map_capture_item(
