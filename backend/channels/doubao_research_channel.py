@@ -183,6 +183,7 @@ def _is_captcha_block(stderr: str, stdout: str) -> bool:
             )
             suggested = (
                 parsed.get("suggested_keywords")
+                or parsed.get("suggested_keys")
                 or parsed.get("recommend_keywords")
                 or parsed.get("recommended_keywords")
                 or []
