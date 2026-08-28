@@ -13,10 +13,14 @@ async function installPluginFixtures(page) {
     contentType: 'application/json',
     body: JSON.stringify({ success: true, data: { version: 'test', catalog: [], primitives: [], channels: [], notifiers: [], triggers: [], resources: [] } }),
   }))
-  await page.route('**/api/v1/nodes/capabilities', (route) => route.fulfill({
+  await page.route('**/api/v1/plugins/capabilities', (route) => route.fulfill({
     contentType: 'application/json',
-    body: JSON.stringify({ success: true, data: { version: 'test', nodes: [] } }),
+    body: JSON.stringify({ success: true, data: { version: 'opencli.node-capabilities.v1', authority: 'backend', nodes: [{
+      id: 'e2e-provider.browser', label: 'Browser', description: 'E2E browser capability', category: 'tool', origin: 'plugin', provider: 'e2e/test-plugin', source: 'backend.workflow.node_capabilities', readiness: 'runnable', runtimeBinding: 'workflow.external-tool.capability', kind: 'action', capability: 'tool', icon: 'Globe2', inputPorts: [], outputPorts: [], parameters: [], difyNodeTypes: [], missing: [],
+    }], categories: [{ id: 'tool', label: 'Tool', count: 1 }], summary: { total: 1, byReadiness: { runnable: 1 }, byOrigin: { plugin: 1 } } } }),
   }))
+  await page.route('**/api/v1/workspaces', (route) => route.fulfill({ contentType: 'application/json', body: JSON.stringify({ success: true, data: [{ id: 'e2e-workspace', name: 'E2E Workspace' }] }) }))
+  await page.route('**/api/v1/workspaces/*/projects', (route) => route.fulfill({ contentType: 'application/json', body: JSON.stringify({ success: true, data: [], meta: { total: 0, page: 1, pages: 0, limit: 20 } }) }))
 }
 
 test.beforeEach(async ({ page }) => {
@@ -52,7 +56,21 @@ test('plugins tabs expose semantic selection and installed capability detail', a
   await page.getByRole('navigation', { name: '插件页面' }).getByRole('button', { name: '已安装' }).dispatchEvent('click')
   await page.getByRole('button', { name: '查看 E2E Provider 插件' }).click()
   await expect(page.getByText('声明的能力')).toBeVisible()
-  await expect(page.getByText('Browser', { exact: true })).toBeVisible()
+  await expect(page.getByText('Browser', { exact: true }).first()).toBeVisible()
+})
+
+test('plugin CTA carries capability context into Studio and can be removed', async ({ page }) => {
+  await installPluginFixtures(page)
+  await goAuthed(page, '/plugins')
+  await page.getByRole('button', { name: '查看 E2E Provider 插件' }).click()
+  await page.getByText('带着能力进入 Studio', { exact: true }).click()
+  await expect(page).toHaveURL(/\/studio\?provider=e2e-provider&capability=/)
+  await expect(page.getByRole('region', { name: '能力上下文' })).toContainText('e2e-provider')
+  await expect(page.getByText(/目录 readiness 不等于 run-scoped admission/)).toBeVisible()
+  const removeContext = page.getByRole('link', { name: '移除能力上下文' })
+  await removeContext.click()
+  await expect(page).toHaveURL(/\/studio(?:\?|$)/)
+  await expect(page.getByRole('region', { name: '能力上下文' })).toHaveCount(0)
 })
 
 
