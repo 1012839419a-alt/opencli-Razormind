@@ -8,6 +8,10 @@ configuration. The channel is read-only and never calls a write endpoint.
 
 from __future__ import annotations
 
+import asyncio
+import json
+import os
+import shutil
 from typing import Any
 
 import httpx
@@ -48,6 +52,38 @@ def _positive_int(value: Any, default: int, maximum: int) -> int:
     return min(max(1, parsed), maximum)
 
 
+def _cli_rows(payload: Any) -> list[dict[str, Any]]:
+    if isinstance(payload, list):
+        return [row for row in payload if isinstance(row, dict)]
+    if not isinstance(payload, dict):
+        return []
+    data = payload.get("data")
+    if isinstance(data, dict) and isinstance(data.get("data"), list):
+        columns = data.get("fields")
+        record_ids = data.get("record_id_list")
+        if isinstance(columns, list):
+            return [
+                {
+                    "record_id": record_ids[index]
+                    if isinstance(record_ids, list) and index < len(record_ids)
+                    else str(index),
+                    "fields": {
+                        str(column): row[column_index]
+                        for column_index, column in enumerate(columns)
+                        if column_index < len(row)
+                    },
+                }
+                for index, row in enumerate(data["data"])
+                if isinstance(row, list)
+            ]
+    for candidate in (
+        payload.get("records"),
+        payload.get("items"),
+        (payload.get("data") or {}).get("items") if isinstance(payload.get("data"), dict) else None,
+    ):
+        if isinstance(candidate, list):
+            return [row for row in candidate if isinstance(row, dict)]
+    return []
 @register_channel
 class FeishuTableChannel(AbstractChannel):
     """Fetch eligible keyword rows from a Feishu Bitable table."""
@@ -194,6 +230,221 @@ class FeishuTableChannel(AbstractChannel):
             has_more=bool(next_cursor),
             metadata={"source": "feishu_table", "rowCount": len(items), "bounded": True},
         )
+
+# Legacy pre-matrix implementation retained below only as an intermediate merge
+# artifact; the matrix-aware implementation later in the class is authoritative.
+    async def _fetch_with_lark_cli(self, ctx: FetchContext) -> FetchResult:
+        config = ctx.config
+        binary = shutil.which(str(config.get("cli_binary") or "lark-cli"))
+        if not binary:
+            raise ChannelFetchError("lark-cli binary was not found", "FileNotFoundError")
+        base_token = _text(config.get("app_token"))
+        if not base_token:
+            raise ChannelFetchError("'app_token' is required for lark-cli", "InvalidSourceConfig")
+        limit = _positive_int(config.get("page_size"), _DEFAULT_PAGE_SIZE, 200)
+        args = [
+            binary,
+            "base",
+            "+record-list",
+            "--base-token",
+            base_token,
+            "--table-id",
+            str(config["table_id"]),
+            "--limit",
+            str(limit),
+            "--format",
+            "json",
+        ]
+        if _text(config.get("view_id")):
+            args.extend(["--view-id", _text(config["view_id"])])
+        if _text(config.get("profile")):
+            args.extend(["--profile", _text(config["profile"])])
+        offset = _positive_int((ctx.cursor or {}).get("offset"), 0, 5_000_000)
+        if offset:
+            args.extend(["--offset", str(offset)])
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *args,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=os.environ.copy(),
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+        except TimeoutError as exc:
+            raise ChannelFetchError("lark-cli record-list timed out", "TimeoutError") from exc
+        if proc.returncode:
+            detail = stderr.decode(errors="replace").strip()[:500]
+            raise ChannelFetchError(
+                f"lark-cli record-list failed: {detail or proc.returncode}",
+                "LarkCLIError",
+            )
+        try:
+            payload = json.loads(stdout.decode(errors="replace"))
+        except json.JSONDecodeError as exc:
+            raise ChannelFetchError("lark-cli returned invalid JSON", "JSONDecodeError") from exc
+        rows = _cli_rows(payload)
+        result = await self._rows_to_result(ctx, rows)
+        max_rows = _positive_int(config.get("max_rows"), _DEFAULT_MAX_ROWS, 5000)
+        has_more = len(rows) >= limit and len(rows) < max_rows
+        next_cursor = {"offset": offset + len(rows)} if has_more and rows else None
+        return FetchResult(
+            items=result,
+            next_cursor=next_cursor,
+            has_more=bool(next_cursor),
+            metadata={"source": "feishu_table", "transport": "lark-cli", "rowCount": len(result)},
+        )
+
+    async def _rows_to_result(
+        self, ctx: FetchContext, records: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        config = ctx.config
+        remaining = _positive_int(config.get("max_rows"), _DEFAULT_MAX_ROWS, 5000)
+        keyword_field = str(config["keyword_field"])
+        status_field = _text(config.get("status_field"))
+        eligible_status = _text(config.get("eligible_status"))
+        source_group = _text(config.get("source_group")) or "feishu-keywords"
+        items: list[dict[str, Any]] = []
+        for record in records[:remaining]:
+            fields = record.get("fields")
+            if not isinstance(fields, dict):
+                fields = record
+            keyword = _text(fields.get(keyword_field))
+            if not keyword:
+                continue
+            status = _text(fields.get(status_field)) if status_field else ""
+            if eligible_status and status != eligible_status:
+                continue
+            row_id = _text(record.get("record_id")) or _text(record.get("id"))
+            if not row_id:
+                continue
+            items.append(
+                {
+                    "id": f"feishu:{ctx.source_id or 'source'}:{row_id}",
+                    "source_row_id": row_id,
+                    "keyword": keyword,
+                    "title": keyword,
+                    "content": keyword,
+                    "status": status,
+                    "source": "feishu_table",
+                    "source_group": source_group,
+                    "sourceGroup": source_group,
+                    "feishu": {
+                        "record_id": row_id,
+                        "app_token": config["app_token"],
+                        "table_id": config["table_id"],
+                    },
+                    "fields": fields,
+                }
+            )
+        return items
+
+# Matrix-aware implementation.
+    async def _fetch_with_lark_cli(self, ctx: FetchContext) -> FetchResult:
+        config = ctx.config
+        binary = shutil.which(str(config.get("cli_binary") or "lark-cli"))
+        if not binary:
+            raise ChannelFetchError("lark-cli binary was not found", "FileNotFoundError")
+        base_token = _text(config.get("app_token"))
+        if not base_token:
+            raise ChannelFetchError("'app_token' is required for lark-cli", "InvalidSourceConfig")
+        limit = _positive_int(config.get("page_size"), _DEFAULT_PAGE_SIZE, 200)
+        args = [
+            binary,
+            "base",
+            "+record-list",
+            "--base-token",
+            base_token,
+            "--table-id",
+            str(config["table_id"]),
+            "--limit",
+            str(limit),
+            "--format",
+            "json",
+        ]
+        if _text(config.get("view_id")):
+            args.extend(["--view-id", _text(config["view_id"])])
+        if _text(config.get("profile")):
+            args.extend(["--profile", _text(config["profile"])])
+        offset = _positive_int((ctx.cursor or {}).get("offset"), 0, 5_000_000)
+        if offset:
+            args.extend(["--offset", str(offset)])
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *args,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=os.environ.copy(),
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+        except TimeoutError as exc:
+            raise ChannelFetchError("lark-cli record-list timed out", "TimeoutError") from exc
+        if proc.returncode:
+            detail = stderr.decode(errors="replace").strip()[:500]
+            raise ChannelFetchError(
+                f"lark-cli record-list failed: {detail or proc.returncode}",
+                "LarkCLIError",
+            )
+        try:
+            payload = json.loads(stdout.decode(errors="replace"))
+        except json.JSONDecodeError as exc:
+            raise ChannelFetchError("lark-cli returned invalid JSON", "JSONDecodeError") from exc
+        rows = _cli_rows(payload)
+        result = await self._rows_to_result(ctx, rows)
+        max_rows = _positive_int(config.get("max_rows"), _DEFAULT_MAX_ROWS, 5000)
+        cli_data = payload.get("data") if isinstance(payload, dict) else None
+        cli_has_more = bool(cli_data.get("has_more")) if isinstance(cli_data, dict) else False
+        has_more = cli_has_more and len(rows) < max_rows
+        next_cursor = {"offset": offset + len(rows)} if has_more and rows else None
+        return FetchResult(
+            items=result,
+            next_cursor=next_cursor,
+            has_more=bool(next_cursor),
+            metadata={"source": "feishu_table", "transport": "lark-cli", "rowCount": len(result)},
+        )
+
+    async def _rows_to_result(
+        self, ctx: FetchContext, records: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        config = ctx.config
+        remaining = _positive_int(config.get("max_rows"), _DEFAULT_MAX_ROWS, 5000)
+        keyword_field = str(config["keyword_field"])
+        status_field = _text(config.get("status_field"))
+        eligible_status = _text(config.get("eligible_status"))
+        source_group = _text(config.get("source_group")) or "feishu-keywords"
+        items: list[dict[str, Any]] = []
+        for record in records[:remaining]:
+            fields = record.get("fields")
+            if not isinstance(fields, dict):
+                fields = record
+            keyword = _text(fields.get(keyword_field))
+            if not keyword:
+                continue
+            status = _text(fields.get(status_field)) if status_field else ""
+            if eligible_status and status != eligible_status:
+                continue
+            row_id = _text(record.get("record_id")) or _text(record.get("id"))
+            if not row_id:
+                continue
+            items.append(
+                {
+                    "id": f"feishu:{ctx.source_id or 'source'}:{row_id}",
+                    "source_row_id": row_id,
+                    "keyword": keyword,
+                    "title": keyword,
+                    "content": keyword,
+                    "status": status,
+                    "source": "feishu_table",
+                    "source_group": source_group,
+                    "sourceGroup": source_group,
+                    "feishu": {
+                        "record_id": row_id,
+                        "app_token": config["app_token"],
+                        "table_id": config["table_id"],
+                    },
+                    "fields": fields,
+                }
+            )
+        return items
 
     async def validate_config(self, config: dict[str, Any]) -> list[str]:
         errors: list[str] = []
