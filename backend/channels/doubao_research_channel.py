@@ -1,14 +1,7 @@
 """Collect a cited Doubao research answer through the installed OpenCLI adapter."""
 
-# merge marker
 import asyncio
 import json
-# merge-base marker
-import os
-# incoming marker
-import json
-import os
-# end marker
 import re
 from typing import Any
 
@@ -84,7 +77,7 @@ def _answer(rows: list[dict[str, Any]]) -> str:
 
 
 def _structured_response(text: str) -> dict[str, Any]:
-# merge marker
+    # merge marker
     """Decode Doubao JSON while retaining the complete provider response."""
     raw = text.strip()
     candidates = [raw]
@@ -102,10 +95,35 @@ def _structured_response(text: str) -> dict[str, Any]:
         if not isinstance(parsed, dict):
             continue
         answer = parsed.get("answer") or parsed.get("content") or raw
-        data = parsed.get("data") or parsed.get("details") or parsed.get("answer_data") or parsed.get("result") or parsed.get("key_points") or []
-        links = parsed.get("links") or parsed.get("references") or parsed.get("sources") or parsed.get("urls") or []
-        share_data = parsed.get("session_share_data") or parsed.get("conversation_share_data") or parsed.get("share_data") or parsed.get("share_urls") or []
-        suggested = parsed.get("suggested_keywords") or parsed.get("suggested_keys") or parsed.get("recommend_keywords") or parsed.get("recommended_keywords") or []
+        data = (
+            parsed.get("data")
+            or parsed.get("details")
+            or parsed.get("answer_data")
+            or parsed.get("result")
+            or parsed.get("key_points")
+            or []
+        )
+        links = (
+            parsed.get("links")
+            or parsed.get("references")
+            or parsed.get("sources")
+            or parsed.get("urls")
+            or []
+        )
+        share_data = (
+            parsed.get("session_share_data")
+            or parsed.get("conversation_share_data")
+            or parsed.get("share_data")
+            or parsed.get("share_urls")
+            or []
+        )
+        suggested = (
+            parsed.get("suggested_keywords")
+            or parsed.get("suggested_keys")
+            or parsed.get("recommend_keywords")
+            or parsed.get("recommended_keywords")
+            or []
+        )
         if not isinstance(data, (list, dict, str)):
             data = []
         if not isinstance(links, (list, dict, str)):
@@ -151,8 +169,9 @@ def _is_captcha_block(stderr: str, stdout: str) -> bool:
     """True when the adapter reports a captcha/verification wall."""
     text = f"{stderr} {stdout}".lower()
     return any(marker in text for marker in _CAPTCHA_MARKERS)
-# merge-base marker
-# incoming marker
+
+
+def _structured_response_legacy(text: str) -> dict[str, Any]:
     """Decode the JSON response requested by the Doubao research prompt.
 
     Doubao may wrap the JSON in a markdown fence or add a short preamble. Keep
@@ -211,17 +230,30 @@ def _is_captcha_block(stderr: str, stdout: str) -> bool:
                 links = []
             if not isinstance(suggested, list):
                 suggested = [suggested] if suggested else []
-            data = parsed.get("data") or parsed.get("details") or parsed.get("answer_data") or parsed.get("result") or parsed.get("key_points") or []
-            links = parsed.get("links") or parsed.get("references") or parsed.get("sources") or parsed.get("urls") or []
+            data = (
+                parsed.get("data")
+                or parsed.get("details")
+                or parsed.get("answer_data")
+                or parsed.get("result")
+                or parsed.get("key_points")
+                or []
+            )
+            links = (
+                parsed.get("links")
+                or parsed.get("references")
+                or parsed.get("sources")
+                or parsed.get("urls")
+                or []
+            )
             if not isinstance(data, (list, dict, str)):
                 data = []
             if not isinstance(links, (list, dict, str)):
                 links = []
             return {
                 "answer": str(answer).strip(),
-# merge marker
+                # merge marker
                 "data": data,
-# end merge marker
+                # end merge marker
                 "links": links,
                 "response_data": parsed,
                 "session_share_data": share_data,
@@ -239,7 +271,6 @@ def _is_captcha_block(stderr: str, stdout: str) -> bool:
         "suggested_keywords": [],
         "raw_answer": raw,
     }
-# end marker
 
 
 async def _run_doubao_command(command: list[str]) -> tuple[int, str, str]:
@@ -331,7 +362,7 @@ class DoubaoResearchChannel(AbstractChannel):
         if not answer:
             return ChannelResult.fail("Doubao returned no assistant text")
 
-# merge marker
+        # merge marker
         # OpenCLI 1.8.5 can return after Doubao creates its first progress
         # message while deep research continues in the same conversation.
         # The Gaojixing capability opts into one delayed, read-only snapshot so
@@ -349,9 +380,7 @@ class DoubaoResearchChannel(AbstractChannel):
             ]
             try:
                 read_rc, read_stdout, _ = await _run_doubao_command(read_command)
-                settled_answer = (
-                    _answer(_parse_opencli_rows(read_stdout)) if read_rc == 0 else ""
-                )
+                settled_answer = _answer(_parse_opencli_rows(read_stdout)) if read_rc == 0 else ""
                 if len(settled_answer) > len(answer):
                     answer = settled_answer
             except Exception:
@@ -393,21 +422,6 @@ class DoubaoResearchChannel(AbstractChannel):
             "answer": content,
             "links": citations,
         }
-# merge marker
-# merge-base marker
-        citations = _citations(answer) if extract_citations else []
-# incoming marker
-        structured = _structured_response(answer)
-        content = structured["answer"]
-        citations_text = " ".join(
-            [
-                structured["raw_answer"],
-                json.dumps(structured["session_share_data"], ensure_ascii=False),
-            ]
-        )
-        citations = _citations(citations_text) if extract_citations else []
-# end marker
-# end merge marker
         return ChannelResult.ok(
             [
                 {
@@ -415,18 +429,11 @@ class DoubaoResearchChannel(AbstractChannel):
                     "content": content,
                     "author": "doubao",
                     "question": question,
-# merge marker
                     "conversation_url": conversation_url,
                     "answer": content,
                     "data": structured["data"],
                     "links": links,
                     "response_data": response_data,
-# merge marker
-# merge-base marker
-# incoming marker
-                    "answer": content,
-# end marker
-# end merge marker
                     "raw_answer": structured["raw_answer"],
                     "session_share_data": structured["session_share_data"],
                     "suggested_keywords": structured["suggested_keywords"],

@@ -1,7 +1,6 @@
 """Compile Canvas WorkflowProject documents into executable-plan previews."""
 
 import re
-
 from collections import Counter, defaultdict, deque
 from dataclasses import dataclass
 from typing import Literal
@@ -81,10 +80,6 @@ _PORT_CONTRACTS: dict[str, tuple[list[_PortContract], list[_PortContract]]] = {
         [_PortContract("out", "output", "items[]")],
     ),
     "intelligence.source.rss": (
-        [_PortContract("in", "input", "trigger", required=False)],
-        [_PortContract("out", "output", "items[]")],
-    ),
-    "intelligence.source.doubao-research": (
         [_PortContract("in", "input", "trigger", required=False)],
         [_PortContract("out", "output", "items[]")],
     ),
