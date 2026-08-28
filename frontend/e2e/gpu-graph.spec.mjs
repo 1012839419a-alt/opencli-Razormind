@@ -164,6 +164,24 @@ async function goAuthed(page, path) {
   await expect(page).toHaveURL(new RegExp(`${path.split('?')[0].replaceAll('/', '\\/')}(?:\\?.*)?$`))
 }
 
+test('records graph mounts its interactive WebGL2 renderer when available', async ({ page }) => {
+  await installGraphFixtures(page)
+  await goAuthed(page, '/records/graph')
+
+  const surface = page.locator('[data-gpu-surface="record-relationship-graph"]')
+  await expect(surface).toHaveAttribute('data-gpu-backend', 'webgl2')
+  await expect(surface.locator('canvas').first()).toBeVisible()
+})
+
+test('Galaxy mounts its interactive WebGL2 renderer when available', async ({ page }) => {
+  await installGraphFixtures(page)
+  await goAuthed(page, `/studio/projects/${project.id}/galaxy?workspace=${workspace.id}`)
+
+  const surface = page.locator('[data-gpu-surface="project-galaxy-graph"]')
+  await expect(surface).toHaveAttribute('data-gpu-backend', 'webgl2')
+  await expect(surface.locator('canvas').first()).toBeVisible()
+})
+
 test('records graph keeps fallback nodes selectable without WebGL2', async ({ page }) => {
   await disableWebGl2(page)
   await installGraphFixtures(page)

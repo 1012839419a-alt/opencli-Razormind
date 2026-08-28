@@ -74,7 +74,7 @@ context:
 - `npm --prefix frontend run build` -- Next.js SSR/客户端边界与动态 imports 可生产构建。
 - `npm --prefix frontend run check:login-themes` -- 三种现有主题与 reduced-motion 合同保持通过。
 - `npm --prefix frontend run check:record-relationships` -- 现有图谱结构和交互合同保持通过。
-- `npm --prefix frontend run test:smoke -- login.spec.mjs gpu-graph.spec.mjs` -- Chromium 中 7 条 GPU、SSR、恢复和图谱 fallback 场景通过。
+- `npm --prefix frontend run test:smoke -- login.spec.mjs gpu-graph.spec.mjs` -- Chromium 中 9 条 GPU、SSR、恢复、正常图谱挂载和图谱 fallback 场景通过。
 
 ## Suggested Review Order
 

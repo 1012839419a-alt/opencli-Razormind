@@ -28,12 +28,15 @@ export function probeGpuCapabilities(): GpuCapabilities {
 
   const webgpuApiPresent = 'gpu' in navigator
   let webgl2 = false
+  let context: WebGL2RenderingContext | null = null
   try {
     const canvas = document.createElement('canvas')
-    const context = canvas.getContext('webgl2')
+    context = canvas.getContext('webgl2')
     webgl2 = Boolean(context && !context.isContextLost())
   } catch {
     webgl2 = false
+  } finally {
+    context?.getExtension('WEBGL_lose_context')?.loseContext()
   }
 
   cachedCapabilities = { webgl2, webgpuApiPresent }

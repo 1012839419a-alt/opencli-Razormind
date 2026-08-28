@@ -166,6 +166,11 @@ export function GpuSurface({
         : current)
     }
     const observeCanvases = () => {
+      observedCanvases.forEach((canvas) => {
+        if (host.contains(canvas)) return
+        canvas.removeEventListener('webglcontextlost', handleContextLost)
+        observedCanvases.delete(canvas)
+      })
       host.querySelectorAll('canvas').forEach((canvas) => {
         if (observedCanvases.has(canvas)) return
         canvas.addEventListener('webglcontextlost', handleContextLost)
@@ -206,7 +211,7 @@ export function GpuSurface({
           {children}
         </RendererErrorBoundary>
       ) : (
-        <div role="status" className="h-full">
+        <div className="h-full">
           {fallback}
         </div>
       )}
