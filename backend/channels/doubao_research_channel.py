@@ -1,7 +1,14 @@
 """Collect a cited Doubao research answer through the installed OpenCLI adapter."""
 
+# merge marker
 import asyncio
 import json
+# merge-base marker
+import os
+# incoming marker
+import json
+import os
+# end marker
 import re
 from typing import Any
 
@@ -77,6 +84,7 @@ def _answer(rows: list[dict[str, Any]]) -> str:
 
 
 def _structured_response(text: str) -> dict[str, Any]:
+# merge marker
     """Decode Doubao JSON while retaining the complete provider response."""
     raw = text.strip()
     candidates = [raw]
@@ -143,6 +151,73 @@ def _is_captcha_block(stderr: str, stdout: str) -> bool:
     """True when the adapter reports a captcha/verification wall."""
     text = f"{stderr} {stdout}".lower()
     return any(marker in text for marker in _CAPTCHA_MARKERS)
+# merge-base marker
+# incoming marker
+    """Decode the JSON response requested by the Doubao research prompt.
+
+    Doubao may wrap the JSON in a markdown fence or add a short preamble. Keep
+    the raw answer as the fallback so a formatting deviation never discards
+    the research result.
+    """
+    raw = text.strip()
+    candidates = [raw]
+    fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw, re.DOTALL | re.IGNORECASE)
+    if fenced:
+        candidates.insert(0, fenced.group(1))
+    start, end = raw.find("{"), raw.rfind("}")
+    if start >= 0 and end > start:
+        candidates.append(raw[start : end + 1])
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if isinstance(parsed, dict):
+            answer = parsed.get("answer") or parsed.get("content") or raw
+            share_data = (
+                parsed.get("session_share_data")
+                or parsed.get("conversation_share_data")
+                or parsed.get("share_data")
+                or parsed.get("share_urls")
+                or []
+            )
+            suggested = (
+                parsed.get("suggested_keywords")
+                or parsed.get("recommend_keywords")
+                or parsed.get("recommended_keywords")
+                or []
+            )
+            if not isinstance(share_data, (list, dict, str)):
+                share_data = []
+            if not isinstance(suggested, list):
+                suggested = [suggested] if suggested else []
+            data = parsed.get("data") or parsed.get("details") or parsed.get("answer_data") or parsed.get("result") or parsed.get("key_points") or []
+            links = parsed.get("links") or parsed.get("references") or parsed.get("sources") or parsed.get("urls") or []
+            if not isinstance(data, (list, dict, str)):
+                data = []
+            if not isinstance(links, (list, dict, str)):
+                links = []
+            return {
+                "answer": str(answer).strip(),
+                "data": data,
+                "links": links,
+                "response_data": parsed,
+                "session_share_data": share_data,
+                "suggested_keywords": [
+                    str(item).strip() for item in suggested if str(item).strip()
+                ],
+                "raw_answer": raw,
+            }
+    return {
+        "answer": raw,
+        "data": [],
+        "links": [],
+        "response_data": {},
+        "session_share_data": [],
+        "suggested_keywords": [],
+        "raw_answer": raw,
+    }
+# end marker
 
 
 async def _run_doubao_command(command: list[str]) -> tuple[int, str, str]:
@@ -225,7 +300,8 @@ class DoubaoResearchChannel(AbstractChannel):
                 error_type=error_type,
             )
         try:
-            answer = _answer(_parse_opencli_rows(stdout))
+            response_rows = _parse_opencli_rows(stdout)
+            answer = _answer(response_rows)
         except Exception as exc:
             return ChannelResult.fail(
                 f"Failed to parse Doubao answer: {exc}", error_type=type(exc).__name__
@@ -233,6 +309,7 @@ class DoubaoResearchChannel(AbstractChannel):
         if not answer:
             return ChannelResult.fail("Doubao returned no assistant text")
 
+# merge marker
         # OpenCLI 1.8.5 can return after Doubao creates its first progress
         # message while deep research continues in the same conversation.
         # The Gaojixing capability opts into one delayed, read-only snapshot so
@@ -294,6 +371,19 @@ class DoubaoResearchChannel(AbstractChannel):
             "answer": content,
             "links": citations,
         }
+# merge-base marker
+        citations = _citations(answer) if extract_citations else []
+# incoming marker
+        structured = _structured_response(answer)
+        content = structured["answer"]
+        citations_text = " ".join(
+            [
+                structured["raw_answer"],
+                json.dumps(structured["session_share_data"], ensure_ascii=False),
+            ]
+        )
+        citations = _citations(citations_text) if extract_citations else []
+# end marker
         return ChannelResult.ok(
             [
                 {
@@ -301,11 +391,16 @@ class DoubaoResearchChannel(AbstractChannel):
                     "content": content,
                     "author": "doubao",
                     "question": question,
+# merge marker
                     "conversation_url": conversation_url,
                     "answer": content,
                     "data": structured["data"],
                     "links": links,
                     "response_data": response_data,
+# merge-base marker
+# incoming marker
+                    "answer": content,
+# end marker
                     "raw_answer": structured["raw_answer"],
                     "session_share_data": structured["session_share_data"],
                     "suggested_keywords": structured["suggested_keywords"],

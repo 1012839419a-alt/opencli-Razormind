@@ -3,7 +3,13 @@ import pytest
 from backend.channels.doubao_research_channel import (
     DoubaoResearchChannel,
     _citations,
+# merge marker
     _conversation_url,
+# merge-base marker
+from backend.channels.doubao_research_channel import DoubaoResearchChannel, _citations
+# incoming marker
+    _structured_response,
+# end marker
 )
 from backend.schemas.source import DataSourceCreate
 
@@ -17,6 +23,7 @@ def test_citations_preserve_order_and_strip_punctuation():
     ]
 
 
+# merge marker
 def test_conversation_url_extracts_chat_id():
     status = (
         '[{"Status": "Connected", "Url": '
@@ -33,6 +40,19 @@ def test_conversation_url_ignores_root_chat():
 
 def test_conversation_url_tolerates_garbage():
     assert _conversation_url("not json at all") == ""
+# merge-base marker
+# incoming marker
+def test_structured_response_preserves_share_data_and_keywords():
+    response = _structured_response(
+        "```json\n"
+        '{"answer":"结论", "session_share_data":[{"url":"https://doubao.com/share/1"}], '
+        '"suggested_keywords":["DHA 食物"]}\n```'
+    )
+
+    assert response["answer"] == "结论"
+    assert response["session_share_data"] == [{"url": "https://doubao.com/share/1"}]
+    assert response["suggested_keywords"] == ["DHA 食物"]
+# end marker
 
 
 @pytest.mark.asyncio
@@ -82,6 +102,28 @@ async def test_collect_reads_settled_research_answer(monkeypatch):
     assert result.items[0]["content"] == "最终报告 https://example.com/source"
     assert result.items[0]["citations"] == [{"url": "https://example.com/source"}]
     assert result.metadata["citation_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_collect_stores_structured_share_data_and_suggested_keywords(monkeypatch):
+    async def fake_run(command):
+        return (
+            0,
+            "[{\"Role\":\"assistant\",\"Text\":"
+            '"{\\"answer\\":\\"研究结论\\",'
+            '\\"session_share_data\\":[{\\"url\\":\\"https://doubao.com/share/1\\"}],'
+            '\\"suggested_keywords\\":[\\"DHA 食物\\"]}"}]',
+            "",
+        )
+
+    monkeypatch.setattr("backend.channels.doubao_research_channel._run_doubao_command", fake_run)
+    result = await DoubaoResearchChannel().collect({"question": "推荐追问"}, {})
+
+    assert result.success
+    assert result.items[0]["content"] == "研究结论"
+    assert result.items[0]["session_share_data"] == [{"url": "https://doubao.com/share/1"}]
+    assert result.items[0]["suggested_keywords"] == ["DHA 食物"]
+    assert result.items[0]["citations"] == [{"url": "https://doubao.com/share/1"}]
 
 
 @pytest.mark.asyncio

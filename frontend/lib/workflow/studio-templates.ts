@@ -144,13 +144,23 @@ function feishuDouyinDoubaoGraph(name: string) {
   }
   const schedule = createWorkflowNodeFromCatalog(catalog('intelligence.schedule.cron'), 'schedule', { x: 80, y: 260 })
   const feishu = createWorkflowNodeFromCatalog(catalog('intelligence.source.feishu-table'), 'feishu-keywords', { x: 320, y: 260 })
+  feishu.params = {
+    ...feishu.params,
+    table_id: 'tblS6dfkT1dE0SXd',
+    keyword_field: '推荐追问',
+    source_group: 'feishu-recommended-followups',
+  }
   const douyin: WorkflowProjectNode = {
     id: 'douyin-search', kind: 'source', capability: 'fetch', adapter: 'opencli-douyin',
     params: { site: 'douyin', command: 'search', args: { query: '{{keyword}}' }, sourceGroup: 'douyin-search', queryFrom: 'keyword', format: 'json' },
     ui: { label: '抖音 · 关键词搜索', description: '逐条使用飞书 keyword 调用 douyin search', icon: 'Globe', color: 'var(--chart-4)', position: { x: 570, y: 260 }, catalogId: 'intelligence.source.opencli-slot' },
   }
   const doubao = createWorkflowNodeFromCatalog(catalog('intelligence.source.doubao-research'), 'doubao-research', { x: 820, y: 260 })
-  doubao.params = { ...doubao.params, question: '请分析关键词 {{keyword}} 对应的抖音结果，提炼内容、作者、互动和可引用证据。', questionFrom: 'keyword' }
+  doubao.params = {
+    ...doubao.params,
+    question: '请围绕推荐追问 {{keyword}} 进行研究，并严格返回 JSON：{"answer":"完整回答，包含关键结论和证据","session_share_data":[{"title":"会话或分享标题","url":"可访问的分享链接","summary":"分享内容摘要"}],"suggested_keywords":["建议关键词"]}。必须保留所有可引用来源；没有会话分享链接时 session_share_data 返回空数组；建议关键词返回 3-10 个与该追问相关、可继续检索的词。不要输出 Markdown。',
+    questionFrom: 'keyword',
+  }
   const hygiene = createWorkflowNodeFromCatalog(catalog('package.processing.record-hygiene'), 'record-hygiene', { x: 1080, y: 260 })
   const records = createWorkflowNodeFromCatalog(catalog('intelligence.sink.records'), 'records', { x: 1380, y: 260 })
   return parseWorkflowProject({
