@@ -5,7 +5,7 @@ from backend.workflow.channel_source_executor import execute_workflow_channel_so
 
 
 @pytest.mark.asyncio
-async def test_channel_source_executor_interpolates_each_upstream_keyword(monkeypatch):
+async def test_channel_source_executor_passes_each_upstream_keyword_directly(monkeypatch):
     calls = []
 
     async def fake_collect(source, params):
@@ -16,14 +16,14 @@ async def test_channel_source_executor_interpolates_each_upstream_keyword(monkey
     items = await execute_workflow_channel_source(
         {
             "channelType": "doubao_research",
-            "params": {"question": "analyze {{keyword}}", "site_session": "ephemeral"},
+            "params": {"question": "{{keyword}}", "site_session": "ephemeral"},
         },
         max_items=10,
         upstream_items=[{"keyword": "gjs"}, {"keyword": "dha"}],
     )
 
-    assert [params["question"] for _, params in calls] == ["analyze gjs", "analyze dha"]
-    assert [item["id"] for item in items] == ["analyze gjs", "analyze dha"]
+    assert [params["question"] for _, params in calls] == ["gjs", "dha"]
+    assert [item["id"] for item in items] == ["gjs", "dha"]
 
 
 @pytest.mark.asyncio

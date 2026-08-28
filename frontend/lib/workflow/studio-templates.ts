@@ -25,7 +25,7 @@ export const STUDIO_TEMPLATES = [
   { id: 'ashare-self-media-listening', variant: 'collection-to-consumption', appType: 'workflow', title: 'A 股自媒体与社区舆情', description: '采集公众号、股吧、雪球、微博、小红书、B站、抖音与知乎内容，并逐来源暴露登录和健康状态。', category: '真实业务测试', steps: ['跨平台搜索', '舆情清洗', '自媒体数据集'] },
   { id: 'opencli-situation-awareness', variant: 'collection-to-consumption', appType: 'workflow', title: 'OpenCLI 态势感知框架', description: '采集实时事件、新闻和视频字幕，保留证据血缘，并投影到数据工作台与逻辑证据页。', category: '真实业务测试', steps: ['多模态证据采集', '证据准入', '数据与证据工作台'] },
   { id: 'opencli-live-pipeline', variant: 'collection-to-consumption', appType: 'workflow', title: 'OpenCLI 实时采集清洗发送', description: '从 OpenCLI 动态数据源实时提取，完成标准化、去重、Records 入库并发送结果。', category: '完整链路', steps: ['OpenCLI 实时采集', '清洗与 Records', 'Webhook 发送'] },
-  { id: 'feishu-douyin-doubao', variant: 'collection-to-consumption', appType: 'workflow', title: '飞书关键词 → 抖音 → 豆包', description: '从飞书多维表格读取待采集词条，逐词搜索抖音并交给豆包分析，最后标准化、去重后写入 Records。', category: '真实业务测试', steps: ['飞书词条', '抖音搜索与豆包分析', '清洗与 Records'] },
+  { id: 'feishu-douyin-doubao', variant: 'collection-to-consumption', appType: 'workflow', title: '飞书关键词 → 豆包', description: '从飞书多维表格读取待采集词条，逐条原样交给豆包回答，保留回答、数据、链接、分享信息和建议关键词后写入 Records。', category: '真实业务测试', steps: ['飞书词条', '豆包直接回答', '完整结果入库'] },
   { id: 'financial-rss-intelligence', variant: 'collect', appType: 'workflow', title: '财经多源 RSS 情报', description: '并行采集央行政策、监管公告与研究动态，按来源 Group 清洗后写入成果与数据。', category: '采集与监控', steps: ['多源 RSS', 'Group 标准化', 'Records 入库'] },
   { id: 'website-watch', variant: 'collect', appType: 'workflow', title: '网站变化监控', description: '定时读取指定页面，识别内容变化并形成可追溯记录。', category: '采集与监控', steps: ['网页来源', '变化检测', '记录入库'] },
   { id: 'multi-source-intake', variant: 'collect', appType: 'workflow', title: '多来源信息采集', description: '把多个网站与 CLI 数据源汇入统一的采集队列。', category: '采集与监控', steps: ['来源列表', '并行采集', '统一输出'] },
@@ -109,7 +109,7 @@ export function studioGraphForTemplate(template: StudioTemplateId, name: string)
     })
   }
   if (template === 'opencli-live-pipeline') return opencliLivePipelineGraph(name)
-  if (template === 'feishu-douyin-doubao') return feishuDouyinDoubaoGraph(name)
+  if (template === 'feishu-douyin-doubao') return feishuDoubaoGraph(name)
   if (template === 'financial-rss-intelligence') return financialRssIntelligenceGraph(name)
   if (template === 'ashare-market-intelligence') return buildAshareMarketWorkflow(name)
   if (template === 'ashare-stock-research') return buildAshareStockResearchWorkflow(name)
@@ -136,7 +136,7 @@ export function studioGraphForTemplate(template: StudioTemplateId, name: string)
   return parseWorkflowProject({ ...base, id: `draft-${Date.now()}`, name, nodes, edges: base.edges.filter((edge) => ids.has(edge.source) && ids.has(edge.target)), adapters })
 }
 
-function feishuDouyinDoubaoGraph(name: string) {
+function feishuDoubaoGraph(name: string) {
   const catalog = (id: string) => {
     const item = WORKFLOW_NODE_CATALOG.find((candidate) => candidate.id === id)
     if (!item) throw new Error(`工作流节点未注册：${id}`)
@@ -150,15 +150,10 @@ function feishuDouyinDoubaoGraph(name: string) {
     keyword_field: '推荐追问',
     source_group: 'feishu-recommended-followups',
   }
-  const douyin: WorkflowProjectNode = {
-    id: 'douyin-search', kind: 'source', capability: 'fetch', adapter: 'opencli-douyin',
-    params: { site: 'douyin', command: 'search', args: { query: '{{keyword}}' }, sourceGroup: 'douyin-search', queryFrom: 'keyword', format: 'json' },
-    ui: { label: '抖音 · 关键词搜索', description: '逐条使用飞书 keyword 调用 douyin search', icon: 'Globe', color: 'var(--chart-4)', position: { x: 570, y: 260 }, catalogId: 'intelligence.source.opencli-slot' },
-  }
   const doubao = createWorkflowNodeFromCatalog(catalog('intelligence.source.doubao-research'), 'doubao-research', { x: 820, y: 260 })
   doubao.params = {
     ...doubao.params,
-    question: '请围绕推荐追问 {{keyword}} 进行研究，并严格返回 JSON：{"answer":"完整回答，包含关键结论和证据","session_share_data":[{"title":"会话或分享标题","url":"可访问的分享链接","summary":"分享内容摘要"}],"suggested_keywords":["建议关键词"]}。必须保留所有可引用来源；没有会话分享链接时 session_share_data 返回空数组；建议关键词返回 3-10 个与该追问相关、可继续检索的词。不要输出 Markdown。',
+    question: '{{keyword}}',
     questionFrom: 'keyword',
   }
   const hygiene = createWorkflowNodeFromCatalog(catalog('package.processing.record-hygiene'), 'record-hygiene', { x: 1080, y: 260 })
@@ -168,14 +163,12 @@ function feishuDouyinDoubaoGraph(name: string) {
     agentPermissions: { ...PACKAGED_WORKFLOW_PROJECT.agentPermissions, canFetchNetwork: true },
     adapters: [
       { id: 'feishu-table-source', type: 'source', provider: 'feishu', mode: 'live', config: { channel: 'feishu_table', channelType: 'feishu_table' } },
-      { id: 'opencli-douyin', type: 'source', provider: 'opencli', mode: 'live', config: { channel: 'opencli', site: 'douyin', command: 'search' } },
       { id: 'doubao-research-source', type: 'source', provider: 'doubao', mode: 'live', config: { channel: 'doubao_research', channelType: 'doubao_research' } },
     ],
-    nodes: [schedule, feishu, douyin, doubao, hygiene, records],
+    nodes: [schedule, feishu, doubao, hygiene, records],
     edges: [
       { id: 'schedule-feishu', source: schedule.id, target: feishu.id },
-      { id: 'feishu-douyin', source: feishu.id, sourcePort: 'out', target: douyin.id, targetPort: 'in' },
-      { id: 'douyin-doubao', source: douyin.id, sourcePort: 'out', target: doubao.id, targetPort: 'in' },
+      { id: 'feishu-doubao', source: feishu.id, sourcePort: 'out', target: doubao.id, targetPort: 'in' },
       { id: 'doubao-hygiene', source: doubao.id, sourcePort: 'out', target: hygiene.id, targetPort: 'in' },
       { id: 'hygiene-records', source: hygiene.id, sourcePort: 'out', target: records.id, targetPort: 'records' },
     ],

@@ -67,6 +67,21 @@ def _structured_response(text: str) -> dict[str, Any]:
                 or parsed.get("share_urls")
                 or []
             )
+            response_data = (
+                parsed.get("data")
+                or parsed.get("details")
+                or parsed.get("answer_data")
+                or parsed.get("result")
+                or parsed.get("key_points")
+                or []
+            )
+            links = (
+                parsed.get("links")
+                or parsed.get("references")
+                or parsed.get("sources")
+                or parsed.get("urls")
+                or []
+            )
             suggested = (
                 parsed.get("suggested_keywords")
                 or parsed.get("suggested_keys")
@@ -76,10 +91,17 @@ def _structured_response(text: str) -> dict[str, Any]:
             )
             if not isinstance(share_data, (list, dict, str)):
                 share_data = []
+            if not isinstance(response_data, (list, dict, str)):
+                response_data = []
+            if not isinstance(links, (list, dict, str)):
+                links = []
             if not isinstance(suggested, list):
                 suggested = [suggested] if suggested else []
             return {
                 "answer": str(answer).strip(),
+                "data": response_data,
+                "links": links,
+                "response_data": parsed,
                 "session_share_data": share_data,
                 "suggested_keywords": [
                     str(item).strip() for item in suggested if str(item).strip()
@@ -88,6 +110,9 @@ def _structured_response(text: str) -> dict[str, Any]:
             }
     return {
         "answer": raw,
+        "data": [],
+        "links": [],
+        "response_data": {},
         "session_share_data": [],
         "suggested_keywords": [],
         "raw_answer": raw,
@@ -181,6 +206,11 @@ class DoubaoResearchChannel(AbstractChannel):
             ]
         )
         citations = _citations(citations_text) if extract_citations else []
+        links = structured["links"] or citations
+        response_data = structured["response_data"] or {
+            "answer": content,
+            "links": citations,
+        }
         return ChannelResult.ok(
             [
                 {
@@ -189,6 +219,9 @@ class DoubaoResearchChannel(AbstractChannel):
                     "author": "doubao",
                     "question": question,
                     "answer": content,
+                    "data": structured["data"],
+                    "links": links,
+                    "response_data": response_data,
                     "raw_answer": structured["raw_answer"],
                     "session_share_data": structured["session_share_data"],
                     "suggested_keywords": structured["suggested_keywords"],
