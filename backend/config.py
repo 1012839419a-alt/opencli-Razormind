@@ -149,6 +149,12 @@ class Settings(BaseSettings):
     # pinned Python 3.10 sidecar instead of the Python 3.13 API process.
     kats_runtime_url: str = "http://localhost:8096"
     kats_runtime_timeout_seconds: float = 120.0
+    # PAW runs only in its own offline sidecar. The URL and program identity are
+    # deployment-owned settings rather than agent-editable processor config.
+    paw_runtime_url: str = "http://localhost:8097"
+    paw_runtime_timeout_seconds: float = 30.0
+    paw_program_id: str = ""
+    paw_max_tokens: int = 512
     # Managed acquisition runtime. The commit/version are code-owned pins;
     # this path merely locates the installed checkout on every platform.
     ohmyopencli_root: str = "/opt/ohmyopencli"

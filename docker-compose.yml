@@ -141,6 +141,42 @@ services:
       start_period: 60s
     restart: unless-stopped
 
+  # ── PAW local enrichment runtime ─────────────────────────────────────────
+  # The fixed PAW 0.4.4 program is opt-in and never receives egress access.
+  paw-runtime:
+    profiles: ["paw"]
+    build:
+      context: ./compat/paw_runtime
+      dockerfile: Dockerfile
+    environment:
+      PAW_OFFLINE: "1"
+      PAW_PROGRAM_ID: ${PAW_PROGRAM_ID:-}
+      PAW_EXECUTION_TIMEOUT_SECONDS: ${PAW_EXECUTION_TIMEOUT_SECONDS:-30}
+      PAW_N_CTX: ${PAW_N_CTX:-2048}
+    volumes:
+      - ${PAW_CACHE_DIR:-./.paw-cache}:/var/cache/paw:ro
+    networks:
+      - paw_runtime
+    read_only: true
+    tmpfs:
+      - /tmp:size=${PAW_RUNTIME_TMPFS_SIZE:-64m},mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:8097/health', timeout=3)"
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+    restart: unless-stopped
+
   # ── Backend API ───────────────────────────────────────────────────────────
   api:
     <<: *backend-common
@@ -180,6 +216,10 @@ services:
       III_URL: ${III_URL:-}
       DIFY_GRAPHON_RUNTIME_URL: ${DIFY_GRAPHON_RUNTIME_URL:-http://dify-graphon-runtime:8095}
       KATS_RUNTIME_URL: ${KATS_RUNTIME_URL:-http://kats-runtime:8096}
+      PAW_RUNTIME_URL: ${PAW_RUNTIME_URL:-http://paw-runtime:8097}
+      PAW_PROGRAM_ID: ${PAW_PROGRAM_ID:-}
+      PAW_RUNTIME_TIMEOUT_SECONDS: ${PAW_RUNTIME_TIMEOUT_SECONDS:-30}
+      PAW_MAX_TOKENS: ${PAW_MAX_TOKENS:-512}
       INVOKEAI_ENABLED: ${INVOKEAI_ENABLED:-false}
       INVOKEAI_BASE_URL: http://invokeai:9090
       INVOKEAI_API_TOKEN: ${INVOKEAI_API_TOKEN:-}
@@ -194,6 +234,7 @@ services:
       - default
       - dify_runtime
       - kats_runtime
+      - paw_runtime
       - invokeai-private
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
@@ -275,6 +316,10 @@ services:
       KATS_RUNTIME_URL: ${KATS_RUNTIME_URL:-http://kats-runtime:8096}
       INVOKEAI_ENABLED: ${INVOKEAI_ENABLED:-false}
       INVOKEAI_BASE_URL: http://invokeai:9090
+      PAW_RUNTIME_URL: ${PAW_RUNTIME_URL:-http://paw-runtime:8097}
+      PAW_PROGRAM_ID: ${PAW_PROGRAM_ID:-}
+      PAW_RUNTIME_TIMEOUT_SECONDS: ${PAW_RUNTIME_TIMEOUT_SECONDS:-30}
+      PAW_MAX_TOKENS: ${PAW_MAX_TOKENS:-512}
       INVOKEAI_API_TOKEN: ${INVOKEAI_API_TOKEN:-}
       IMAGE_ASSET_STORAGE_PATH: /data/image-studio/assets
     depends_on:
@@ -285,6 +330,7 @@ services:
     networks:
       - default
       - kats_runtime
+      - paw_runtime
       - invokeai-private
 
   # ── Private image-generation data plane ─────────────────────────────────
@@ -526,6 +572,9 @@ networks:
   dify_runtime:
     internal: true
   kats_runtime:
+    internal: true
+  # PAW has no egress; only the API and Celery worker can reach it.
+  paw_runtime:
     internal: true
   # Dedicated outbound network: the Graphon sidecar can reach server-owned
   # sandbox/model endpoints without becoming reachable from sibling services.

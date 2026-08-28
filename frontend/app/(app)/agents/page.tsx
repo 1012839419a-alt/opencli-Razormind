@@ -19,6 +19,7 @@ const PROCESSOR_LABEL: Record<string, string> = {
   claude: 'Claude',
   openai: 'OpenAI',
   local: '本地模型',
+  paw: 'PAW 本地富化',
 }
 
 export default function AgentsPage() {

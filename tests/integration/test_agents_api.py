@@ -33,6 +33,56 @@ async def test_create_agent(client, agent_data):
 
 
 @pytest.mark.asyncio
+async def test_create_paw_agent_round_trips_safe_processor_config(client, agent_data):
+    response = await client.post(
+        "/api/v1/agents",
+        json={
+            **agent_data,
+            "name": "Offline PAW Agent",
+            "processor_type": "paw",
+            "processor_config": {"max_tokens": 128},
+        },
+    )
+
+    assert response.status_code == 201
+    data = response.json()["data"]
+    assert data["processor_type"] == "paw"
+    assert data["processor_config"] == {"max_tokens": 128}
+
+
+@pytest.mark.asyncio
+async def test_paw_agent_api_rejects_blank_or_unapproved_config(client, agent_data):
+    blank = await client.post(
+        "/api/v1/agents",
+        json={**agent_data, "processor_type": "paw", "prompt_template": "   "},
+    )
+    unsupported = await client.post(
+        "/api/v1/agents",
+        json={
+            **agent_data,
+            "processor_type": "paw",
+            "processor_config": {"endpoint": "http://example.test"},
+        },
+    )
+
+    assert blank.status_code == 422
+    assert unsupported.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_paw_agent_update_validates_merged_state(client, agent_data):
+    created = await client.post(
+        "/api/v1/agents",
+        json={**agent_data, "processor_type": "paw", "processor_config": {"max_tokens": 8}},
+    )
+    agent_id = created.json()["data"]["id"]
+
+    response = await client.patch(f"/api/v1/agents/{agent_id}", json={"prompt_template": " "})
+
+    assert response.status_code == 422
+
+
+@pytest.mark.asyncio
 async def test_list_agents_after_create(client, agent_data):
     await client.post("/api/v1/agents", json=agent_data)
     response = await client.get("/api/v1/agents")

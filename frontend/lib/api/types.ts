@@ -187,7 +187,7 @@ export interface AIAgent {
   id: string
   name: string
   description?: string
-  processor_type: 'claude' | 'openai' | 'local'
+  processor_type: 'claude' | 'openai' | 'local' | 'paw'
   model?: string
   prompt_template: string
   processor_config: Record<string, unknown>
