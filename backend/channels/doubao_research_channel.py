@@ -69,6 +69,7 @@ def _structured_response(text: str) -> dict[str, Any]:
             )
             suggested = (
                 parsed.get("suggested_keywords")
+                or parsed.get("suggested_keys")
                 or parsed.get("recommend_keywords")
                 or parsed.get("recommended_keywords")
                 or []

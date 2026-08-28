@@ -29,6 +29,15 @@ def test_structured_response_preserves_share_data_and_keywords():
     assert response["suggested_keywords"] == ["DHA 食物"]
 
 
+def test_structured_response_accepts_doubao_suggested_keys_alias():
+    response = _structured_response(
+        '{"answer":"结论", "session_share_data":"", '
+        '"suggested_keys":["深海鱼", "DHA 鸡蛋"], "citations":[]}'
+    )
+
+    assert response["suggested_keywords"] == ["深海鱼", "DHA 鸡蛋"]
+
+
 @pytest.mark.asyncio
 async def test_collect_stores_answer_and_citations(monkeypatch):
     async def fake_run(command):
