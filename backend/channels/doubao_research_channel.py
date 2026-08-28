@@ -254,14 +254,12 @@ class DoubaoResearchChannel(AbstractChannel):
         config: dict[str, Any] | None = None,
         source_id: str | None = None,
     ) -> bool:
-        """Probe the same persistent browser session used by live capture.
-
-        ``status`` can only report ``Login=Unknown`` for a live authenticated
-        workspace.  Keep its explicit logged-in result for compatibility, but
-        require a provider-scoped workspace and read-only ``whoami`` evidence
-        before treating that indeterminate state as ready.
-        """
+        """Return whether the selected session satisfies live capture readiness."""
         del source_id
+        return await self.readiness_code(config) is None
+
+    async def readiness_code(self, config: dict[str, Any] | None = None) -> str | None:
+        """Classify a failed live-session probe without exposing provider secrets."""
         session = str((config or {}).get("site_session", "persistent"))
         status_command = [
             _opencli_binary(),
@@ -274,14 +272,18 @@ class DoubaoResearchChannel(AbstractChannel):
         ]
         try:
             returncode, stdout, stderr = await _run_doubao_command(status_command)
-        except (FileNotFoundError, TimeoutError, OSError):
-            return False
-        if returncode or _is_captcha_block(stderr, stdout):
-            return False
+        except FileNotFoundError:
+            return "adapter_missing"
+        except (TimeoutError, OSError):
+            return "session_unavailable"
+        if _is_captcha_block(stderr, stdout):
+            return "captcha_challenge"
+        if returncode:
+            return "session_unavailable"
         try:
             rows = _parse_opencli_rows(stdout)
         except Exception:
-            return False
+            return "session_unavailable"
 
         connected_rows = [
             row
@@ -289,16 +291,16 @@ class DoubaoResearchChannel(AbstractChannel):
             if _row_value(row, "status").lower() in {"connected", "ready", "available"}
         ]
         if not connected_rows:
-            return False
+            return "session_unavailable"
         logins = [_row_value(row, "login").lower() for row in connected_rows]
         if any(login in _LOGGED_OUT_LOGIN_VALUES for login in logins):
-            return False
+            return "authentication_required"
         for row, login in zip(connected_rows, logins, strict=True):
             if login not in _AUTHENTICATED_LOGIN_VALUES:
                 continue
             if _row_value(row, "url", "title") and not _is_authenticated_doubao_workspace(row):
-                return False
-            return True
+                return "session_unavailable"
+            return None
 
         workspace_rows = [
             row
@@ -306,7 +308,7 @@ class DoubaoResearchChannel(AbstractChannel):
             if login in {"", "unknown"} and _is_authenticated_doubao_workspace(row)
         ]
         if len(workspace_rows) != 1:
-            return False
+            return "session_unavailable"
         whoami_command = [
             _opencli_binary(),
             "doubao",
@@ -318,14 +320,22 @@ class DoubaoResearchChannel(AbstractChannel):
         ]
         try:
             returncode, stdout, stderr = await _run_doubao_command(whoami_command)
-        except (FileNotFoundError, TimeoutError, OSError):
-            return False
-        if returncode or _is_captcha_block(stderr, stdout):
-            return False
+        except FileNotFoundError:
+            return "adapter_missing"
+        except (TimeoutError, OSError):
+            return "session_unavailable"
+        if _is_captcha_block(stderr, stdout):
+            return "captcha_challenge"
+        if returncode:
+            return "authentication_required"
         try:
-            return _has_authenticated_account(_parse_opencli_rows(stdout))
+            return (
+                None
+                if _has_authenticated_account(_parse_opencli_rows(stdout))
+                else "authentication_required"
+            )
         except Exception:
-            return False
+            return "authentication_required"
 
     async def validate_config(self, config: dict[str, Any]) -> list[str]:
         return (

@@ -13,6 +13,7 @@ from backend.workflow.gaojixing_runtime import (
     map_capture_item,
 )
 from backend.workflow.opencli_hda_tracer import (
+    _execute_gaojixing_fixture_source,
     _execute_gaojixing_source,
     _store_record_sink_outputs,
     replay_downstream_from_persisted_gaojixing_source,
@@ -35,6 +36,28 @@ def test_question_package_uses_runtime_question_and_stable_digest():
     assert first.digest == second.digest
     assert len(first.digest) == 64
     assert first.options["settle_seconds"] == 35
+
+
+def test_question_package_remains_immutable_after_source_changes():
+    node_params = {"question": "original", "sourceGroup": "before"}
+    package = build_question_package(
+        node_params=node_params,
+        adapter_config={"settle_seconds": 35},
+        runtime_payload={},
+    )
+
+    node_params["question"] = "edited"
+    node_params["sourceGroup"] = "after"
+
+    assert package.question == "original"
+    assert package.options["sourceGroup"] == "before"
+    with pytest.raises(TypeError):
+        package.options["sourceGroup"] = "mutated"
+    assert package.digest == build_question_package(
+        node_params={"question": "original", "sourceGroup": "before"},
+        adapter_config={"settle_seconds": 35},
+        runtime_payload={},
+    ).digest
 
 
 def test_question_package_accepts_published_run_query_input():
@@ -74,6 +97,69 @@ async def test_capture_fails_closed_when_capability_missing(monkeypatch):
 
     assert error.value.code == "gaojixing_capability_missing"
 
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("adapter_config", "network_allowed", "expected_code"),
+    [
+        ({"capabilityAvailable": False}, True, "gaojixing_capability_missing"),
+        ({"adapterAvailable": False}, True, "gaojixing_adapter_missing"),
+        ({"authenticated": False}, True, "gaojixing_authentication_required"),
+        ({"sessionAvailable": False}, True, "gaojixing_session_unavailable"),
+        ({}, False, "gaojixing_network_denied"),
+    ],
+)
+async def test_capture_reports_each_configured_readiness_blocker(
+    monkeypatch,
+    adapter_config,
+    network_allowed,
+    expected_code,
+):
+    package = build_question_package(
+        node_params={"question": "q"}, adapter_config={}, runtime_payload={}
+    )
+
+    async def should_not_probe(self, _config):
+        raise AssertionError("session probe must not run after a readiness blocker")
+
+    monkeypatch.setattr(runtime.DoubaoResearchChannel, "health_check", should_not_probe)
+    with pytest.raises(GaojixingReadinessError) as error:
+        await capture_live_doubao(
+            package=package,
+            node_params={},
+            adapter_config=adapter_config,
+            network_allowed=network_allowed,
+        )
+
+    assert error.value.code == expected_code
+
+
+@pytest.mark.asyncio
+async def test_capture_reports_captcha_from_session_probe(monkeypatch):
+    package = build_question_package(
+        node_params={"question": "q"}, adapter_config={}, runtime_payload={}
+    )
+
+    async def unhealthy(self, _config):
+        return False
+
+    async def captcha(self, _config):
+        return "captcha_challenge"
+
+    monkeypatch.setattr(runtime.DoubaoResearchChannel, "health_check", unhealthy)
+    monkeypatch.setattr(runtime.DoubaoResearchChannel, "readiness_code", captcha)
+
+    with pytest.raises(GaojixingReadinessError) as error:
+        await capture_live_doubao(
+            package=package,
+            node_params={},
+            adapter_config={},
+            network_allowed=True,
+        )
+
+    assert error.value.code == "gaojixing_captcha_challenge"
+    assert error.value.details["site"] == "doubao"
 
 @pytest.mark.asyncio
 async def test_capture_uses_live_channel_after_health_probe(monkeypatch):
@@ -132,6 +218,33 @@ def test_capture_mapping_keeps_package_and_independent_evidence():
         "value": "https://www.doubao.com/chat/123",
         "status": "unique",
     }
+
+
+def test_capture_mapping_does_not_invent_malformed_optional_evidence():
+    package = build_question_package(
+        node_params={"question": "q"}, adapter_config={}, runtime_payload={}
+    )
+    mapped = map_capture_item(
+        {
+            "content": "answer",
+            "citations": "not-a-citation-list",
+            "conversation_url": {"url": "https://www.doubao.com/chat/guessed"},
+        },
+        package=package,
+        workflow_id="wf",
+        run_id="run",
+        node_id="source",
+        artifact_id="artifact",
+    )
+
+    evidence = mapped["gaojixing"]["evidence"]
+    assert evidence["citations"] == {
+        "status": "empty",
+        "capture": "answer_url_extraction",
+        "verified": False,
+        "items": [],
+    }
+    assert evidence["conversation"] == {"status": "unknown", "url": None}
 
 
 class _Emitter:
@@ -204,13 +317,88 @@ async def test_hda_live_source_branch_maps_capture_output(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_downstream_replay_uses_only_persisted_gaojixing_evidence(monkeypatch):
+@pytest.mark.parametrize(
+    ("capture_result", "expected_code"),
+    [
+        (ChannelResult.fail("Doubao request timed out", error_type="TimeoutError"), "TimeoutError"),
+        (
+            ChannelResult.fail("CAPTCHA challenge", error_type="captcha_challenge"),
+            "captcha_challenge",
+        ),
+        (ChannelResult.ok([{"content": " "}]), "gaojixing_answer_missing"),
+    ],
+)
+async def test_hda_live_source_fails_closed_on_capture_errors(
+    monkeypatch,
+    capture_result,
+    expected_code,
+):
+    node = SimpleNamespace(
+        id="gaojixing-source",
+        kind="source",
+        adapter=None,
+        depends_on=[],
+        params={"question": "q", "sourceGroup": "gaojixing"},
+        runtime={
+            "binding": {
+                "input": {
+                    "channelType": "doubao_research",
+                    "liveMode": "live",
+                    "adapterConfig": {"capabilityId": GAOJIXING_CAPABILITY_ID},
+                }
+            }
+        },
+    )
+    body = SimpleNamespace(
+        input=SimpleNamespace(payload={}),
+        project=SimpleNamespace(
+            id="workflow",
+            agentPermissions=SimpleNamespace(canFetchNetwork=True),
+        ),
+    )
+    emitter = _Emitter()
+    outputs = {}
+
+    async def fake_capture(**_kwargs):
+        return capture_result
+
+    monkeypatch.setattr("backend.workflow.opencli_hda_tracer.capture_live_doubao", fake_capture)
+    await _execute_gaojixing_source(
+        node,
+        body=body,
+        run_id="run",
+        workflow_id="workflow",
+        trace_id="trace",
+        outputs_by_node=outputs,
+        emitter=emitter,
+        session=None,
+    )
+
+    assert outputs["gaojixing-source"] == []
+    assert emitter.events[-1][1] == "failed"
+    assert emitter.events[-1][2]["block_reason"].code == expected_code
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("mode", "provenance", "business_outcome"),
+    [
+        ("live", "opencli:doubao", "unconfirmed"),
+        ("fixture", "fixture:contract-vector", "fixture"),
+    ],
+)
+async def test_replay_preserves_provenance_for_webhook_delivery(
+    monkeypatch,
+    mode,
+    provenance,
+    business_outcome,
+):
     source_node = SimpleNamespace(
         id="source",
         kind="source",
         params={},
         adapter=None,
-        runtime={"binding": {"input": {"channelType": "doubao_research", "liveMode": "live"}}},
+        runtime={"binding": {"input": {"channelType": "doubao_research", "liveMode": mode}}},
     )
     source_input = SimpleNamespace(
         sourceId=None,
@@ -236,7 +424,8 @@ async def test_downstream_replay_uses_only_persisted_gaojixing_evidence(monkeypa
                     "package": {"digest": "digest"},
                     "artifactId": "artifact",
                     "evidence": {
-                        "mode": "live",
+                        "mode": mode,
+                        "provenance": provenance,
                         "packageDigest": "digest",
                         "runId": "source-run",
                         "workflowId": "workflow",
@@ -291,8 +480,34 @@ async def test_downstream_replay_uses_only_persisted_gaojixing_evidence(monkeypa
     assert replay.runId == "replay-run"
     request = start.await_args.args[0]
     assert request.input.sourceId == "source-run"
-    assert request.sourceOutputs["source"][0]["raw"]["gaojixing"]["artifactId"] == "artifact"
+    replay_raw = request.sourceOutputs["source"][0]["raw"]
+    assert replay_raw["gaojixing"]["artifactId"] == "artifact"
+    assert replay_raw["gaojixing"]["provenance"] == provenance
+    assert request.sourceOutputs["source"][0]["lineage"][0]["mode"] == "persisted-replay"
     assert start.await_args.kwargs["replay_source_node_ids"] == {"source"}
+
+    from backend.notifiers.base import NotificationSendResult
+    from backend.workflow.webhook_delivery import execute_workflow_webhook_delivery
+
+    class _Notifier:
+        async def send(self, _config, _payload):
+            return NotificationSendResult(success=True, response_data=None)
+
+    monkeypatch.setattr(
+        "backend.workflow.webhook_delivery.get_notifier",
+        lambda _kind: _Notifier(),
+    )
+    delivery = await execute_workflow_webhook_delivery(
+        {},
+        request.sourceOutputs["source"],
+        workflow_id="workflow",
+        run_id="replay-run",
+        node_id="notify",
+    )
+    assert delivery["mode"] == mode
+    assert delivery["provenance"] == provenance
+    assert delivery["businessOutcome"] == business_outcome
+    assert delivery["liveAccepted"] is False
 
 
 @pytest.mark.asyncio
@@ -419,3 +634,448 @@ async def test_gaojixing_delivery_distinguishes_transport_from_business_ack(monk
     assert result["ackEvidence"] is None
     assert result["packageDigest"] == package.digest
     assert captured["payload"].delivery_id == result["deliveryAttemptId"]
+
+
+@pytest.mark.asyncio
+async def test_matching_destination_ack_confirms_one_idempotent_business_outcome(monkeypatch):
+    from backend.notifiers.base import NotificationSendResult
+    from backend.workflow.webhook_delivery import execute_workflow_webhook_delivery
+
+    package = build_question_package(
+        node_params={"question": "q"}, adapter_config={}, runtime_payload={}
+    )
+    raw = map_capture_item(
+        {"content": "answer"},
+        package=package,
+        workflow_id="workflow",
+        run_id="run",
+        node_id="source",
+        artifact_id="artifact",
+    )
+
+    class _Notifier:
+        async def send(self, _config, payload):
+            return NotificationSendResult(
+                success=True,
+                response_data={
+                    "businessAck": True,
+                    "deliveryAttemptId": payload.delivery_id,
+                },
+            )
+
+    monkeypatch.setattr(
+        "backend.workflow.webhook_delivery.get_notifier",
+        lambda _kind: _Notifier(),
+    )
+    first = await execute_workflow_webhook_delivery(
+        {},
+        [{"raw": raw, "lineage": [{"nodeId": "source"}]}],
+        workflow_id="workflow",
+        run_id="run",
+        node_id="notify",
+    )
+    retry = await execute_workflow_webhook_delivery(
+        {},
+        [{"raw": raw, "lineage": [{"nodeId": "source"}]}],
+        workflow_id="workflow",
+        run_id="run",
+        node_id="notify",
+    )
+
+    assert first["deliveryAttemptId"] == retry["deliveryAttemptId"]
+    assert first["transportStatus"] == "accepted"
+    assert first["businessOutcome"] == "confirmed"
+    assert first["liveAccepted"] is True
+    assert first["ackEvidence"]["matchesDeliveryAttempt"] is True
+
+
+@pytest.mark.asyncio
+async def test_unmatched_destination_ack_remains_unconfirmed(monkeypatch):
+    from backend.notifiers.base import NotificationSendResult
+    from backend.workflow.webhook_delivery import execute_workflow_webhook_delivery
+
+    package = build_question_package(
+        node_params={"question": "q"}, adapter_config={}, runtime_payload={}
+    )
+    raw = map_capture_item(
+        {"content": "answer"},
+        package=package,
+        workflow_id="workflow",
+        run_id="run",
+        node_id="source",
+        artifact_id="artifact",
+    )
+
+    class _Notifier:
+        async def send(self, _config, _payload):
+            return NotificationSendResult(
+                success=True,
+                response_data={"businessAck": True, "deliveryAttemptId": "another-attempt"},
+            )
+
+    monkeypatch.setattr(
+        "backend.workflow.webhook_delivery.get_notifier",
+        lambda _kind: _Notifier(),
+    )
+    result = await execute_workflow_webhook_delivery(
+        {},
+        [{"raw": raw, "lineage": [{"nodeId": "source"}]}],
+        workflow_id="workflow",
+        run_id="run",
+        node_id="notify",
+    )
+
+    assert result["transportStatus"] == "accepted"
+    assert result["businessOutcome"] == "unconfirmed"
+    assert result["liveAccepted"] is False
+    assert result["ackEvidence"]["matchesDeliveryAttempt"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("failure_kind", "expected_code"),
+    [
+        ("notifier", "webhook_delivery_failed"),
+        ("network", "webhook_delivery_network_error"),
+    ],
+)
+async def test_destination_failures_preserve_typed_unknown_business_state(
+    monkeypatch,
+    failure_kind,
+    expected_code,
+):
+    from backend.notifiers.base import NotificationSendResult
+    from backend.workflow.webhook_delivery import (
+        WorkflowWebhookDeliveryError,
+        execute_workflow_webhook_delivery,
+    )
+
+    package = build_question_package(
+        node_params={"question": "q"}, adapter_config={}, runtime_payload={}
+    )
+    raw = map_capture_item(
+        {"content": "answer"},
+        package=package,
+        workflow_id="workflow",
+        run_id="run",
+        node_id="source",
+        artifact_id="artifact",
+    )
+
+    class _Notifier:
+        async def send(self, _config, _payload):
+            if failure_kind == "network":
+                raise OSError("destination timed out")
+            return NotificationSendResult(success=False, response_data=None)
+
+    monkeypatch.setattr(
+        "backend.workflow.webhook_delivery.get_notifier",
+        lambda _kind: _Notifier(),
+    )
+    with pytest.raises(WorkflowWebhookDeliveryError) as error:
+        await execute_workflow_webhook_delivery(
+            {},
+            [{"raw": raw, "lineage": [{"nodeId": "source"}]}],
+            workflow_id="workflow",
+            run_id="run",
+            node_id="notify",
+        )
+
+    assert error.value.code == expected_code
+    assert error.value.details["transportStatus"] == "failed"
+    assert error.value.details["businessOutcome"] == "unknown"
+    assert error.value.details["deliveryAttemptId"]
+
+
+@pytest.mark.asyncio
+async def test_fixture_source_labels_digest_evidence_and_lineage_without_live_dispatch(
+    monkeypatch,
+):
+    node = SimpleNamespace(
+        id="fixture-source",
+        kind="source",
+        adapter=None,
+        depends_on=[],
+        params={
+            "question": "configured",
+            "sourceGroup": "gaojixing",
+            "fixtureItems": [
+                {
+                    "content": "fixture answer",
+                    "citations": [{"url": "https://fixture.test/citation"}],
+                    "conversation_url": "https://fixture.test/conversation",
+                }
+            ],
+        },
+        runtime={
+            "binding": {
+                "binding_id": "workflow.source.fetch",
+                "input": {
+                    "channelType": "doubao_research",
+                    "liveMode": "fixture",
+                    "adapterConfig": {"fixtureProvenance": "fixture:contract-vector"},
+                },
+            }
+        },
+    )
+    body = SimpleNamespace(
+        input=SimpleNamespace(payload={"question": "runtime"}),
+        project=SimpleNamespace(
+            id="workflow",
+            agentPermissions=SimpleNamespace(canFetchNetwork=False),
+        ),
+        sourceOutputs={},
+    )
+    emitter = _Emitter()
+    outputs = {}
+
+    async def should_not_dispatch_live(**_kwargs):
+        raise AssertionError("fixture execution must not dispatch the live channel")
+
+    monkeypatch.setattr(
+        "backend.workflow.opencli_hda_tracer.capture_live_doubao", should_not_dispatch_live
+    )
+    await _execute_gaojixing_fixture_source(
+        node,
+        body=body,
+        run_id="run",
+        workflow_id="workflow",
+        outputs_by_node=outputs,
+        emitter=emitter,
+    )
+
+    raw = outputs["fixture-source"][0]["raw"]
+    evidence = raw["gaojixing"]["evidence"]
+    assert raw["gaojixing"]["mode"] == "fixture"
+    assert raw["gaojixing"]["provenance"] == "fixture:contract-vector"
+    assert evidence["mode"] == "fixture"
+    assert evidence["provenance"] == "fixture:contract-vector"
+    assert raw["packageDigest"] == build_question_package(
+        node_params=node.params,
+        adapter_config={"fixtureProvenance": "fixture:contract-vector"},
+        runtime_payload={"question": "runtime"},
+    ).digest
+    assert outputs["fixture-source"][0]["lineage"][0]["mode"] == "fixture"
+    assert (
+        outputs["fixture-source"][0]["lineage"][0]["provenance"]
+        == "fixture:contract-vector"
+    )
+    assert emitter.events[-2][2]["details"]["liveAccepted"] is False
+
+
+@pytest.mark.asyncio
+async def test_live_source_never_falls_back_to_fixture_items_when_session_is_unavailable(
+    monkeypatch,
+):
+    node = SimpleNamespace(
+        id="live-source",
+        kind="source",
+        adapter=None,
+        depends_on=[],
+        params={"question": "q", "fixtureItems": [{"content": "must not be used"}]},
+        runtime={
+            "binding": {
+                "input": {
+                    "channelType": "doubao_research",
+                    "liveMode": "live",
+                    "adapterConfig": {"capabilityId": GAOJIXING_CAPABILITY_ID},
+                }
+            }
+        },
+    )
+    body = SimpleNamespace(
+        input=SimpleNamespace(payload={}),
+        project=SimpleNamespace(
+            id="workflow",
+            agentPermissions=SimpleNamespace(canFetchNetwork=True),
+        ),
+    )
+    emitter = _Emitter()
+    outputs = {}
+
+    async def unavailable(**_kwargs):
+        raise GaojixingReadinessError("gaojixing_session_unavailable", "session unavailable")
+
+    monkeypatch.setattr("backend.workflow.opencli_hda_tracer.capture_live_doubao", unavailable)
+    await _execute_gaojixing_source(
+        node,
+        body=body,
+        run_id="run",
+        workflow_id="workflow",
+        trace_id="trace",
+        outputs_by_node=outputs,
+        emitter=emitter,
+        session=None,
+    )
+
+    assert outputs["live-source"] == []
+    assert [event[1] for event in emitter.events] == ["blocked"]
+    details = emitter.events[0][2]
+    assert details["details"] == {"nodeId": "live-source"}
+    assert details["block_reason"].code == "gaojixing_session_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_mock_delivery_ack_remains_mock_business_outcome(monkeypatch):
+    from backend.notifiers.base import NotificationSendResult
+    from backend.workflow.webhook_delivery import execute_workflow_webhook_delivery
+
+    package = build_question_package(
+        node_params={"question": "q"}, adapter_config={}, runtime_payload={}
+    )
+    raw = map_capture_item(
+        {"content": "mock answer", "citations": [], "conversation_url": ""},
+        package=package,
+        workflow_id="workflow",
+        run_id="run",
+        node_id="source",
+        artifact_id="artifact",
+        mode="mock",
+        provenance="mock:contract-vector",
+    )
+    captured = {}
+
+    class _Notifier:
+        async def send(self, _config, payload):
+            captured["payload"] = payload
+            return NotificationSendResult(success=True, response_data={"businessAck": True})
+
+    monkeypatch.setattr(
+        "backend.workflow.webhook_delivery.get_notifier",
+        lambda _kind: _Notifier(),
+    )
+    result = await execute_workflow_webhook_delivery(
+        {"target": "business", "config": {"url": "https://example.test/hook"}},
+        [{"raw": raw, "lineage": [{"nodeId": "source", "mode": "mock"}]}],
+        workflow_id="workflow",
+        run_id="run",
+        node_id="notify",
+    )
+
+    assert result["transportStatus"] == "accepted"
+    assert result["businessOutcome"] == "mock"
+    assert result["ackEvidence"]["status"] == "confirmed"
+    assert result["liveAccepted"] is False
+    assert result["mode"] == "mock"
+    assert result["provenance"] == "mock:contract-vector"
+    assert captured["payload"].data["mode"] == "mock"
+
+
+@pytest.mark.asyncio
+async def test_delivery_rejects_mixed_live_and_mock_contexts():
+    from backend.workflow.webhook_delivery import (
+        WorkflowWebhookDeliveryError,
+        execute_workflow_webhook_delivery,
+    )
+
+    package = build_question_package(
+        node_params={"question": "q"}, adapter_config={}, runtime_payload={}
+    )
+    live = map_capture_item(
+        {"content": "live answer"},
+        package=package,
+        workflow_id="workflow",
+        run_id="run",
+        node_id="source",
+        artifact_id="live-artifact",
+    )
+    mock = map_capture_item(
+        {"content": "mock answer"},
+        package=package,
+        workflow_id="workflow",
+        run_id="run",
+        node_id="source",
+        artifact_id="mock-artifact",
+        mode="mock",
+        provenance="mock:contract-vector",
+    )
+
+    with pytest.raises(WorkflowWebhookDeliveryError) as error:
+        await execute_workflow_webhook_delivery(
+            {},
+            [{"raw": live}, {"raw": mock}],
+            workflow_id="workflow",
+            run_id="run",
+            node_id="notify",
+        )
+
+    assert error.value.code == "gaojixing_delivery_context_mismatch"
+    assert error.value.details["inconsistentFields"] == ["mode", "provenance"]
+
+
+@pytest.mark.asyncio
+async def test_delivery_rejects_contradictory_evidence_envelope():
+    from backend.workflow.webhook_delivery import (
+        WorkflowWebhookDeliveryError,
+        execute_workflow_webhook_delivery,
+    )
+
+    package = build_question_package(
+        node_params={"question": "q"}, adapter_config={}, runtime_payload={}
+    )
+    raw = map_capture_item(
+        {"content": "answer"},
+        package=package,
+        workflow_id="workflow",
+        run_id="run",
+        node_id="source",
+        artifact_id="artifact",
+    )
+    raw["gaojixing"]["evidence"]["mode"] = "mock"
+
+    with pytest.raises(WorkflowWebhookDeliveryError) as error:
+        await execute_workflow_webhook_delivery(
+            {},
+            [{"raw": raw}],
+            workflow_id="workflow",
+            run_id="run",
+            node_id="notify",
+        )
+
+    assert error.value.code == "gaojixing_delivery_evidence_mismatch"
+
+
+@pytest.mark.asyncio
+async def test_delivery_rejects_cross_run_and_package_lineage():
+    from backend.workflow.webhook_delivery import (
+        WorkflowWebhookDeliveryError,
+        execute_workflow_webhook_delivery,
+    )
+
+    package = build_question_package(
+        node_params={"question": "q"}, adapter_config={}, runtime_payload={}
+    )
+    raw = map_capture_item(
+        {"content": "answer"},
+        package=package,
+        workflow_id="workflow",
+        run_id="run",
+        node_id="source",
+        artifact_id="artifact",
+    )
+
+    with pytest.raises(WorkflowWebhookDeliveryError) as error:
+        await execute_workflow_webhook_delivery(
+            {},
+            [
+                {
+                    "raw": raw,
+                    "lineage": [
+                        {
+                            "nodeId": "source",
+                            "packageDigest": "another-package",
+                            "runId": "another-run",
+                        }
+                    ],
+                }
+            ],
+            workflow_id="workflow",
+            run_id="run",
+            node_id="notify",
+        )
+
+    assert error.value.code == "gaojixing_delivery_lineage_mismatch"
+    assert error.value.details["mismatchedFields"] == [
+        "sourceLineage.packageDigest",
+        "sourceLineage.runId",
+    ]

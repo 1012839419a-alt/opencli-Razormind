@@ -51,6 +51,8 @@ async def execute_workflow_webhook_delivery(
     if gaojixing:
         payload_data["packageDigest"] = gaojixing["packageDigest"]
         payload_data["lineage"] = gaojixing["lineage"]
+        payload_data["mode"] = gaojixing["mode"]
+        payload_data["provenance"] = gaojixing["provenance"]
     payload = NotificationPayload(
         event=WEBHOOK_DELIVERY_EVENT,
         source_id=workflow_id,
@@ -80,6 +82,8 @@ async def execute_workflow_webhook_delivery(
                     "transportStatus": "failed",
                     "businessOutcome": "unknown",
                     "lineage": gaojixing["lineage"],
+                    "mode": gaojixing["mode"],
+                    "provenance": gaojixing["provenance"],
                 }
             )
         raise WorkflowWebhookDeliveryError(
@@ -101,6 +105,8 @@ async def execute_workflow_webhook_delivery(
                     "transportStatus": "failed",
                     "businessOutcome": "unknown",
                     "lineage": gaojixing["lineage"],
+                    "mode": gaojixing["mode"],
+                    "provenance": gaojixing["provenance"],
                 }
             )
         raise WorkflowWebhookDeliveryError(
@@ -119,14 +125,25 @@ async def execute_workflow_webhook_delivery(
         "itemCount": len(input_items),
     }
     if gaojixing:
-        ack = _destination_ack(response_data)
+        ack = _destination_ack(response_data, gaojixing["deliveryAttemptId"])
+        matching_ack = bool(ack and ack["matchesDeliveryAttempt"])
+        is_live = gaojixing["mode"] == "live"
         result.update(
             {
                 "deliveryAttemptId": gaojixing["deliveryAttemptId"],
                 "transportStatus": "accepted",
-                "businessOutcome": "confirmed" if ack else "unconfirmed",
+                "businessOutcome": (
+                    "confirmed"
+                    if is_live and matching_ack
+                    else "unconfirmed"
+                    if is_live
+                    else gaojixing["mode"]
+                ),
                 "ackEvidence": ack,
                 "packageDigest": gaojixing["packageDigest"],
+                "mode": gaojixing["mode"],
+                "provenance": gaojixing["provenance"],
+                "liveAccepted": is_live and matching_ack,
                 "lineage": gaojixing["lineage"],
             }
         )
@@ -139,46 +156,204 @@ def _gaojixing_delivery_context(
     run_id: str,
     node_id: str,
 ) -> dict[str, Any] | None:
-    for item in input_items:
+    contexts: list[dict[str, Any]] = []
+    for index, item in enumerate(input_items):
         raw = _read_dict(item.get("raw"))
         gaojixing = _read_dict(raw.get("gaojixing"))
         if not gaojixing:
             continue
         package = _read_dict(gaojixing.get("package"))
+        evidence = _read_dict(gaojixing.get("evidence"))
         package_digest = _read_string(package.get("digest"))
-        if not package_digest:
-            continue
-        lineage = {
+        mode = _read_string(gaojixing.get("mode"))
+        provenance = _read_string(gaojixing.get("provenance"))
+        evidence_digest = _read_string(evidence.get("packageDigest"))
+        evidence_mode = _read_string(evidence.get("mode"))
+        evidence_provenance = _read_string(evidence.get("provenance"))
+        context_details = {
             "workflowId": workflow_id,
-            "workflowRunId": run_id,
+            "runId": run_id,
             "nodeId": node_id,
-            "packageDigest": package_digest,
-            "artifactId": _read_string(gaojixing.get("artifactId")),
-            "sourceLineage": _read_dict_list(item.get("lineage")),
+            "itemIndex": index,
         }
-        delivery_id = str(
-            uuid.uuid5(
-                uuid.NAMESPACE_URL,
-                f"opencli-admin/gaojixing/delivery/{workflow_id}/{run_id}/{node_id}/{package_digest}",
+        if not package_digest or not mode or not provenance:
+            raise WorkflowWebhookDeliveryError(
+                code="gaojixing_delivery_context_incomplete",
+                message="Gaojixing delivery input lacks package, mode, or provenance.",
+                details=context_details,
             )
+        if (
+            evidence_digest != package_digest
+            or evidence_mode != mode
+            or evidence_provenance != provenance
+        ):
+            raise WorkflowWebhookDeliveryError(
+                code="gaojixing_delivery_evidence_mismatch",
+                message="Gaojixing delivery evidence contradicts its source envelope.",
+                details={
+                    **context_details,
+                    "packageDigest": package_digest,
+                    "mode": mode,
+                    "provenance": provenance,
+                },
+            )
+        _validate_gaojixing_lineage(
+            raw=raw,
+            gaojixing=gaojixing,
+            evidence=evidence,
+            source_lineage=_read_dict_list(item.get("lineage")),
+            context_details=context_details,
         )
-        return {
-            "deliveryAttemptId": delivery_id,
-            "packageDigest": package_digest,
-            "lineage": lineage,
-        }
-    return None
+        contexts.append(
+            {
+                "artifactId": _read_string(gaojixing.get("artifactId")),
+                "itemIndex": index,
+                "mode": mode,
+                "packageDigest": package_digest,
+                "provenance": provenance,
+                "sourceLineage": _read_dict_list(item.get("lineage")),
+            }
+        )
+    if not contexts:
+        return None
+    first = contexts[0]
+    for context in contexts[1:]:
+        inconsistent = [
+            field
+            for field in ("packageDigest", "mode", "provenance")
+            if context[field] != first[field]
+        ]
+        if inconsistent:
+            raise WorkflowWebhookDeliveryError(
+                code="gaojixing_delivery_context_mismatch",
+                message="Gaojixing delivery batch mixes incompatible source contexts.",
+                details={
+                    "workflowId": workflow_id,
+                    "runId": run_id,
+                    "nodeId": node_id,
+                    "itemIndex": context["itemIndex"],
+                    "inconsistentFields": inconsistent,
+                },
+            )
+    lineage = {
+        "workflowId": workflow_id,
+        "workflowRunId": run_id,
+        "nodeId": node_id,
+        "packageDigest": first["packageDigest"],
+        "artifactId": first["artifactId"],
+        "sourceLineage": first["sourceLineage"],
+        "mode": first["mode"],
+        "provenance": first["provenance"],
+    }
+    delivery_id = str(
+        uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            (
+                "opencli-admin/gaojixing/delivery/"
+                f"{workflow_id}/{run_id}/{node_id}/{first['packageDigest']}"
+            ),
+        )
+    )
+    return {
+        "deliveryAttemptId": delivery_id,
+        "packageDigest": first["packageDigest"],
+        "lineage": lineage,
+        "mode": first["mode"],
+        "provenance": first["provenance"],
+    }
 
 
-def _destination_ack(response_data: dict[str, Any] | None) -> dict[str, Any] | None:
+def _destination_ack(
+    response_data: dict[str, Any] | None, delivery_attempt_id: str
+) -> dict[str, Any] | None:
     if not isinstance(response_data, dict):
         return None
+    confirmation_field: str | None = None
     for key in ("businessAck", "business_ack", "acknowledged"):
         if response_data.get(key) is True:
-            return {"status": "confirmed", "source": "destination_response", "field": key}
+            confirmation_field = key
+            break
     status = _read_string(response_data.get("status"))
-    if status in {"confirmed", "acknowledged"}:
-        return {"status": "confirmed", "source": "destination_response", "field": "status"}
+    if confirmation_field is None and status in {"confirmed", "acknowledged"}:
+        confirmation_field = "status"
+    if confirmation_field is None:
+        return None
+    ack_delivery_id = _delivery_attempt_id(response_data)
+    return {
+        "status": "confirmed",
+        "source": "destination_response",
+        "field": confirmation_field,
+        "deliveryAttemptId": ack_delivery_id,
+        "matchesDeliveryAttempt": ack_delivery_id == delivery_attempt_id,
+    }
+
+
+def _validate_gaojixing_lineage(
+    *,
+    raw: dict[str, Any],
+    gaojixing: dict[str, Any],
+    evidence: dict[str, Any],
+    source_lineage: list[dict[str, Any]],
+    context_details: dict[str, Any],
+) -> None:
+    package = _read_dict(gaojixing.get("package"))
+    package_digest = _read_string(package.get("digest"))
+    artifact_id = _read_string(gaojixing.get("artifactId"))
+    expected = {
+        "packageDigest": package_digest,
+        "artifactId": artifact_id,
+        "mode": _read_string(gaojixing.get("mode")),
+        "provenance": _read_string(gaojixing.get("provenance")),
+        "runId": _read_string(evidence.get("runId")),
+        "workflowId": _read_string(evidence.get("workflowId")),
+        "nodeId": _read_string(evidence.get("nodeId")),
+    }
+    raw_digest = _read_string(raw.get("packageDigest"))
+    question_package = _read_dict(raw.get("questionPackage"))
+    mismatches = [
+        field
+        for field, actual, expected_value in (
+            ("packageDigest", raw_digest, package_digest),
+            (
+                "questionPackage.digest",
+                _read_string(question_package.get("digest")),
+                package_digest,
+            ),
+            (
+                "evidence.answer.artifactId",
+                _read_string(_read_dict(evidence.get("answer")).get("artifactId")),
+                artifact_id,
+            ),
+        )
+        if actual is not None and actual != expected_value
+    ]
+    for entry in source_lineage:
+        for field, expected_value in expected.items():
+            actual = _read_string(entry.get(field))
+            if field == "mode" and actual == "persisted-replay":
+                continue
+            if actual is not None and expected_value is not None and actual != expected_value:
+                mismatches.append(f"sourceLineage.{field}")
+    if mismatches:
+        raise WorkflowWebhookDeliveryError(
+            code="gaojixing_delivery_lineage_mismatch",
+            message="Gaojixing delivery lineage contradicts its immutable source evidence.",
+            details={**context_details, "mismatchedFields": sorted(set(mismatches))},
+        )
+
+
+def _delivery_attempt_id(response_data: dict[str, Any]) -> str | None:
+    keys = (
+        "deliveryAttemptId",
+        "delivery_attempt_id",
+        "deliveryId",
+        "delivery_id",
+        "idempotencyKey",
+    )
+    for key in keys:
+        value = _read_string(response_data.get(key))
+        if value:
+            return value
     return None
 
 

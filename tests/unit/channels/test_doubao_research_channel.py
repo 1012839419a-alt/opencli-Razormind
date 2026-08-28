@@ -167,6 +167,22 @@ async def test_collect_classifies_captcha_block(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_collect_classifies_adapter_timeout(monkeypatch):
+    async def fake_run(command):
+        raise TimeoutError("adapter timed out")
+
+    monkeypatch.setattr(
+        "backend.channels.doubao_research_channel._run_doubao_command",
+        fake_run,
+    )
+    result = await DoubaoResearchChannel().collect({"question": "测试"}, {})
+
+    assert not result.success
+    assert result.error_type == "TimeoutError"
+    assert result.error == "Doubao request timed out"
+
+
+@pytest.mark.asyncio
 async def test_collect_does_not_classify_generic_error(monkeypatch):
     async def fake_run(command):
         return 1, "", "some unrelated error"

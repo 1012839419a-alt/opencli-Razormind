@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
+from copy import deepcopy
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Any
 
 from backend.channels.base import ChannelResult
@@ -13,6 +16,11 @@ from backend.channels.doubao_research_channel import DoubaoResearchChannel
 GAOJIXING_CAPABILITY_ID = "chat-ai.capture"
 GAOJIXING_CHANNEL_TYPE = "doubao_research"
 GAOJIXING_LIVE_MODE = "live"
+GAOJIXING_FIXTURE_MODE = "fixture"
+GAOJIXING_MOCK_MODE = "mock"
+GAOJIXING_EXECUTION_MODES = frozenset(
+    {GAOJIXING_LIVE_MODE, GAOJIXING_FIXTURE_MODE, GAOJIXING_MOCK_MODE}
+)
 GAOJIXING_PACKAGE_SCHEMA = "gaojixing.question-package.v1"
 GAOJIXING_EVIDENCE_SCHEMA = "gaojixing.capture-evidence.v1"
 
@@ -31,14 +39,14 @@ class GaojixingReadinessError(RuntimeError):
 class GaojixingQuestionPackage:
     schema: str
     question: str
-    options: dict[str, Any]
+    options: Mapping[str, Any]
     digest: str
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "schema": self.schema,
             "question": self.question,
-            "options": self.options,
+            "options": _thaw_json(self.options),
             "digest": self.digest,
         }
 
@@ -61,7 +69,10 @@ def build_question_package(
     if question is None:
         raise GaojixingReadinessError(
             "gaojixing_question_required",
-            "A live Gaojixing run requires an effective question in run input, node params, or adapter config.",
+            (
+                "A live Gaojixing run requires an effective question in run input, "
+                "node params, or adapter config."
+            ),
             details={"required": "question"},
         )
 
@@ -88,7 +99,7 @@ def build_question_package(
     return GaojixingQuestionPackage(
         schema=GAOJIXING_PACKAGE_SCHEMA,
         question=question,
-        options=options,
+        options=_freeze_json(options),
         digest=hashlib.sha256(encoded).hexdigest(),
     )
 
@@ -122,6 +133,7 @@ async def capture_live_doubao(
             "The live Gaojixing chat-ai.capture/Doubao capability is unavailable.",
             details={"capabilityId": capability_id},
         )
+    _raise_configured_readiness_blocker(adapter_config)
     if not network_allowed:
         raise GaojixingReadinessError(
             "gaojixing_network_denied",
@@ -132,9 +144,10 @@ async def capture_live_doubao(
     channel = DoubaoResearchChannel()
     healthy = await channel.health_check(adapter_config)
     if not healthy:
+        readiness_code = await channel.readiness_code(adapter_config)
         raise GaojixingReadinessError(
-            "gaojixing_session_unavailable",
-            "The Doubao OpenCLI session is unavailable or not logged in.",
+            f"gaojixing_{readiness_code or 'session_unavailable'}",
+            _readiness_message(readiness_code),
             details={"site": "doubao", "session": adapter_config.get("site_session", "persistent")},
         )
 
@@ -156,16 +169,23 @@ def map_capture_item(
     run_id: str,
     node_id: str,
     artifact_id: str,
+    mode: str = GAOJIXING_LIVE_MODE,
+    provenance: str | None = None,
 ) -> dict[str, Any]:
     """Attach separate answer/citation/conversation evidence to one raw item."""
+    if mode not in GAOJIXING_EXECUTION_MODES:
+        raise ValueError(f"Unsupported Gaojixing execution mode: {mode}")
+    provenance = provenance or (
+        "opencli:doubao" if mode == GAOJIXING_LIVE_MODE else f"{mode}:unspecified"
+    )
 
     answer = _string(item.get("content"))
     citations = item.get("citations") if isinstance(item.get("citations"), list) else []
     conversation_url = _string(item.get("conversation_url"))
     evidence = {
         "schema": GAOJIXING_EVIDENCE_SCHEMA,
-        "mode": "live",
-        "provenance": "opencli:doubao",
+        "mode": mode,
+        "provenance": provenance,
         "packageDigest": package.digest,
         "runId": run_id,
         "workflowId": workflow_id,
@@ -189,7 +209,8 @@ def map_capture_item(
     mapped = {
         **item,
         "gaojixing": {
-            "mode": "live",
+            "mode": mode,
+            "provenance": provenance,
             "capabilityId": GAOJIXING_CAPABILITY_ID,
             "package": package.to_dict(),
             "artifactId": artifact_id,
@@ -197,6 +218,8 @@ def map_capture_item(
         },
         "packageDigest": package.digest,
         "questionPackage": package.to_dict(),
+        "mode": mode,
+        "provenance": provenance,
         "answerArtifactId": artifact_id,
     }
     if conversation_url:
@@ -223,14 +246,69 @@ def _json_safe(value: Any) -> Any:
     return str(value)
 
 
+def _raise_configured_readiness_blocker(adapter_config: dict[str, Any]) -> None:
+    if adapter_config.get("adapterAvailable") is False:
+        raise GaojixingReadinessError(
+            "gaojixing_adapter_missing",
+            "The Doubao OpenCLI adapter is unavailable.",
+            details={"requiredAdapter": "opencli:doubao"},
+        )
+    if (
+        adapter_config.get("authenticated") is False
+        or adapter_config.get("authenticationAvailable") is False
+    ):
+        raise GaojixingReadinessError(
+            "gaojixing_authentication_required",
+            "The configured Doubao session is not authenticated.",
+            details={"site": "doubao"},
+        )
+    if adapter_config.get("sessionAvailable") is False:
+        raise GaojixingReadinessError(
+            "gaojixing_session_unavailable",
+            "The configured Doubao OpenCLI session is unavailable.",
+            details={"site": "doubao", "session": adapter_config.get("site_session", "persistent")},
+        )
+
+
+def _readiness_message(code: str | None) -> str:
+    messages = {
+        "adapter_missing": "The Doubao OpenCLI adapter is unavailable.",
+        "authentication_required": "The configured Doubao session is not authenticated.",
+        "captcha_challenge": "The Doubao session is blocked by a CAPTCHA challenge.",
+    }
+    return messages.get(
+        code or "",
+        "The Doubao OpenCLI session is unavailable or not logged in.",
+    )
+
+
+def _freeze_json(value: Any) -> Any:
+    if isinstance(value, dict):
+        return MappingProxyType({str(key): _freeze_json(item) for key, item in value.items()})
+    if isinstance(value, list):
+        return tuple(_freeze_json(item) for item in value)
+    return deepcopy(value)
+
+
+def _thaw_json(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {str(key): _thaw_json(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [_thaw_json(item) for item in value]
+    return deepcopy(value)
+
+
 __all__ = [
     "GAOJIXING_CAPABILITY_ID",
     "GAOJIXING_CHANNEL_TYPE",
     "GAOJIXING_EVIDENCE_SCHEMA",
     "GAOJIXING_LIVE_MODE",
+    "GAOJIXING_EXECUTION_MODES",
+    "GAOJIXING_FIXTURE_MODE",
     "GaojixingQuestionPackage",
     "GaojixingReadinessError",
     "build_question_package",
     "capture_live_doubao",
+    "GAOJIXING_MOCK_MODE",
     "map_capture_item",
 ]

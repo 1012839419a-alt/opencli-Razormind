@@ -72,6 +72,8 @@ from backend.workflow.event_mirror import publish_workflow_run_event_mirror
 from backend.workflow.fleet_inventory import match_workflow_fleet_capability
 from backend.workflow.gaojixing_runtime import (
     GAOJIXING_CHANNEL_TYPE,
+    GAOJIXING_EXECUTION_MODES,
+    GAOJIXING_LIVE_MODE,
     GaojixingReadinessError,
     build_question_package,
     capture_live_doubao,
@@ -708,11 +710,7 @@ async def start_workflow_run(
             )
             emitter.emit(node, "completed", message="Workflow webhook input completed")
             continue
-        if (
-            node.id in replay_source_node_ids
-            and _is_gaojixing_source_node(node)
-            and _source_live_mode(node)
-        ):
+        if node.id in replay_source_node_ids and _is_gaojixing_source_node(node):
             resumed_items = _read_dict_list(body.sourceOutputs.get(node.id))
             if not resumed_items:
                 raise ValueError(
@@ -757,6 +755,16 @@ async def start_workflow_run(
                 outputs_by_node=outputs_by_node,
                 emitter=emitter,
                 session=session,
+            )
+            continue
+        if _is_gaojixing_source_node(node):
+            await _execute_gaojixing_fixture_source(
+                node,
+                body=body,
+                run_id=run_id,
+                workflow_id=body.project.id,
+                outputs_by_node=outputs_by_node,
+                emitter=emitter,
             )
             continue
 
@@ -1864,10 +1872,10 @@ async def replay_downstream_from_persisted_gaojixing_source(
     source_nodes = {
         node.id: node
         for node in compiled.plan.runtime.nodes
-        if _is_gaojixing_source_node(node) and _source_live_mode(node)
+        if _is_gaojixing_source_node(node)
     }
     if not source_nodes:
-        raise ValueError("Persisted workflow has no live Gaojixing source")
+        raise ValueError("Persisted workflow has no Gaojixing source")
 
     source_outputs: dict[str, list[dict[str, Any]]] = {}
     for node_id, node in source_nodes.items():
@@ -1915,6 +1923,7 @@ async def replay_downstream_from_persisted_gaojixing_source(
             "conversation_url": conversation_url or "",
             "gaojixing": {
                 "mode": evidence.get("mode"),
+                "provenance": evidence.get("provenance"),
                 "capabilityId": details.get("capabilityId"),
                 "package": deepcopy(package),
                 "artifactId": artifact_id,
@@ -1923,6 +1932,8 @@ async def replay_downstream_from_persisted_gaojixing_source(
             "packageDigest": package_digest,
             "questionPackage": deepcopy(package),
             "answerArtifactId": artifact_id,
+            "mode": evidence.get("mode"),
+            "provenance": evidence.get("provenance"),
         }
         if conversation_url:
             raw["dedupe"] = {
@@ -1944,6 +1955,7 @@ async def replay_downstream_from_persisted_gaojixing_source(
                         "runId": source_run_id,
                         "workflowId": expected_workflow_id,
                         "mode": "persisted-replay",
+                        "provenance": evidence.get("provenance"),
                         "index": 0,
                     }
                 ],
@@ -3123,6 +3135,143 @@ def _bbx_tool_block_reason(
     return None
 
 
+async def _execute_gaojixing_fixture_source(
+    node: CompiledWorkflowNode,
+    *,
+    body: WorkflowRunStartRequest,
+    run_id: str,
+    workflow_id: str,
+    outputs_by_node: dict[str, list[dict[str, Any]]],
+    emitter: Any,
+) -> None:
+    """Materialize explicit fixture/mock Gaojixing input without live dispatch."""
+    binding_input = _binding_input(node)
+    adapter_config = _read_dict(binding_input.get("adapterConfig")) or binding_input
+    mode = _gaojixing_execution_mode(node)
+    if mode not in GAOJIXING_EXECUTION_MODES - {GAOJIXING_LIVE_MODE}:
+        reason = WorkflowRunBlockReason(
+            code="gaojixing_execution_mode_invalid",
+            message=f'Gaojixing source mode "{mode}" is not supported.',
+            source="gaojixing_fixture",
+            details={"nodeId": node.id, "mode": mode},
+        )
+        emitter.emit(
+            node, "blocked", message=reason.message, block_reason=reason, details=reason.details
+        )
+        outputs_by_node[node.id] = []
+        return
+    raw_items = _read_dict_list(body.sourceOutputs.get(node.id))
+    source = "sourceOutputs"
+    if not raw_items:
+        raw_items = _read_dict_list(node.params.get("fixtureItems"))
+        source = "fixtureItems"
+    if not raw_items:
+        raw_items = _read_dict_list(node.params.get("sampleItems", node.params.get("items")))
+        source = "sampleItems"
+    provenance = (
+        _read_string(adapter_config.get("fixtureProvenance"))
+        or _read_string(adapter_config.get("provenance"))
+        or f"{mode}:{source}"
+    )
+    try:
+        package = build_question_package(
+            node_params=dict(node.params),
+            adapter_config=adapter_config,
+            runtime_payload=body.input.payload,
+        )
+    except GaojixingReadinessError as exc:
+        reason = WorkflowRunBlockReason(
+            code=exc.code,
+            message=exc.message,
+            source="gaojixing_fixture",
+            details={"nodeId": node.id, "mode": mode, "provenance": provenance, **exc.details},
+        )
+        emitter.emit(
+            node, "blocked", message=exc.message, block_reason=reason, details=reason.details
+        )
+        outputs_by_node[node.id] = []
+        return
+    if not raw_items:
+        reason = WorkflowRunBlockReason(
+            code="gaojixing_fixture_output_required",
+            message=(
+                f"{mode.capitalize()} Gaojixing execution requires explicit fixture/mock input."
+            ),
+            source="gaojixing_fixture",
+            details={
+                "nodeId": node.id,
+                "mode": mode,
+                "provenance": provenance,
+                "packageDigest": package.digest,
+            },
+        )
+        emitter.emit(
+            node, "blocked", message=reason.message, block_reason=reason, details=reason.details
+        )
+        outputs_by_node[node.id] = []
+        return
+    mapped_items = []
+    source_group = _source_group(node, node.id)
+    for index, raw_item in enumerate(raw_items):
+        artifact_id = _stable_id(
+            "gaojixing-answer-artifact", mode, run_id, node.id, package.digest, str(index)
+        )
+        mapped = map_capture_item(
+            raw_item,
+            package=package,
+            workflow_id=workflow_id,
+            run_id=run_id,
+            node_id=node.id,
+            artifact_id=artifact_id,
+            mode=mode,
+            provenance=provenance,
+        )
+        mapped_items.append(
+            {
+                "raw": mapped,
+                "lineage": [
+                    {
+                        "nodeId": node.id,
+                        "sourceGroup": source_group,
+                        "artifact": "gaojixing.capture",
+                        "artifactId": artifact_id,
+                        "packageDigest": package.digest,
+                        "runId": run_id,
+                        "workflowId": workflow_id,
+                        "mode": mode,
+                        "provenance": provenance,
+                        "index": index,
+                    }
+                ],
+            }
+        )
+    outputs_by_node[node.id] = mapped_items
+    batch = _node_batch_reference(workflow_id, run_id, node, item_count=len(mapped_items))
+    emitter.emit(node, "started", message=f"{mode.capitalize()} Gaojixing source started")
+    emitter.emit(
+        node,
+        "partial",
+        message=f"{mode.capitalize()} Gaojixing evidence captured",
+        batch=batch,
+        details={
+            "bindingId": SOURCE_FETCH_BINDING_ID,
+            "channelType": GAOJIXING_CHANNEL_TYPE,
+            "mode": mode,
+            "provenance": provenance,
+            "package": package.to_dict(),
+            "artifacts": [
+                item["raw"]["gaojixing"]["artifactId"] for item in mapped_items
+            ],
+            "evidence": [
+                item["raw"]["gaojixing"]["evidence"] for item in mapped_items
+            ],
+            "lineage": _lineage_pointer(node),
+            "liveAccepted": False,
+        },
+    )
+    emitter.emit(node, "completed", message=f"{mode.capitalize()} Gaojixing source completed")
+
+
 async def _execute_gaojixing_source(
     node: CompiledWorkflowNode,
     *,
@@ -3220,6 +3369,7 @@ async def _execute_gaojixing_source(
             "runId": run_id,
             "workflowId": workflow_id,
             "mode": "live",
+            "provenance": mapped["gaojixing"]["provenance"],
             "index": 0,
         }
     ]
@@ -3236,6 +3386,7 @@ async def _execute_gaojixing_source(
             "channelType": GAOJIXING_CHANNEL_TYPE,
             "capabilityId": mapped["gaojixing"]["capabilityId"],
             "mode": "live",
+            "provenance": mapped["gaojixing"]["provenance"],
             "package": package.to_dict(),
             "artifactId": artifact_id,
             "evidence": evidence,
@@ -3257,15 +3408,19 @@ def _is_gaojixing_source_node(node: CompiledWorkflowNode) -> bool:
     )
 
 
-def _source_live_mode(node: CompiledWorkflowNode) -> bool:
+def _gaojixing_execution_mode(node: CompiledWorkflowNode) -> str:
     binding_input = _binding_input(node)
     adapter_config = _read_dict(binding_input.get("adapterConfig"))
     return (
         _read_string(binding_input.get("liveMode"))
         or _read_string(adapter_config.get("liveMode"))
         or _read_string(node.params.get("liveMode"))
-        or "live"
-    ) == "live"
+        or GAOJIXING_LIVE_MODE
+    )
+
+
+def _source_live_mode(node: CompiledWorkflowNode) -> bool:
+    return _gaojixing_execution_mode(node) == GAOJIXING_LIVE_MODE
 
 
 def _is_first_loop_native_node(node: CompiledWorkflowNode) -> bool:
