@@ -18,6 +18,7 @@ class FakeClient:
 
 def _config(**overrides):
     return {
+        "transport": "http",
         "app_token": "bascn-keywords",
         "table_id": "tblKeywords",
         "keyword_field": "关键词",
