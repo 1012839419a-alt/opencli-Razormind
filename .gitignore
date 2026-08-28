@@ -88,6 +88,5 @@ odp-rs/target/
 .repowise/
 .understand-anything/
 .codex/
-.sentrux/agent-sessions/
-.sentrux/baseline.json
+.sentrux/
 artifacts/
