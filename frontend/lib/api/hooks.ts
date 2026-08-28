@@ -33,10 +33,11 @@ export function useWorkspaceProjects(workspaceId: string | null) {
   })
 }
 
-export function useGovernedWorkspaces() {
+export function useGovernedWorkspaces(options?: { enabled?: boolean }) {
   return useQuery({
     queryKey: ['governance-workspaces'],
     queryFn: api.listGovernedWorkspaces,
+    enabled: options?.enabled ?? true,
   })
 }
 
@@ -209,11 +210,15 @@ export function useCreateProjectWorkflow() {
   })
 }
 
-export function useOperationsInbox(workspaceId: string | null, status?: string) {
+export function useOperationsInbox(
+  workspaceId: string | null,
+  status?: string,
+  options?: { enabled?: boolean },
+) {
   return useQuery({
     queryKey: ['operations-inbox', workspaceId, status],
     queryFn: () => api.listOperationsInbox(workspaceId as string, { status, limit: 100 }),
-    enabled: !!workspaceId,
+    enabled: Boolean(workspaceId) && (options?.enabled ?? true),
     refetchInterval: 15_000,
   })
 }
@@ -452,6 +457,7 @@ export function useTasks(params?: { source_id?: string; status?: string; page?: 
 
 export function useInfiniteTasks(
   params?: { source_id?: string; status?: string; limit?: number },
+  options?: { enabled?: boolean },
 ) {
   return useInfiniteQuery({
     queryKey: ['tasks', 'infinite', params],
@@ -461,6 +467,7 @@ export function useInfiniteTasks(
       const meta = lastPage.meta
       return meta && meta.page < meta.pages ? meta.page + 1 : undefined
     },
+    enabled: options?.enabled ?? true,
   })
 }
 
@@ -843,6 +850,7 @@ export function useNotificationLogs(params?: { rule_id?: string; page?: number; 
 
 export function useInfiniteNotificationLogs(
   params?: { rule_id?: string; limit?: number },
+  options?: { enabled?: boolean },
 ) {
   return useInfiniteQuery({
     queryKey: ['notification-logs', 'infinite', params],
@@ -852,6 +860,7 @@ export function useInfiniteNotificationLogs(
       const meta = lastPage.meta
       return meta && meta.page < meta.pages ? meta.page + 1 : undefined
     },
+    enabled: options?.enabled ?? true,
   })
 }
 
@@ -1106,12 +1115,15 @@ export function useControlActions(params?: {
   })
 }
 
-export function useInfiniteControlActions(params?: {
-  source_id?: string
-  mode?: string
-  outcome?: string
-  limit?: number
-}) {
+export function useInfiniteControlActions(
+  params?: {
+    source_id?: string
+    mode?: string
+    outcome?: string
+    limit?: number
+  },
+  options?: { enabled?: boolean },
+) {
   return useInfiniteQuery({
     queryKey: ['control-actions', 'infinite', params],
     initialPageParam: 1,
@@ -1120,6 +1132,7 @@ export function useInfiniteControlActions(params?: {
       const meta = lastPage.meta
       return meta && meta.page < meta.pages ? meta.page + 1 : undefined
     },
+    enabled: options?.enabled ?? true,
   })
 }
 

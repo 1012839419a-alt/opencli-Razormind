@@ -51,9 +51,9 @@ test('sidebar keeps automation separate from Agent surfaces', async () => {
     assert.match(navigation, new RegExp(`label: '${label}'`))
   }
 
-  assert.match(navigation, /href: '\/inbox'/)
+  assert.match(navigation, /href: '\/inbox\?tab=pending'/)
   assert.match(navigation, /match: \['\/inbox', '\/tasks', '\/notifications'\]/)
-  assert.match(navigation, /match: \['\/operations-agents', '\/schedules'\]/)
+  assert.match(navigation, /href: '\/control\/kill-switch'/)
   assert.doesNotMatch(navigation, /label: '自动化与 Agent'/)
   assert.doesNotMatch(navigation, /match: \[[^\]]*'\/agents'/)
   assert.doesNotMatch(navigation, /match: \[[^\]]*'\/skills'/)
@@ -86,23 +86,47 @@ test('records use a scalable source-to-table explorer with pagination and raw ev
   assert.match(records, /原始数据/)
 })
 
-test('task and automation sibling routes share their consolidated route tabs', async () => {
-  const [tabs, inbox, tasks, notifications, sources, schedules, agents, skills] = await Promise.all([
-    read('components/shell/route-tabs.tsx'),
-    read('app/(app)/inbox/page.tsx'),
-    read('app/(app)/tasks/page.tsx'),
-    read('app/(app)/notifications/page.tsx'),
-    read('app/(app)/sources/page.tsx'),
-    read('app/(app)/schedules/page.tsx'),
-    read('app/(app)/agents/page.tsx'),
-    read('app/(app)/skills/page.tsx'),
-  ])
+test('Action Center tabs use one canonical workspace while legacy paths remain query-preserving redirects', async () => {
+  const [tabs, inbox, tasks, notifications, actions, taskDetail, sources, schedules, agents, skills] =
+    await Promise.all([
+      read('components/shell/route-tabs.tsx'),
+      read('app/(app)/inbox/page.tsx'),
+      read('app/(app)/tasks/page.tsx'),
+      read('app/(app)/notifications/page.tsx'),
+      read('app/(app)/control/actions/page.tsx'),
+      read('app/(app)/tasks/[id]/page.tsx'),
+      read('app/(app)/sources/page.tsx'),
+      read('app/(app)/schedules/page.tsx'),
+      read('app/(app)/agents/page.tsx'),
+      read('app/(app)/skills/page.tsx'),
+    ])
 
-  for (const label of ['待处理', '工作项', '通知规则', '自动化与智能体', 'Agent', '技能']) {
-    assert.match(tabs, new RegExp(`label: '${label}'`))
+  for (const [label, tab] of [
+    ['待处理', 'pending'],
+    ['工作项', 'tasks'],
+    ['通知规则', 'notifications'],
+    ['控制记录', 'controls'],
+  ]) {
+    assert.match(tabs, new RegExp(`href: '\\/inbox\\?tab=${tab}', label: '${label}'`))
   }
-  for (const page of [inbox, tasks, notifications]) {
-    assert.match(page, /ACTION_CENTER_TABS/)
+  assert.match(tabs, /href=\{destinationHref\}/)
+  assert.match(tabs, /router\.replace\(destinationHref, \{ scroll: false \}\)/)
+  assert.match(inbox, /const activeTab = isActionCenterTab\(requestedTab\) \? requestedTab : 'pending'/)
+  assert.match(inbox, /<TasksPane scrollTopRef=\{tasksScrollTopRef\} \/>/)
+  assert.match(inbox, /<NotificationsPane scrollTopRef=\{notificationsScrollTopRef\} \/>/)
+  for (const [page, tab] of [
+    [tasks, 'tasks'],
+    [notifications, 'notifications'],
+    [actions, 'controls'],
+  ]) {
+    assert.match(page, /const query = new URLSearchParams\(\)/)
+    assert.match(page, new RegExp(`query\\.set\\('tab', '${tab}'\\)`))
+    assert.match(page, /redirect\(`\/inbox\?\$\{query\.toString\(\)\}`\)/)
+  }
+  assert.match(taskDetail, /href="\/inbox\?tab=tasks"/)
+  assert.doesNotMatch(tabs, /href: '\/control\/actions'/)
+  for (const label of ['自动化与智能体', 'Agent', '技能']) {
+    assert.match(tabs, new RegExp(`label: '${label}'`))
   }
   for (const page of [agents, skills]) {
     assert.match(page, /AUTOMATION_TABS/)
@@ -160,12 +184,13 @@ test('studio keeps Agent conversation global while management has its own entry'
   assert.match(transition, /'\/operations-agents'/)
 })
 
-test('SSGOI boundary is pathname-keyed, interruptible, and reduced-motion safe', async () => {
+test('SSGOI boundary keeps Action Center tab changes outside pathname transitions', async () => {
   const transition = await read('components/motion/app-route-transition.tsx')
 
   assert.match(transition, /const pathname = usePathname\(\)/)
-  assert.match(transition, /key=\{pathname\}/)
-  assert.match(transition, /data-ssgoi-transition=\{pathname\}/)
+  assert.match(transition, /const transitionKey = pathname === '\/inbox' \? '\/inbox' : pathname/)
+  assert.match(transition, /key=\{transitionKey\}/)
+  assert.match(transition, /data-ssgoi-transition=\{transitionKey\}/)
   assert.match(transition, /className="[^"]*h-full[^"]*min-h-full[^"]*"/)
   assert.match(transition, /axis\(\{ paths: APP_ROUTES, type: 'x', variant: 'snappy' \}\)/)
   assert.match(transition, /prefersReducedMotion \? STATIC_CONFIG : MOTION_CONFIG/)

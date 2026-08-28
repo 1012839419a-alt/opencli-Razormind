@@ -10,16 +10,16 @@ test('inbox combines existing operational signals with server-backed human appro
   const hooks = await read('lib/api/hooks.ts')
   const endpoints = await read('lib/api/endpoints.ts')
 
-  assert.match(page, /useInfiniteTasks\(\{ status: 'failed', limit: 100 \}\)/)
-  assert.match(page, /useInfiniteTasks\(\{ status: 'pending', limit: 100 \}\)/)
-  assert.match(page, /useInfiniteNotificationLogs\(\{ limit: 100 \}\)/)
-  assert.match(page, /useInfiniteControlActions\(\{ outcome: 'pending', limit: 100 \}\)/)
+  assert.match(page, /useInfiniteTasks\(\{ status: 'failed', limit: 100 \}, \{ enabled: pendingActive \}\)/)
+  assert.match(page, /useInfiniteTasks\(\{ status: 'pending', limit: 100 \}, \{ enabled: pendingActive \}\)/)
+  assert.match(page, /useInfiniteNotificationLogs\(\{ limit: 100 \}, \{ enabled: pendingActive \}\)/)
+  assert.match(page, /useInfiniteControlActions\(\s+\{ outcome: 'pending', limit: 100 \},\s+\{ enabled: pendingActive \},/)
   assert.match(hooks, /export function useInfiniteTasks/)
   assert.match(hooks, /export function useInfiniteNotificationLogs/)
   assert.match(hooks, /export function useInfiniteControlActions/)
   assert.match(endpoints, /listNotificationLogs = \(params\?: \{ rule_id\?: string; page\?: number; limit\?: number \}\)/)
-  assert.match(page, /useGovernedWorkspaces\(\)/)
-  assert.match(page, /useOperationsInbox\(workspaceId, 'open'\)/)
+  assert.match(page, /useGovernedWorkspaces\(\{ enabled: pendingActive \}\)/)
+  assert.match(page, /useOperationsInbox\(workspaceId, 'open', \{ enabled: pendingActive \}\)/)
   assert.match(approvalDetail, /useDecideOperationsApproval\(\)/)
   assert.match(approvalDetail, /<AIApproval/)
   assert.match(approvalDetail, /审批理由（必填）/)
@@ -28,7 +28,7 @@ test('inbox combines existing operational signals with server-backed human appro
   assert.match(hooks, /export function useDecideOperationsApproval/)
 })
 
-test('inbox uses a Linear-style queue while preserving destinations for underlying records', async () => {
+test('inbox uses a Linear-style queue while preserving canonical destinations for underlying records', async () => {
   const page = await read('app/(app)/inbox/page.tsx')
   const detail = await read('components/inbox/queue-detail.tsx')
 
@@ -50,8 +50,8 @@ test('inbox uses a Linear-style queue while preserving destinations for underlyi
   assert.match(page, /scrollIntoView\(\{ block: 'nearest' \}\)/)
   assert.match(page, /\[content-visibility:auto\]/)
   assert.match(page, /href: `\/tasks\/\$\{task\.id\}`/)
-  assert.match(page, /href: '\/notifications'/)
-  assert.match(page, /href: '\/control\/actions'/)
+  assert.match(page, /href: '\/inbox\?tab=notifications'/)
+  assert.match(page, /href: '\/inbox\?tab=controls'/)
   assert.match(detail, /href=\{`\/sources\/\$\{item\.sourceId\}`\}/)
 })
 
@@ -69,6 +69,32 @@ test('inbox preserves queue state and progressively loads hundreds-scale signal 
   assert.match(page, /isFetchingNextPage/)
   assert.match(page, /加载更多信号/)
   assert.match(page, /已加载/)
+})
+
+test('pending-only signals and shortcuts are disabled outside the pending pane', async () => {
+  const page = await read('app/(app)/inbox/page.tsx')
+
+  assert.match(page, /const pendingActive = activeTab === 'pending'/)
+  assert.match(page, /if \(!pendingActive\) return/)
+  assert.match(page, /\{pendingActive && partialFailures\.length > 0 \? \(/)
+  assert.match(page, /\{pendingActive && approvalNotice \? \(/)
+  assert.match(page, /\{pendingActive \? \(\s+<span/)
+})
+
+test('controls pane keeps the evidence ledger read-only and forwards its supported filters', async () => {
+  const [inbox, ledger, hooks] = await Promise.all([
+    read('app/(app)/inbox/page.tsx'),
+    read('components/control/control-actions-ledger.tsx'),
+    read('lib/api/hooks.ts'),
+  ])
+
+  assert.match(inbox, /<ControlActionsLedger \/>/)
+  assert.match(ledger, /source_id: query\.get\('source_id'\) \?\? undefined/)
+  assert.match(ledger, /mode: query\.get\('mode'\) \?\? undefined/)
+  assert.match(ledger, /outcome: query\.get\('outcome'\) \?\? undefined/)
+  assert.match(ledger, /useControlActions\(params\)/)
+  assert.doesNotMatch(ledger, /use[A-Z]\w*(Mutation|Delete|Create|Update)/)
+  assert.match(hooks, /export function useControlActions/)
 })
 
 test('inbox renders explicit initial, partial, empty, and total failure states', async () => {

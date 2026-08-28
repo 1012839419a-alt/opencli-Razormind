@@ -56,7 +56,7 @@ export default function TaskDetailPage({ params }: { params: Promise<{ id: strin
       title={source.data?.name ?? item?.source_name ?? `工作项 ${id.slice(0, 8)}`}
       description={item ? `${item.trigger_type} 触发 · 创建于 ${formatRelative(item.created_at)}` : '查看工作上下文、运行记录、事件与成果。'}
       actions={
-        <Link href="/tasks" className={cn(buttonVariants({ variant: 'outline', size: 'sm' }))}>
+        <Link href="/inbox?tab=tasks" className={cn(buttonVariants({ variant: 'outline', size: 'sm' }))}>
           <ArrowLeft className="size-4" />
           返回工作项
         </Link>

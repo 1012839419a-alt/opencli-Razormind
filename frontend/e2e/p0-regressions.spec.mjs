@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test'
+import { installActionCenterFixtures } from './action-center-fixtures.mjs'
 
 const api = (path) => `**/api/v1${path}`
 
@@ -105,4 +106,74 @@ test('skill correction proposal can be dismissed and rollback is not stale after
   await page.getByRole('button', { name: '确认回滚' }).click()
   await page.reload()
   await expect(page.getByRole('button', { name: /回滚/ })).toHaveCount(0)
+})
+
+
+test('Action Center preserves canonical pane state while compatibility routes retain their filters', async ({
+  page,
+}) => {
+  const { controlRequests, taskRequests } = await installActionCenterFixtures(page)
+  await goAuthed(page, '/inbox?tab=pending')
+  const workbench = page.getByTestId('inbox-workbench')
+  const header = page.getByTestId('action-center-header')
+  const queueViewport = page
+    .getByTestId('inbox-queue-scroll')
+    .locator('[data-slot="scroll-area-viewport"]')
+  await expect(workbench).toBeVisible()
+  await expect(queueViewport).toBeVisible()
+  await header.evaluate((element) => {
+    element.dataset.reviewIdentity = 'stable'
+  })
+  const queueScrollTop = await queueViewport.evaluate((element) => {
+    element.scrollTop = 120
+    element.dispatchEvent(new Event('scroll', { bubbles: true }))
+    return element.scrollTop
+  })
+  const tabs = page.getByRole('navigation', { name: '相关视图' })
+
+  await page.locator('#inbox-row-control-control-e2e-0').click()
+  await page.getByRole('link', { name: '打开控制证据' }).click()
+  await expect(page).toHaveURL(/\/inbox\?tab=controls$/)
+  await expect(page.getByText('pause_collection').first()).toBeVisible()
+
+  await tabs.getByRole('link', { name: '待处理' }).click()
+  await expect(page).toHaveURL(/\/inbox\?tab=pending$/)
+  await expect(header).toHaveAttribute('data-review-identity', 'stable')
+  await expect
+    .poll(() => queueViewport.evaluate((element) => element.scrollTop))
+    .toBe(queueScrollTop)
+
+  await tabs.getByRole('link', { name: '工作项' }).click()
+  await expect(page).toHaveURL(/\/inbox\?tab=tasks$/)
+  await expect(page.getByRole('region', { name: '任务历史' })).toBeVisible()
+  await page.evaluate(() => {
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+  })
+  await expect(page).toHaveURL(/\/inbox\?tab=tasks$/)
+
+  await page.goto('/tasks?status=failed')
+  await expect(page).toHaveURL(/\/inbox\?status=failed&tab=tasks$/)
+  await expect(page.getByText('Failed source')).toBeVisible()
+  await expect
+    .poll(() => taskRequests.filter((status) => status === 'failed').length)
+    .toBeGreaterThan(1)
+  await expect(tabs.getByRole('link', { name: '通知规则' })).toHaveAttribute(
+    'href',
+    '/inbox?status=failed&tab=notifications',
+  )
+
+  await page.goto('/notifications?rule_id=e2e')
+  await expect(page).toHaveURL(/\/inbox\?rule_id=e2e&tab=notifications$/)
+  await expect(page.getByRole('region', { name: '通知规则' })).toBeVisible()
+
+  await page.goto('/control/actions?outcome=pending')
+  await expect(page).toHaveURL(/\/inbox\?outcome=pending&tab=controls$/)
+  await expect(page.getByText('pause_collection').first()).toBeVisible()
+  await expect
+    .poll(() =>
+      controlRequests.some(
+        (query) => query.outcome === 'pending' && query.source_id === null && query.mode === null,
+      ),
+    )
+    .toBeTruthy()
 })
