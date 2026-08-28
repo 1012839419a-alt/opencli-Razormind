@@ -29,6 +29,8 @@ WORKFLOW_CATALOG_IDS = {
     "intelligence.source.doubao-research",
     "intelligence.source.pool",
     "intelligence.source.opencli-slot",
+    "intelligence.source.feishu-table",
+    "intelligence.source.doubao-research",
     "intelligence.processing.normalize",
     "intelligence.processing.dedupe",
     "intelligence.data.generate",
