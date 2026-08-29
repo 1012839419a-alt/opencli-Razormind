@@ -1,0 +1,12 @@
+FROM rust:1.88-bookworm AS builder
+WORKDIR /app
+COPY Cargo.toml Cargo.lock* ./
+COPY crates ./crates
+RUN cargo build --release -p odp-query
+
+FROM debian:bookworm-slim
+# curl is required for the docker-compose healthcheck (curl -f localhost:8042/health).
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /app/target/release/odp-query /usr/local/bin/odp-query
+EXPOSE 8042
+CMD ["odp-query"]

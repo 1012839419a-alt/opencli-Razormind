@@ -43,6 +43,15 @@ pub async fn migrate(pool: &PgPool) -> Result<()> {
 
     sqlx::query(
         r#"
+        CREATE INDEX IF NOT EXISTS idx_odp_records_attempt_page
+            ON odp_records (task_id, trace_id, source_id, committed_at, id)
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
         CREATE TABLE IF NOT EXISTS odp_dlq (
             id BIGSERIAL PRIMARY KEY,
             stream_id TEXT NOT NULL,
@@ -54,6 +63,15 @@ pub async fn migrate(pool: &PgPool) -> Result<()> {
             payload JSONB,
             failed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_odp_dlq_source_event
+            ON odp_dlq (source_id, event_id)
         "#,
     )
     .execute(pool)
