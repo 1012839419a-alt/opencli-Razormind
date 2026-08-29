@@ -33,10 +33,6 @@ from backend.models.studio import (
 )
 from backend.models.workflow_run import WorkflowRun
 from backend.schemas import workflow as workflow_schemas
-from backend.schemas.iii_collection import (
-    EvidenceBatchMaterializationReadV1,
-    StudioEvidenceBatchMaterializationListV1,
-)
 from backend.schemas.common import ApiResponse, PaginationMeta
 from backend.workflow.opencli_hda_tracer import (
     get_workflow_run_checkpoint,
@@ -44,11 +40,6 @@ from backend.workflow.opencli_hda_tracer import (
     list_workflow_run_events,
     start_workflow_run,
 )
-from backend.workflow.evidence_batch_materializer import (
-    get_materialization_by_batch,
-    list_materializations,
-)
-from backend.workflow.iii_collection_store import CollectionScope
 
 router = APIRouter()
 
@@ -115,39 +106,6 @@ async def _project_runtime_scope(
     )
     return workflow_names, {version.id: version.version for version in versions}
 
-
-async def _scoped_evidence_batch_run(
-    db: AsyncSession,
-    *,
-    workspace_id: str,
-    project_id: str,
-    workflow_id: str,
-    run_id: str,
-) -> CollectionScope:
-    """Resolve a Studio-owned run and its immutable published workflow version."""
-    await get_workflow(db, workspace_id, project_id, workflow_id)
-    run = await db.get(WorkflowRun, run_id)
-    if run is None or run.workflow_id != workflow_id or run.studio_workflow_version_id is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Workflow run not found")
-    version = await db.get(StudioWorkflowVersion, run.studio_workflow_version_id)
-    if version is None or version.workflow_id != workflow_id:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Workflow run not found")
-    return CollectionScope(
-        workspace_id=workspace_id,
-        project_id=project_id,
-        workflow_id=workflow_id,
-        studio_workflow_version_id=version.id,
-        run_id=run.id,
-    )
-
-
-async def _scoped_evidence_batch_or_404(
-    db: AsyncSession, *, scope: CollectionScope, batch_id: str
-) -> EvidenceBatchMaterializationReadV1:
-    materialization = await get_materialization_by_batch(db, scope=scope, batch_id=batch_id)
-    if materialization is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Evidence batch materialization not found")
-    return materialization
 
 
 @router.get(
@@ -482,87 +440,6 @@ async def get_project_runtime_trace(
         )
     )
 
-
-@router.get(
-    (
-        "/workspaces/{workspace_id}/projects/{project_id}/workflows/{workflow_id}"
-        "/runs/{run_id}/evidence-batches/v1"
-    ),
-    response_model=ApiResponse[StudioEvidenceBatchMaterializationListV1],
-)
-async def list_studio_evidence_batch_materializations(
-    workspace_id: str,
-    project_id: str,
-    workflow_id: str,
-    run_id: str,
-    db: AsyncSession = Depends(get_db),
-) -> ApiResponse[StudioEvidenceBatchMaterializationListV1]:
-    """List redacted latest evidence-batch materializations for one Studio run."""
-    scope = await _scoped_evidence_batch_run(
-        db,
-        workspace_id=workspace_id,
-        project_id=project_id,
-        workflow_id=workflow_id,
-        run_id=run_id,
-    )
-    return ApiResponse.ok(
-        StudioEvidenceBatchMaterializationListV1(
-            run_id=run_id,
-            evidence_batches=await list_materializations(db, scope=scope),
-        )
-    )
-
-
-@router.get(
-    (
-        "/workspaces/{workspace_id}/projects/{project_id}/workflows/{workflow_id}"
-        "/runs/{run_id}/evidence-batches/v1/{batch_id}"
-    ),
-    response_model=ApiResponse[EvidenceBatchMaterializationReadV1],
-)
-async def get_studio_evidence_batch_materialization(
-    workspace_id: str,
-    project_id: str,
-    workflow_id: str,
-    run_id: str,
-    batch_id: str,
-    db: AsyncSession = Depends(get_db),
-) -> ApiResponse[EvidenceBatchMaterializationReadV1]:
-    """Return one redacted latest evidence-batch materialization."""
-    scope = await _scoped_evidence_batch_run(
-        db,
-        workspace_id=workspace_id,
-        project_id=project_id,
-        workflow_id=workflow_id,
-        run_id=run_id,
-    )
-    return ApiResponse.ok(await _scoped_evidence_batch_or_404(db, scope=scope, batch_id=batch_id))
-
-
-@router.get(
-    (
-        "/workspaces/{workspace_id}/projects/{project_id}/workflows/{workflow_id}"
-        "/runs/{run_id}/evidence-batches/v1/{batch_id}/status"
-    ),
-    response_model=ApiResponse[EvidenceBatchMaterializationReadV1],
-)
-async def get_studio_evidence_batch_materialization_status(
-    workspace_id: str,
-    project_id: str,
-    workflow_id: str,
-    run_id: str,
-    batch_id: str,
-    db: AsyncSession = Depends(get_db),
-) -> ApiResponse[EvidenceBatchMaterializationReadV1]:
-    """Return safe status, counts, and recovery for one evidence batch."""
-    return await get_studio_evidence_batch_materialization(
-        workspace_id,
-        project_id,
-        workflow_id,
-        run_id,
-        batch_id,
-        db,
-    )
 
 
 @router.post(

@@ -248,9 +248,31 @@ class EvidenceBatchMaterializationReadV1(_V1Model):
     finalized_at: datetime | None = None
 
 
+class EvidenceBatchMaterializationSummaryV1(_V1Model):
+    """Bounded latest-state projection for evidence-batch listings."""
+
+    version: Literal["v1"] = "v1"
+    batch_id: str = Field(min_length=1, max_length=36)
+    reconciliation_revision: int = Field(ge=1)
+    materialization_status: MaterializationStatusV1
+    legacy_status: Literal["running", "completed", "partial", "failed", "blocked"]
+    item_count: int = Field(ge=0)
+    record_count: int = Field(ge=0)
+    counts: dict[str, int] = Field(max_length=7)
+    blocker: str | None = Field(default=None, max_length=256)
+    recovery_action: str
+    query_fingerprint: str | None = Field(default=None, max_length=64)
+    page_snapshot_as_of: str | None = Field(default=None, max_length=64)
+    redaction_profile_version: str | None = Field(default=None, max_length=64)
+    finalized_at: datetime | None = None
+
+
 class StudioEvidenceBatchMaterializationListV1(_V1Model):
-    """Latest immutable redacted materializations visible from one Studio run."""
+    """Bounded latest immutable materializations visible from one Studio run."""
 
     version: Literal["v1"] = "v1"
     run_id: str = Field(min_length=1, max_length=36)
-    evidence_batches: list[EvidenceBatchMaterializationReadV1] = Field(default_factory=list)
+    evidence_batches: list[EvidenceBatchMaterializationSummaryV1] = Field(
+        default_factory=list, max_length=200
+    )
+    next_cursor: str | None = Field(default=None, max_length=36)

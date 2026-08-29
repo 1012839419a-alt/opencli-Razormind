@@ -13,7 +13,7 @@ from hashlib import sha256
 from typing import Any
 from uuid import NAMESPACE_URL, uuid5
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -26,7 +26,11 @@ from backend.models.iii_collection import (
     IIICollectionIngressReceiptV1,
 )
 from backend.odp.query_client import OdpQueryError, build_attempt_page_request, build_exact_request, post_reconciliation_query
-from backend.schemas.iii_collection import EvidenceBatchMaterializationReadV1, EvidenceBatchRecordReferenceV1
+from backend.schemas.iii_collection import (
+    EvidenceBatchMaterializationReadV1,
+    EvidenceBatchMaterializationSummaryV1,
+    EvidenceBatchRecordReferenceV1,
+)
 from backend.workflow.evidence_batch_materialization_facts import (
     delegation,
     matches_scope,
@@ -134,26 +138,75 @@ def _scope_filters(scope: CollectionScope) -> tuple[Any, ...]:
     )
 
 
-async def list_materializations(
-    db: AsyncSession, *, scope: CollectionScope
-) -> list[EvidenceBatchMaterializationReadV1]:
-    """Project the latest redacted revision for every scoped evidence batch."""
-    manifests = list(
-        (
-            await db.execute(
-                select(EvidenceBatchMaterializationManifestV1)
-                .where(*_scope_filters(scope))
-                .order_by(
-                    EvidenceBatchMaterializationManifestV1.batch_id,
-                    EvidenceBatchMaterializationManifestV1.reconciliation_revision.desc(),
-                )
-            )
-        ).scalars()
+def _summary(row: Any) -> EvidenceBatchMaterializationSummaryV1:
+    status = row.materialization_status
+    return EvidenceBatchMaterializationSummaryV1(
+        batch_id=row.batch_id,
+        reconciliation_revision=row.reconciliation_revision,
+        materialization_status=status,
+        legacy_status=_legacy_status(status),
+        item_count=row.item_count,
+        record_count=int(row.counts.get("record_present", 0)),
+        counts={name: int(row.counts.get(name, 0)) for name in _COUNT_NAMES},
+        blocker=None if status in _TERMINAL else row.finalization_reason,
+        recovery_action=_recovery_action(status),
+        query_fingerprint=row.query_fingerprint,
+        page_snapshot_as_of=row.page_snapshot_as_of,
+        redaction_profile_version=row.redaction_profile_version,
+        finalized_at=row.finalized_at,
     )
-    latest_by_batch: dict[str, EvidenceBatchMaterializationManifestV1] = {}
-    for manifest in manifests:
-        latest_by_batch.setdefault(manifest.batch_id, manifest)
-    return [_read(manifest) for manifest in latest_by_batch.values()]
+
+
+async def list_materializations(
+    db: AsyncSession,
+    *,
+    scope: CollectionScope,
+    cursor: str | None = None,
+    limit: int = 50,
+) -> tuple[list[EvidenceBatchMaterializationSummaryV1], str | None]:
+    """Page latest scoped revisions in SQL without loading record-reference JSON."""
+    if not 1 <= limit <= 200:
+        raise ValueError("limit must be between 1 and 200")
+    if cursor is not None and (not cursor or len(cursor) > 36):
+        raise ValueError("cursor must be a bounded batch id")
+    manifest = EvidenceBatchMaterializationManifestV1
+    latest = (
+        select(
+            manifest.id.label("id"),
+            func.row_number()
+            .over(
+                partition_by=manifest.batch_id,
+                order_by=manifest.reconciliation_revision.desc(),
+            )
+            .label("revision_rank"),
+        )
+        .where(*_scope_filters(scope))
+        .subquery()
+    )
+    statement = (
+        select(
+            manifest.batch_id,
+            manifest.reconciliation_revision,
+            manifest.materialization_status,
+            manifest.item_count,
+            manifest.counts,
+            manifest.finalization_reason,
+            manifest.query_fingerprint,
+            manifest.page_snapshot_as_of,
+            manifest.redaction_profile_version,
+            manifest.finalized_at,
+        )
+        .join(latest, manifest.id == latest.c.id)
+        .where(latest.c.revision_rank == 1)
+        .order_by(manifest.batch_id)
+        .limit(limit + 1)
+    )
+    if cursor is not None:
+        statement = statement.where(manifest.batch_id > cursor)
+    rows = list((await db.execute(statement)).all())
+    page = rows[:limit]
+    next_cursor = page[-1].batch_id if len(rows) > limit else None
+    return [_summary(row) for row in page], next_cursor
 
 
 async def get_materialization_by_batch(

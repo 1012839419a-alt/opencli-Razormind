@@ -5,7 +5,7 @@ from __future__ import annotations
 import secrets
 from collections.abc import Iterator
 
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -19,6 +19,7 @@ from backend.schemas.iii_collection import (
     CollectorFinalExpectedKeyReportReadV1,
     CollectorFinalExpectedKeyReportV1,
     EvidenceBatchMaterializationReadV1,
+    StudioEvidenceBatchMaterializationListV1,
     IIICollectionLifecycleReadV1,
     IIICollectionLifecycleV1,
     IIICollectionSubmitReadV1,
@@ -30,6 +31,8 @@ from backend.schemas.iii_collection import (
 from backend.workflow.iii_collection_dispatch import dispatch_collection_attempt
 from backend.workflow.evidence_batch_materializer import (
     get_materialization,
+    get_materialization_by_batch,
+    list_materializations,
     materialize_evidence_batch,
 )
 from backend.workflow.iii_collection_store import (
@@ -257,6 +260,91 @@ async def get_iii_collection_materialization(
     if materialization is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Evidence batch materialization not found")
     return ApiResponse.ok(materialization)
+
+
+@router.get(
+    "/workspaces/{workspace_id}/projects/{project_id}/workflows/{workflow_id}/runs/{run_id}/evidence-batches/v1",
+    response_model=ApiResponse[StudioEvidenceBatchMaterializationListV1],
+)
+async def list_studio_evidence_batch_materializations(
+    workspace_id: str,
+    project_id: str,
+    workflow_id: str,
+    run_id: str,
+    cursor: str | None = Query(default=None, min_length=1, max_length=36),
+    limit: int = Query(default=50, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+) -> ApiResponse[StudioEvidenceBatchMaterializationListV1]:
+    """Page latest redacted materialization summaries for one Studio run."""
+    scope, _, _ = await _scoped_run(
+        db,
+        workspace_id=workspace_id,
+        project_id=project_id,
+        workflow_id=workflow_id,
+        run_id=run_id,
+    )
+    evidence_batches, next_cursor = await list_materializations(
+        db,
+        scope=scope,
+        cursor=cursor,
+        limit=limit,
+    )
+    return ApiResponse.ok(
+        StudioEvidenceBatchMaterializationListV1(
+            run_id=run_id,
+            evidence_batches=evidence_batches,
+            next_cursor=next_cursor,
+        )
+    )
+
+
+@router.get(
+    "/workspaces/{workspace_id}/projects/{project_id}/workflows/{workflow_id}/runs/{run_id}/evidence-batches/v1/{batch_id}",
+    response_model=ApiResponse[EvidenceBatchMaterializationReadV1],
+)
+async def get_studio_evidence_batch_materialization(
+    workspace_id: str,
+    project_id: str,
+    workflow_id: str,
+    run_id: str,
+    batch_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> ApiResponse[EvidenceBatchMaterializationReadV1]:
+    """Return one bounded, redacted latest evidence-batch detail projection."""
+    scope, _, _ = await _scoped_run(
+        db,
+        workspace_id=workspace_id,
+        project_id=project_id,
+        workflow_id=workflow_id,
+        run_id=run_id,
+    )
+    materialization = await get_materialization_by_batch(db, scope=scope, batch_id=batch_id)
+    if materialization is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Evidence batch materialization not found")
+    return ApiResponse.ok(materialization)
+
+
+@router.get(
+    "/workspaces/{workspace_id}/projects/{project_id}/workflows/{workflow_id}/runs/{run_id}/evidence-batches/v1/{batch_id}/status",
+    response_model=ApiResponse[EvidenceBatchMaterializationReadV1],
+)
+async def get_studio_evidence_batch_materialization_status(
+    workspace_id: str,
+    project_id: str,
+    workflow_id: str,
+    run_id: str,
+    batch_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> ApiResponse[EvidenceBatchMaterializationReadV1]:
+    """Return safe status, counts, and recovery for one evidence batch."""
+    return await get_studio_evidence_batch_materialization(
+        workspace_id,
+        project_id,
+        workflow_id,
+        run_id,
+        batch_id,
+        db,
+    )
 
 
 @router.post(
