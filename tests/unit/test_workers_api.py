@@ -6,31 +6,37 @@ import pytest
 
 # ── _novnc_port ────────────────────────────────────────────────────────────────
 
+
 def test_novnc_port_first_chrome():
     """chrome (no suffix) maps to base_port + 0."""
     from backend.api.v1.workers import _novnc_port
+
     assert _novnc_port("http://chrome:9222", 6080) == 6080
 
 
 def test_novnc_port_second_agent():
     """agent-2 maps to base_port + 1."""
     from backend.api.v1.workers import _novnc_port
+
     assert _novnc_port("http://agent-2:9222", 6080) == 6081
 
 
 def test_novnc_port_third_agent():
     """agent-3 maps to base_port + 2."""
     from backend.api.v1.workers import _novnc_port
+
     assert _novnc_port("http://agent-3:9222", 6080) == 6082
 
 
 def test_novnc_port_unknown_hostname():
     """Unknown hostname pattern falls back to N=1."""
     from backend.api.v1.workers import _novnc_port
+
     assert _novnc_port("http://unknown-host:9222", 6080) == 6080
 
 
 # ── _container_status ─────────────────────────────────────────────────────────
+
 
 def test_container_status_running():
     """Returns 'running' when Docker container is running."""
@@ -68,6 +74,7 @@ def test_container_status_import_error():
 
 
 # ── chrome_pool_status endpoint ────────────────────────────────────────────────
+
 
 @pytest.mark.asyncio
 async def test_chrome_pool_status(client):
@@ -166,6 +173,17 @@ async def test_registered_anonymous_profile_is_visible_in_pool_inventory(client)
             "agent_url": "http://clean-agent:19823",
             "agent_protocol": "http",
             "profile_kind": "anonymous",
+            "profile_name": "http://clean-agent:19823",
+            "runtime_status": "LEGACY",
+            "runtime_bundle_id": None,
+            "runtime_bundle_name": None,
+            "runtime_bundle_version": None,
+            "resource_class": "standard",
+            "startup_pages": [],
+            "network_policy": {},
+            "loaded_bundle_name": None,
+            "loaded_bundle_version": None,
+            "runtime_diagnostics": [],
         }
     ]
     # Module-level pool is shared across tests; restore its conservative bridge

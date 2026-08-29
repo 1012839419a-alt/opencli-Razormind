@@ -1,6 +1,5 @@
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -40,7 +39,7 @@ def test_public_release_has_one_ci_frontend_job_and_installers() -> None:
     assert "BOOTSTRAP_ADMIN_TOKEN" in unix_installer
     assert "BOOTSTRAP_ADMIN_TOKEN" in windows_installer
     assert 'os.environ.get("NOVNC_BASE_PORT", 6080)' in source(
-        "backend/api/v1/browsers.py"
+        "backend/api/v1/browser_containers.py"
     )
     assert "Assert-NativeSuccess" in windows_installer
     assert "-UseBasicParsing" in windows_installer

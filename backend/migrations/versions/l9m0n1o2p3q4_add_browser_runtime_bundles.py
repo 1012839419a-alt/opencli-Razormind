@@ -5,6 +5,7 @@ Revises: k8l9m0n1o2p3
 Create Date: 2026-08-29
 """
 
+import json
 from datetime import UTC, datetime
 
 import sqlalchemy as sa
@@ -54,6 +55,13 @@ branch_labels = None
 depends_on = None
 
 
+def _table_exists(table_name: str) -> bool:
+    context = op.get_context()
+    if context.as_sql:
+        return True
+    return sa.inspect(op.get_bind()).has_table(table_name)
+
+
 def upgrade() -> None:
     op.create_table(
         "browser_runtime_bundles",
@@ -88,12 +96,15 @@ def upgrade() -> None:
                 "updated_at": now,
                 "name": "opencli-default",
                 "version": "1",
-                "manifest": DEFAULT_BUNDLE_MANIFEST,
+                "manifest": op.inline_literal(json.dumps(DEFAULT_BUNDLE_MANIFEST)),
                 "trust_level": "system",
                 "source": "image",
             }
         ],
+        multiinsert=False,
     )
+    if not _table_exists("browser_instances"):
+        return
     with op.batch_alter_table("browser_instances") as batch:
         batch.add_column(
             sa.Column("profile_name", sa.String(length=100), nullable=False, server_default="")
@@ -178,23 +189,26 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_index(
-        "ix_browser_capability_invocations_browser_instance_id",
-        table_name="browser_capability_invocations",
-    )
-    op.drop_table("browser_capability_invocations")
-    op.drop_index(
-        "ix_browser_runtime_deployments_browser_instance_id",
-        table_name="browser_runtime_deployments",
-    )
-    op.drop_table("browser_runtime_deployments")
-    with op.batch_alter_table("browser_instances") as batch:
-        batch.drop_index("ix_browser_instances_runtime_bundle_id")
-        batch.drop_constraint("fk_browser_instances_runtime_bundle", type_="foreignkey")
-        batch.drop_constraint("uq_browser_instances_profile_name", type_="unique")
-        batch.drop_column("network_policy")
-        batch.drop_column("startup_pages")
-        batch.drop_column("resource_class")
-        batch.drop_column("runtime_bundle_id")
-        batch.drop_column("profile_name")
+    if _table_exists("browser_capability_invocations"):
+        op.drop_index(
+            "ix_browser_capability_invocations_browser_instance_id",
+            table_name="browser_capability_invocations",
+        )
+        op.drop_table("browser_capability_invocations")
+    if _table_exists("browser_runtime_deployments"):
+        op.drop_index(
+            "ix_browser_runtime_deployments_browser_instance_id",
+            table_name="browser_runtime_deployments",
+        )
+        op.drop_table("browser_runtime_deployments")
+    if _table_exists("browser_instances"):
+        with op.batch_alter_table("browser_instances") as batch:
+            batch.drop_index("ix_browser_instances_runtime_bundle_id")
+            batch.drop_constraint("fk_browser_instances_runtime_bundle", type_="foreignkey")
+            batch.drop_constraint("uq_browser_instances_profile_name", type_="unique")
+            batch.drop_column("network_policy")
+            batch.drop_column("startup_pages")
+            batch.drop_column("resource_class")
+            batch.drop_column("runtime_bundle_id")
+            batch.drop_column("profile_name")
     op.drop_table("browser_runtime_bundles")

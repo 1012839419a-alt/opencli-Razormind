@@ -1,6 +1,6 @@
 version: 1
 source: backend.main.app.openapi
-openapi_operation_count: 231
+openapi_operation_count: 240
 allowed_dispositions:
 - operator_ui
 - studio_binding
@@ -292,6 +292,87 @@ operations:
   decision: Bind to Workflow Studio; do not create a second top-level product surface.
   target_epic: Epic 8
   capability_id: studio.sources
+- method: POST
+  path: /api/v1/browser-sessions/{instance_id}/capabilities/{capability}/invoke
+  operation_id: invoke_runtime_capability_api_v1_browser_sessions__instance_id__capabilities__capability__invoke_post
+  disposition: internal_only
+  frontend_route: null
+  wrapper: invokeBrowserCapability
+  decision: Keep structured runtime execution behind authenticated orchestration and explicit risk gates.
+  target_epic: Epic 6
+  capability_id: setup.nodes
+- method: GET
+  path: /api/v1/browsers/instances
+  operation_id: list_runtime_instances_api_v1_browsers_instances_get
+  disposition: setup_status
+  frontend_route: /browsers
+  wrapper: null
+  decision: Expose runtime identity and desired state through the browser operations surface.
+  target_epic: Epic 6
+  capability_id: setup.nodes
+- method: POST
+  path: /api/v1/browsers/instances
+  operation_id: create_runtime_instance_api_v1_browsers_instances_post
+  disposition: internal_only
+  frontend_route: null
+  wrapper: null
+  decision: Keep direct slot persistence behind managed container and agent registration flows.
+  target_epic: Epic 6
+  capability_id: setup.nodes
+- method: POST
+  path: /api/v1/browsers/instances/{instance_id}/runtime-report
+  operation_id: report_runtime_deployment_api_v1_browsers_instances__instance_id__runtime_report_post
+  disposition: machine_ingress
+  frontend_route: null
+  wrapper: null
+  decision: Accept loaded runtime facts only from authenticated browser workers.
+  target_epic: Epic 6
+  capability_id: setup.nodes
+- method: GET
+  path: /api/v1/browsers/instances/{instance_id}/runtime
+  operation_id: get_runtime_deployment_api_v1_browsers_instances__instance_id__runtime_get
+  disposition: setup_status
+  frontend_route: /browsers
+  wrapper: null
+  decision: Show loaded runtime evidence and drift in controlled browser operations UI.
+  target_epic: Epic 6
+  capability_id: setup.nodes
+- method: GET
+  path: /api/v1/browsers/runtime-bundles
+  operation_id: list_runtime_bundles_api_v1_browsers_runtime_bundles_get
+  disposition: setup_status
+  frontend_route: /browsers
+  wrapper: listBrowserRuntimeBundles
+  decision: Manage immutable runtime versions through the browser operations surface.
+  target_epic: Epic 6
+  capability_id: setup.nodes
+- method: POST
+  path: /api/v1/browsers/runtime-bundles
+  operation_id: create_runtime_bundle_api_v1_browsers_runtime_bundles_post
+  disposition: setup_status
+  frontend_route: /browsers
+  wrapper: createBrowserRuntimeBundle
+  decision: Create reviewed runtime manifests only through controlled browser operations UI.
+  target_epic: Epic 6
+  capability_id: setup.nodes
+- method: DELETE
+  path: /api/v1/browsers/runtime-bundles/{bundle_id}
+  operation_id: delete_runtime_bundle_api_v1_browsers_runtime_bundles__bundle_id__delete
+  disposition: setup_status
+  frontend_route: /browsers
+  wrapper: deleteBrowserRuntimeBundle
+  decision: Delete only unused non-system runtime versions through controlled operations UI.
+  target_epic: Epic 6
+  capability_id: setup.nodes
+- method: PUT
+  path: /api/v1/browsers/runtime-bundles/{bundle_id}
+  operation_id: update_runtime_bundle_api_v1_browsers_runtime_bundles__bundle_id__put
+  disposition: setup_status
+  frontend_route: /browsers
+  wrapper: updateBrowserRuntimeBundle
+  decision: Update only unassigned runtime versions while preserving immutable deployed lineage.
+  target_epic: Epic 6
+  capability_id: setup.nodes
 - method: POST
   path: /api/v1/browsers/agents/register
   operation_id: register_agent_api_v1_browsers_agents_register_post
@@ -2323,21 +2404,6 @@ unreferenced_wrappers:
   disposition: operator_ui
   target_epic: Epic 8
   decision: Retain for version comparison and rollback detail once the UI exposes it.
-- wrapper: getWorkspaceSettings
-  operation_id: null
-  disposition: retire
-  target_epic: Phase 0
-  decision: 'Ghost wrapper: remove unless it is mapped to a real backend settings contract.'
-- wrapper: updateWorkspaceSettings
-  operation_id: null
-  disposition: retire
-  target_epic: Phase 0
-  decision: 'Ghost wrapper: remove unless it is mapped to a real backend settings contract.'
-- wrapper: resetWorkspaceSettings
-  operation_id: null
-  disposition: retire
-  target_epic: Phase 0
-  decision: 'Ghost wrapper: remove unless it is mapped to a real backend settings contract.'
 - wrapper: listProjectWorkflowVersions
   operation_id: list_versions_api_v1_workspaces__workspace_id__projects__project_id__workflows__workflow_id__versions_get
   disposition: studio_binding
@@ -2358,46 +2424,11 @@ unreferenced_wrappers:
   disposition: operator_ui
   target_epic: Epic 1
   decision: Wire into source connectivity diagnostics.
-- wrapper: listSourceCredentials
-  operation_id: list_source_credentials_api_v1_sources__source_id__credentials_get
-  disposition: operator_ui
-  target_epic: Epic 1
-  decision: Wire into source credential key management without returning secret values.
-- wrapper: storeSourceCredential
-  operation_id: store_source_credential_api_v1_sources__source_id__credentials_post
-  disposition: operator_ui
-  target_epic: Epic 1
-  decision: Wire into source credential key management without returning secret values.
-- wrapper: deleteSourceCredential
-  operation_id: delete_source_credential_api_v1_sources__source_id__credentials__key_name__delete
-  disposition: operator_ui
-  target_epic: Epic 1
-  decision: Wire into source credential key management without returning secret values.
 - wrapper: setSourceObjective
   operation_id: set_source_objective_api_v1_sources__source_id__objective_patch
   disposition: operator_ui
   target_epic: Epic 1
   decision: Wire into source control objectives.
-- wrapper: getOdpState
-  operation_id: get_odp_state_api_v1_control_odp_state_get
-  disposition: operator_ui
-  target_epic: Epic 7
-  decision: Expose as governance status.
-- wrapper: getKillSwitch
-  operation_id: get_kill_switch_api_v1_control_kill_switch_get
-  disposition: operator_ui
-  target_epic: Epic 7
-  decision: Expose as governance status.
-- wrapper: setKillSwitch
-  operation_id: set_kill_switch_api_v1_control_kill_switch_post
-  disposition: operator_ui
-  target_epic: Epic 7
-  decision: Expose as a confirmed high-risk governance action.
-- wrapper: getAdvisoryReport
-  operation_id: get_advisory_report_api_v1_control_advisory_report_get
-  disposition: operator_ui
-  target_epic: Epic 7
-  decision: Expose after GET becomes read-only.
 - wrapper: getRecord
   operation_id: get_record_api_v1_records__record_id__get
   disposition: operator_ui
@@ -2418,23 +2449,8 @@ unreferenced_wrappers:
   disposition: operator_ui
   target_epic: Epic 1
   decision: Wire into a protected danger zone.
-- wrapper: getSkill
-  operation_id: get_skill_api_v1_skills__skill_id__get
-  disposition: operator_ui
-  target_epic: Epic 4
-  decision: Wire into skill detail.
 - wrapper: redistillSkill
   operation_id: redistill_skill_api_v1_skills__skill_id__redistill_post
-  disposition: operator_ui
-  target_epic: Epic 4
-  decision: Wire into the reviewed correction flow.
-- wrapper: dismissCorrection
-  operation_id: dismiss_correction_api_v1_skills__skill_id__dismiss_correction_post
-  disposition: operator_ui
-  target_epic: Epic 4
-  decision: Wire into the reviewed correction flow.
-- wrapper: rollbackSkill
-  operation_id: rollback_skill_api_v1_skills__skill_id__rollback_post
   disposition: operator_ui
   target_epic: Epic 4
   decision: Wire into the reviewed correction flow.
@@ -2453,106 +2469,11 @@ unreferenced_wrappers:
   disposition: operator_ui
   target_epic: Epic 4
   decision: Wire into skill distillation.
-- wrapper: createSchedule
-  operation_id: create_schedule_api_v1_schedules_post
-  disposition: operator_ui
-  target_epic: Epic 2
-  decision: Wire into schedule CRUD.
-- wrapper: updateSchedule
-  operation_id: update_schedule_api_v1_schedules__schedule_id__patch
-  disposition: operator_ui
-  target_epic: Epic 2
-  decision: Wire into schedule CRUD.
-- wrapper: deleteSchedule
-  operation_id: delete_schedule_api_v1_schedules__schedule_id__delete
-  disposition: operator_ui
-  target_epic: Epic 2
-  decision: Wire into schedule CRUD.
-- wrapper: createNotificationRule
-  operation_id: create_rule_api_v1_notifications_rules_post
-  disposition: operator_ui
-  target_epic: Epic 3
-  decision: Wire after notifier schema and secret handling are fixed.
-- wrapper: updateNotificationRule
-  operation_id: update_rule_api_v1_notifications_rules__rule_id__patch
-  disposition: operator_ui
-  target_epic: Epic 3
-  decision: Wire after notifier schema and secret handling are fixed.
-- wrapper: deleteNotificationRule
-  operation_id: delete_rule_api_v1_notifications_rules__rule_id__delete
-  disposition: operator_ui
-  target_epic: Epic 3
-  decision: Wire into notification rule management.
-- wrapper: createAgent
-  operation_id: create_agent_api_v1_agents_post
-  disposition: operator_ui
-  target_epic: Epic 5
-  decision: Wire into Agent management after provider/model validation exists.
-- wrapper: updateAgent
-  operation_id: update_agent_api_v1_agents__agent_id__patch
-  disposition: operator_ui
-  target_epic: Epic 5
-  decision: Wire into Agent management after provider/model validation exists.
-- wrapper: deleteAgent
-  operation_id: delete_agent_api_v1_agents__agent_id__delete
-  disposition: operator_ui
-  target_epic: Epic 5
-  decision: Wire after reference checks exist.
-- wrapper: listBrowserBindings
-  operation_id: list_bindings_api_v1_browsers_bindings_get
-  disposition: setup_status
-  target_epic: Epic 6
-  decision: Expose in browser resource diagnostics.
-- wrapper: createBrowserBinding
-  operation_id: create_binding_api_v1_browsers_bindings_post
-  disposition: setup_status
-  target_epic: Epic 6
-  decision: Expose as a controlled browser resource action.
-- wrapper: deleteBrowserBinding
-  operation_id: delete_binding_api_v1_browsers_bindings__binding_id__delete
-  disposition: setup_status
-  target_epic: Epic 6
-  decision: Expose as a confirmed browser resource action.
-- wrapper: addChromeInstance
-  operation_id: add_chrome_instance_api_v1_browsers_chrome_instances_post
-  disposition: setup_status
-  target_epic: Epic 6
-  decision: Expose as a controlled browser resource action.
-- wrapper: updateChromeInstanceConfig
-  operation_id: update_instance_config_api_v1_browsers_instances__endpoint_b64__patch
-  disposition: setup_status
-  target_epic: Epic 6
-  decision: Expose as a controlled browser resource action.
-- wrapper: removeChromeInstance
-  operation_id: remove_chrome_instance_api_v1_browsers_chrome_instances__n__delete
-  disposition: setup_status
-  target_epic: Epic 6
-  decision: Expose as a confirmed browser resource action.
-- wrapper: restartApi
-  operation_id: restart_api_api_v1_browsers_restart_api_post
-  disposition: setup_status
-  target_epic: Epic 6
-  decision: Expose as a confirmed audited operation.
-- wrapper: getSystemConfig
-  operation_id: get_config_api_v1_system_config_get
-  disposition: setup_status
-  target_epic: Epic 7
-  decision: Expose as deployment-level status.
-- wrapper: updateSystemConfig
-  operation_id: update_config_api_v1_system_config_patch
-  disposition: setup_status
-  target_epic: Epic 7
-  decision: Expose after unknown fields are rejected.
 - wrapper: getWsAgentStatus
   operation_id: ws_agents_status_api_v1_browsers_agents_ws_status_get
   disposition: setup_status
   target_epic: Epic 6
   decision: Expose as diagnostic status.
-- wrapper: getCeleryStats
-  operation_id: celery_stats_api_v1_workers_celery_stats_get
-  disposition: setup_status
-  target_epic: Epic 6
-  decision: Expose with explicit unavailable/error state.
 - wrapper: getNodeEvents
   operation_id: list_node_events_api_v1_nodes__node_id__events_get
   disposition: setup_status
@@ -2573,38 +2494,13 @@ unreferenced_wrappers:
   disposition: setup_status
   target_epic: Epic 6
   decision: Expose only after the install script contains no embedded secret.
-- wrapper: getChromePool
-  operation_id: chrome_pool_status_api_v1_workers_chrome_pool_get
-  disposition: setup_status
-  target_epic: Epic 6
-  decision: Expose in worker/browser resource status.
 - wrapper: updateChromeEndpointMode
   operation_id: update_endpoint_mode_api_v1_workers_chrome_pool__endpoint_b64__mode_patch
   disposition: setup_status
   target_epic: Epic 6
   decision: Expose as a confirmed audited operation.
-- wrapper: createPlan
-  operation_id: create_plan_api_v1_plans_post
-  disposition: studio_binding
-  target_epic: Epic 8
-  decision: Keep behind the Plan compatibility boundary and migrate to Workflow Studio.
-- wrapper: updatePlan
-  operation_id: update_plan_api_v1_plans__plan_id__patch
-  disposition: studio_binding
-  target_epic: Epic 8
-  decision: Keep behind the Plan compatibility boundary and migrate to Workflow Studio.
-- wrapper: deletePlan
-  operation_id: delete_plan_api_v1_plans__plan_id__delete
-  disposition: studio_binding
-  target_epic: Epic 8
-  decision: Keep behind the Plan compatibility boundary and migrate to Workflow Studio.
-- wrapper: runPlan
-  operation_id: run_plan_api_v1_plans__plan_id__run_post
-  disposition: studio_binding
-  target_epic: Epic 8
-  decision: Keep behind the Plan compatibility boundary until cutover.
-- wrapper: getPlanHealth
-  operation_id: get_plan_health_api_v1_plans__plan_id__health_get
-  disposition: studio_binding
-  target_epic: Epic 8
-  decision: Keep as legacy read-only health until Workflow cutover.
+- wrapper: invokeBrowserCapability
+  operation_id: invoke_runtime_capability_api_v1_browser_sessions__instance_id__capabilities__capability__invoke_post
+  disposition: internal_only
+  target_epic: Epic 6
+  decision: Keep structured runtime execution behind authenticated orchestration and explicit risk gates.
