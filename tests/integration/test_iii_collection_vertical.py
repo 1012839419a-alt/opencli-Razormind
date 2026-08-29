@@ -728,6 +728,7 @@ async def test_zero_expected_key_report_without_receipt_remains_reconciling(
     assert status["blockingStage"] == "reconciliation"
 
 
+
 @pytest.mark.asyncio
 @pytest.mark.skipif(
     not os.environ.get("ODP_INGEST_INTEROP_URL"),
@@ -797,8 +798,12 @@ async def test_real_odp_ingest_receipts_are_accepted_by_admin(client, db_session
         )
     first.raise_for_status()
     second.raise_for_status()
-    first_receipt = first.json()["ingress_receipt"]
-    second_receipt = second.json()["ingress_receipt"]
+    first_response = first.json()
+    second_response = second.json()
+    assert first_response["outcomes"] == []
+    assert second_response["outcomes"] == []
+    first_receipt = first_response["ingress_receipt"]
+    second_receipt = second_response["ingress_receipt"]
     assert first_receipt["outcomes"][0] == {
         "source_id": command.odp_source_id,
         "event_id": event_id,
