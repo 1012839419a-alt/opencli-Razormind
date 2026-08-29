@@ -17,6 +17,12 @@ from backend.models.identity import (
     WorkspaceRole,
 )
 from backend.models.feed_provider import FeedProvider
+from backend.models.delivery_authorization import (
+    DeliveryAuthorizationDecisionV1,
+    DeliveryTarget,
+    DeliveryTargetRevision,
+)
+
 from backend.models.iii_collection import (
     EvidenceBatchMaterializationEventV1,
     EvidenceBatchMaterializationManifestV1,
@@ -120,6 +126,9 @@ __all__ = [
     "IntelligenceCommandRecord",
     "IntelligenceOutbox",
     "IIICollectionCommandV1",
+    "DeliveryTarget",
+    "DeliveryTargetRevision",
+    "DeliveryAuthorizationDecisionV1",
     "IIICollectionAttemptV1",
     "IIICollectionOutboundV1",
     "IIICollectionLifecycleObservationV1",
