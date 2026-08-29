@@ -7,6 +7,7 @@ import json
 import os
 import sys
 import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -145,6 +146,74 @@ def _emit_admin_lifecycle(
         raise RuntimeError("admin III lifecycle callback failed") from exc
 
 
+def _expected_key_set_sha256(events: list[dict[str, Any]]) -> str:
+    keys = sorted(
+        {(str(event["source_id"]), str(event["event_id"])) for event in events},
+        key=lambda key: (key[0], key[1]),
+    )
+    return hashlib.sha256(
+        json.dumps(
+            {
+                "expected_keys": [
+                    {"source_id": source_id, "event_id": event_id}
+                    for source_id, event_id in keys
+                ]
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
+
+
+def _emit_expected_key_report(
+    metadata: dict[str, Any] | None, events: list[dict[str, Any]], *, rejected_count: int
+) -> None:
+    if metadata is None:
+        return
+    lifecycle_url = os.environ["ADMIN_III_LIFECYCLE_URL"].rstrip("/")
+    if not lifecycle_url.endswith("/lifecycle"):
+        raise RuntimeError("ADMIN_III_LIFECYCLE_URL must name the Admin lifecycle endpoint")
+    expected_keys = [
+        {"source_id": source_id, "event_id": event_id}
+        for source_id, event_id in sorted(
+            {(str(event["source_id"]), str(event["event_id"])) for event in events},
+            key=lambda key: (key[0], key[1]),
+        )
+    ]
+    report = {
+        **metadata,
+        "report_id": f"collector:{metadata['attempt_id']}:1",
+        "report_sequence": 1,
+        "expected_keys": expected_keys,
+        "expected_key_set_sha256": _expected_key_set_sha256(events),
+        "item_count": len(events),
+        "zero_count": int(not events),
+        "rejected_count": rejected_count,
+        "reported_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+    }
+    report["report_hash"] = hashlib.sha256(
+        json.dumps(report, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    headers = {"content-type": "application/json"}
+    fleet_token = os.environ.get("API_AUTH_TOKEN", "")
+    if fleet_token:
+        headers["authorization"] = f"Bearer {fleet_token}"
+    bridge_token = os.environ.get("ADMIN_III_LIFECYCLE_TOKEN", "")
+    if bridge_token:
+        headers["x-iii-bridge-token"] = bridge_token
+    try:
+        response = httpx.post(
+            f"{lifecycle_url.rsplit('/', 1)[0]}/expected-key-reports",
+            json=report,
+            headers=headers,
+            timeout=10.0,
+        )
+        response.raise_for_status()
+    except httpx.HTTPError as exc:
+        raise RuntimeError("Admin expected-key report callback failed") from exc
+
+
 def opencli_snapshot_handler(payload: dict[str, Any]) -> dict[str, Any]:
     payload = _unwrap_admin_command(payload)
     site = str(payload.get("site") or "").strip()
@@ -189,19 +258,34 @@ def opencli_snapshot_handler(payload: dict[str, Any]) -> dict[str, Any]:
         task_id=task_id,
         trace_id=trace_id,
     )
+    if len({(str(event["source_id"]), str(event["event_id"])) for event in events}) != len(events):
+        raise ValueError("collector produced duplicate expected source/event keys")
+    if len(events) > 1000:
+        raise ValueError("collector expected-key report exceeds the 1000-key bound")
 
     ingest_result: dict[str, Any] = {"sent": 0, "accepted": 0, "duplicates": 0, "rejected": 0}
     if events:
+        ingest_payload: dict[str, Any] = {
+            "events": events,
+            "trace_id": trace_id,
+            "task_id": task_id,
+        }
+        if metadata is not None:
+            ingest_payload["admin_collection"] = {
+                **metadata,
+                "expected_key_set_sha256": _expected_key_set_sha256(events),
+            }
         ingest_result = worker.trigger(
             {
                 "function_id": "odp.ingest::batch",
-                "payload": {
-                    "events": events,
-                    "trace_id": trace_id,
-                    "task_id": task_id,
-                },
+                "payload": ingest_payload,
             }
         )
+    _emit_expected_key_report(
+        metadata,
+        events,
+        rejected_count=min(len(events), max(0, int(ingest_result.get("rejected", 0)))),
+    )
     _emit_admin_lifecycle(
         metadata,
         event_type="collector_returned",

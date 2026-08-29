@@ -16,10 +16,14 @@ from backend.models.studio import StudioProject, StudioWorkflow, StudioWorkflowV
 from backend.models.workflow_run import WorkflowRun
 from backend.schemas.common import ApiResponse
 from backend.schemas.iii_collection import (
+    CollectorFinalExpectedKeyReportReadV1,
+    CollectorFinalExpectedKeyReportV1,
     IIICollectionLifecycleReadV1,
     IIICollectionLifecycleV1,
     IIICollectionSubmitReadV1,
     IIICollectionSubmitV1,
+    ODPIngressOutcomeReceiptReadV1,
+    ODPIngressOutcomeReceiptV1,
     VerticalStatusV1,
 )
 from backend.workflow.iii_collection_dispatch import dispatch_collection_attempt
@@ -30,6 +34,8 @@ from backend.workflow.iii_collection_store import (
     cancel_collection,
     collection_status,
     get_scoped_command,
+    ingest_expected_key_report,
+    ingest_ingress_receipt,
     ingest_lifecycle,
     submission_read,
     submit_collection,
@@ -239,6 +245,52 @@ async def ingest_iii_collection_lifecycle(
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid III bridge token")
     try:
         result = await ingest_lifecycle(db, event=body)
+    except IIICollectionNotFoundError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    except IIICollectionConflictError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    return ApiResponse.ok(result)
+
+
+@router.post(
+    "/iii-collections/expected-key-reports",
+    response_model=ApiResponse[CollectorFinalExpectedKeyReportReadV1],
+)
+async def ingest_iii_collection_expected_key_report(
+    body: CollectorFinalExpectedKeyReportV1,
+    x_iii_bridge_token: str | None = Header(default=None),
+    db: AsyncSession = Depends(get_db),
+) -> ApiResponse[CollectorFinalExpectedKeyReportReadV1]:
+    """Append the bounded collector completion boundary through the III callback."""
+
+    configured_token = get_settings().iii_lifecycle_token
+    if not configured_token or not secrets.compare_digest(configured_token, x_iii_bridge_token or ""):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid III bridge token")
+    try:
+        result = await ingest_expected_key_report(db, report=body)
+    except IIICollectionNotFoundError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    except IIICollectionConflictError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    return ApiResponse.ok(result)
+
+
+@router.post(
+    "/iii-collections/ingress-receipts",
+    response_model=ApiResponse[ODPIngressOutcomeReceiptReadV1],
+)
+async def ingest_iii_collection_ingress_receipt(
+    body: ODPIngressOutcomeReceiptV1,
+    x_iii_bridge_token: str | None = Header(default=None),
+    db: AsyncSession = Depends(get_db),
+) -> ApiResponse[ODPIngressOutcomeReceiptReadV1]:
+    """Append only a bridge-authenticated, producer-signed ingress observation."""
+
+    configured_token = get_settings().iii_lifecycle_token
+    if not configured_token or not secrets.compare_digest(configured_token, x_iii_bridge_token or ""):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid III bridge token")
+    try:
+        result = await ingest_ingress_receipt(db, receipt=body)
     except IIICollectionNotFoundError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
     except IIICollectionConflictError as exc:

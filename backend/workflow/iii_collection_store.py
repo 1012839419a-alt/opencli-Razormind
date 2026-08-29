@@ -3,27 +3,34 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
-
+from backend.config import get_settings
 from backend.models.iii_collection import (
     IIICollectionAttemptV1,
     IIICollectionCommandV1,
+    IIICollectionExpectedKeyReportV1,
+    IIICollectionIngressReceiptV1,
     IIICollectionLifecycleObservationV1,
     IIICollectionOutboundV1,
 )
 from backend.models.workflow_run import WorkflowRun
 from backend.schemas.iii_collection import (
+    CollectorFinalExpectedKeyReportReadV1,
+    CollectorFinalExpectedKeyReportV1,
     IIICollectionLifecycleReadV1,
     IIICollectionLifecycleV1,
     IIICollectionRequestV1,
     IIICollectionSubmitReadV1,
+    ODPIngressOutcomeReceiptReadV1,
+    ODPIngressOutcomeReceiptV1,
     VerticalEvidenceReferenceV1,
     VerticalStatusV1,
 )
@@ -68,6 +75,86 @@ def _canonical_json(value: dict) -> bytes:
 
 def _sha256(value: dict) -> str:
     return hashlib.sha256(_canonical_json(value)).hexdigest()
+
+
+def _expected_key_set_hash(report: CollectorFinalExpectedKeyReportV1) -> str:
+    keys = sorted(
+        {(key.source_id, key.event_id) for key in report.expected_keys},
+        key=lambda key: (key[0], key[1]),
+    )
+    if len(keys) != len(report.expected_keys):
+        raise IIICollectionConflictError("Expected source/event keys must be unique")
+    return _sha256({"expected_keys": [{"source_id": source_id, "event_id": event_id} for source_id, event_id in keys]})
+
+
+def _report_hash(report: CollectorFinalExpectedKeyReportV1) -> str:
+    return _sha256(report.model_dump(mode="json", exclude={"report_hash"}))
+
+
+def _receipt_hash(receipt: ODPIngressOutcomeReceiptV1) -> str:
+    return _sha256(receipt.model_dump(mode="json", exclude={"receipt_hash", "signature"}))
+
+
+def _validate_fact_identity(
+    command: IIICollectionCommandV1,
+    attempt: IIICollectionAttemptV1,
+    fact: CollectorFinalExpectedKeyReportV1 | ODPIngressOutcomeReceiptV1,
+) -> None:
+    if not (
+        command.workspace_id == fact.workspace_id
+        and command.project_id == fact.project_id
+        and command.workflow_id == fact.workflow_id
+        and command.studio_workflow_version_id == fact.studio_workflow_version_id
+        and command.run_id == fact.run_id
+        and command.node_id == fact.node_id
+        and command.odp_source_id == fact.source_id
+        and command.source_binding_id == fact.source_binding_id
+        and command.source_binding_revision_id == fact.source_binding_revision_id
+        and command.source_binding_revision_number == fact.source_binding_revision_number
+        and command.payload_sha256 == fact.payload_sha256
+        and attempt.command_id == command.id
+        and attempt.attempt_number == fact.attempt_number
+        and attempt.task_id == fact.task_id
+        and attempt.trace_id == fact.trace_id
+        and command.trace_id == fact.trace_id
+    ):
+        raise IIICollectionConflictError("Fact identity, scope, or payload hash does not match")
+
+
+async def _fact_target(
+    db: AsyncSession, *, command_id: str, attempt_id: str
+) -> tuple[IIICollectionCommandV1, IIICollectionAttemptV1]:
+    command = await db.get(IIICollectionCommandV1, command_id)
+    attempt = await db.get(IIICollectionAttemptV1, attempt_id)
+    if command is None or attempt is None or attempt.command_id != command.id:
+        raise IIICollectionNotFoundError("Collection fact target not found")
+    return command, attempt
+
+
+async def _report_for_attempt(
+    db: AsyncSession, attempt_id: str
+) -> IIICollectionExpectedKeyReportV1 | None:
+    return (
+        await db.execute(
+            select(IIICollectionExpectedKeyReportV1).where(
+                IIICollectionExpectedKeyReportV1.attempt_id == attempt_id
+            )
+        )
+    ).scalar_one_or_none()
+
+
+def _outcomes_match_report(
+    receipt: ODPIngressOutcomeReceiptV1, report: IIICollectionExpectedKeyReportV1
+) -> bool:
+    expected = {(key["source_id"], key["event_id"]) for key in report.expected_keys}
+    outcomes = [(outcome.source_id, outcome.event_id) for outcome in receipt.outcomes]
+    return (
+        receipt.expected_key_set_sha256 == report.key_set_sha256
+        and len(outcomes) == len(expected)
+        and len(set(outcomes)) == len(outcomes)
+        and set(outcomes) == expected
+        and sum(outcome.outcome == "rejected" for outcome in receipt.outcomes) == report.rejected_count
+    )
 
 
 def canonical_collection_payload(collection: IIICollectionRequestV1) -> tuple[dict, str]:
@@ -457,6 +544,188 @@ async def ingest_lifecycle(
         duplicate=False,
     )
 
+async def ingest_expected_key_report(
+    db: AsyncSession, *, report: CollectorFinalExpectedKeyReportV1
+) -> CollectorFinalExpectedKeyReportReadV1:
+    """Retain one immutable collector boundary without inferring ODP persistence."""
+
+    if report.report_sequence != 1:
+        raise IIICollectionConflictError("Only one final expected-key report is permitted per attempt")
+    if _expected_key_set_hash(report) != report.expected_key_set_sha256:
+        raise IIICollectionConflictError("Expected-key set hash does not match canonical keys")
+    if _report_hash(report) != report.report_hash:
+        raise IIICollectionConflictError("Expected-key report hash does not match canonical content")
+    command, attempt = await _fact_target(
+        db, command_id=report.command_id, attempt_id=report.attempt_id
+    )
+    _validate_fact_identity(command, attempt, report)
+    existing = await _report_for_attempt(db, attempt.id)
+    if existing is not None:
+        if existing.report_hash != report.report_hash or existing.report_id != report.report_id:
+            raise IIICollectionConflictError("Expected-key report replay has changed content")
+        return CollectorFinalExpectedKeyReportReadV1(
+            command_id=command.id,
+            attempt_id=attempt.id,
+            report_id=existing.report_id,
+            report_sequence=existing.report_sequence,
+            duplicate=True,
+        )
+    receipts = list(
+        (
+            await db.execute(
+                select(IIICollectionIngressReceiptV1).where(
+                    IIICollectionIngressReceiptV1.attempt_id == attempt.id
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    expected = {(key.source_id, key.event_id) for key in report.expected_keys}
+    for receipt in receipts:
+        outcomes = [(outcome["source_id"], outcome["event_id"]) for outcome in receipt.outcomes]
+        if (
+            receipt.expected_key_set_sha256 != report.expected_key_set_sha256
+            or len(outcomes) != len(expected)
+            or len(set(outcomes)) != len(outcomes)
+            or set(outcomes) != expected
+            or sum(outcome["outcome"] == "rejected" for outcome in receipt.outcomes)
+            != report.rejected_count
+        ):
+            raise IIICollectionConflictError(
+                "Expected-key report does not match retained ingress receipt evidence"
+            )
+    observation = IIICollectionExpectedKeyReportV1(
+        version=report.version,
+        report_id=report.report_id,
+        command_id=command.id,
+        attempt_id=attempt.id,
+        report_sequence=report.report_sequence,
+        payload_sha256=report.payload_sha256,
+        key_set_sha256=report.expected_key_set_sha256,
+        item_count=report.item_count,
+        zero_count=report.zero_count,
+        rejected_count=report.rejected_count,
+        expected_keys=[key.model_dump() for key in report.expected_keys],
+        reported_at=report.reported_at,
+        report_hash=report.report_hash,
+    )
+    db.add(observation)
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        existing = await _report_for_attempt(db, attempt.id)
+        if existing is None or existing.report_hash != report.report_hash or existing.report_id != report.report_id:
+            raise IIICollectionConflictError("Expected-key report replay has changed content")
+        return CollectorFinalExpectedKeyReportReadV1(
+            command_id=command.id,
+            attempt_id=attempt.id,
+            report_id=existing.report_id,
+            report_sequence=existing.report_sequence,
+            duplicate=True,
+        )
+    return CollectorFinalExpectedKeyReportReadV1(
+        command_id=command.id,
+        attempt_id=attempt.id,
+        report_id=observation.report_id,
+        report_sequence=observation.report_sequence,
+        duplicate=False,
+    )
+
+
+async def ingest_ingress_receipt(
+    db: AsyncSession, *, receipt: ODPIngressOutcomeReceiptV1
+) -> ODPIngressOutcomeReceiptReadV1:
+    """Verify and append one signed odp-ingest ingress observation."""
+
+    if _receipt_hash(receipt) != receipt.receipt_hash:
+        raise IIICollectionConflictError("Ingress receipt hash does not match canonical content")
+    if receipt.producer_id != "odp-ingest":
+        raise IIICollectionConflictError("Ingress receipt producer is not authoritative")
+    secret = get_settings().iii_ingress_receipt_secret
+    expected_signature = "sha256=" + hmac.new(
+        secret.encode("utf-8"), receipt.receipt_hash.encode("ascii"), hashlib.sha256
+    ).hexdigest()
+    if not secret or not hmac.compare_digest(expected_signature, receipt.signature):
+        raise IIICollectionConflictError("Ingress receipt signature is invalid or unconfigured")
+    command, attempt = await _fact_target(
+        db, command_id=receipt.command_id, attempt_id=receipt.attempt_id
+    )
+    _validate_fact_identity(command, attempt, receipt)
+    report = await _report_for_attempt(db, attempt.id)
+    if report is not None and not _outcomes_match_report(receipt, report):
+        raise IIICollectionConflictError("Ingress receipt does not match the expected-key report")
+    existing = (
+        await db.execute(
+            select(IIICollectionIngressReceiptV1).where(
+                or_(
+                    IIICollectionIngressReceiptV1.receipt_id == receipt.receipt_id,
+                    (
+                        IIICollectionIngressReceiptV1.producer_id == receipt.producer_id
+                    )
+                    & (IIICollectionIngressReceiptV1.idempotency_key == receipt.idempotency_key),
+                )
+            )
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        if (
+            existing.receipt_hash != receipt.receipt_hash
+            or existing.signature != receipt.signature
+            or existing.receipt_id != receipt.receipt_id
+            or existing.producer_id != receipt.producer_id
+            or existing.idempotency_key != receipt.idempotency_key
+        ):
+            raise IIICollectionConflictError("Ingress receipt replay has changed content")
+        return ODPIngressOutcomeReceiptReadV1(
+            command_id=command.id,
+            attempt_id=attempt.id,
+            receipt_id=existing.receipt_id,
+            duplicate=True,
+        )
+    observation = IIICollectionIngressReceiptV1(
+        version=receipt.version,
+        receipt_id=receipt.receipt_id,
+        idempotency_key=receipt.idempotency_key,
+        producer_id=receipt.producer_id,
+        producer_key_id=receipt.producer_key_id,
+        command_id=command.id,
+        attempt_id=attempt.id,
+        payload_sha256=receipt.payload_sha256,
+        expected_key_set_sha256=receipt.expected_key_set_sha256,
+        outcomes=[outcome.model_dump() for outcome in receipt.outcomes],
+        issued_at=receipt.issued_at,
+        receipt_hash=receipt.receipt_hash,
+        signature=receipt.signature,
+    )
+    db.add(observation)
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        existing = (
+            await db.execute(
+                select(IIICollectionIngressReceiptV1).where(
+                    IIICollectionIngressReceiptV1.receipt_id == receipt.receipt_id
+                )
+            )
+        ).scalar_one_or_none()
+        if existing is None or existing.receipt_hash != receipt.receipt_hash:
+            raise IIICollectionConflictError("Ingress receipt replay has changed content")
+        return ODPIngressOutcomeReceiptReadV1(
+            command_id=command.id,
+            attempt_id=attempt.id,
+            receipt_id=existing.receipt_id,
+            duplicate=True,
+        )
+    return ODPIngressOutcomeReceiptReadV1(
+        command_id=command.id,
+        attempt_id=attempt.id,
+        receipt_id=observation.receipt_id,
+        duplicate=False,
+    )
+
 
 async def collection_status(
     db: AsyncSession, *, command: IIICollectionCommandV1
@@ -473,10 +742,30 @@ async def collection_status(
         .scalars()
         .all()
     )
+    report = await _report_for_attempt(db, attempt.id)
+    receipts = list(
+        (
+            await db.execute(
+                select(IIICollectionIngressReceiptV1)
+                .where(IIICollectionIngressReceiptV1.attempt_id == attempt.id)
+                .order_by(IIICollectionIngressReceiptV1.issued_at)
+            )
+        )
+        .scalars()
+        .all()
+    )
     state = outbound.state
     if outbound.cancel_requested_at is not None and state != "cancelled":
         state = "cancel_requested"
-    if state == "pending":
+    if receipts and report is not None:
+        blocking_stage, action, uncertain = "reconciliation", "await_reconciliation", True
+    elif receipts and state not in {"cancelled", "cancel_requested"}:
+        blocking_stage, action, uncertain = "collector_report", "await_collector_report", True
+    elif report is not None and report.zero_count == 1:
+        blocking_stage, action, uncertain = "reconciliation", "await_reconciliation", True
+    elif report is not None and state not in {"cancelled", "cancel_requested"}:
+        blocking_stage, action, uncertain = "ingress", "await_ingress_receipt", True
+    elif state == "pending":
         blocking_stage, action, uncertain = "dispatch", "resume_dispatch", False
     elif state == "bridge_unavailable":
         blocking_stage, action, uncertain = "bridge", "resume_dispatch", True
@@ -488,7 +777,11 @@ async def collection_status(
         blocking_stage, action, uncertain = "collector", "await_lifecycle", True
     elif state == "collector_started":
         blocking_stage, action, uncertain = "collector", "await_lifecycle", True
-    else:  # submitted/returned are explicitly non-terminal collection observations.
+    elif report is None:
+        blocking_stage, action, uncertain = "collector_report", "await_collector_report", True
+    elif not receipts:
+        blocking_stage, action, uncertain = "ingress", "await_ingress_receipt", True
+    else:  # Ingress and collector facts are still nonterminal pending #32 reconciliation.
         blocking_stage, action, uncertain = "reconciliation", "await_reconciliation", True
 
     evidence = [
@@ -499,6 +792,19 @@ async def collection_status(
                 kind="lifecycle", reference=f"lifecycle:{observation.sequence}"
             )
             for observation in observations
+        ],
+        *(
+            [
+                VerticalEvidenceReferenceV1(
+                    kind="expected_key_report", reference=f"report:{report.report_id}"
+                )
+            ]
+            if report is not None
+            else []
+        ),
+        *[
+            VerticalEvidenceReferenceV1(kind="ingress_receipt", reference=f"receipt:{receipt.receipt_id}")
+            for receipt in receipts
         ],
     ]
     return VerticalStatusV1(
@@ -513,6 +819,8 @@ async def collection_status(
             command.updated_at,
             outbound.updated_at,
             *(observation.created_at for observation in observations),
+            *((report.created_at,) if report is not None else ()),
+            *(receipt.created_at for receipt in receipts),
         ),
     )
 

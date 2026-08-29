@@ -2,7 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import os
+import uuid
+from datetime import UTC, datetime
 from types import SimpleNamespace
+
+import httpx
 
 import pytest
 from sqlalchemy import select
@@ -10,6 +17,8 @@ from sqlalchemy import select
 from backend.models.iii_collection import (
     IIICollectionAttemptV1,
     IIICollectionCommandV1,
+    IIICollectionExpectedKeyReportV1,
+    IIICollectionIngressReceiptV1,
     IIICollectionLifecycleObservationV1,
     IIICollectionOutboundV1,
 )
@@ -21,7 +30,11 @@ from backend.models.studio import (
     StudioWorkspace,
 )
 from backend.models.workflow_run import WorkflowRun, WorkflowRunEvent
-from backend.schemas.iii_collection import IIICollectionRequestV1
+from backend.schemas.iii_collection import (
+    CollectorFinalExpectedKeyReportV1,
+    IIICollectionRequestV1,
+    ODPIngressOutcomeReceiptV1,
+)
 from backend.workflow.iii_collection_dispatch import (
     IIIBridgeUnavailableError,
     collector_trigger_payload,
@@ -30,6 +43,9 @@ from backend.workflow.iii_collection_dispatch import (
 from backend.workflow.iii_collection_store import (
     CollectionScope,
     _attempt_and_outbound,
+    _expected_key_set_hash,
+    _receipt_hash,
+    _report_hash,
     cancel_collection,
     submit_collection,
 )
@@ -108,6 +124,80 @@ def _submit_body() -> dict:
             "sourceBindingRevisionNumber": 1,
         },
     }
+
+
+def _fact_identity(command, attempt) -> dict:
+    return {
+        "version": "v1",
+        "workspaceId": command.workspace_id,
+        "projectId": command.project_id,
+        "workflowId": command.workflow_id,
+        "studioWorkflowVersionId": command.studio_workflow_version_id,
+        "runId": command.run_id,
+        "nodeId": command.node_id,
+        "commandId": command.id,
+        "attemptId": attempt.id,
+        "attemptNumber": attempt.attempt_number,
+        "taskId": attempt.task_id,
+        "traceId": attempt.trace_id,
+        "sourceId": command.odp_source_id,
+        "sourceBindingId": command.source_binding_id,
+        "sourceBindingRevisionId": command.source_binding_revision_id,
+        "sourceBindingRevisionNumber": command.source_binding_revision_number,
+        "payloadSha256": command.payload_sha256,
+    }
+def _report_body(command, attempt, *, event_id: str | None = "event-1") -> dict:
+    expected_keys = (
+        [{"sourceId": command.odp_source_id, "eventId": event_id}] if event_id is not None else []
+    )
+    body = {
+        **_fact_identity(command, attempt),
+        "reportId": "report-1",
+        "reportSequence": 1,
+        "expectedKeys": expected_keys,
+        "expectedKeySetSha256": "0" * 64,
+        "itemCount": len(expected_keys),
+        "zeroCount": int(not expected_keys),
+        "rejectedCount": 0,
+        "reportedAt": datetime(2026, 8, 30, tzinfo=UTC).isoformat(),
+        "reportHash": "0" * 64,
+    }
+    report = CollectorFinalExpectedKeyReportV1.model_validate(body)
+    body["expectedKeySetSha256"] = _expected_key_set_hash(report)
+    report = CollectorFinalExpectedKeyReportV1.model_validate(body)
+    body["reportHash"] = _report_hash(report)
+    return body
+
+
+def _receipt_body(command, attempt, report: dict, *, event_id: str = "event-1") -> dict:
+    return _sign_receipt_body(
+        {
+            **_fact_identity(command, attempt),
+            "receiptId": "receipt-1",
+            "idempotencyKey": "odp-ingest:receipt-1",
+            "producerId": "odp-ingest",
+            "producerKeyId": "odp-ingest-v1",
+            "expectedKeySetSha256": report["expectedKeySetSha256"],
+            "outcomes": [
+                {
+                    "sourceId": command.odp_source_id,
+                    "eventId": event_id,
+                    "outcome": "accepted",
+                }
+            ],
+            "issuedAt": datetime(2026, 8, 30, tzinfo=UTC).isoformat(),
+        }
+    )
+
+
+def _sign_receipt_body(body: dict) -> dict:
+    signed = {**body, "receiptHash": "0" * 64, "signature": "sha256=placeholder"}
+    receipt = ODPIngressOutcomeReceiptV1.model_validate(signed)
+    signed["receiptHash"] = _receipt_hash(receipt)
+    signed["signature"] = "sha256=" + hmac.new(
+        b"receipt-secret", signed["receiptHash"].encode(), hashlib.sha256
+    ).hexdigest()
+    return signed
 
 
 @pytest.mark.asyncio
@@ -309,8 +399,8 @@ async def test_lifecycle_replay_conflict_unavailable_status_and_redaction(client
     assert status_response.status_code == 200
     vertical = status_response.json()["data"]
     assert vertical["state"] == "collector_returned"
-    assert vertical["blockingStage"] == "reconciliation"
-    assert vertical["recoveryAction"] == "await_reconciliation"
+    assert vertical["blockingStage"] == "collector_report"
+    assert vertical["recoveryAction"] == "await_collector_report"
     assert vertical["sideEffectUncertainty"] is True
     rendered = status_response.text
     assert "bilibili" not in rendered
@@ -445,3 +535,287 @@ async def test_lifecycle_ingress_requires_bridge_token_and_rejects_scope_hash_co
             f"{scope['workflow'].id}/runs/other-run/iii-collections/{command.id}"
         )
     ).status_code == 404
+
+@pytest.mark.asyncio
+async def test_signed_receipts_and_expected_reports_are_replay_safe_and_nonterminal(
+    client, db_session, monkeypatch
+):
+    scope = await _create_scoped_run(db_session)
+
+    async def no_dispatch(_db, *, command):
+        _, outbound = await _attempt_and_outbound(_db, command.id)
+        return outbound
+
+    monkeypatch.setattr("backend.api.v1.iii_collections.dispatch_collection_attempt", no_dispatch)
+    monkeypatch.setattr(
+        "backend.api.v1.iii_collections.get_settings",
+        lambda: SimpleNamespace(
+            iii_lifecycle_token="bridge-token", iii_ingress_receipt_secret="receipt-secret"
+        ),
+    )
+    monkeypatch.setattr(
+        "backend.workflow.iii_collection_store.get_settings",
+        lambda: SimpleNamespace(iii_ingress_receipt_secret="receipt-secret"),
+    )
+    submitted = await client.post(_route(scope), json=_submit_body())
+    assert submitted.status_code == 202
+    command = await db_session.get(IIICollectionCommandV1, submitted.json()["data"]["commandId"])
+    attempt = await db_session.get(IIICollectionAttemptV1, submitted.json()["data"]["attemptId"])
+    assert command is not None and attempt is not None
+    headers = {"x-iii-bridge-token": "bridge-token"}
+    report = _report_body(command, attempt)
+    receipt = _receipt_body(command, attempt, report)
+
+    # Receipt-first evidence is retained but cannot claim collection completion.
+    first_receipt = await client.post(
+        "/api/v1/iii-collections/ingress-receipts", json=receipt, headers=headers
+    )
+    assert first_receipt.status_code == 200
+    assert first_receipt.json()["data"]["duplicate"] is False
+    before_report = await client.get(f"{_route(scope)}/{command.id}")
+    assert before_report.json()["data"]["blockingStage"] == "collector_report"
+    assert before_report.json()["data"]["sideEffectUncertainty"] is True
+
+    report_response = await client.post(
+        "/api/v1/iii-collections/expected-key-reports", json=report, headers=headers
+    )
+    assert report_response.status_code == 200
+    assert report_response.json()["data"]["duplicate"] is False
+    status_response = await client.get(f"{_route(scope)}/{command.id}")
+    status = status_response.json()["data"]
+    assert status["blockingStage"] == "reconciliation"
+    assert status["sideEffectUncertainty"] is True
+    assert "event-1" not in status_response.text
+    assert "receipt-secret" not in status_response.text
+    assert len(
+        (
+            await db_session.execute(
+                select(IIICollectionExpectedKeyReportV1).where(
+                    IIICollectionExpectedKeyReportV1.attempt_id == attempt.id
+                )
+            )
+        ).scalars().all()
+    ) == 1
+    assert len(
+        (
+            await db_session.execute(
+                select(IIICollectionIngressReceiptV1).where(
+                    IIICollectionIngressReceiptV1.attempt_id == attempt.id
+                )
+            )
+        ).scalars().all()
+    ) == 1
+
+    assert (
+        await client.post(
+            "/api/v1/iii-collections/ingress-receipts", json=receipt, headers=headers
+        )
+    ).json()["data"]["duplicate"] is True
+    assert (
+        await client.post(
+            "/api/v1/iii-collections/expected-key-reports", json=report, headers=headers
+        )
+    ).json()["data"]["duplicate"] is True
+
+    tampered = {**receipt, "signature": "sha256=" + "0" * 64}
+    assert (
+        await client.post(
+            "/api/v1/iii-collections/ingress-receipts", json=tampered, headers=headers
+        )
+    ).status_code == 409
+    changed_report = {**report, "itemCount": 2}
+    assert (
+        await client.post(
+            "/api/v1/iii-collections/expected-key-reports", json=changed_report, headers=headers
+        )
+    ).status_code == 422
+
+    duplicate_outcome = _sign_receipt_body(
+        {
+            **receipt,
+            "receiptId": "receipt-duplicate-key",
+            "idempotencyKey": "odp-ingest:receipt-duplicate-key",
+            "outcomes": receipt["outcomes"] * 2,
+        }
+    )
+    assert (
+        await client.post(
+            "/api/v1/iii-collections/ingress-receipts", json=duplicate_outcome, headers=headers
+        )
+    ).status_code == 409
+    mismatched_rejected_count = _sign_receipt_body(
+        {
+            **receipt,
+            "receiptId": "receipt-rejected-key",
+            "idempotencyKey": "odp-ingest:receipt-rejected-key",
+            "outcomes": [
+                {
+                    **receipt["outcomes"][0],
+                    "outcome": "rejected",
+                    "rejectionReason": "validation failed",
+                }
+            ],
+        }
+    )
+    assert (
+        await client.post(
+            "/api/v1/iii-collections/ingress-receipts",
+            json=mismatched_rejected_count,
+            headers=headers,
+        )
+    ).status_code == 409
+    wrong_producer = _sign_receipt_body(
+        {
+            **receipt,
+            "receiptId": "receipt-wrong-producer",
+            "idempotencyKey": "other:receipt-wrong-producer",
+            "producerId": "other-producer",
+        }
+    )
+    assert (
+        await client.post(
+            "/api/v1/iii-collections/ingress-receipts", json=wrong_producer, headers=headers
+        )
+    ).status_code == 409
+
+    duplicate_key_report = {
+        **report,
+        "reportId": "report-duplicate-key",
+        "expectedKeys": report["expectedKeys"] * 2,
+        "itemCount": 2,
+        "reportHash": "0" * 64,
+    }
+    assert (
+        await client.post(
+            "/api/v1/iii-collections/expected-key-reports",
+            json=duplicate_key_report,
+            headers=headers,
+        )
+    ).status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_zero_expected_key_report_without_receipt_remains_reconciling(
+    client, db_session, monkeypatch
+):
+    scope = await _create_scoped_run(db_session)
+
+    async def no_dispatch(_db, *, command):
+        _, outbound = await _attempt_and_outbound(_db, command.id)
+        return outbound
+
+    monkeypatch.setattr("backend.api.v1.iii_collections.dispatch_collection_attempt", no_dispatch)
+    monkeypatch.setattr(
+        "backend.api.v1.iii_collections.get_settings",
+        lambda: SimpleNamespace(iii_lifecycle_token="bridge-token"),
+    )
+    submitted = await client.post(_route(scope), json=_submit_body())
+    assert submitted.status_code == 202
+    command = await db_session.get(IIICollectionCommandV1, submitted.json()["data"]["commandId"])
+    attempt = await db_session.get(IIICollectionAttemptV1, submitted.json()["data"]["attemptId"])
+    assert command is not None and attempt is not None
+    report = _report_body(command, attempt, event_id=None)
+    assert (
+        await client.post(
+            "/api/v1/iii-collections/expected-key-reports",
+            json=report,
+            headers={"x-iii-bridge-token": "bridge-token"},
+        )
+    ).status_code == 200
+    status_response = await client.get(f"{_route(scope)}/{command.id}")
+    assert status_response.status_code == 200
+    status = status_response.json()["data"]
+    assert status["blockingStage"] == "reconciliation"
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    not os.environ.get("ODP_INGEST_INTEROP_URL"),
+    reason="requires real odp-ingest interop endpoint",
+)
+async def test_real_odp_ingest_receipts_are_accepted_by_admin(client, db_session, monkeypatch):
+    scope = await _create_scoped_run(db_session)
+
+    async def no_dispatch(_db, *, command):
+        _, outbound = await _attempt_and_outbound(_db, command.id)
+        return outbound
+
+    secret = os.environ["III_INGRESS_RECEIPT_SECRET"]
+    monkeypatch.setattr("backend.api.v1.iii_collections.dispatch_collection_attempt", no_dispatch)
+    monkeypatch.setattr(
+        "backend.api.v1.iii_collections.get_settings",
+        lambda: SimpleNamespace(iii_lifecycle_token="bridge-token"),
+    )
+    monkeypatch.setattr(
+        "backend.workflow.iii_collection_store.get_settings",
+        lambda: SimpleNamespace(iii_ingress_receipt_secret=secret),
+    )
+    submitted = await client.post(_route(scope), json=_submit_body())
+    command = await db_session.get(IIICollectionCommandV1, submitted.json()["data"]["commandId"])
+    attempt = await db_session.get(IIICollectionAttemptV1, submitted.json()["data"]["attemptId"])
+    assert command is not None and attempt is not None
+    event_id = f"interop-{uuid.uuid4()}"
+    report = _report_body(command, attempt, event_id=event_id)
+    context = {
+        "workspace_id": str(command.workspace_id),
+        "project_id": str(command.project_id),
+        "workflow_id": str(command.workflow_id),
+        "studio_workflow_version_id": str(command.studio_workflow_version_id),
+        "node_id": command.node_id,
+        "run_id": str(command.run_id),
+        "command_id": str(command.id),
+        "attempt_id": str(attempt.id),
+        "attempt_number": attempt.attempt_number,
+        "task_id": attempt.task_id,
+        "trace_id": attempt.trace_id,
+        "source_id": command.odp_source_id,
+        "source_binding_id": str(command.source_binding_id) if command.source_binding_id else None,
+        "source_binding_revision_id": (
+            str(command.source_binding_revision_id) if command.source_binding_revision_id else None
+        ),
+        "source_binding_revision_number": command.source_binding_revision_number,
+        "payload_sha256": command.payload_sha256,
+        "expected_key_set_sha256": report["expectedKeySetSha256"],
+    }
+    event = {
+        "schema_version": 1,
+        "provider": "interop",
+        "source_id": command.odp_source_id,
+        "event_id": event_id,
+        "ingest_mode": "snapshot",
+        "source_ts": datetime.now(UTC).isoformat(),
+        "payload": {},
+    }
+    async with httpx.AsyncClient() as odp:
+        first = await odp.post(
+            f"{os.environ['ODP_INGEST_INTEROP_URL'].rstrip('/')}/v1/ingest/batch",
+            json={"events": [event], "receipt_context": context},
+        )
+        second = await odp.post(
+            f"{os.environ['ODP_INGEST_INTEROP_URL'].rstrip('/')}/v1/ingest/batch",
+            json={"events": [event], "receipt_context": context},
+        )
+    first.raise_for_status()
+    second.raise_for_status()
+    first_receipt = first.json()["ingress_receipt"]
+    second_receipt = second.json()["ingress_receipt"]
+    assert first_receipt["outcomes"][0] == {
+        "source_id": command.odp_source_id,
+        "event_id": event_id,
+        "outcome": "accepted",
+        "rejection_reason": None,
+    }
+    assert second_receipt["outcomes"][0]["outcome"] == "duplicate"
+    assert second_receipt["outcomes"][0]["rejection_reason"] is None
+    headers = {"x-iii-bridge-token": "bridge-token"}
+    for receipt in (first_receipt, second_receipt):
+        assert (
+            await client.post("/api/v1/iii-collections/ingress-receipts", json=receipt, headers=headers)
+        ).status_code == 200
+    assert (
+        await client.post("/api/v1/iii-collections/expected-key-reports", json=report, headers=headers)
+    ).status_code == 200
+    status = (await client.get(f"{_route(scope)}/{command.id}")).json()["data"]
+    assert status["blockingStage"] == "reconciliation"
+    assert status["recoveryAction"] == "await_reconciliation"
+    assert status["sideEffectUncertainty"] is True

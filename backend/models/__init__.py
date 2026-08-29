@@ -20,6 +20,8 @@ from backend.models.feed_provider import FeedProvider
 from backend.models.iii_collection import (
     IIICollectionAttemptV1,
     IIICollectionCommandV1,
+    IIICollectionExpectedKeyReportV1,
+    IIICollectionIngressReceiptV1,
     IIICollectionLifecycleObservationV1,
     IIICollectionOutboundV1,
 )

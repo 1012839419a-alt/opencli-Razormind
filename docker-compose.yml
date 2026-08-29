@@ -182,6 +182,9 @@ services:
       COLLECTION_ORCHESTRATOR: ${COLLECTION_ORCHESTRATOR:-admin}
       ODP_INGEST_URL: ${ODP_INGEST_URL:-}
       III_URL: ${III_URL:-}
+      III_LIFECYCLE_URL: ${III_LIFECYCLE_URL:-}
+      III_LIFECYCLE_TOKEN: ${III_LIFECYCLE_TOKEN:-}
+      III_INGRESS_RECEIPT_SECRET: ${III_INGRESS_RECEIPT_SECRET:-}
       DIFY_GRAPHON_RUNTIME_URL: ${DIFY_GRAPHON_RUNTIME_URL:-http://dify-graphon-runtime:8095}
       KATS_RUNTIME_URL: ${KATS_RUNTIME_URL:-http://kats-runtime:8096}
       INVOKEAI_ENABLED: ${INVOKEAI_ENABLED:-false}
@@ -376,6 +379,8 @@ services:
       ODP_INGEST_PORT: 8040
       ODP_REDIS_URL: redis://redis:6379/2
       RUST_LOG: info,odp_ingest=debug
+      ODP_INGRESS_RECEIPT_SECRET: ${III_INGRESS_RECEIPT_SECRET:-}
+      ODP_INGRESS_RECEIPT_KEY_ID: ${ODP_INGRESS_RECEIPT_KEY_ID:-odp-ingest-v1}
     ports:
       - "${ODP_INGEST_PORT:-8040}:8040"
     healthcheck:
@@ -465,6 +470,9 @@ services:
     environment:
       III_URL: ws://iii-engine:49134
       ODP_INGEST_URL: http://odp-ingest:8040
+      ADMIN_III_LIFECYCLE_URL: ${III_LIFECYCLE_URL:-}
+      ADMIN_III_LIFECYCLE_TOKEN: ${III_LIFECYCLE_TOKEN:-}
+      API_AUTH_TOKEN: ${API_AUTH_TOKEN:-}
     depends_on:
       iii-engine:
         condition: service_started
@@ -499,6 +507,9 @@ services:
       OPENCLI_DAEMON_HOST: agent-1
       OPENCLI_DAEMON_PORT: ${OPENCLI_DAEMON_PORT:-19825}
       OPENCLI_TIMEOUT: ${OPENCLI_TIMEOUT:-120}
+      ADMIN_III_LIFECYCLE_URL: ${III_LIFECYCLE_URL:-}
+      ADMIN_III_LIFECYCLE_TOKEN: ${III_LIFECYCLE_TOKEN:-}
+      API_AUTH_TOKEN: ${API_AUTH_TOKEN:-}
     depends_on:
       iii-engine:
         condition: service_started
