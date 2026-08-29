@@ -235,7 +235,7 @@ async def ingest_iii_collection_lifecycle(
     """Accept only validated, replay-safe lifecycle summaries from the III bridge."""
 
     configured_token = get_settings().iii_lifecycle_token
-    if configured_token and not secrets.compare_digest(configured_token, x_iii_bridge_token or ""):
+    if not configured_token or not secrets.compare_digest(configured_token, x_iii_bridge_token or ""):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid III bridge token")
     try:
         result = await ingest_lifecycle(db, event=body)
