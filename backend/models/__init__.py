@@ -17,6 +17,13 @@ from backend.models.identity import (
     WorkspaceRole,
 )
 from backend.models.feed_provider import FeedProvider
+from backend.models.iii_collection import (
+    IIICollectionAttemptV1,
+    IIICollectionCommandV1,
+    IIICollectionLifecycleObservationV1,
+    IIICollectionOutboundV1,
+)
+
 from backend.models.intelligence import (
     IntelligenceArtifact,
     IntelligenceArtifactReference,
@@ -108,6 +115,10 @@ __all__ = [
     "IntelligenceTransition",
     "IntelligenceCommandRecord",
     "IntelligenceOutbox",
+    "IIICollectionCommandV1",
+    "IIICollectionAttemptV1",
+    "IIICollectionOutboundV1",
+    "IIICollectionLifecycleObservationV1",
     "CanvasDocument",
     "CanvasSnapshot",
     "MediaAsset",

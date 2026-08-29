@@ -41,6 +41,19 @@ class Settings(BaseSettings):
     # admin — API内置 scheduler.py / Celery Beat 驱动定时采集（默认）
     # iii   — III engine + schedule-bootstrap 驱动 cron；API 仅保留 UI/手动任务
     collection_orchestrator: Literal["admin", "iii"] = "admin"
+    # III direct function trigger used by the durable Admin collection outbox.
+    # The bridge path remains the public `iii trigger` protocol; no private queue
+    # or engine HTTP convention is assumed.
+    iii_cli_path: str = "iii"
+    iii_url: str = ""
+    iii_trigger_timeout_seconds: float = 30.0
+    # Optional shared secret for III lifecycle callbacks. API-wide fleet auth,
+    # when configured, remains in force independently.
+    iii_lifecycle_token: str = ""
+    # Required for governed V1 collection dispatch: without a callback target,
+    # Admin refuses to invoke III rather than losing lifecycle authority.
+    iii_lifecycle_url: str = ""
+    iii_dispatch_lease_seconds: float = 60.0
 
     # Redis / Celery — only required when task_executor="celery"
     redis_url: str = "redis://localhost:6379/0"
