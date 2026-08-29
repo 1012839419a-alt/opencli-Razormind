@@ -32,20 +32,39 @@ from backend.schemas.research_graph_v2 import ResearchGraphV2ActorEvidence, Rese
 from backend.workflow.research_graph_v2 import (
     ResearchGraphV2ConflictError,
     ResearchGraphV2Scope,
+    lock_scoped_workflow_run,
     read_research_graph_v2,
 )
-from backend.workflow.workflow_run_lock import lock_scoped_workflow_run
 
-_POLICY_VERSION = "controlled-receiver-policy-v1"
+_POLICY_VERSION = "controlled-receiver-policy-v2"
 _PAYLOAD_SCHEMA_VERSION = "delivery-claim-manifest-v1"
 _REDACTION_PROFILE_VERSION = "delivery-authorization-redaction-v1"
 _CONTROLLED_RECEIVER_POLICY = {
-    "timeout": "not-configured",
-    "retryPolicy": "not-configured",
-    "confirmationPolicy": "not-configured",
-    "unknownResultPolicy": "not-configured",
-    "continuationPolicy": "not-configured",
-    "compensationPolicy": "not-configured",
+    "receipt": {
+        "required": True,
+        "schemaVersion": "signed-receipt-v2",
+        "invalidOrMissing": "unknown-fail-closed",
+        "validRejected": "terminal",
+    },
+    "redirects": {"mode": "forbidden"},
+    "timeout": {"perAttemptSeconds": 30},
+    "retry": {
+        "mode": "exact-idempotent",
+        "retryOn": ["transport-timeout", "network-error", "http-5xx"],
+        "maxAttempts": 3,
+        "backoff": {
+            "kind": "deterministic-exponential",
+            "initialDelaySeconds": 1,
+            "multiplier": 2,
+            "maxDelaySeconds": 4,
+        },
+        "terminalOn": ["http-4xx", "valid-rejected-receipt"],
+    },
+    "continuation": {
+        "exhaustedUnknown": "requires-reconciliation-blocked",
+        "cancellation": "stop-new-attempts",
+    },
+    "compensation": {"automatic": False},
 }
 
 

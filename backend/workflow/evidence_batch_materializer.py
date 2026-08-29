@@ -38,7 +38,7 @@ from backend.workflow.evidence_batch_materialization_facts import (
     report_keys,
 )
 from backend.workflow.iii_collection_store import CollectionScope, IIICollectionNotFoundError
-from backend.workflow.workflow_run_lock import lock_scoped_workflow_run
+from backend.workflow.workflow_run_events import lock_scoped_workflow_run
 
 _MAX_QUERY_KEYS = 100
 _MAX_RECORD_REFERENCES = 1000

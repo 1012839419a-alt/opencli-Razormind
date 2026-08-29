@@ -4,7 +4,7 @@ import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from backend.models.workflow_run import WorkflowRun
-from backend.workflow.workflow_run_lock import lock_scoped_workflow_run
+from backend.workflow.workflow_run_events import lock_scoped_workflow_run
 
 
 @pytest.mark.asyncio

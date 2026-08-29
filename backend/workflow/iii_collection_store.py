@@ -34,7 +34,7 @@ from backend.schemas.iii_collection import (
     VerticalEvidenceReferenceV1,
     VerticalStatusV1,
 )
-from backend.schemas.workflow_runtime import WorkflowNodeRunEvent
+from backend.schemas.workflow import WorkflowNodeRunEvent
 from backend.workflow.workflow_run_events import append_workflow_run_events
 
 OPENCLI_FUNCTION_ID = "odp.collect::opencli_snapshot"

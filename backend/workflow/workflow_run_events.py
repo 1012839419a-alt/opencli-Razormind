@@ -314,3 +314,32 @@ __all__ = [
     "append_workflow_run_events",
     "reconcile_workflow_run_event_counters",
 ]
+
+
+async def lock_scoped_workflow_run(
+    session: AsyncSession,
+    *,
+    workflow_id: str,
+    studio_workflow_version_id: str,
+    run_id: str,
+) -> WorkflowRun | None:
+    """Lock one scoped run before reading or mutating freshness-sensitive facts.
+
+    PostgreSQL uses a row write lock. SQLite ignores ``FOR UPDATE``, so a
+    no-op update acquires its transaction-wide write barrier without changing
+    the persisted run projection.
+    """
+    filters = (
+        WorkflowRun.id == run_id,
+        WorkflowRun.workflow_id == workflow_id,
+        WorkflowRun.studio_workflow_version_id == studio_workflow_version_id,
+    )
+    bind = session.get_bind()
+    if bind.dialect.name == "sqlite":
+        result = await session.execute(
+            update(WorkflowRun).where(*filters).values(updated_at=WorkflowRun.updated_at)
+        )
+        if result.rowcount != 1:
+            return None
+        return await session.scalar(select(WorkflowRun).where(*filters))
+    return await session.scalar(select(WorkflowRun).where(*filters).with_for_update())
