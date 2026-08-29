@@ -94,7 +94,10 @@ export function TasksPane({ scrollTopRef }: { scrollTopRef: MutableRefObject<num
               {tasks.map((task) => (
                 <TableRow key={task.id} className="group">
                   <TableCell className="font-medium">
-                    <Link href={`/tasks/${task.id}`} className="flex items-center gap-2 hover:underline">
+                    <Link
+                      href={`/tasks/${task.id}?returnTo=${encodeURIComponent(`${pathname}?${searchParamsKey}`)}`}
+                      className="flex items-center gap-2 hover:underline"
+                    >
                       <span>{task.source_name ?? task.source_id}</span>
                       <ArrowUpRight className="size-3.5 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" />
                     </Link>

@@ -26,7 +26,18 @@ async function authenticateWorkflowPage(page) {
 async function geometrySnapshot(node, ports) {
   const geometry = await node.evaluate((element) => {
     const style = getComputedStyle(element)
-    return { width: Number.parseFloat(style.width), height: Number.parseFloat(style.height) }
+    const wrapper = element.closest('.react-flow__node')
+    const viewport = element.closest('.react-flow__viewport')
+    const transform = viewport ? getComputedStyle(viewport).transform : 'none'
+    const viewportScale = transform === 'none' ? 1 : Number(transform.match(/^matrix\(([^,]+)/)?.[1] ?? 1)
+    const renderedWidth = element.getBoundingClientRect().width
+    const wrapperRenderedWidth = wrapper?.getBoundingClientRect().width ?? Number.NaN
+    return {
+      computedWidth: Number.parseFloat(style.width),
+      computedHeight: Number.parseFloat(style.height),
+      unscaledRenderedWidth: Number((renderedWidth / viewportScale).toFixed(0)),
+      unscaledWrapperWidth: Number((wrapperRenderedWidth / viewportScale).toFixed(0)),
+    }
   })
   const handles = await ports.evaluateAll((elements) => elements.map((element) => {
     const nodeRoot = element.closest('[data-workflow-node="true"]')
@@ -64,8 +75,10 @@ test('workflow node design keeps actual canvas geometry, ports, density, states,
 
   const ports = node.locator('[data-port-id]')
   const highSnapshot = await geometrySnapshot(node, ports)
-  expect(highSnapshot.geometry.width).toBe(240)
-  expect(highSnapshot.geometry.height).toBeGreaterThanOrEqual(96)
+  expect(highSnapshot.geometry.computedWidth).toBe(240)
+  expect(highSnapshot.geometry.unscaledRenderedWidth).toBe(240)
+  expect(highSnapshot.geometry.unscaledWrapperWidth).toBe(240)
+  expect(highSnapshot.geometry.computedHeight).toBeGreaterThanOrEqual(96)
   expect(highSnapshot.handles.length).toBeGreaterThan(0)
   const port = ports.first()
   await port.focus()

@@ -1,11 +1,12 @@
 'use client'
 
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { useSearchParams } from 'next/navigation'
 
 import { BACKEND_HINT, EmptyState, ErrorState, LoadingState } from '@/components/shell/data-states'
 import { StatusBadge } from '@/components/shell/status-badge'
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { useControlActions } from '@/lib/api/hooks'
@@ -34,11 +35,32 @@ export function ControlActionsLedger() {
       limit: Number.isInteger(limit) && limit > 0 ? limit : undefined,
     }
   }, [searchParamsKey])
-  const { data, isLoading, isError, error } = useControlActions(params)
+  const { data, isLoading, isError, error, refetch } = useControlActions(params)
   const actions = data?.data ?? []
+  const [isRetrying, setIsRetrying] = useState(false)
+  const retry = () => {
+    setIsRetrying(true)
+    void refetch().finally(() => setIsRetrying(false))
+  }
 
+  if (isError || isRetrying) {
+    return (
+      <ErrorState
+        message={(error as Error)?.message}
+        hint={BACKEND_HINT}
+        action={
+          <Button
+            onClick={retry}
+            disabled={isRetrying}
+            aria-busy={isRetrying}
+          >
+            {isRetrying ? '重新加载中…' : '重新加载'}
+          </Button>
+        }
+      />
+    )
+  }
   if (isLoading) return <LoadingState />
-  if (isError) return <ErrorState message={(error as Error)?.message} hint={BACKEND_HINT} />
   if (actions.length === 0) {
     return <EmptyState title="暂无控制动作" description="控制器产生建议或执行动作后，记录会显示在此。" />
   }

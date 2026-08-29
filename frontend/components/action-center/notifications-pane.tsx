@@ -111,7 +111,7 @@ export function NotificationsPane({ scrollTopRef }: { scrollTopRef: MutableRefOb
                       <Button
                         variant={confirmDeleteId === rule.id ? 'destructive' : 'ghost'}
                         size="icon-sm"
-                        aria-label={confirmDeleteId === rule.id ? '确认删除' : '删除规则'}
+                        aria-label={confirmDeleteId === rule.id ? `确认删除 ${rule.name}` : '删除规则'}
                         disabled={deleteMutation.isPending}
                         onClick={() => handleDelete(rule)}
                       >

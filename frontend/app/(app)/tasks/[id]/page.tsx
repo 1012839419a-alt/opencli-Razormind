@@ -17,8 +17,23 @@ import { cn } from '@/lib/utils'
 
 const TERMINAL_STATES = new Set(['completed', 'failed', 'cancelled'])
 
-export default function TaskDetailPage({ params }: { params: Promise<{ id: string }> }) {
+const TASKS_RETURN_FALLBACK = '/inbox?tab=tasks'
+
+const CANONICAL_TASKS_RETURN = /^\/inbox\?(?:(?!tab=)[^&#]*&)*tab=tasks(?:&(?:(?!tab=)[^&#]*))*$/
+
+export default function TaskDetailPage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ id: string }>
+  searchParams: Promise<{ returnTo?: string | string[] }>
+}) {
   const { id } = use(params)
+  const { returnTo: requestedReturnTo } = use(searchParams)
+  const returnTo =
+    typeof requestedReturnTo === 'string' && CANONICAL_TASKS_RETURN.test(requestedReturnTo)
+      ? requestedReturnTo
+      : TASKS_RETURN_FALLBACK
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null)
   const task = useQuery({ queryKey: ['tasks', id], queryFn: () => getTask(id), refetchInterval: 10_000 })
   const source = useQuery({
@@ -56,7 +71,7 @@ export default function TaskDetailPage({ params }: { params: Promise<{ id: strin
       title={source.data?.name ?? item?.source_name ?? `工作项 ${id.slice(0, 8)}`}
       description={item ? `${item.trigger_type} 触发 · 创建于 ${formatRelative(item.created_at)}` : '查看工作上下文、运行记录、事件与成果。'}
       actions={
-        <Link href="/inbox?tab=tasks" className={cn(buttonVariants({ variant: 'outline', size: 'sm' }))}>
+        <Link href={returnTo} className={cn(buttonVariants({ variant: 'outline', size: 'sm' }))}>
           <ArrowLeft className="size-4" />
           返回工作项
         </Link>

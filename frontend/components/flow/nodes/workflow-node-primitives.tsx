@@ -46,7 +46,7 @@ export function WorkflowNodeRoot({ children, nodeId, selected, status, packageSt
       data-package-state={packageState}
       aria-label={label}
       className="workflow-node-root relative"
-      style={style}
+      style={{ ...style, width: WORKFLOW_NODE_GEOMETRY.width }}
     >
       {children}
     </div>

@@ -123,7 +123,15 @@ test('Action Center tabs use one canonical workspace while legacy paths remain q
     assert.match(page, new RegExp(`query\\.set\\('tab', '${tab}'\\)`))
     assert.match(page, /redirect\(`\/inbox\?\$\{query\.toString\(\)\}`\)/)
   }
-  assert.match(taskDetail, /href="\/inbox\?tab=tasks"/)
+  assert.match(taskDetail, /const TASKS_RETURN_FALLBACK = '\/inbox\?tab=tasks'/)
+  assert.match(taskDetail, /searchParams: Promise<\{ returnTo\?: string \| string\[\] \}>/)
+  assert.match(taskDetail, /const \{ returnTo: requestedReturnTo \} = use\(searchParams\)/)
+  assert.match(taskDetail, /const CANONICAL_TASKS_RETURN = .*?\(\?!tab=\).*tab=tasks/)
+  assert.match(
+    taskDetail,
+    /typeof requestedReturnTo === 'string' && CANONICAL_TASKS_RETURN\.test\(requestedReturnTo\)/,
+  )
+  assert.match(taskDetail, /<Link href=\{returnTo\}/)
   assert.doesNotMatch(tabs, /href: '\/control\/actions'/)
   for (const label of ['自动化与智能体', 'Agent', '技能']) {
     assert.match(tabs, new RegExp(`label: '${label}'`))

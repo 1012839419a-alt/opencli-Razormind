@@ -518,15 +518,20 @@ function InboxContent() {
     const onKeyDown = (event: KeyboardEvent) => {
       const target = event.target instanceof Element ? event.target : null
       const targetElement = target instanceof HTMLElement ? target : null
-      const isInteractive = shouldIgnoreInboxShortcut({
-        tagName: target?.tagName,
-        isContentEditable: targetElement?.isContentEditable,
-        withinInteractive: Boolean(
-          target?.closest(
-            'a,button,input,select,textarea,summary,[contenteditable="true"],[role="button"],[role="link"],[role="menuitem"],[role="option"],[role="tab"],[tabindex]:not([tabindex="-1"])',
+      const withinQueueOption = Boolean(
+        target?.closest('[role="listbox"][aria-label="待处理信号"] [role="option"]'),
+      )
+      const isInteractive =
+        !withinQueueOption &&
+        shouldIgnoreInboxShortcut({
+          tagName: target?.tagName,
+          isContentEditable: targetElement?.isContentEditable,
+          withinInteractive: Boolean(
+            target?.closest(
+              'a,button,input,select,textarea,summary,[contenteditable="true"],[role="button"],[role="link"],[role="menuitem"],[role="option"],[role="tab"],[tabindex]:not([tabindex="-1"])',
+            ),
           ),
-        ),
-      })
+        })
 
       if (isInteractive) {
         if (event.key === 'Escape' && target === searchRef.current) {

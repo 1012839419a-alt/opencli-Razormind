@@ -1,5 +1,10 @@
 import { expect, test } from '@playwright/test'
-import { installActionCenterFixtures } from './action-center-fixtures.mjs'
+import {
+  installActionCenterFixtures,
+  installControlLedgerFailureRecoveryFixtures,
+  installFailedTaskDetailFixtures,
+  installNotificationRuleCrudFixtures,
+} from './action-center-fixtures.mjs'
 
 const api = (path) => `**/api/v1${path}`
 
@@ -176,4 +181,192 @@ test('Action Center preserves canonical pane state while compatibility routes re
       ),
     )
     .toBeTruthy()
+})
+
+test('anonymous legacy control link survives login as a filtered canonical ledger', async ({ page }) => {
+  const { controlRequests } = await installActionCenterFixtures(page)
+  await page.goto('/control/actions?outcome=pending')
+  await expect
+    .poll(() => new URL(page.url()).searchParams.get('returnTo'))
+    .toBe('/control/actions?outcome=pending')
+
+  await page.getByLabel('用户名').fill('admin')
+  await page.getByLabel('密码').fill('admin')
+  await page.getByRole('button', { name: '登录' }).click()
+  await expect(page).toHaveURL(/\/inbox\?outcome=pending&tab=controls$/)
+  await expect(page.getByText('pause_collection').first()).toBeVisible()
+  await expect
+    .poll(() => controlRequests.some((query) => query.outcome === 'pending'))
+    .toBeTruthy()
+})
+
+test('pending queue keyboard search changes selection and opens only visible work', async ({ page }) => {
+  await installActionCenterFixtures(page)
+  await goAuthed(page, '/inbox?tab=pending')
+
+  const failedItem = page.locator('#inbox-row-task-task-failed-e2e')
+  const pendingItem = page.locator('#inbox-row-task-task-pending-e2e')
+  const search = page.getByRole('textbox', { name: '搜索当前队列' })
+  await expect(failedItem).toHaveAttribute('aria-selected', 'true')
+
+  await page.keyboard.press('Control+f')
+  await expect(search).toBeFocused()
+  await failedItem.click()
+  await page.keyboard.press('j')
+  await expect(pendingItem).toHaveAttribute('aria-selected', 'true')
+  await page.keyboard.press('ArrowUp')
+  await expect(failedItem).toHaveAttribute('aria-selected', 'true')
+  await page.keyboard.press('ArrowDown')
+  await expect(pendingItem).toHaveAttribute('aria-selected', 'true')
+  await page.keyboard.press('Enter')
+  await expect(page).toHaveURL(/\/tasks\/task-pending-e2e$/)
+})
+
+test('pending queue keeps a no-match search stable without navigation timing', async ({ page }) => {
+  await installActionCenterFixtures(page)
+  await goAuthed(page, '/inbox?tab=pending')
+
+  const search = page.getByRole('textbox', { name: '搜索当前队列' })
+  await page.keyboard.press('Control+f')
+  await expect(search).toBeFocused()
+  await search.fill('no matching queue item')
+  await expect(search).toHaveValue('no matching queue item')
+  await expect(page.getByText('当前视图已经清空')).toBeVisible()
+  await page.waitForTimeout(250)
+  await expect(search).toHaveValue('no matching queue item')
+  await expect(page.getByText('当前视图已经清空')).toBeVisible()
+  await page.keyboard.press('Enter')
+  await expect(page).toHaveURL(/\/inbox\?tab=pending/)
+})
+
+test('pending queue shortcuts ignore options outside the queue', async ({ page }) => {
+  await installActionCenterFixtures(page)
+  await goAuthed(page, '/inbox?tab=pending')
+
+  const failedItem = page.locator('#inbox-row-task-task-failed-e2e')
+  await expect(failedItem).toHaveAttribute('aria-selected', 'true')
+  await page.getByRole('button', { name: /搜索/ }).click()
+  const commandOption = page.getByRole('dialog', { name: 'Command Palette' }).getByRole('option').first()
+  await commandOption.dispatchEvent('keydown', { key: 'j', bubbles: true })
+  await expect(failedItem).toHaveAttribute('aria-selected', 'true')
+})
+
+test('failed task detail preserves the filtered tasks return path', async ({ page }) => {
+  await installActionCenterFixtures(page)
+  const { taskDetailRequests, runRequests, eventRequests } = await installFailedTaskDetailFixtures(page)
+  await goAuthed(page, '/inbox?tab=tasks')
+  await page.goto('/inbox?tab=tasks&status=failed')
+
+  await page.getByRole('region', { name: '任务历史' }).getByRole('link', { name: 'Failed source' }).click()
+  await expect(page).toHaveURL(/\/tasks\/task-failed-e2e(?:\?.*)?$/)
+  await expect(page.getByText('E2E collection failure').first()).toBeVisible()
+  await expect(page.getByText('collect', { exact: true })).toBeVisible()
+  await expect.poll(() => taskDetailRequests.length).toBe(1)
+  await expect.poll(() => runRequests.length).toBe(1)
+  await expect.poll(() => eventRequests.length).toBe(1)
+
+  await page.getByRole('link', { name: '返回工作项' }).click()
+  await expect(page).toHaveURL(/\/inbox\?tab=tasks&status=failed$/)
+  await expect(page.getByRole('region', { name: '任务历史' })).toBeVisible()
+})
+
+
+test('task detail return action is filtered before task data loads', async ({ page }) => {
+  await installActionCenterFixtures(page)
+  await installFailedTaskDetailFixtures(page)
+  await goAuthed(page, '/inbox?tab=tasks')
+  await page.goto('/tasks/task-failed-e2e?returnTo=%2Finbox%3Ftab%3Dtasks%26status%3Dfailed')
+
+  const returnAction = page.getByRole('link', { name: '返回工作项' })
+  await expect(returnAction).toHaveAttribute('href', '/inbox?tab=tasks&status=failed')
+  await returnAction.click()
+  await expect(page).toHaveURL(/\/inbox\?tab=tasks&status=failed$/)
+})
+
+test('task detail rejects a non-canonical return path after loading', async ({ page }) => {
+  await installActionCenterFixtures(page)
+  const { taskDetailRequests } = await installFailedTaskDetailFixtures(page)
+  await goAuthed(page, '/inbox?tab=tasks')
+  await page.goto('/tasks/task-failed-e2e?returnTo=%2Finbox%3Ftab%3Dtasks-unsafe')
+  await expect.poll(() => taskDetailRequests.length).toBe(1)
+
+  await expect(page.getByRole('link', { name: '返回工作项' })).toHaveAttribute('href', '/inbox?tab=tasks')
+})
+test('notifications pane creates, confirms deletes, and keeps a rule after delete failure', async ({ page }) => {
+  await installActionCenterFixtures(page)
+  const { deleteRequests } = await installNotificationRuleCrudFixtures(page)
+  await goAuthed(page, '/inbox?tab=notifications')
+
+  await page.getByRole('button', { name: '创建规则' }).click()
+  const createDialog = page.getByRole('dialog')
+  await createDialog.getByLabel('规则名称').fill('Delete success rule')
+  await createDialog.getByLabel('Webhook URL').fill('https://example.test/success')
+  await createDialog.getByRole('button', { name: '创建规则' }).click()
+  const successRow = page.getByRole('row').filter({ hasText: 'Delete success rule' })
+  await expect(successRow).toBeVisible()
+
+  await successRow.getByRole('button', { name: '删除规则' }).click()
+  await expect(successRow.getByRole('button', { name: '确认删除 Delete success rule' })).toBeVisible()
+  await successRow.getByRole('button', { name: '确认删除 Delete success rule' }).click()
+  await expect(successRow).toHaveCount(0)
+
+  await page.getByRole('button', { name: '创建规则' }).click()
+  await createDialog.getByLabel('规则名称').fill('Delete failure rule')
+  await createDialog.getByLabel('Webhook URL').fill('https://example.test/failure')
+  await createDialog.getByRole('button', { name: '创建规则' }).click()
+  const failureRow = page.getByRole('row').filter({ hasText: 'Delete failure rule' })
+  await expect(failureRow).toBeVisible()
+
+  await failureRow.getByRole('button', { name: '删除规则' }).click()
+  await failureRow.getByRole('button', { name: '确认删除 Delete failure rule' }).click()
+  await expect(failureRow).toBeVisible()
+  await expect(page.getByText('E2E delete failure')).toBeVisible()
+  await expect.poll(() => deleteRequests.length).toBe(2)
+  expect(deleteRequests.map((request) => request.method)).toEqual(['DELETE', 'DELETE'])
+  const nonDeleteStatus = await page.evaluate(() =>
+    fetch('/api/v1/notifications/rules/non-delete-e2e', { method: 'PATCH' }).then(
+      (response) => response.status,
+    ),
+  )
+  expect(nonDeleteStatus).toBe(405)
+  const collectionPatchStatus = await page.evaluate(() =>
+    fetch('/api/v1/notifications/rules', { method: 'PATCH' }).then((response) => response.status),
+  )
+  expect(collectionPatchStatus).toBe(405)
+})
+
+test('controls ledger retries a filtered empty read-only query', async ({ page }) => {
+  await installActionCenterFixtures(page)
+  await goAuthed(page, '/inbox?tab=pending')
+  await expect(page.getByText('pause_collection').first()).toBeVisible()
+  const { recover, releaseRecoveryResponse, requests } = await installControlLedgerFailureRecoveryFixtures(page)
+  await page.goto('/inbox?tab=controls&source_id=source-e2e&mode=advisory&outcome=pending&page=3&limit=11')
+
+  const ledger = page.getByRole('region', { name: '控制记录' })
+  await expect(ledger.getByText('加载失败')).toBeVisible({ timeout: 15_000 })
+  await expect(ledger.getByText('E2E control ledger failure')).toBeVisible()
+  await expect(ledger.getByRole('button', { name: '重新加载' })).toBeVisible()
+
+  recover()
+  const retry = ledger.getByRole('button', { name: '重新加载' })
+  await retry.click()
+  await expect(retry).toBeDisabled()
+  releaseRecoveryResponse()
+  await expect(ledger.getByText('暂无控制动作')).toBeVisible()
+  await expect.poll(() => requests.length).toBeGreaterThan(1)
+  expect(
+    requests.every(
+      (request) =>
+        request.method === 'GET' &&
+        request.source_id === 'source-e2e' &&
+        request.mode === 'advisory' &&
+        request.outcome === 'pending' &&
+        request.page === '3' &&
+        request.limit === '11',
+    ),
+  ).toBeTruthy()
+  const nonGetStatus = await page.evaluate(() =>
+    fetch('/api/v1/control/actions', { method: 'POST' }).then((response) => response.status),
+  )
+  expect(nonGetStatus).toBe(405)
 })
