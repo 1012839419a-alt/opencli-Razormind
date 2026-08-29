@@ -5,8 +5,10 @@ import {
   BarChart3,
   Braces,
   Database,
+  Download,
   ExternalLink,
   FileStack,
+  FileSpreadsheet,
   Filter,
   Rows3,
   Search,
@@ -16,27 +18,33 @@ import {
 } from 'lucide-react'
 import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
-import { use, useEffect, useMemo, useState } from 'react'
+import { use, useCallback, useEffect, useMemo, useState } from 'react'
+import * as XLSX from 'xlsx'
+import { toast } from 'sonner'
 
 import { EmptyState, ErrorState, LoadingState } from '@/components/shell/data-states'
 import { PageContainer } from '@/components/shell/page-container'
 import { ProjectNavigation } from '@/components/studio/project-navigation'
 import { Badge } from '@/components/ui/badge'
 import { Button, buttonVariants } from '@/components/ui/button'
+import { DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { listRecords } from '@/lib/api/endpoints'
 import { useProjectWorkflows, useRecords, useWorkspaceProjects } from '@/lib/api/hooks'
 import type { CollectedRecord } from '@/lib/api/types'
 import { formatDateTime, formatFreshness, formatRelative, formatSourceDateTime } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
 const PAGE_SIZE = 50
+const EXPORT_PAGE_SIZE = 100
 const PRIORITY_FIELDS = ['title', 'name', 'url', 'text', 'content', 'author', 'published_at', 'source']
 const SOURCE_PUBLISHED_RAW_KEYS = ['displayTime', 'published_at', 'publishedAt', 'published', 'sent_at', 'sentAt', 'time', 'timestamp'] as const
 const SOURCE_PUBLISHED_FALLBACK_KEYS = ['noticeDate', 'date', 'created_at', 'createdAt', 'listed', 'updated'] as const
 type WorkbenchView = 'dataset' | 'profile' | 'files'
+type ExportFormat = 'xlsx' | 'csv' | 'json'
 
 function recordPayload(record: CollectedRecord) {
   return Object.keys(record.normalized_data ?? {}).length ? record.normalized_data : record.raw_data
@@ -82,6 +90,52 @@ function fieldKind(values: unknown[]) {
   return typeof sample
 }
 
+function collectRecordFields(records: CollectedRecord[], limit?: number) {
+  const keys = new Set<string>()
+  records.forEach((record) => Object.keys(recordPayload(record)).forEach((key) => keys.add(key)))
+  const fields = [...keys]
+    .filter((key) => !key.startsWith('_'))
+    .sort((left, right) => {
+      const leftIndex = PRIORITY_FIELDS.indexOf(left)
+      const rightIndex = PRIORITY_FIELDS.indexOf(right)
+      if (leftIndex >= 0 || rightIndex >= 0) {
+        if (leftIndex < 0) return 1
+        if (rightIndex < 0) return -1
+        return leftIndex - rightIndex
+      }
+      return left.localeCompare(right)
+    })
+  return limit === undefined ? fields : fields.slice(0, limit)
+}
+
+function downloadBlob(filename: string, content: BlobPart, type: string) {
+  const url = URL.createObjectURL(new Blob([content], { type }))
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = filename
+  anchor.click()
+  URL.revokeObjectURL(url)
+}
+
+function exportRow(record: CollectedRecord, fields: string[]): Record<string, string> {
+  const payload = recordPayload(record)
+  return {
+    ...Object.fromEntries(fields.map((field) => [field, formatCell(payload[field])])),
+    record_id: record.id,
+    status: record.status,
+    source_id: record.source_id,
+    workflow_id: record.workflow_id ?? '',
+    workflow_run_id: record.workflow_run_id ?? '',
+    collected_at: record.created_at,
+    updated_at: record.updated_at,
+  }
+}
+
+function exportFileBase(projectName?: string) {
+  const safeName = (projectName ?? 'project-data').trim().replace(/[^\p{L}\p{N}_-]+/gu, '-')
+  return safeName.replace(/^-+|-+$/g, '') || 'project-data'
+}
+
 export default function ProjectDataWorkbenchPage({ params }: { params: Promise<{ projectId: string }> }) {
   const { projectId } = use(params)
   const searchParams = useSearchParams()
@@ -94,6 +148,8 @@ export default function ProjectDataWorkbenchPage({ params }: { params: Promise<{
   const [selectedField, setSelectedField] = useState<string | null>(null)
   const [selectedRecord, setSelectedRecord] = useState<CollectedRecord | null>(null)
   const [detailMode, setDetailMode] = useState<'normalized' | 'raw' | 'enrichment'>('normalized')
+  const [selectedColumns, setSelectedColumns] = useState<string[] | null>(null)
+  const [exporting, setExporting] = useState<ExportFormat | null>(null)
 
   const projectsQuery = useWorkspaceProjects(workspaceId)
   const workflowsQuery = useProjectWorkflows(workspaceId, projectId)
@@ -112,23 +168,13 @@ export default function ProjectDataWorkbenchPage({ params }: { params: Promise<{
   const pages = Math.max(1, meta?.pages ?? 1)
   const workflowId = preferredWorkflowId ?? project?.primary_workflow_id ?? workflows[0]?.id ?? null
 
-  const visibleFields = useMemo(() => {
-    const keys = new Set<string>()
-    records.forEach((record) => Object.keys(recordPayload(record)).forEach((key) => keys.add(key)))
-    return [...keys]
-      .filter((key) => !key.startsWith('_'))
-      .sort((left, right) => {
-        const leftIndex = PRIORITY_FIELDS.indexOf(left)
-        const rightIndex = PRIORITY_FIELDS.indexOf(right)
-        if (leftIndex >= 0 || rightIndex >= 0) {
-          if (leftIndex < 0) return 1
-          if (rightIndex < 0) return -1
-          return leftIndex - rightIndex
-        }
-        return left.localeCompare(right)
-      })
-      .slice(0, 24)
-  }, [records])
+  const visibleFields = useMemo(() => collectRecordFields(records, 24), [records])
+  const tableFields = useMemo(() => {
+    const fallback = visibleFields.slice(0, 4)
+    if (selectedColumns === null) return fallback
+    const selected = selectedColumns.filter((field) => visibleFields.includes(field))
+    return selected.length ? selected : fallback.slice(0, 1)
+  }, [selectedColumns, visibleFields])
 
   const activeField = selectedField && visibleFields.includes(selectedField) ? selectedField : visibleFields[0] ?? null
   const fieldProfiles = useMemo(() => visibleFields.map((field) => {
@@ -171,6 +217,65 @@ export default function ProjectDataWorkbenchPage({ params }: { params: Promise<{
     : null
   const overviewHref = workspaceId ? `/studio/projects/${projectId}?workspace=${workspaceId}` : '/studio'
 
+  const toggleColumn = useCallback((field: string) => {
+    setSelectedColumns((current) => {
+      const active = current ?? visibleFields.slice(0, 4)
+      if (active.includes(field)) {
+        return active.length > 1 ? active.filter((candidate) => candidate !== field) : active
+      }
+      return [...active, field]
+    })
+  }, [visibleFields])
+
+  const exportData = useCallback(async (format: ExportFormat) => {
+    setExporting(format)
+    try {
+      const filters = {
+        project_id: projectId,
+        ...(status === 'all' ? {} : { status }),
+        ...(search.trim() ? { search: search.trim() } : {}),
+      }
+      const allRecords: CollectedRecord[] = []
+      let exportPage = 1
+      while (true) {
+        const response = await listRecords({ ...filters, page: exportPage, limit: EXPORT_PAGE_SIZE })
+        allRecords.push(...response.data)
+        if (!response.meta || exportPage >= response.meta.pages || response.data.length === 0) break
+        exportPage += 1
+      }
+      if (allRecords.length === 0) {
+        toast.info('当前筛选条件没有可导出的数据')
+        return
+      }
+      const fields = collectRecordFields(allRecords)
+      const rows = allRecords.map((record) => exportRow(record, fields))
+      const base = exportFileBase(project?.name)
+      if (format === 'json') {
+        downloadBlob(`${base}.json`, JSON.stringify(allRecords, null, 2), 'application/json;charset=utf-8')
+      } else if (format === 'csv') {
+        const headers = Object.keys(rows[0])
+        const csv = [headers, ...rows.map((row) => headers.map((header) => row[header] ?? ''))]
+          .map((row) => row.map((value) => {
+            const text = String(value)
+            return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text
+          }).join(','))
+          .join('\r\n')
+        downloadBlob(`${base}.csv`, `\uFEFF${csv}`, 'text/csv;charset=utf-8')
+      } else {
+        const worksheet = XLSX.utils.json_to_sheet(rows)
+        const workbook = XLSX.utils.book_new()
+        XLSX.utils.book_append_sheet(workbook, worksheet, '数据集')
+        const content = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' })
+        downloadBlob(`${base}.xlsx`, content, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+      }
+      toast.success(`已导出 ${allRecords.length} 条记录`)
+    } catch (reason) {
+      toast.error(reason instanceof Error ? `导出失败：${reason.message}` : '导出失败')
+    } finally {
+      setExporting(null)
+    }
+  }, [project, projectId, search, status])
+
   return (
     <PageContainer
       eyebrow="Project data workbench"
@@ -185,8 +290,8 @@ export default function ProjectDataWorkbenchPage({ params }: { params: Promise<{
 
       <section className="grid gap-3 sm:grid-cols-3" aria-label="项目数据摘要">
         <Summary label="项目记录" value={total.toLocaleString('zh-CN')} icon={Database} />
-        <Summary label="当前字段" value={String(visibleFields.length)} icon={Rows3} />
-        <Summary label="数据来源" value={String(sourceGroups.length)} icon={FileStack} />
+        <Summary label="当前页字段" value={String(visibleFields.length)} icon={Rows3} />
+        <Summary label="当前页来源" value={String(sourceGroups.length)} icon={FileStack} />
       </section>
 
       <section className="overflow-hidden rounded-xl border bg-card">
@@ -197,7 +302,22 @@ export default function ProjectDataWorkbenchPage({ params }: { params: Promise<{
               <ViewButton active={view === 'profile'} icon={BarChart3} onClick={() => setView('profile')}>字段分析</ViewButton>
               <ViewButton active={view === 'files'} icon={FileStack} onClick={() => setView('files')}>项目文件</ViewButton>
             </div>
-            {orchestrationHref ? <Link href={orchestrationHref} className={cn(buttonVariants({ variant: 'outline', size: 'sm' }), 'min-h-10')}><Workflow className="size-4" />打开业务编排</Link> : null}
+            <div className="flex flex-wrap items-center gap-2">
+              {view === 'dataset' ? (
+                <DropdownMenu>
+                  <DropdownMenuTrigger render={<Button variant="outline" size="sm" className="min-h-10" disabled={Boolean(exporting) || records.length === 0} />}>
+                    <Download className="size-4" />{exporting ? '导出中…' : '导出数据'}
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="w-64">
+                    <DropdownMenuLabel>导出当前筛选结果（全量）</DropdownMenuLabel>
+                    <DropdownMenuItem onClick={() => void exportData('xlsx')}><FileSpreadsheet className="size-4" />Excel 工作簿（.xlsx）</DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => void exportData('csv')}><Download className="size-4" />CSV（Excel 可打开）</DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => void exportData('json')}><Braces className="size-4" />JSON（保留完整结构）</DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              ) : null}
+              {orchestrationHref ? <Link href={orchestrationHref} className={cn(buttonVariants({ variant: 'outline', size: 'sm' }), 'min-h-10')}><Workflow className="size-4" />打开业务编排</Link> : null}
+            </div>
           </div>
           {view !== 'files' ? (
             <div className="grid gap-3 p-3 lg:grid-cols-[minmax(0,1fr)_13rem_auto] lg:items-center">
@@ -216,7 +336,10 @@ export default function ProjectDataWorkbenchPage({ params }: { params: Promise<{
                   <SelectItem value="error">处理失败</SelectItem>
                 </SelectContent>
               </Select>
-              <div className="flex items-center gap-2 text-xs text-muted-foreground"><SlidersHorizontal className="size-3.5" />当前视图使用项目过滤条件</div>
+              <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                <span className="flex items-center gap-2"><SlidersHorizontal className="size-3.5" />当前视图使用项目过滤条件</span>
+                {view === 'dataset' ? <ColumnPicker fields={visibleFields} selectedFields={tableFields} onToggle={toggleColumn} onReset={() => setSelectedColumns(null)} /> : null}
+              </div>
             </div>
           ) : null}
         </header>
@@ -230,7 +353,7 @@ export default function ProjectDataWorkbenchPage({ params }: { params: Promise<{
         ) : records.length === 0 ? (
           <EmptyState title="项目还没有可显示的数据" description="运行并完成业务工作流后，记录会按 workflow_id 自动归入当前项目。" />
         ) : (
-          <DatasetView records={records} visibleFields={visibleFields} onSelect={setSelectedRecord} />
+          <DatasetView records={records} visibleFields={tableFields} onSelect={setSelectedRecord} />
         )}
 
         {view !== 'files' ? (
@@ -263,13 +386,27 @@ function ViewButton({ active, children, icon: Icon, onClick }: { active: boolean
   return <button type="button" aria-pressed={active} onClick={onClick} className={cn('flex min-h-9 items-center gap-2 rounded-md px-3 text-xs transition-colors', active ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground')}><Icon className="size-3.5" />{children}</button>
 }
 
+function ColumnPicker({ fields, selectedFields, onToggle, onReset }: { fields: string[]; selectedFields: string[]; onToggle: (field: string) => void; onReset: () => void }) {
+  return <DropdownMenu>
+    <DropdownMenuTrigger render={<Button variant="ghost" size="sm" className="min-h-8 gap-1.5 px-2 text-xs" disabled={fields.length === 0} />}>
+      <SlidersHorizontal className="size-3.5" />列管理
+    </DropdownMenuTrigger>
+    <DropdownMenuContent align="end" className="w-64">
+      <DropdownMenuLabel>显示字段（至少保留 1 列）</DropdownMenuLabel>
+      {fields.map((field) => <DropdownMenuCheckboxItem key={field} checked={selectedFields.includes(field)} onCheckedChange={() => onToggle(field)}>{field}</DropdownMenuCheckboxItem>)}
+      <DropdownMenuSeparator />
+      <DropdownMenuItem onClick={onReset}>恢复默认列</DropdownMenuItem>
+    </DropdownMenuContent>
+  </DropdownMenu>
+}
+
 function DatasetView({ records, visibleFields, onSelect }: { records: CollectedRecord[]; visibleFields: string[]; onSelect: (record: CollectedRecord) => void }) {
   return <div className="overflow-x-auto"><Table><TableHeader><TableRow><TableHead className="min-w-64">记录</TableHead>{visibleFields.slice(0, 4).map((field) => <TableHead key={field} className="min-w-40">{field}</TableHead>)}<TableHead>状态</TableHead><TableHead>源发布时间</TableHead></TableRow></TableHeader><TableBody>{records.map((record) => { const payload = recordPayload(record); const sourcePublishedAt = recordSourcePublishedAt(record); return <TableRow key={record.id} className="cursor-pointer" onClick={() => onSelect(record)}><TableCell><div className="max-w-80"><div className="truncate font-medium">{recordTitle(record)}</div><div className="mt-1 truncate font-mono text-[10px] text-muted-foreground">{record.id}</div></div></TableCell>{visibleFields.slice(0, 4).map((field) => <TableCell key={field}><span className="block max-w-64 truncate text-xs text-muted-foreground">{formatCell(payload[field])}</span></TableCell>)}<TableCell><Badge variant={record.status === 'error' ? 'destructive' : 'outline'}>{record.status}</Badge></TableCell><TableCell className="whitespace-nowrap text-xs text-muted-foreground" title={formatSourceDateTime(sourcePublishedAt)}><span className="block text-foreground/80">{formatFreshness(sourcePublishedAt)}</span><span className="mt-0.5 block text-[10px]">{formatSourceDateTime(sourcePublishedAt)}</span></TableCell></TableRow> })}</TableBody></Table></div>
 }
 
 function FieldProfileView({ profiles, activeField, activeProfile, distribution, total, onSelect }: { profiles: Array<{ field: string; kind: string; filled: number; unique: number; ratio: number }>; activeField: string | null; activeProfile: { field: string; kind: string; filled: number; unique: number; ratio: number } | null; distribution: Array<[string, number]>; total: number; onSelect: (field: string) => void }) {
   const max = Math.max(1, ...distribution.map(([, count]) => count))
-  return <div className="grid min-h-[32rem] lg:grid-cols-[16rem_minmax(0,1fr)]"><aside className="border-b p-3 lg:border-b-0 lg:border-r"><p className="px-2 pb-2 text-[10px] font-medium uppercase tracking-widest text-muted-foreground">字段 · {profiles.length}</p><div className="max-h-[30rem] space-y-1 overflow-y-auto">{profiles.map((profile) => <button type="button" key={profile.field} onClick={() => onSelect(profile.field)} className={cn('flex w-full items-center justify-between gap-2 rounded-md px-2.5 py-2 text-left text-xs', activeField === profile.field ? 'bg-muted text-foreground' : 'text-muted-foreground hover:bg-muted/50 hover:text-foreground')}><span className="truncate font-mono">{profile.field}</span><span>{profile.ratio}%</span></button>)}</div></aside><div className="p-5">{activeProfile ? <><div className="flex flex-wrap items-start justify-between gap-3"><div><div className="flex items-center gap-2"><Braces className="size-4 text-muted-foreground" /><h2 className="font-mono text-base font-semibold">{activeProfile.field}</h2></div><p className="mt-1 text-xs text-muted-foreground">按当前筛选结果即时计算，不写回源数据。</p></div><Badge variant="outline">{activeProfile.kind}</Badge></div><div className="mt-5 grid gap-3 sm:grid-cols-3"><Fact label="字段填充" value={`${activeProfile.filled} / ${total}`} /><Fact label="完整率" value={`${activeProfile.ratio}%`} /><Fact label="唯一值" value={String(activeProfile.unique)} /></div><section className="mt-6"><div className="flex items-center justify-between"><p className="text-xs font-medium">值分布</p><span className="text-[10px] text-muted-foreground">Top {distribution.length}</span></div><div className="mt-3 space-y-3">{distribution.map(([label, count]) => <div key={label} className="grid grid-cols-[minmax(8rem,15rem)_minmax(0,1fr)_3rem] items-center gap-3 text-xs"><span className="truncate font-mono text-muted-foreground" title={label}>{label}</span><span className="h-2 overflow-hidden rounded-full bg-muted"><span className="block h-full rounded-full bg-primary" style={{ width: `${Math.max(4, (count / max) * 100)}%` }} /></span><span className="text-right font-mono">{count}</span></div>)}</div></section></> : <p className="text-sm text-muted-foreground">当前数据没有可分析字段。</p>}</div></div>
+  return <div className="grid min-h-[32rem] lg:grid-cols-[16rem_minmax(0,1fr)]"><aside className="border-b p-3 lg:border-b-0 lg:border-r"><p className="px-2 pb-2 text-[10px] font-medium uppercase tracking-widest text-muted-foreground">字段 · {profiles.length}</p><div className="max-h-[30rem] space-y-1 overflow-y-auto">{profiles.map((profile) => <button type="button" key={profile.field} onClick={() => onSelect(profile.field)} className={cn('flex w-full items-center justify-between gap-2 rounded-md px-2.5 py-2 text-left text-xs', activeField === profile.field ? 'bg-muted text-foreground' : 'text-muted-foreground hover:bg-muted/50 hover:text-foreground')}><span className="truncate font-mono">{profile.field}</span><span>{profile.ratio}%</span></button>)}</div></aside><div className="p-5">{activeProfile ? <><div className="flex flex-wrap items-start justify-between gap-3"><div><div className="flex items-center gap-2"><Braces className="size-4 text-muted-foreground" /><h2 className="font-mono text-base font-semibold">{activeProfile.field}</h2></div><p className="mt-1 text-xs text-muted-foreground">按当前加载页即时计算，不写回源数据。</p></div><Badge variant="outline">{activeProfile.kind}</Badge></div><div className="mt-5 grid gap-3 sm:grid-cols-3"><Fact label="字段填充" value={`${activeProfile.filled} / ${total}`} /><Fact label="完整率" value={`${activeProfile.ratio}%`} /><Fact label="唯一值" value={String(activeProfile.unique)} /></div><section className="mt-6"><div className="flex items-center justify-between"><p className="text-xs font-medium">值分布</p><span className="text-[10px] text-muted-foreground">Top {distribution.length}</span></div><div className="mt-3 space-y-3">{distribution.map(([label, count]) => <div key={label} className="grid grid-cols-[minmax(8rem,15rem)_minmax(0,1fr)_3rem] items-center gap-3 text-xs"><span className="truncate font-mono text-muted-foreground" title={label}>{label}</span><span className="h-2 overflow-hidden rounded-full bg-muted"><span className="block h-full rounded-full bg-primary" style={{ width: `${Math.max(4, (count / max) * 100)}%` }} /></span><span className="text-right font-mono">{count}</span></div>)}</div></section></> : <p className="text-sm text-muted-foreground">当前数据没有可分析字段。</p>}</div></div>
 }
 
 function ProjectInputsView({ groups }: { groups: Array<[string, { count: number; updatedAt: string; statuses: Set<string> }]> }) {

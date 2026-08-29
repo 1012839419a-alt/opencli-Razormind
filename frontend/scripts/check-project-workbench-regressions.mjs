@@ -99,6 +99,12 @@ test('project data workbench is project scoped and links data back to workflow e
   assert.match(page, /标准化结果/)
   assert.match(page, /AI 富化/)
   assert.match(page, /查看逻辑与证据/)
+  assert.match(page, /导出数据/)
+  assert.match(page, /Excel 工作簿（\.xlsx）/)
+  assert.match(page, /CSV（Excel 可打开）/)
+  assert.match(page, /JSON（保留完整结构）/)
+  assert.match(page, /列管理/)
+  assert.match(page, /limit: EXPORT_PAGE_SIZE/)
 })
 
 test('project data workbench keeps file controls and empty states view-specific', async () => {
