@@ -1,5 +1,8 @@
 import json
+import os
+import sqlite3
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -24,12 +27,12 @@ def manifest() -> RuntimeBundleManifest:
     return RuntimeBundleManifest.model_validate(
         {
             "name": "opencli-bridge",
-            "version": "1.8.5",
+            "version": "1.8.7",
             "components": [
                 {
                     "kind": "extension",
                     "id": "bridge",
-                    "version": "1.8.5",
+                    "version": "1.8.7",
                     "path": "extensions/bridge",
                     "required": True,
                     "capabilities": ["page.read"],
@@ -37,7 +40,7 @@ def manifest() -> RuntimeBundleManifest:
                 {
                     "kind": "script",
                     "id": "page-actions",
-                    "version": "1.8.5",
+                    "version": "1.8.7",
                     "path": "scripts/page-actions",
                     "required": True,
                     "capabilities": [],
@@ -45,7 +48,7 @@ def manifest() -> RuntimeBundleManifest:
                 {
                     "kind": "opencli_plugin",
                     "id": "browser-tools",
-                    "version": "1.8.5",
+                    "version": "1.8.7",
                     "path": "plugins/browser-tools",
                     "required": True,
                     "capabilities": [],
@@ -85,11 +88,11 @@ async def create_bundle(db_session, bundle_manifest: RuntimeBundleManifest | Non
 def healthy_report(**overrides) -> SlotRuntimeReport:
     data = {
         "loaded_bundle_name": "opencli-bridge",
-        "loaded_bundle_version": "1.8.5",
+        "loaded_bundle_version": "1.8.7",
         "loaded_components": [
-            {"kind": "extension", "id": "bridge", "version": "1.8.5", "healthy": True},
-            {"kind": "script", "id": "page-actions", "version": "1.8.5", "healthy": True},
-            {"kind": "opencli_plugin", "id": "browser-tools", "version": "1.8.5", "healthy": True},
+            {"kind": "extension", "id": "bridge", "version": "1.8.7", "healthy": True},
+            {"kind": "script", "id": "page-actions", "version": "1.8.7", "healthy": True},
+            {"kind": "opencli_plugin", "id": "browser-tools", "version": "1.8.7", "healthy": True},
         ],
         "capabilities": ["page.read"],
         "self_check": {"ok": True},
@@ -122,6 +125,50 @@ async def test_matching_loaded_report_is_ready_and_persists_slot_config(db_sessi
     assert instance.startup_pages == ["https://example.com"]
     assert instance.network_policy == {"mode": "direct"}
 
+
+
+@pytest.mark.asyncio
+async def test_violentmonkey_bundle_rejects_missing_nested_access_check(db_session):
+    manifest_payload = manifest().model_dump()
+    manifest_payload["components"].append(
+        {
+            "kind": "extension",
+            "id": "violentmonkey",
+            "version": "2.48.0",
+            "path": "extensions/violentmonkey",
+            "required": True,
+            "capabilities": [],
+        }
+    )
+    bundle = await create_bundle(
+        db_session, RuntimeBundleManifest.model_validate(manifest_payload)
+    )
+    instance = await browser_service.create_browser_instance(
+        db_session,
+        BrowserInstanceCreate(
+            endpoint="http://agent-violentmonkey:19823",
+            profile_name="operator-violentmonkey",
+            runtime_bundle_id=bundle.id,
+        ),
+    )
+    report = healthy_report(
+        loaded_components=[
+            *healthy_report().model_dump()["loaded_components"],
+            {
+                "kind": "extension",
+                "id": "violentmonkey",
+                "version": "2.48.0",
+                "healthy": True,
+            },
+        ]
+    )
+
+    deployment = await browser_service.report_runtime_deployment(db_session, instance, report)
+
+    assert deployment.state == "EXTENSION_FAILED"
+    assert deployment.diagnostics == [
+        "Violentmonkey userScriptsAccess self-check did not report ok=true"
+    ]
 
 @pytest.mark.asyncio
 async def test_two_slots_with_the_same_bundle_report_the_same_ready_runtime(db_session):
@@ -201,7 +248,7 @@ async def test_unknown_component_and_required_extension_failure_are_not_ready(db
         instance,
         healthy_report(
             loaded_components=[
-                {"kind": "extension", "id": "bridge", "version": "1.8.5", "healthy": True},
+                {"kind": "extension", "id": "bridge", "version": "1.8.7", "healthy": True},
                 {"kind": "extension", "id": "foreign", "version": "1", "healthy": True},
             ]
         ),
@@ -213,12 +260,12 @@ async def test_unknown_component_and_required_extension_failure_are_not_ready(db
         instance,
         healthy_report(
             loaded_components=[
-                {"kind": "extension", "id": "bridge", "version": "1.8.5", "healthy": False},
-                {"kind": "script", "id": "page-actions", "version": "1.8.5", "healthy": True},
+                {"kind": "extension", "id": "bridge", "version": "1.8.7", "healthy": False},
+                {"kind": "script", "id": "page-actions", "version": "1.8.7", "healthy": True},
                 {
                     "kind": "opencli_plugin",
                     "id": "browser-tools",
-                    "version": "1.8.5",
+                    "version": "1.8.7",
                     "healthy": True,
                 },
             ]
@@ -328,8 +375,8 @@ async def test_capability_gate_fail_closed_then_records_full_lineage(db_session,
         "page_before": {"url": "https://example.com"},
         "page_after": {"url": "https://example.com", "title": "Example"},
     }
-    assert invocation.desired_bundle_version == "1.8.5"
-    assert invocation.loaded_bundle_version == "1.8.5"
+    assert invocation.desired_bundle_version == "1.8.7"
+    assert invocation.loaded_bundle_version == "1.8.7"
     assert {item["id"] for item in invocation.component_versions} == {
         "bridge",
         "page-actions",
@@ -540,3 +587,296 @@ def test_bundle_resolver_rejects_component_version_drift(tmp_path):
 
     assert result.returncode == 1
     assert "expected version 9.9.9, found 0.1.0" in result.stderr
+
+
+def _opencli_default_v2_manifest() -> dict:
+    return json.loads(
+        (
+            Path(__file__).parents[2]
+            / "chrome"
+            / "runtime-bundles"
+            / "opencli-default"
+            / "2"
+            / "manifest.json"
+        ).read_text(encoding="utf-8")
+    )
+
+
+def _materialize_opencli_default_v2_bundle(
+    root: Path,
+    *,
+    absent_component_ids: set[str] | None = None,
+    component_versions: dict[str, str] | None = None,
+) -> tuple[Path, dict]:
+    manifest = _opencli_default_v2_manifest()
+    bundle = root / manifest["name"] / manifest["version"]
+    bundle.mkdir(parents=True)
+    (bundle / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    absent_component_ids = absent_component_ids or set()
+    component_versions = component_versions or {}
+    for component in manifest["components"]:
+        if component["id"] in absent_component_ids:
+            continue
+        extension = bundle / component["path"]
+        extension.mkdir(parents=True)
+        (extension / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "manifest_version": 3,
+                    "name": component["id"],
+                    "version": component_versions.get(
+                        component["id"], component["version"]
+                    ),
+                }
+            ),
+            encoding="utf-8",
+        )
+    return bundle, manifest
+
+
+def test_opencli_default_v2_resolver_loads_the_three_required_extensions(tmp_path):
+    bundle, manifest = _materialize_opencli_default_v2_bundle(tmp_path / "bundles")
+
+    result = subprocess.run(
+        ["node", str(_resolver()), str(bundle / "manifest.json"), str(tmp_path / "bundles"), "--report"],
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    report = SlotRuntimeReport.model_validate_json(result.stdout)
+    assert report.loaded_bundle_name == "opencli-default"
+    assert report.loaded_bundle_version == "2"
+    assert [(component.id, component.version) for component in report.loaded_components] == [
+        (component["id"], component["version"]) for component in manifest["components"]
+    ]
+
+
+def test_opencli_default_v2_resolver_fails_when_violentmonkey_is_missing(tmp_path):
+    bundle, _ = _materialize_opencli_default_v2_bundle(
+        tmp_path / "bundles", absent_component_ids={"violentmonkey"}
+    )
+
+    result = subprocess.run(
+        ["node", str(_resolver()), str(bundle / "manifest.json"), str(tmp_path / "bundles")],
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert result.returncode == 1
+    assert "required component violentmonkey@2.48.0 is missing" in result.stderr
+
+
+@pytest.mark.asyncio
+async def test_opencli_default_v2_loaded_runtime_requires_violentmonkey_and_exact_versions(
+    db_session,
+):
+    manifest_payload = _opencli_default_v2_manifest()
+    bundle = await create_bundle(
+        db_session, RuntimeBundleManifest.model_validate(manifest_payload)
+    )
+    instance = BrowserInstance(
+        endpoint="http://agent-v2:19823",
+        profile_name="operator-v2",
+        runtime_bundle_id=bundle.id,
+    )
+    db_session.add(instance)
+    await db_session.flush()
+
+    base_report = {
+        "loaded_bundle_name": "opencli-default",
+        "loaded_bundle_version": "2",
+        "loaded_components": [
+            {
+                "kind": component["kind"],
+                "id": component["id"],
+                "version": component["version"],
+                "healthy": True,
+            }
+            for component in manifest_payload["components"]
+        ],
+        "capabilities": ["page.metadata"],
+        "self_check": {
+            "ok": True,
+            "violentmonkey_user_scripts_access": {"ok": True},
+        },
+    }
+
+    ready = await browser_service.report_runtime_deployment(
+        db_session, instance, SlotRuntimeReport.model_validate(base_report)
+    )
+    assert ready.state == "READY"
+
+    missing = await browser_service.report_runtime_deployment(
+        db_session,
+        instance,
+        SlotRuntimeReport.model_validate(
+            {
+                **base_report,
+                "loaded_components": [
+                    component
+                    for component in base_report["loaded_components"]
+                    if component["id"] != "violentmonkey"
+                ],
+            }
+        ),
+    )
+    assert missing.state == "EXTENSION_FAILED"
+    assert missing.diagnostics == ["required extension 'violentmonkey' is not loaded"]
+
+    version_drift = await browser_service.report_runtime_deployment(
+        db_session,
+        instance,
+        SlotRuntimeReport.model_validate(
+            {
+                **base_report,
+                "loaded_components": [
+                    {
+                        **component,
+                        "version": "2.47.0",
+                    }
+                    if component["id"] == "violentmonkey"
+                    else component
+                    for component in base_report["loaded_components"]
+                ],
+            }
+        ),
+    )
+    assert version_drift.state == "CONFIG_DRIFT"
+    assert "violentmonkey" in version_drift.diagnostics[0]
+
+
+def test_upgrade_from_opencli_default_v1_preserves_lineage_and_reassigns_slots(
+    tmp_path,
+):
+    production_manifest = _opencli_default_v2_manifest()
+    v1_bundle_id = "f4bce7f9-1df8-4e18-b671-37aa03230e93"
+    v2_bundle_id = "b5b4d7d1-a2f7-4e53-92cf-9d85f9fca3bc"
+    database = tmp_path / "migration.db"
+    environment = {
+        **os.environ,
+        "DATABASE_URL": f"sqlite+aiosqlite:///{database.as_posix()}",
+    }
+
+    before = subprocess.run(
+        [sys.executable, "-m", "alembic", "upgrade", "l9m0n1o2p3q4"],
+        cwd=Path(__file__).parents[2],
+        env=environment,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    assert before.returncode == 0, before.stderr
+
+    connection = sqlite3.connect(database)
+    try:
+        columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(browser_instances)")
+        }
+        values = {
+            "id": "browser-runtime-v1",
+            "created_at": "2026-08-29T00:00:00+00:00",
+            "updated_at": "2026-08-29T00:00:00+00:00",
+            "endpoint": "http://legacy-v1:19823",
+            "mode": "bridge",
+            "label": "",
+            "agent_url": None,
+            "agent_protocol": None,
+            "profile_kind": "authenticated",
+            "profile_name": "legacy-v1",
+            "runtime_bundle_id": v1_bundle_id,
+            "resource_class": "standard",
+            "startup_pages": "[]",
+            "network_policy": "{\"mode\":\"direct\"}",
+        }
+        insert_columns = [name for name in values if name in columns]
+        connection.execute(
+            "INSERT INTO browser_instances "
+            f"({', '.join(insert_columns)}) VALUES ({', '.join('?' for _ in insert_columns)})",
+            [values[name] for name in insert_columns],
+        )
+        connection.execute(
+            "INSERT INTO browser_runtime_deployments "
+            "(id, created_at, updated_at, browser_instance_id, loaded_bundle_name, "
+            "loaded_bundle_version, loaded_components, self_check, state, diagnostics) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "legacy-v1-deployment",
+                "2026-08-29T00:00:00+00:00",
+                "2026-08-29T00:00:00+00:00",
+                "browser-runtime-v1",
+                "opencli-default",
+                "1",
+                "[]",
+                "{\"ok\": true}",
+                "READY",
+                "[]",
+            ),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    upgraded = subprocess.run(
+        [sys.executable, "-m", "alembic", "upgrade", "head"],
+        cwd=Path(__file__).parents[2],
+        env=environment,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    assert upgraded.returncode == 0, upgraded.stderr
+
+    connection = sqlite3.connect(database)
+    try:
+        bundle_rows = connection.execute(
+            "SELECT id, version, manifest FROM browser_runtime_bundles "
+            "WHERE name = 'opencli-default' ORDER BY version"
+        ).fetchall()
+        loaded_bundle_id = connection.execute(
+            "SELECT runtime_bundle_id FROM browser_instances "
+            "WHERE endpoint = 'http://legacy-v1:19823'"
+        ).fetchone()[0]
+        deployment_state = connection.execute(
+            "SELECT state FROM browser_runtime_deployments "
+            "WHERE browser_instance_id = 'browser-runtime-v1'"
+        ).fetchone()[0]
+    finally:
+        connection.close()
+
+    bundles = {row[0]: (row[1], json.loads(row[2])) for row in bundle_rows}
+    assert bundles[v1_bundle_id][0] == "1"
+    assert bundles[v2_bundle_id] == ("2", production_manifest)
+    assert loaded_bundle_id == v2_bundle_id
+    assert deployment_state == "RESTART_REQUIRED"
+
+    downgraded = subprocess.run(
+        [sys.executable, "-m", "alembic", "downgrade", "l9m0n1o2p3q4"],
+        cwd=Path(__file__).parents[2],
+        env=environment,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    assert downgraded.returncode == 0, downgraded.stderr
+    connection = sqlite3.connect(database)
+    try:
+        restored_bundle_id, restored_state = connection.execute(
+            "SELECT browser_instances.runtime_bundle_id, browser_runtime_deployments.state "
+            "FROM browser_instances JOIN browser_runtime_deployments "
+            "ON browser_runtime_deployments.browser_instance_id = browser_instances.id "
+            "WHERE browser_instances.id = 'browser-runtime-v1'"
+        ).fetchone()
+        assert restored_bundle_id == v1_bundle_id
+        assert restored_state == "RESTART_REQUIRED"
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM browser_runtime_bundles WHERE id = ?",
+                (v2_bundle_id,),
+            ).fetchone()[0]
+            == 0
+        )
+    finally:
+        connection.close()

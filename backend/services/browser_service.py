@@ -148,6 +148,12 @@ def reconcile_runtime_state(
             "capability manifest drift: expected "
             f"{sorted(expected_capabilities)}, loaded {sorted(loaded_capabilities)}"
         ]
+    if any(component.id == "violentmonkey" for component in manifest.components):
+        userscripts_check = report.self_check.get("violentmonkey_user_scripts_access")
+        if not isinstance(userscripts_check, dict) or userscripts_check.get("ok") is not True:
+            return "EXTENSION_FAILED", [
+                "Violentmonkey userScriptsAccess self-check did not report ok=true"
+            ]
     if report.self_check.get("ok") is not True:
         return "DEGRADED", ["slot self-check did not report ok=true"]
     return "READY", []

@@ -8,7 +8,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$OpenCliVersion = "1.8.5"
+$OpenCliVersion = "1.8.7"
 $OhMyOpenCliCommit = "73cc60c83586ef2c95469b3b70d6cfc80fa5bc53"
 $CapabilitySourceCommit = "73cc60c83586ef2c95469b3b70d6cfc80fa5bc53"
 $requestHeaders = @{}

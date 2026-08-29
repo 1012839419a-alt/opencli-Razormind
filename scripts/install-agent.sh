@@ -312,13 +312,13 @@ install_python() {
   # ── Check / install opencli ───────────────────────────────────────────────
   if command -v npm >/dev/null 2>&1; then
     if [ -t 0 ]; then
-      read -r -p "Install or upgrade managed OpenCLI 1.8.5 via npm? [Y/n] " _reply </dev/tty || _reply="Y"
+      read -r -p "Install or upgrade managed OpenCLI 1.8.7 via npm? [Y/n] " _reply </dev/tty || _reply="Y"
     else
       _reply="Y"
-      info "Installing pinned OpenCLI 1.8.5 via npm (non-interactive)..."
+      info "Installing pinned OpenCLI 1.8.7 via npm (non-interactive)..."
     fi
     if [[ "${_reply:-Y}" =~ ^[Yy]$ ]]; then
-      npm install -g @jackwener/opencli@1.8.5
+      npm install -g @jackwener/opencli@1.8.7
       PATCH_FILE="$AGENT_DIR/patch-opencli.js"
       curl -fsSL "${AUTH_HEADER[@]}" \
         "$CENTRAL_API_URL/api/v1/nodes/install/patch-opencli.js" -o "$PATCH_FILE"
@@ -329,7 +329,7 @@ install_python() {
     fi
   else
     warn "npm not found — opencli channel will be unavailable"
-    warn "  Install Node.js 22+ from https://nodejs.org then run: npm install -g @jackwener/opencli@1.8.5"
+    warn "  Install Node.js 22+ from https://nodejs.org then run: npm install -g @jackwener/opencli@1.8.7"
   fi
 
   # Organization-specific adapter packs are optional and never fetched implicitly.
