@@ -18,6 +18,7 @@ from backend.api.v1 import (
     iii_collections,
     identity,
     odp_reconciliation,
+    research_graph_v2_routes,
     image_studio,
     model_defaults,
     nodes,
@@ -89,5 +90,4 @@ v1_router.include_router(workspaces.router)
 v1_router.include_router(workspace_sources.router)
 v1_router.include_router(project_source_bindings.router)
 v1_router.include_router(delivery_authorization_routes.router)
-    research_graph_v2_routes,
 v1_router.include_router(research_graph_v2_routes.router)
