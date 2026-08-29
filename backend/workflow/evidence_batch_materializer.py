@@ -14,6 +14,7 @@ from typing import Any
 from uuid import NAMESPACE_URL, uuid5
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.models.iii_collection import (
@@ -112,7 +113,59 @@ async def get_materialization(
                 EvidenceBatchMaterializationManifestV1.workspace_id == scope.workspace_id,
                 EvidenceBatchMaterializationManifestV1.project_id == scope.project_id,
                 EvidenceBatchMaterializationManifestV1.workflow_id == scope.workflow_id,
+                EvidenceBatchMaterializationManifestV1.studio_workflow_version_id
+                == scope.studio_workflow_version_id,
                 EvidenceBatchMaterializationManifestV1.run_id == scope.run_id,
+            )
+            .order_by(EvidenceBatchMaterializationManifestV1.reconciliation_revision.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    return _read(manifest) if manifest is not None else None
+
+def _scope_filters(scope: CollectionScope) -> tuple[Any, ...]:
+    manifest = EvidenceBatchMaterializationManifestV1
+    return (
+        manifest.workspace_id == scope.workspace_id,
+        manifest.project_id == scope.project_id,
+        manifest.workflow_id == scope.workflow_id,
+        manifest.studio_workflow_version_id == scope.studio_workflow_version_id,
+        manifest.run_id == scope.run_id,
+    )
+
+
+async def list_materializations(
+    db: AsyncSession, *, scope: CollectionScope
+) -> list[EvidenceBatchMaterializationReadV1]:
+    """Project the latest redacted revision for every scoped evidence batch."""
+    manifests = list(
+        (
+            await db.execute(
+                select(EvidenceBatchMaterializationManifestV1)
+                .where(*_scope_filters(scope))
+                .order_by(
+                    EvidenceBatchMaterializationManifestV1.batch_id,
+                    EvidenceBatchMaterializationManifestV1.reconciliation_revision.desc(),
+                )
+            )
+        ).scalars()
+    )
+    latest_by_batch: dict[str, EvidenceBatchMaterializationManifestV1] = {}
+    for manifest in manifests:
+        latest_by_batch.setdefault(manifest.batch_id, manifest)
+    return [_read(manifest) for manifest in latest_by_batch.values()]
+
+
+async def get_materialization_by_batch(
+    db: AsyncSession, *, scope: CollectionScope, batch_id: str
+) -> EvidenceBatchMaterializationReadV1 | None:
+    """Return a scoped batch's latest revision without exposing retained raw facts."""
+    manifest = (
+        await db.execute(
+            select(EvidenceBatchMaterializationManifestV1)
+            .where(
+                *_scope_filters(scope),
+                EvidenceBatchMaterializationManifestV1.batch_id == batch_id,
             )
             .order_by(EvidenceBatchMaterializationManifestV1.reconciliation_revision.desc())
             .limit(1)
@@ -122,9 +175,13 @@ async def get_materialization(
 
 
 async def materialize_evidence_batch(
-    db: AsyncSession, *, scope: CollectionScope, command_id: str
+    db: AsyncSession,
+    *,
+    scope: CollectionScope,
+    command_id: str,
+    _race_retries_remaining: int = 1,
 ) -> EvidenceBatchMaterializationReadV1:
-    """Append (or replay) a materialization revision from retained facts only."""
+    """Append a revision, or replay immutable terminal facts without querying ODP."""
     command = await db.get(IIICollectionCommandV1, command_id)
     if command is None or not matches_scope(command, scope):
         raise IIICollectionNotFoundError("Collection command not found")
@@ -138,6 +195,7 @@ async def materialize_evidence_batch(
     ).scalar_one_or_none()
     if attempt is None:
         raise IIICollectionNotFoundError("Collection attempt not found")
+    attempt_id = attempt.id
     report = (
         await db.execute(
             select(IIICollectionExpectedKeyReportV1).where(
@@ -154,9 +212,15 @@ async def materialize_evidence_batch(
             )
         ).scalars()
     )
+    terminal_inputs = _terminal_inputs(report, receipts)
+    latest = await _latest_manifest(db, command_id, attempt_id)
+    if latest is not None and _same_terminal_inputs(latest, terminal_inputs):
+        return _read(latest)
     facts = await _reconcile(command, attempt, report, receipts)
-    latest = await _latest_manifest(db, command.id, attempt.id)
-    if latest is not None and _same_revision(latest, facts):
+    latest = await _latest_manifest(db, command_id, attempt_id)
+    if latest is not None and (
+        _same_terminal_inputs(latest, terminal_inputs) or _same_revision(latest, facts)
+    ):
         return _read(latest)
     revision = 1 if latest is None else latest.reconciliation_revision + 1
     manifest_payload = {"revision": revision, **facts}
@@ -179,19 +243,63 @@ async def materialize_evidence_batch(
         **facts,
     )
     db.add(manifest)
-    await db.flush()
-    db.add(
-        EvidenceBatchMaterializationEventV1(
-            manifest_id=manifest.id,
-            command_id=command.id,
-            attempt_id=attempt.id,
-            reconciliation_revision=revision,
-            materialization_status=facts["materialization_status"],
-            event_hash=_canonical_hash({"event": "reconciled", **manifest_payload}),
+    try:
+        await db.flush()
+        db.add(
+            EvidenceBatchMaterializationEventV1(
+                manifest_id=manifest.id,
+                command_id=command.id,
+                attempt_id=attempt.id,
+                reconciliation_revision=revision,
+                materialization_status=facts["materialization_status"],
+                event_hash=_canonical_hash({"event": "reconciled", **manifest_payload}),
+            )
         )
-    )
-    await db.commit()
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        winner = await _latest_manifest(db, command_id, attempt_id)
+        if winner is not None and (
+            _same_terminal_inputs(winner, terminal_inputs) or _same_revision(winner, facts)
+        ):
+            return _read(winner)
+        if _race_retries_remaining:
+            return await materialize_evidence_batch(
+                db,
+                scope=scope,
+                command_id=command_id,
+                _race_retries_remaining=_race_retries_remaining - 1,
+            )
+        raise
     return _read(manifest)
+
+
+def _terminal_inputs(
+    report: IIICollectionExpectedKeyReportV1 | None,
+    receipts: list[IIICollectionIngressReceiptV1],
+) -> tuple[str, str, str, int, tuple[str, ...]] | None:
+    if report is None:
+        return None
+    return (
+        report.report_id,
+        report.report_hash,
+        report.key_set_sha256,
+        report.item_count,
+        tuple(receipt.receipt_hash for receipt in receipts),
+    )
+
+
+def _same_terminal_inputs(
+    manifest: EvidenceBatchMaterializationManifestV1,
+    inputs: tuple[str, str, str, int, tuple[str, ...]] | None,
+) -> bool:
+    return inputs is not None and manifest.materialization_status in _TERMINAL and (
+        manifest.report_id,
+        manifest.report_hash,
+        manifest.expected_key_set_hash,
+        manifest.item_count,
+        tuple(manifest.receipt_hashes),
+    ) == inputs
 
 
 async def _reconcile(
