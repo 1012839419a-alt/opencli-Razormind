@@ -29,11 +29,15 @@ RUN useradd -m -u 1000 chrome \
 COPY chrome/entrypoint.sh /entrypoint.sh
 RUN sed -i 's/\r$//' /entrypoint.sh && chmod +x /entrypoint.sh
 
-# Install Browser Bridge extension (pre-built dist/background.js is committed).
-# To update: sync chrome/extension-src/ from the opencli repo and rebuild.
-COPY chrome/extension-src/manifest.json /home/chrome/extension/manifest.json
-COPY chrome/extension-src/icons/ /home/chrome/extension/icons/
-COPY chrome/extension-src/dist/background.js /home/chrome/extension/dist/background.js
+# Default bundle is immutable image content. Deployments may mount another
+# versioned directory read-only, but never place components in the Profile.
+COPY chrome/runtime-bundles/ /opt/browser-runtime-bundles/
+COPY chrome/extension-src/manifest.json /opt/browser-runtime-bundles/opencli-default/1/extensions/opencli-browser-bridge/manifest.json
+COPY chrome/extension-src/icons/ /opt/browser-runtime-bundles/opencli-default/1/extensions/opencli-browser-bridge/icons/
+COPY chrome/extension-src/dist/background.js /opt/browser-runtime-bundles/opencli-default/1/extensions/opencli-browser-bridge/dist/background.js
+COPY chrome/script-host/ /opt/browser-runtime-bundles/opencli-default/1/extensions/opencli-script-host/
+COPY scripts/resolve-browser-runtime-bundle.mjs /usr/local/bin/resolve-browser-runtime-bundle.mjs
+COPY scripts/ensure-script-host.mjs /usr/local/bin/ensure-script-host.mjs
 
 EXPOSE 6080 19222 19825
 

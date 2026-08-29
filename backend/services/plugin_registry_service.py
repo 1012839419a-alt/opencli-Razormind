@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import UTC, datetime
 from typing import Any
 
@@ -9,6 +11,11 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.models.browser import (
+    BrowserInstance,
+    BrowserRuntimeBundle,
+    BrowserRuntimeDeployment,
+)
 from backend.models.plugin_installation import PluginInstallation
 from backend.models.studio import StudioWorkflowDraft
 from backend.plugins.dify_manifest import parse_dify_manifest
@@ -37,8 +44,10 @@ async def list_plugin_installations(
             )
         )
     ).all()
+    runtime_bundles = await _browser_runtime_bundle_installations(session)
     return [
         *_bundled_installations(dify_runtime_ready=dify_runtime_ready),
+        *runtime_bundles,
         *[_to_read(row) for row in rows],
     ]
 
@@ -49,6 +58,16 @@ async def get_plugin_installation(
     *,
     dify_runtime_ready: bool = False,
 ) -> PluginInstallationRead | None:
+    runtime_bundle = next(
+        (
+            item
+            for item in await _browser_runtime_bundle_installations(session)
+            if item.id == installation_id
+        ),
+        None,
+    )
+    if runtime_bundle is not None:
+        return runtime_bundle
     bundled = next(
         (
             item
@@ -144,6 +163,12 @@ async def delete_plugin_installation(session: AsyncSession, installation_id: str
         raise PluginRegistryError(
             "bundled_plugin_cannot_uninstall",
             "Bundled OpenCLI capabilities cannot be uninstalled from the plugin catalog.",
+            status_code=409,
+        )
+    if installation_id.startswith("browser-runtime:"):
+        raise PluginRegistryError(
+            "browser_runtime_bundle_cannot_uninstall",
+            "Browser runtime bundles are managed through the browser runtime API.",
             status_code=409,
         )
     row = await session.get(PluginInstallation, installation_id)
@@ -299,6 +324,151 @@ def _node_definitions(
             }
         )
     return rows
+
+
+async def _browser_runtime_bundle_installations(
+    session: AsyncSession,
+) -> list[PluginInstallationRead]:
+    """Project persisted browser bundles into the read-only plugin registry."""
+
+    bundles = (
+        await session.scalars(
+            select(BrowserRuntimeBundle).order_by(
+                BrowserRuntimeBundle.name, BrowserRuntimeBundle.version
+            )
+        )
+    ).all()
+    if not bundles:
+        return []
+    instances = (await session.scalars(select(BrowserInstance))).all()
+    deployments = {
+        item.browser_instance_id: item
+        for item in (await session.scalars(select(BrowserRuntimeDeployment))).all()
+    }
+    projected: list[PluginInstallationRead] = []
+    for bundle in bundles:
+        manifest = bundle.manifest
+        assigned_instances = [
+            instance for instance in instances if instance.runtime_bundle_id == bundle.id
+        ]
+        unhealthy = [
+            (instance, deployments.get(instance.id))
+            for instance in assigned_instances
+            if deployments.get(instance.id) is None or deployments[instance.id].state != "READY"
+        ]
+        blockers: list[dict[str, str]] = []
+        if not assigned_instances:
+            blockers.append(
+                {
+                    "code": "no_runtime_slot",
+                    "message": "没有 Slot 已加载并通过此 Bundle 的自检。",
+                }
+            )
+        elif unhealthy:
+            for instance, deployment in unhealthy:
+                detail = (
+                    deployment.diagnostics[0]
+                    if deployment and deployment.diagnostics
+                    else "尚未收到运行时上报"
+                )
+                blockers.append(
+                    {
+                        "code": "runtime_not_ready",
+                        "message": f"{instance.endpoint}: {detail}",
+                    }
+                )
+        runtime_status = "READY" if not blockers else "BLOCKED"
+        component_paths = {
+            item["id"]: item["path"]
+            for item in manifest.get("components", [])
+            if isinstance(item, dict)
+            and isinstance(item.get("id"), str)
+            and isinstance(item.get("path"), str)
+        }
+        capabilities = [
+            {
+                "id": f"browser-runtime:{bundle.id}:{item.get('name')}",
+                "family": "tool",
+                "key": item.get("name"),
+                "label": item.get("name"),
+                "sourcePath": component_paths.get(item.get("component_id")),
+                "status": runtime_status,
+                "runtimeAdapterId": None,
+                "blockers": blockers,
+                "flowCapability": False,
+            }
+            for item in manifest.get("capabilities", [])
+            if isinstance(item, dict) and isinstance(item.get("name"), str)
+        ]
+        components = [
+            {
+                "kind": item.get("kind"),
+                "id": item.get("id"),
+                "version": item.get("version"),
+            }
+            for item in manifest.get("components", [])
+            if isinstance(item, dict)
+        ]
+        digest = hashlib.sha256(
+            json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        projected.append(
+            PluginInstallationRead(
+                id=f"browser-runtime:{bundle.id}",
+                providerKey=f"browser-runtime/{bundle.name}",
+                name=f"{bundle.name} Browser Runtime",
+                author="OpenCLI Browser Runtime",
+                version=bundle.version,
+                sourceKind="bundled",
+                sourceDigest=digest,
+                manifestSpecVersion="browser-runtime-manifest/v1",
+                signatureState=(
+                    "bundled"
+                    if bundle.trust_level in {"system", "trusted"}
+                    else "present_unverified"
+                ),
+                labels={"zh_Hans": f"{bundle.name} 浏览器运行时"},
+                descriptions={
+                    "zh_Hans": "受版本化 Manifest 约束的浏览器扩展、脚本与 OpenCLI 插件。",
+                },
+                pluginTypes=["browser_runtime", "endpoint"],
+                manifest=manifest,
+                capabilities=capabilities,
+                permissions={
+                    "components": components,
+                    "allowed_hosts": sorted(
+                        {
+                            host
+                            for item in manifest.get("capabilities", [])
+                            if isinstance(item, dict)
+                            for host in item.get("allowed_hosts", [])
+                            if isinstance(host, str)
+                        }
+                    ),
+                    "risks": sorted(
+                        {
+                            item["risk"]
+                            for item in manifest.get("capabilities", [])
+                            if isinstance(item, dict) and isinstance(item.get("risk"), str)
+                        }
+                    ),
+                    "required_gates": sorted(
+                        {
+                            item["required_gate"]
+                            for item in manifest.get("capabilities", [])
+                            if isinstance(item, dict) and isinstance(item.get("required_gate"), str)
+                        }
+                    ),
+                },
+                runtimeStatus=runtime_status,
+                blockers=blockers,
+                nodeDefinitions=[],
+                bundled=True,
+                installedAt=bundle.created_at,
+                updatedAt=bundle.updated_at,
+            )
+        )
+    return projected
 
 
 def _bundled_installations(*, dify_runtime_ready: bool) -> list[PluginInstallationRead]:

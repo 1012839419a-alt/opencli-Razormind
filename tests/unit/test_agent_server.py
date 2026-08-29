@@ -12,7 +12,7 @@ import json
 import pytest
 from fastapi import HTTPException
 
-from backend import agent_server
+from backend import agent_runtime_dispatch, agent_server
 from backend.agent_runtimes.base import RuntimeInvocationError
 
 # ── opencli binary resolution ────────────────────────────────────────────────
@@ -41,6 +41,18 @@ def test_resolve_bin_treats_empty_opencli_bin_as_default(monkeypatch):
     monkeypatch.setattr(agent_server.shutil, "which", lambda name: None)
 
     assert agent_server._resolve_bin("cdp") == "opencli"
+
+
+def test_available_agent_runtimes_includes_packaged_script_host(tmp_path, monkeypatch):
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(
+        json.dumps({"capabilities": [{"runtime": "script-host"}]}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(agent_server, "_RUNTIME_BUNDLE_MANIFEST", str(manifest))
+    monkeypatch.setattr(agent_server, "available_runtimes", lambda: ["opentabs"])
+
+    assert agent_server._available_agent_runtimes() == ["opentabs", "script-host"]
 
 
 # ── _auth_headers ────────────────────────────────────────────────────────────
@@ -104,6 +116,7 @@ async def test_register_with_center_attaches_authorization_header(monkeypatch):
     monkeypatch.setattr(agent_server, "available_runtimes", lambda: ["opentabs"])
 
     import httpx
+
     monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
 
     await agent_server._register_with_center("http://agent.example:19823")
@@ -122,6 +135,7 @@ async def test_register_with_center_sends_empty_headers_without_token(monkeypatc
     monkeypatch.setattr(agent_server, "available_runtimes", lambda: [])
 
     import httpx
+
     monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
 
     await agent_server._register_with_center("http://agent.example:19823")
@@ -379,6 +393,7 @@ async def test_handle_ws_agent_task_one_task_crash_does_not_raise(monkeypatch):
     fires this via asyncio.create_task, so an uncaught exception here would
     otherwise surface only as a silently-logged task exception, never crashing
     the loop, but the contract is that _handle_ws_agent_task itself is safe)."""
+
     def _raise_get_runtime(rt):
         raise KeyError("totally unexpected")
 
@@ -412,3 +427,104 @@ async def test_tracked_ws_agent_task_can_be_cancelled(monkeypatch):
         await task
 
     assert "req-1" not in agent_server._ACTIVE_AGENT_TASKS
+
+
+@pytest.mark.asyncio
+async def test_runtime_invoke_routes_script_host_without_generic_adapter(monkeypatch):
+    request = agent_runtime_dispatch.RuntimeInvokeRequest(
+        runtime="script-host",
+        workflow="read-title",
+        instructions="read-title",
+        input={"selector": "h1"},
+        config={"pack": "example"},
+    )
+    expected = {
+        "result": {"title": "Example"},
+        "page_before": {"url": "https://example.com"},
+        "page_after": {"url": "https://example.com"},
+    }
+
+    async def invoke(req, *, cdp_endpoint):
+        assert req is request
+        assert cdp_endpoint == "http://localhost:9222"
+        return expected
+
+    monkeypatch.setattr(agent_runtime_dispatch, "invoke_script_host", invoke)
+    monkeypatch.setattr(
+        agent_runtime_dispatch,
+        "get_runtime",
+        lambda runtime: pytest.fail(f"generic adapter selected for {runtime}"),
+    )
+
+    assert (
+        await agent_runtime_dispatch.invoke_runtime(
+            "request-1",
+            request,
+            cdp_endpoint="http://localhost:9222",
+        )
+        == expected
+    )
+
+
+@pytest.mark.asyncio
+async def test_script_host_invocation_uses_persistent_extension_page(monkeypatch):
+    request = agent_runtime_dispatch.RuntimeInvokeRequest(
+        runtime="script-host",
+        workflow="page.metadata",
+        instructions="read metadata",
+        config={"pack": "page-basics", "action": "page.metadata"},
+    )
+    target_url = "chrome-extension://stable-id/host.html"
+    websocket_url = "ws://chrome:9222/devtools/page/host"
+
+    class Response:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> list[dict]:
+            return [
+                {
+                    "type": "page",
+                    "url": target_url,
+                    "webSocketDebuggerUrl": websocket_url,
+                }
+            ]
+
+    class Client:
+        def __init__(self, **kwargs):
+            assert kwargs == {"timeout": 5}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return None
+
+        async def get(self, url):
+            assert url == "http://chrome:9222/json/list"
+            return Response()
+
+    expressions: list[str] = []
+
+    async def evaluate(url, expression):
+        assert url == websocket_url
+        expressions.append(expression)
+        if expression == "chrome.runtime.getManifest().name":
+            return "OpenCLI Script Host"
+        return {
+            "result": {"title": "Example Domain"},
+            "page_before": {"url": "https://example.com"},
+            "page_after": {"url": "https://example.com"},
+        }
+
+    monkeypatch.setattr(agent_runtime_dispatch.httpx, "AsyncClient", Client)
+    monkeypatch.setattr(agent_runtime_dispatch, "_evaluate_cdp_target", evaluate)
+
+    result = await agent_runtime_dispatch.invoke_script_host(
+        request,
+        cdp_endpoint="http://chrome:9222",
+    )
+
+    assert result["result"]["title"] == "Example Domain"
+    assert len(expressions) == 2
+    assert "opencliScriptHost.invoke" in expressions[1]

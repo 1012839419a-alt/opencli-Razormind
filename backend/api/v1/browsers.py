@@ -1,24 +1,75 @@
 import asyncio
+import base64
 import logging
-import os
-import re
 import socket
+from datetime import UTC
 
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.api.v1.browser_containers import docker_client, update_env_file
 from backend.database import get_db
-from pydantic import BaseModel
-
-from backend.schemas.browser import BrowserBindingCreate, BrowserBindingRead, BrowserInstanceRead
+from backend.schemas.browser import (
+    BrowserBindingCreate,
+    BrowserBindingRead,
+    BrowserCapabilityInvocationRead,
+    BrowserInstanceConfigUpdate,
+    BrowserInstanceCreate,
+    BrowserInstanceRead,
+    BrowserRuntimeBundleCreate,
+    BrowserRuntimeBundleRead,
+    BrowserRuntimeDeploymentRead,
+    CapabilityInvokeRequest,
+    SlotRuntimeReport,
+)
 from backend.schemas.common import ApiResponse
-from backend.services import browser_service
+from backend.security.identity import RequestIdentity, get_request_identity
+from backend.services import browser_capability_service, browser_service
 
 router = APIRouter(prefix="/browsers", tags=["browsers"])
+
+runtime_router = APIRouter(tags=["browser-runtime"])
+
+
+def _runtime_http_error(exc: browser_service.BrowserRuntimeError) -> HTTPException:
+    status_code = (
+        409
+        if exc.code
+        in {
+            "bundle_version_exists",
+            "immutable_bundle_version",
+            "system_bundle_immutable",
+            "bundle_in_use",
+            "profile_in_use",
+        }
+        else 400
+    )
+    return HTTPException(status_code=status_code, detail={"code": exc.code, "message": str(exc)})
+
+
+def _decode_endpoint(endpoint_b64: str) -> str:
+    try:
+        padded = endpoint_b64 + "=" * (-len(endpoint_b64) % 4)
+        return base64.urlsafe_b64decode(padded.encode()).decode()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid endpoint encoding") from exc
+
+
+async def _browser_instance_or_404(db: AsyncSession, instance_id: str):
+    from backend.models.browser import BrowserInstance
+
+    instance = await db.get(BrowserInstance, instance_id)
+    if instance is None:
+        raise HTTPException(status_code=404, detail="Browser instance not found")
+    return instance
+
+
 logger = logging.getLogger(__name__)
 
 # ── Bindings ──────────────────────────────────────────────────────────────────
+
 
 @router.get("/bindings", response_model=ApiResponse[list[BrowserBindingRead]])
 async def list_bindings(db: AsyncSession = Depends(get_db)) -> ApiResponse:
@@ -33,17 +84,13 @@ async def create_binding(
     existing = await browser_service.get_binding_by_site(db, body.site)
     if existing:
         raise HTTPException(status_code=409, detail=f"Site '{body.site}' is already bound")
-    binding = await browser_service.create_binding(
-        db, body.browser_endpoint, body.site, body.notes
-    )
+    binding = await browser_service.create_binding(db, body.browser_endpoint, body.site, body.notes)
     await db.commit()
     return ApiResponse.ok(BrowserBindingRead.model_validate(binding))
 
 
 @router.delete("/bindings/{binding_id}", response_model=ApiResponse[None])
-async def delete_binding(
-    binding_id: str, db: AsyncSession = Depends(get_db)
-) -> ApiResponse:
+async def delete_binding(binding_id: str, db: AsyncSession = Depends(get_db)) -> ApiResponse:
     deleted = await browser_service.delete_binding(db, binding_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Binding not found")
@@ -51,48 +98,152 @@ async def delete_binding(
     return ApiResponse.ok(None)
 
 
+# ── Versioned browser runtime bundles ─────────────────────────────────────────
+
+
+@router.get("/runtime-bundles", response_model=ApiResponse[list[BrowserRuntimeBundleRead]])
+async def list_runtime_bundles(db: AsyncSession = Depends(get_db)) -> ApiResponse:
+    bundles = await browser_service.list_runtime_bundles(db)
+    return ApiResponse.ok([BrowserRuntimeBundleRead.model_validate(bundle) for bundle in bundles])
+
+
+@router.post("/runtime-bundles", response_model=ApiResponse[BrowserRuntimeBundleRead])
+async def create_runtime_bundle(
+    body: BrowserRuntimeBundleCreate, db: AsyncSession = Depends(get_db)
+) -> ApiResponse:
+    try:
+        bundle = await browser_service.create_runtime_bundle(db, body)
+        await db.commit()
+        await db.refresh(bundle)
+    except browser_service.BrowserRuntimeError as exc:
+        await db.rollback()
+        raise _runtime_http_error(exc) from exc
+    return ApiResponse.ok(BrowserRuntimeBundleRead.model_validate(bundle))
+
+
+@router.put("/runtime-bundles/{bundle_id}", response_model=ApiResponse[BrowserRuntimeBundleRead])
+async def update_runtime_bundle(
+    bundle_id: str,
+    body: BrowserRuntimeBundleCreate,
+    db: AsyncSession = Depends(get_db),
+) -> ApiResponse:
+    bundle = await browser_service.get_runtime_bundle(db, bundle_id)
+    if bundle is None:
+        raise HTTPException(status_code=404, detail="Runtime bundle not found")
+    try:
+        bundle = await browser_service.update_runtime_bundle(db, bundle, body)
+        await db.commit()
+        await db.refresh(bundle)
+    except browser_service.BrowserRuntimeError as exc:
+        await db.rollback()
+        raise _runtime_http_error(exc) from exc
+    return ApiResponse.ok(BrowserRuntimeBundleRead.model_validate(bundle))
+
+
+@router.delete("/runtime-bundles/{bundle_id}", response_model=ApiResponse[None])
+async def delete_runtime_bundle(bundle_id: str, db: AsyncSession = Depends(get_db)) -> ApiResponse:
+    bundle = await browser_service.get_runtime_bundle(db, bundle_id)
+    if bundle is None:
+        raise HTTPException(status_code=404, detail="Runtime bundle not found")
+    try:
+        await browser_service.delete_runtime_bundle(db, bundle)
+        await db.commit()
+    except browser_service.BrowserRuntimeError as exc:
+        await db.rollback()
+        raise _runtime_http_error(exc) from exc
+    return ApiResponse.ok(None)
+
+
+@router.get("/instances", response_model=ApiResponse[list[BrowserInstanceRead]])
+async def list_runtime_instances(db: AsyncSession = Depends(get_db)) -> ApiResponse:
+    instances = await browser_service.list_browser_instances(db)
+    return ApiResponse.ok([BrowserInstanceRead.model_validate(item) for item in instances])
+
+
+@router.post("/instances", response_model=ApiResponse[BrowserInstanceRead])
+async def create_runtime_instance(
+    body: BrowserInstanceCreate, db: AsyncSession = Depends(get_db)
+) -> ApiResponse:
+    try:
+        instance = await browser_service.create_browser_instance(db, body)
+        await db.commit()
+        await db.refresh(instance)
+    except browser_service.BrowserRuntimeError as exc:
+        await db.rollback()
+        raise _runtime_http_error(exc) from exc
+    return ApiResponse.ok(BrowserInstanceRead.model_validate(instance))
+
+
+@router.post(
+    "/instances/{instance_id}/runtime-report",
+    response_model=ApiResponse[BrowserRuntimeDeploymentRead],
+)
+async def report_runtime_deployment(
+    instance_id: str,
+    body: SlotRuntimeReport,
+    db: AsyncSession = Depends(get_db),
+) -> ApiResponse:
+    instance = await _browser_instance_or_404(db, instance_id)
+    deployment = await browser_service.report_runtime_deployment(db, instance, body)
+    await db.commit()
+    await db.refresh(deployment)
+    try:
+        from backend.browser_pool import LocalBrowserPool, get_pool
+
+        pool = get_pool()
+        if isinstance(pool, LocalBrowserPool):
+            pool.set_runtime_status(instance.endpoint, deployment.state)
+    except RuntimeError:
+        pass
+    return ApiResponse.ok(BrowserRuntimeDeploymentRead.model_validate(deployment))
+
+
+@router.get(
+    "/instances/{instance_id}/runtime",
+    response_model=ApiResponse[BrowserRuntimeDeploymentRead],
+)
+async def get_runtime_deployment(
+    instance_id: str, db: AsyncSession = Depends(get_db)
+) -> ApiResponse:
+    await _browser_instance_or_404(db, instance_id)
+    deployment = await browser_service.get_runtime_deployment(db, instance_id)
+    if deployment is None:
+        raise HTTPException(status_code=404, detail="Runtime deployment has not reported yet")
+    return ApiResponse.ok(BrowserRuntimeDeploymentRead.model_validate(deployment))
+
+
+@runtime_router.post(
+    "/browser-sessions/{instance_id}/capabilities/{capability}/invoke",
+    response_model=ApiResponse[BrowserCapabilityInvocationRead],
+)
+async def invoke_runtime_capability(
+    instance_id: str,
+    capability: str,
+    body: CapabilityInvokeRequest,
+    identity: RequestIdentity = Depends(get_request_identity),
+    db: AsyncSession = Depends(get_db),
+) -> ApiResponse:
+    instance = await _browser_instance_or_404(db, instance_id)
+    try:
+        claimed_roles = identity.claims.get("roles", []) if identity.claims else []
+        gate_authorized = identity.is_platform_admin or "platform-admin" in claimed_roles
+        invocation = await browser_capability_service.invoke_capability(
+            db,
+            instance,
+            capability,
+            body.args,
+            body.gate,
+            gate_authorized=gate_authorized,
+        )
+        await db.commit()
+        await db.refresh(invocation)
+    except browser_service.BrowserRuntimeError as exc:
+        await db.commit()
+        raise _runtime_http_error(exc) from exc
+    return ApiResponse.ok(BrowserCapabilityInvocationRead.model_validate(invocation))
+
+
 # ── Chrome pool management ────────────────────────────────────────────────────
-
-def _docker_client():
-    try:
-        import docker  # type: ignore[import]
-        return docker.from_env()
-    except Exception as exc:
-        raise HTTPException(status_code=503, detail=f"Docker socket not available: {exc}")
-
-
-def _project_name() -> str:
-    return os.environ.get("COMPOSE_PROJECT_NAME", "opencli-admin")
-
-
-def _resolve_env_path() -> str:
-    if explicit := os.environ.get("ENV_FILE_PATH"):
-        return explicit
-    for candidate in [
-        "/app/.env",
-        os.path.join(os.path.dirname(__file__), "..", "..", "..", ".env"),
-    ]:
-        if os.path.exists(candidate):
-            return candidate
-    return os.path.join(os.path.dirname(__file__), "..", "..", "..", ".env")
-
-
-def _update_env_file(key: str, value: str) -> None:
-    """Update or append KEY=value in the .env file."""
-    path = _resolve_env_path()
-    try:
-        with open(path) as f:
-            content = f.read()
-    except FileNotFoundError:
-        content = ""
-    new_line = f"{key}={value}"
-    pattern = rf"^{re.escape(key)}=.*$"
-    if re.search(pattern, content, re.MULTILINE):
-        content = re.sub(pattern, new_line, content, flags=re.MULTILINE)
-    else:
-        content = content.rstrip("\n") + f"\n{new_line}\n"
-    with open(path, "w") as f:
-        f.write(content)
 
 
 class CdpEndpointRequest(BaseModel):
@@ -110,7 +261,7 @@ async def add_cdp_endpoint(
     Use this when Chrome is already running locally with --remote-debugging-port
     or when pointing to any accessible CDP URL.
     """
-    from backend.browser_pool import get_pool, LocalBrowserPool
+    from backend.browser_pool import LocalBrowserPool, get_pool
     from backend.models.browser import BrowserInstance
 
     url = body.url.rstrip("/")
@@ -129,115 +280,18 @@ async def add_cdp_endpoint(
     if inst:
         inst.mode = mode
     else:
-        inst = BrowserInstance(endpoint=url, mode=mode)
+        inst = BrowserInstance(endpoint=url, mode=mode, profile_name=url)
         db.add(inst)
     await db.commit()
 
     return ApiResponse(success=True, data={"endpoint": url, "mode": mode})
 
 
-@router.post("/chrome-instances", response_model=ApiResponse[dict])
-async def add_chrome_instance(
-    count: int = 1,
-    mode: str = "bridge",
-    agent_url: str = "",
-    agent_protocol: str = "",
-    db: AsyncSession = Depends(get_db),
-) -> ApiResponse:
-    """Start one or more new Chrome instances (chrome-N) and hot-add them to the pool."""
-    from backend.browser_pool import get_pool, LocalBrowserPool
-    from backend.models.browser import BrowserInstance
-    from sqlalchemy import select
-
-    if count < 1 or count > 10:
-        raise HTTPException(status_code=400, detail="count must be between 1 and 10")
-    if mode not in ("bridge", "cdp"):
-        raise HTTPException(status_code=400, detail="mode must be 'bridge' or 'cdp'")
-    clean_agent_url = agent_url.strip() or None
-    clean_agent_protocol = agent_protocol.strip() or None
-    if clean_agent_protocol and clean_agent_protocol not in ("http", "ws"):
-        raise HTTPException(status_code=400, detail="agent_protocol must be 'http' or 'ws'")
-
-    pool = get_pool()
-    project = _project_name()
-    novnc_base = int(os.environ.get("NOVNC_BASE_PORT", 6080))
-    network = f"{project}_default"
-    image = os.environ.get("CHROME_IMAGE", f"{project}-chrome")
-    client = _docker_client()
-
-    created: list[dict] = []
-    for _ in range(count):
-        current = pool.endpoints
-        N = len(current) + 1
-        name = f"agent-{N}"
-        novnc_port = novnc_base + N - 1
-        volume = f"{project}_agent_profile_{N}"
-        new_endpoint = f"http://{name}:19222"
-
-        try:
-            existing = client.containers.get(name)
-            if existing.status != "running":
-                existing.start()
-                logger.info("agent-pool: restarted existing container %s", name)
-            else:
-                logger.info("agent-pool: %s already running", name)
-        except Exception:
-            try:
-                client.containers.run(
-                    image,
-                    detach=True,
-                    name=name,
-                    network=network,
-                    labels={"agent.pool.extra": "true", "agent.pool.index": str(N)},
-                    ports={"6080/tcp": ("127.0.0.1", novnc_port)},
-                    volumes={volume: {"bind": "/home/chrome/.config/chromium", "mode": "rw"}},
-                    restart_policy={"Name": "unless-stopped"},
-                )
-                logger.info("agent-pool: started new container %s on noVNC :%d", name, novnc_port)
-            except Exception as exc:
-                logger.exception("agent-pool: failed to start %s", name)
-                raise HTTPException(status_code=500, detail=str(exc))
-
-        if isinstance(pool, LocalBrowserPool) and new_endpoint not in pool.endpoints:
-            pool.add_endpoint(new_endpoint)
-        pool.set_mode(new_endpoint, mode)
-        if isinstance(pool, LocalBrowserPool):
-            pool.set_agent_url(new_endpoint, clean_agent_url)
-            pool.set_agent_protocol(new_endpoint, clean_agent_protocol)
-
-        # Persist to DB
-        result = await db.execute(select(BrowserInstance).where(BrowserInstance.endpoint == new_endpoint))
-        inst = result.scalar_one_or_none()
-        if inst:
-            inst.mode = mode
-            inst.agent_url = clean_agent_url
-            inst.agent_protocol = clean_agent_protocol
-        else:
-            inst = BrowserInstance(endpoint=new_endpoint, mode=mode,
-                                   agent_url=clean_agent_url, agent_protocol=clean_agent_protocol, label="")
-            db.add(inst)
-
-        created.append({"endpoint": new_endpoint, "novnc_port": novnc_port})
-
-    await db.commit()
-
-    all_endpoints = ",".join(pool.endpoints)
-    try:
-        _update_env_file("AGENT_POOL_ENDPOINTS", all_endpoints)
-    except Exception as exc:
-        logger.warning("agent-pool: could not update .env: %s", exc)
-
-    return ApiResponse.ok({
-        "created": created,
-        "total": len(pool.endpoints),
-    })
-
-
 class AgentRegisterRequest(BaseModel):
-    agent_url: str                  # e.g. http://192.168.1.100:19823
-    mode: str = "bridge"            # bridge | cdp
+    agent_url: str  # e.g. http://192.168.1.100:19823
+    mode: str = "bridge"  # bridge | cdp
     label: str = ""
-    agent_protocol: str = "http"    # http | ws
+    agent_protocol: str = "http"  # http | ws
 
 
 @router.post("/agents/register", response_model=ApiResponse[BrowserInstanceRead])
@@ -250,7 +304,7 @@ async def register_agent(
     The agent_url is used as the pool endpoint (logical key for routing).
     Idempotent: calling again with the same agent_url updates mode/label.
     """
-    from backend.browser_pool import get_pool, LocalBrowserPool
+    from backend.browser_pool import LocalBrowserPool, get_pool
     from backend.models.browser import BrowserInstance
 
     agent_url = body.agent_url.rstrip("/")
@@ -282,8 +336,12 @@ async def register_agent(
             inst.label = body.label
     else:
         inst = BrowserInstance(
-            endpoint=agent_url, mode=body.mode,
-            agent_url=agent_url, agent_protocol=body.agent_protocol, label=body.label,
+            endpoint=agent_url,
+            mode=body.mode,
+            agent_url=agent_url,
+            agent_protocol=body.agent_protocol,
+            label=body.label,
+            profile_name=agent_url,
         )
         db.add(inst)
     await db.commit()
@@ -291,9 +349,11 @@ async def register_agent(
 
     # Also upsert EdgeNode so the Nodes UI can see HTTP-registered agents
     try:
+        from datetime import datetime
+
         from backend.models.edge_node import EdgeNode, EdgeNodeEvent
-        from datetime import datetime, timezone
-        _now = datetime.now(timezone.utc)
+
+        _now = datetime.now(UTC)
         result2 = await db.execute(select(EdgeNode).where(EdgeNode.url == agent_url))
         node = result2.scalar_one_or_none()
         if node:
@@ -305,8 +365,11 @@ async def register_agent(
                 node.label = body.label
         else:
             node = EdgeNode(
-                url=agent_url, label=body.label or agent_url,
-                protocol="http", mode=body.mode, status="online",
+                url=agent_url,
+                label=body.label or agent_url,
+                protocol="http",
+                mode=body.mode,
+                status="online",
                 last_seen_at=_now,
             )
             db.add(node)
@@ -320,64 +383,65 @@ async def register_agent(
     return ApiResponse.ok(BrowserInstanceRead.model_validate(inst))
 
 
-class InstanceConfigUpdate(BaseModel):
-    mode: str | None = None
-    agent_url: str | None = None
-    agent_protocol: str | None = None
-
-
 @router.patch("/instances/{endpoint_b64}", response_model=ApiResponse[BrowserInstanceRead])
 async def update_instance_config(
     endpoint_b64: str,
-    body: InstanceConfigUpdate,
+    body: BrowserInstanceConfigUpdate,
     db: AsyncSession = Depends(get_db),
 ) -> ApiResponse:
-    """Update mode or agent_url for a Chrome pool instance."""
-    import base64
-    from backend.browser_pool import get_pool, LocalBrowserPool
+    """Update a slot's desired connection, profile, and immutable bundle selection."""
 
-    try:
-        padded = endpoint_b64 + "=" * (-len(endpoint_b64) % 4)
-        endpoint = base64.urlsafe_b64decode(padded.encode()).decode()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid endpoint encoding")
+    from backend.browser_pool import LocalBrowserPool, get_pool
+    from backend.models.browser import BrowserInstance
+
+    endpoint = _decode_endpoint(endpoint_b64)
 
     pool = get_pool()
     if endpoint not in pool.endpoints:
         raise HTTPException(status_code=404, detail=f"Endpoint {endpoint!r} not in pool")
 
-    if body.mode is not None:
-        if body.mode not in ("bridge", "cdp"):
-            raise HTTPException(status_code=400, detail="mode must be 'bridge' or 'cdp'")
-        pool.set_mode(endpoint, body.mode)
-
-    fields_set = body.model_fields_set
-
-    clean_agent_url = body.agent_url.strip() if body.agent_url else None
-    if "agent_url" in fields_set and isinstance(pool, LocalBrowserPool):
-        pool.set_agent_url(endpoint, clean_agent_url or None)
-
-    if "agent_protocol" in fields_set:
-        if body.agent_protocol is not None and body.agent_protocol not in ("http", "ws"):
-            raise HTTPException(status_code=400, detail="agent_protocol must be 'http' or 'ws'")
-        if isinstance(pool, LocalBrowserPool):
-            pool.set_agent_protocol(endpoint, body.agent_protocol)
-
-    from backend.models.browser import BrowserInstance
-    result = await db.execute(select(BrowserInstance).where(BrowserInstance.endpoint == endpoint))
-    inst = result.scalar_one_or_none()
+    inst = (
+        await db.execute(select(BrowserInstance).where(BrowserInstance.endpoint == endpoint))
+    ).scalar_one_or_none()
     if inst is None:
-        inst = BrowserInstance(endpoint=endpoint, mode=pool.get_mode(endpoint), label="")
+        inst = BrowserInstance(
+            endpoint=endpoint,
+            mode=pool.get_mode(endpoint),
+            label="",
+            profile_name=endpoint,
+        )
         db.add(inst)
-    if body.mode is not None:
-        inst.mode = body.mode
-    if "agent_url" in fields_set:
-        inst.agent_url = clean_agent_url or None
-    if "agent_protocol" in fields_set:
-        inst.agent_protocol = body.agent_protocol
-    await db.commit()
-    await db.refresh(inst)
+        await db.flush()
+    previous_runtime_config = (
+        inst.runtime_bundle_id,
+        inst.profile_name,
+        inst.resource_class,
+        inst.startup_pages,
+        inst.network_policy,
+    )
+    try:
+        inst = await browser_service.update_browser_instance(db, inst, body)
+        await db.commit()
+        await db.refresh(inst)
+    except browser_service.BrowserRuntimeError as exc:
+        await db.rollback()
+        raise _runtime_http_error(exc) from exc
 
+    pool.set_mode(endpoint, inst.mode)
+    pool.set_profile_kind(endpoint, inst.profile_kind)
+    current_runtime_config = (
+        inst.runtime_bundle_id,
+        inst.profile_name,
+        inst.resource_class,
+        inst.startup_pages,
+        inst.network_policy,
+    )
+    if previous_runtime_config != current_runtime_config:
+        pool.set_runtime_status(endpoint, "RESTART_REQUIRED")
+    if isinstance(pool, LocalBrowserPool):
+        pool.set_agent_url(endpoint, inst.agent_url)
+        pool.set_agent_protocol(endpoint, inst.agent_protocol)
+        pool.set_profile_name(endpoint, inst.profile_name or endpoint)
     return ApiResponse.ok(BrowserInstanceRead.model_validate(inst))
 
 
@@ -387,15 +451,11 @@ async def remove_instance(
     db: AsyncSession = Depends(get_db),
 ) -> ApiResponse:
     """Remove any pool entry by endpoint URL (base64-encoded). Does NOT touch Docker containers."""
-    import base64
-    from backend.browser_pool import get_pool, LocalBrowserPool
+
+    from backend.browser_pool import LocalBrowserPool, get_pool
     from backend.models.browser import BrowserInstance
 
-    try:
-        padded = endpoint_b64 + "=" * (-len(endpoint_b64) % 4)
-        endpoint = base64.urlsafe_b64decode(padded.encode()).decode()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid endpoint encoding")
+    endpoint = _decode_endpoint(endpoint_b64)
 
     pool = get_pool()
     if endpoint not in pool.endpoints:
@@ -420,13 +480,13 @@ async def remove_chrome_instance(n: int) -> ApiResponse:
     if n < 2:
         raise HTTPException(status_code=400, detail="Instance 1 is managed by docker-compose")
 
-    from backend.browser_pool import get_pool, LocalBrowserPool
+    from backend.browser_pool import LocalBrowserPool, get_pool
 
     pool = get_pool()
     name = f"agent-{n}"
     endpoint = f"http://{name}:19222"
 
-    client = _docker_client()
+    client = docker_client()
     try:
         container = client.containers.get(name)
         container.remove(force=True)
@@ -439,7 +499,7 @@ async def remove_chrome_instance(n: int) -> ApiResponse:
 
     all_endpoints = ",".join(ep for ep in pool.endpoints if ep != endpoint)
     try:
-        _update_env_file("AGENT_POOL_ENDPOINTS", all_endpoints)
+        update_env_file("AGENT_POOL_ENDPOINTS", all_endpoints)
     except Exception as exc:
         logger.warning("agent-pool: could not update .env: %s", exc)
 
@@ -464,7 +524,7 @@ async def agent_ws_endpoint(ws: WebSocket) -> None:
     The center keeps the connection alive and uses it to dispatch collect requests.
     """
     from backend import ws_agent_manager
-    from backend.browser_pool import get_pool, LocalBrowserPool
+    from backend.browser_pool import LocalBrowserPool, get_pool
     from backend.models.browser import BrowserInstance
 
     await ws.accept()
@@ -500,6 +560,7 @@ async def agent_ws_endpoint(ws: WebSocket) -> None:
         # Upsert in DB (fire-and-forget; don't block the WS receive loop)
         try:
             from backend.database import AsyncSessionLocal
+
             async with AsyncSessionLocal() as db:
                 result = await db.execute(
                     select(BrowserInstance).where(BrowserInstance.endpoint == agent_url)
@@ -513,8 +574,12 @@ async def agent_ws_endpoint(ws: WebSocket) -> None:
                         inst.label = label
                 else:
                     inst = BrowserInstance(
-                        endpoint=agent_url, mode=mode,
-                        agent_url=agent_url, agent_protocol="ws", label=label,
+                        endpoint=agent_url,
+                        mode=mode,
+                        agent_url=agent_url,
+                        agent_protocol="ws",
+                        label=label,
+                        profile_name=agent_url,
                     )
                     db.add(inst)
                 await db.commit()
@@ -523,12 +588,15 @@ async def agent_ws_endpoint(ws: WebSocket) -> None:
 
         # Also upsert into EdgeNode so the Nodes UI can see this agent
         try:
-            from backend.models.edge_node import EdgeNode, EdgeNodeEvent
+            from datetime import datetime
+
             from backend.database import AsyncSessionLocal
-            from datetime import datetime, timezone
-            _now = datetime.now(timezone.utc)
+            from backend.models.edge_node import EdgeNode, EdgeNodeEvent
+
+            _now = datetime.now(UTC)
             async with AsyncSessionLocal() as _db:
                 from sqlalchemy import select as _select
+
                 _res = await _db.execute(_select(EdgeNode).where(EdgeNode.url == agent_url))
                 _node = _res.scalar_one_or_none()
                 if _node:
@@ -540,8 +608,11 @@ async def agent_ws_endpoint(ws: WebSocket) -> None:
                         _node.label = label
                 else:
                     _node = EdgeNode(
-                        url=agent_url, label=label or agent_url,
-                        protocol="ws", mode=mode, status="online",
+                        url=agent_url,
+                        label=label or agent_url,
+                        protocol="ws",
+                        mode=mode,
+                        status="online",
                         last_seen_at=_now,
                     )
                     _db.add(_node)
@@ -578,16 +649,19 @@ async def agent_ws_endpoint(ws: WebSocket) -> None:
         if agent_url:
             ws_agent_manager.unregister_connection(agent_url)
             try:
-                from backend.models.edge_node import EdgeNode, EdgeNodeEvent
-                from backend.database import AsyncSessionLocal
-                from datetime import datetime, timezone
+                from datetime import datetime
+
                 from sqlalchemy import select as _select
+
+                from backend.database import AsyncSessionLocal
+                from backend.models.edge_node import EdgeNode, EdgeNodeEvent
+
                 async with AsyncSessionLocal() as _db:
                     _res = await _db.execute(_select(EdgeNode).where(EdgeNode.url == agent_url))
                     _node = _res.scalar_one_or_none()
                     if _node:
                         _node.status = "offline"
-                        _node.last_seen_at = datetime.now(timezone.utc)
+                        _node.last_seen_at = datetime.now(UTC)
                         _db.add(EdgeNodeEvent(node_id=_node.id, event="offline"))
                         await _db.commit()
             except Exception as _exc:
@@ -598,7 +672,7 @@ async def agent_ws_endpoint(ws: WebSocket) -> None:
 async def restart_api() -> ApiResponse:
     """Restart the API container (e.g. after manually editing .env)."""
     container_id = socket.gethostname()
-    client = _docker_client()
+    client = docker_client()
     try:
         container = client.containers.get(container_id)
     except Exception as exc:
