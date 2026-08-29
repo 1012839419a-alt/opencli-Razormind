@@ -36,18 +36,23 @@ RUN pip install --no-cache-dir \
     pyyaml \
     websockets
 
-# Browser Bridge extension — only useful when Chrome runs inside the container
-# Copied unconditionally so the image can be promoted to INSTALL_CHROME=true
-# via a simple rebuild without changing the layer structure.
-COPY chrome/extension-src/manifest.json /home/agent/extension/manifest.json
-COPY chrome/extension-src/icons/         /home/agent/extension/icons/
-COPY chrome/extension-src/dist/background.js /home/agent/extension/dist/background.js
+# Default bundle is immutable image content. Browser profiles only store site
+# state and can be mounted independently without changing capabilities.
+COPY chrome/runtime-bundles/ /opt/browser-runtime-bundles/
+COPY chrome/extension-src/manifest.json /opt/browser-runtime-bundles/opencli-default/1/extensions/opencli-browser-bridge/manifest.json
+COPY chrome/extension-src/icons/ /opt/browser-runtime-bundles/opencli-default/1/extensions/opencli-browser-bridge/icons/
+COPY chrome/extension-src/dist/background.js /opt/browser-runtime-bundles/opencli-default/1/extensions/opencli-browser-bridge/dist/background.js
+COPY chrome/script-host/ /opt/browser-runtime-bundles/opencli-default/1/extensions/opencli-script-host/
+COPY scripts/resolve-browser-runtime-bundle.mjs /usr/local/bin/resolve-browser-runtime-bundle.mjs
+COPY scripts/ensure-script-host.mjs /usr/local/bin/ensure-script-host.mjs
 
 # Agent server source plus the runtime adapters it imports at startup.
 WORKDIR /app
 COPY backend/agent_server.py ./backend/agent_server.py
+COPY backend/agent_runtime_dispatch.py ./backend/agent_runtime_dispatch.py
 COPY backend/agent_runtimes/ ./backend/agent_runtimes/
 COPY backend/miniflow/ ./backend/miniflow/
+COPY backend/security/ ./backend/security/
 RUN touch ./backend/__init__.py
 
 COPY agent/entrypoint.sh /entrypoint.sh

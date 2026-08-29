@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
+    "typecheck": "tsc --noEmit",
     "check:login-themes": "node --test scripts/check-login-theme-regressions.mjs",
     "check:workflow-regressions": "node --test scripts/check-workflow-regressions.mjs scripts/check-inspector-workflow-regressions.mjs",
     "check:image-studio": "node --test scripts/check-image-studio-contract.mjs",
@@ -15,6 +16,7 @@
     "check:record-hygiene": "node --test scripts/check-record-hygiene-regressions.mjs",
     "check:record-relationships": "node --test scripts/check-record-relationship-regressions.mjs",
     "check:opencli-business-workflows": "node --test scripts/check-opencli-business-workflows.mjs",
+    "test": "playwright test",
     "test:smoke": "playwright test",
     "test:workflow-contracts": "node scripts/assert-workflow-contracts.mjs",
     "test:data-operator-nodes": "node scripts/test-data-operator-nodes.mjs",

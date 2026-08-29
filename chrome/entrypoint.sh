@@ -42,12 +42,60 @@ else
   echo "[entrypoint] WARNING: Browser Bridge daemon not found at $DAEMON_JS"
 fi
 
-# Keep Chromium running; restart on crash
-CHROME_EXTRA_FLAGS=""
-if [ -f /home/chrome/extension/manifest.json ]; then
-  CHROME_EXTRA_FLAGS="--load-extension=/home/chrome/extension"
-  echo "[entrypoint] Browser Bridge extension loaded from /home/chrome/extension"
+# The profile is writable user/site state only. Every capability comes from a
+# read-only, versioned runtime bundle and Chromium is given exactly the
+# allowlisted extension directories below.
+BROWSER_RUNTIME_BUNDLE_ROOT="${BROWSER_RUNTIME_BUNDLE_ROOT:-/opt/browser-runtime-bundles}"
+BROWSER_RUNTIME_BUNDLE_MANIFEST="${BROWSER_RUNTIME_BUNDLE_MANIFEST:-$BROWSER_RUNTIME_BUNDLE_ROOT/opencli-default/1/manifest.json}"
+
+BUNDLE_EXTENSION_OUTPUT="$(
+  node /usr/local/bin/resolve-browser-runtime-bundle.mjs \
+    "$BROWSER_RUNTIME_BUNDLE_MANIFEST" \
+    "$BROWSER_RUNTIME_BUNDLE_ROOT"
+)"
+BUNDLE_RUNTIME_REPORT="$(
+  node /usr/local/bin/resolve-browser-runtime-bundle.mjs \
+    "$BROWSER_RUNTIME_BUNDLE_MANIFEST" \
+    "$BROWSER_RUNTIME_BUNDLE_ROOT" \
+    --report
+)"
+SCRIPT_HOST_ENABLED="$(
+  node -e 'const manifest=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); process.stdout.write(String(manifest.components.some((component)=>component.id==="opencli-script-host")));' \
+    "$BROWSER_RUNTIME_BUNDLE_MANIFEST"
+)"
+
+BUNDLE_EXTENSION_DIRS=()
+if [ -n "$BUNDLE_EXTENSION_OUTPUT" ]; then
+  mapfile -t BUNDLE_EXTENSION_DIRS <<< "$BUNDLE_EXTENSION_OUTPUT"
 fi
+
+CHROME_EXTRA_FLAGS=(--disable-extensions)
+if [ "${#BUNDLE_EXTENSION_DIRS[@]}" -gt 0 ]; then
+  EXTENSION_DIRS="$(IFS=,; echo "${BUNDLE_EXTENSION_DIRS[*]}")"
+  CHROME_EXTRA_FLAGS=(
+    "--disable-extensions-except=$EXTENSION_DIRS"
+    "--load-extension=$EXTENSION_DIRS"
+  )
+  echo "[entrypoint] Runtime bundle loaded from $BROWSER_RUNTIME_BUNDLE_MANIFEST"
+fi
+NETWORK_MODE="$(
+  node -e 'const policy=JSON.parse(process.argv[1]||"{\"mode\":\"direct\"}"); if(!["direct","restricted"].includes(policy.mode)) process.exit(1); process.stdout.write(policy.mode);' \
+    "${BROWSER_NETWORK_POLICY:-}"
+)"
+if [ "$NETWORK_MODE" = "restricted" ]; then
+  CHROME_EXTRA_FLAGS+=("--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE localhost")
+fi
+STARTUP_PAGES=()
+if [ -n "${BROWSER_STARTUP_PAGES:-}" ]; then
+  STARTUP_PAGE_OUTPUT="$(
+    node -e 'const pages=JSON.parse(process.argv[1]); if(!Array.isArray(pages)||pages.length>10||pages.some((item)=>typeof item!=="string"||!/^https?:\/\//.test(item))) process.exit(1); process.stdout.write(pages.join("\n"));' \
+      "$BROWSER_STARTUP_PAGES"
+  )"
+  if [ -n "$STARTUP_PAGE_OUTPUT" ]; then
+    mapfile -t STARTUP_PAGES <<< "$STARTUP_PAGE_OUTPUT"
+  fi
+fi
+
 
 start_chrome() {
   find /home/chrome/.config/chromium -name 'SingletonLock' -o -name 'SingletonCookie' -o -name 'SingletonSocket' 2>/dev/null | xargs rm -f 2>/dev/null || true
@@ -59,12 +107,31 @@ start_chrome() {
     --disable-dev-shm-usage \
     --user-data-dir=/home/chrome/.config/chromium \
     --window-size=1280,900 \
-    $CHROME_EXTRA_FLAGS \
+    "${CHROME_EXTRA_FLAGS[@]}" \
     "$@"
 }
+(
+  for _ in $(seq 1 30); do
+    if curl -sf http://localhost:9222/json/version >/dev/null 2>&1; then
+      EXTENSION_WORKERS="$(
+        curl -sf http://localhost:9222/json/list |
+          node -e 'let data=""; process.stdin.on("data",(chunk)=>data+=chunk); process.stdin.on("end",()=>{const targets=JSON.parse(data); process.stdout.write(String(targets.filter((target)=>target.type==="service_worker"&&target.url.startsWith("chrome-extension://")).length));});'
+      )"
+      if [ "$EXTENSION_WORKERS" -ge "${#BUNDLE_EXTENSION_DIRS[@]}" ]; then
+        if [ "$SCRIPT_HOST_ENABLED" != "true" ] ||
+          node /usr/local/bin/ensure-script-host.mjs http://localhost:9222 >/dev/null; then
+          printf '%s\n' "$BUNDLE_RUNTIME_REPORT" > /tmp/browser-runtime-report.json
+          exit 0
+        fi
+      fi
+    fi
+    sleep 1
+  done
+  echo "[entrypoint] Chromium did not become ready; runtime report not written" >&2
+) &
 
 while true; do
-  start_chrome || true
+  start_chrome "${STARTUP_PAGES[@]}" || true
   echo "[entrypoint] Chromium exited, restarting in 2s..."
   sleep 2
 done

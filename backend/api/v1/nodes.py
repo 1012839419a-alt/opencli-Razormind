@@ -231,6 +231,7 @@ async def register_node(
             agent_protocol=body.agent_protocol,
             label=body.label,
             profile_kind=body.profile_kind,
+            profile_name=url,
         )
         db.add(inst)
 
@@ -816,6 +817,7 @@ async def node_ws_endpoint(ws: WebSocket) -> None:
                         agent_protocol="ws",
                         label=label,
                         profile_kind=profile_kind,
+                        profile_name=agent_url,
                     )
                     db.add(inst)
                 await db.commit()
