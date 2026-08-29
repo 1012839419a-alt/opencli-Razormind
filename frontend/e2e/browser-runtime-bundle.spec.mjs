@@ -1,18 +1,34 @@
 import { expect, test } from "@playwright/test";
 
 const bundle = {
-  id: "bundle-opencli-bridge",
-  name: "opencli-bridge",
-  version: "1.8.5",
+  id: "bundle-opencli-default-v2",
+  name: "opencli-default",
+  version: "2",
   manifest: {
-    name: "opencli-bridge",
-    version: "1.8.5",
+    name: "opencli-default",
+    version: "2",
     components: [
       {
         kind: "extension",
-        id: "bridge",
-        version: "1.8.5",
-        path: "extensions/bridge",
+        id: "opencli-browser-bridge",
+        version: "0.1.0",
+        path: "extensions/opencli-browser-bridge",
+        required: true,
+        capabilities: [],
+      },
+      {
+        kind: "extension",
+        id: "opencli-script-host",
+        version: "1.2.0",
+        path: "extensions/opencli-script-host",
+        required: true,
+        capabilities: ["page.metadata"],
+      },
+      {
+        kind: "extension",
+        id: "violentmonkey",
+        version: "2.48.0",
+        path: "extensions/violentmonkey",
         required: true,
         capabilities: [],
       },
@@ -20,8 +36,8 @@ const bundle = {
     capabilities: [],
     act_pack_ids: ["search-research/google-search-serp"],
   },
-  trust_level: "trusted",
-  source: "local",
+  trust_level: "system",
+  source: "image",
   created_at: "2026-08-29T00:00:00Z",
   updated_at: "2026-08-29T00:00:00Z",
 };
@@ -74,10 +90,10 @@ test("浏览器管理展示 Bundle 期望态、加载态和 Act Pack 关联", as
               runtime_bundle_id: bundle.id,
               runtime_bundle_name: bundle.name,
               runtime_bundle_version: bundle.version,
-              loaded_bundle_name: "opencli-bridge",
-              loaded_bundle_version: "1.8.4",
+              loaded_bundle_name: "opencli-default",
+              loaded_bundle_version: "1",
               runtime_diagnostics: [
-                "desired bundle is opencli-bridge@1.8.5; loaded is opencli-bridge@1.8.4",
+                "desired bundle is opencli-default@2; loaded is opencli-default@1",
               ],
             },
           ],
@@ -118,10 +134,11 @@ test("浏览器管理展示 Bundle 期望态、加载态和 Act Pack 关联", as
   await page.goto("/browsers");
 
   await expect(page.getByText("Browser Runtime Bundles")).toBeVisible();
-  await expect(page.getByText("opencli-bridge@1.8.5").first()).toBeVisible();
+  await expect(page.getByText("opencli-default@2").first()).toBeVisible();
+  await expect(page.getByText("3 个组件").first()).toBeVisible();
   await expect(page.getByText("CONFIG_DRIFT")).toBeVisible();
-  await expect(page.getByText("期望 opencli-bridge@1.8.5")).toBeVisible();
-  await expect(page.getByText("已载入 opencli-bridge@1.8.4")).toBeVisible();
+  await expect(page.getByText("期望 opencli-default@2")).toBeVisible();
+  await expect(page.getByText("已载入 opencli-default@1")).toBeVisible();
   await expect(page.getByText("Google Search")).toBeVisible();
 
   await page.getByRole("button", { name: "添加实例" }).click();

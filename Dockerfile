@@ -28,7 +28,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Install opencli globally — available as 'opencli' on PATH
-ARG OPENCLI_VERSION=1.8.5
+ARG OPENCLI_VERSION=1.8.7
 ARG IMAGE_TAG=latest
 COPY scripts/patch-opencli.js /tmp/patch-opencli.js
 RUN npm install -g @jackwener/opencli@${OPENCLI_VERSION} \
