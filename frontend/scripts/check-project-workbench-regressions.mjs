@@ -113,6 +113,9 @@ test('project data workbench is project scoped and links data back to workflow e
   assert.match(page, /localStorage/)
   assert.match(page, /全量筛选结果/)
   assert.match(page, /buildQualityStats/)
+  assert.doesNotMatch(page, /PRIORITY_FIELDS/)
+  assert.doesNotMatch(page, /payload\.title \?\? payload\.name/)
+  assert.match(page, /字段集合按真实记录动态识别/)
 })
 
 test('project data workbench keeps file controls and empty states view-specific', async () => {

@@ -46,7 +46,6 @@ import { cn } from '@/lib/utils'
 
 const PAGE_SIZE = 50
 const EXPORT_PAGE_SIZE = 100
-const PRIORITY_FIELDS = ['title', 'name', 'url', 'text', 'content', 'author', 'published_at', 'source']
 const SOURCE_PUBLISHED_RAW_KEYS = ['displayTime', 'published_at', 'publishedAt', 'published', 'sent_at', 'sentAt', 'time', 'timestamp'] as const
 const SOURCE_PUBLISHED_FALLBACK_KEYS = ['noticeDate', 'date', 'created_at', 'createdAt', 'listed', 'updated'] as const
 type WorkbenchView = 'dataset' | 'profile' | 'quality' | 'files'
@@ -85,7 +84,7 @@ function recordPayload(record: CollectedRecord) {
 
 function recordTitle(record: CollectedRecord) {
   const payload = recordPayload(record)
-  const value = payload.title ?? payload.name ?? payload.text ?? payload.content ?? payload.url
+  const value = Object.entries(payload).find(([key, candidate]) => !key.startsWith('_') && typeof candidate === 'string' && candidate.trim())?.[1]
   return typeof value === 'string' && value.trim() ? value : `记录 ${record.id.slice(0, 8)}`
 }
 
@@ -124,20 +123,11 @@ function fieldKind(values: unknown[]) {
 }
 
 function collectRecordFields(records: CollectedRecord[], limit?: number) {
-  const keys = new Set<string>()
-  records.forEach((record) => Object.keys(recordPayload(record)).forEach((key) => keys.add(key)))
-  const fields = [...keys]
-    .filter((key) => !key.startsWith('_'))
-    .sort((left, right) => {
-      const leftIndex = PRIORITY_FIELDS.indexOf(left)
-      const rightIndex = PRIORITY_FIELDS.indexOf(right)
-      if (leftIndex >= 0 || rightIndex >= 0) {
-        if (leftIndex < 0) return 1
-        if (rightIndex < 0) return -1
-        return leftIndex - rightIndex
-      }
-      return left.localeCompare(right)
-    })
+  const firstSeen = new Map<string, number>()
+  records.forEach((record) => Object.keys(recordPayload(record)).forEach((key) => {
+    if (!key.startsWith('_') && !firstSeen.has(key)) firstSeen.set(key, firstSeen.size)
+  }))
+  const fields = [...firstSeen.keys()].sort((left, right) => (firstSeen.get(left) ?? 0) - (firstSeen.get(right) ?? 0))
   return limit === undefined ? fields : fields.slice(0, limit)
 }
 
@@ -191,9 +181,9 @@ function hasMeaningfulValue(value: unknown) {
   return value !== null && value !== undefined && value !== '' && !(typeof value === 'string' && !value.trim())
 }
 
-function hasRecordTitle(record: CollectedRecord) {
+function hasReadableValue(record: CollectedRecord) {
   const payload = recordPayload(record)
-  return hasMeaningfulValue(payload.title) || hasMeaningfulValue(payload.name)
+  return Object.entries(payload).some(([key, value]) => !key.startsWith('_') && typeof value === 'string' && Boolean(value.trim()))
 }
 
 function isHttpUrl(value: unknown) {
@@ -212,7 +202,7 @@ type QualityStats = {
   completeness: number
   duplicateExtraRows: number
   failedRecords: number
-  missingTitles: number
+  missingReadableValues: number
   missingSourceTimes: number
   urlTotal: number
   validUrls: number
@@ -240,7 +230,7 @@ function buildQualityStats(records: CollectedRecord[], fields: string[]): Qualit
     completeness: totalCells ? Math.round((filledCells / totalCells) * 100) : 0,
     duplicateExtraRows,
     failedRecords: records.filter((record) => record.status === 'error').length,
-    missingTitles: records.filter((record) => !hasRecordTitle(record)).length,
+    missingReadableValues: records.filter((record) => !hasReadableValue(record)).length,
     missingSourceTimes: records.filter((record) => !recordSourcePublishedAt(record)).length,
     urlTotal: urlValues.length,
     validUrls: urlValues.filter(isHttpUrl).length,
@@ -648,11 +638,11 @@ function DatasetView({ records, visibleFields, selectedRecordIds, allPageSelecte
 
 function FieldProfileView({ profiles, activeField, activeProfile, distribution, total, onSelect }: { profiles: Array<{ field: string; kind: string; filled: number; unique: number; ratio: number }>; activeField: string | null; activeProfile: { field: string; kind: string; filled: number; unique: number; ratio: number } | null; distribution: Array<[string, number]>; total: number; onSelect: (field: string) => void }) {
   const max = Math.max(1, ...distribution.map(([, count]) => count))
-  return <div className="grid min-h-[32rem] lg:grid-cols-[16rem_minmax(0,1fr)]"><aside className="border-b p-3 lg:border-b-0 lg:border-r"><p className="px-2 pb-2 text-[10px] font-medium uppercase tracking-widest text-muted-foreground">字段 · {profiles.length}</p><div className="max-h-[30rem] space-y-1 overflow-y-auto">{profiles.map((profile) => <button type="button" key={profile.field} onClick={() => onSelect(profile.field)} className={cn('flex w-full items-center justify-between gap-2 rounded-md px-2.5 py-2 text-left text-xs', activeField === profile.field ? 'bg-muted text-foreground' : 'text-muted-foreground hover:bg-muted/50 hover:text-foreground')}><span className="truncate font-mono">{profile.field}</span><span>{profile.ratio}%</span></button>)}</div></aside><div className="p-5">{activeProfile ? <><div className="flex flex-wrap items-start justify-between gap-3"><div><div className="flex items-center gap-2"><Braces className="size-4 text-muted-foreground" /><h2 className="font-mono text-base font-semibold">{activeProfile.field}</h2></div><p className="mt-1 text-xs text-muted-foreground">按当前加载页即时计算，不写回源数据。</p></div><Badge variant="outline">{activeProfile.kind}</Badge></div><div className="mt-5 grid gap-3 sm:grid-cols-3"><Fact label="字段填充" value={`${activeProfile.filled} / ${total}`} /><Fact label="完整率" value={`${activeProfile.ratio}%`} /><Fact label="唯一值" value={String(activeProfile.unique)} /></div><section className="mt-6"><div className="flex items-center justify-between"><p className="text-xs font-medium">值分布</p><span className="text-[10px] text-muted-foreground">Top {distribution.length}</span></div><div className="mt-3 space-y-3">{distribution.map(([label, count]) => <div key={label} className="grid grid-cols-[minmax(8rem,15rem)_minmax(0,1fr)_3rem] items-center gap-3 text-xs"><span className="truncate font-mono text-muted-foreground" title={label}>{label}</span><span className="h-2 overflow-hidden rounded-full bg-muted"><span className="block h-full rounded-full bg-primary" style={{ width: `${Math.max(4, (count / max) * 100)}%` }} /></span><span className="text-right font-mono">{count}</span></div>)}</div></section></> : <p className="text-sm text-muted-foreground">当前数据没有可分析字段。</p>}</div></div>
+  return <div className="grid min-h-[32rem] lg:grid-cols-[16rem_minmax(0,1fr)]"><aside className="border-b p-3 lg:border-b-0 lg:border-r"><p className="px-2 pb-2 text-[10px] font-medium uppercase tracking-widest text-muted-foreground">字段 · {profiles.length}</p><div className="max-h-[30rem] space-y-1 overflow-y-auto">{profiles.map((profile) => <button type="button" key={profile.field} onClick={() => onSelect(profile.field)} className={cn('flex w-full items-center justify-between gap-2 rounded-md px-2.5 py-2 text-left text-xs', activeField === profile.field ? 'bg-muted text-foreground' : 'text-muted-foreground hover:bg-muted/50 hover:text-foreground')}><span className="truncate font-mono">{profile.field}</span><span>{profile.ratio}%</span></button>)}</div></aside><div className="p-5">{activeProfile ? <><div className="flex flex-wrap items-start justify-between gap-3"><div><div className="flex items-center gap-2"><Braces className="size-4 text-muted-foreground" /><h2 className="font-mono text-base font-semibold">{activeProfile.field}</h2></div><p className="mt-1 text-xs text-muted-foreground">按当前筛选全量即时计算，不写回源数据。</p></div><Badge variant="outline">{activeProfile.kind}</Badge></div><div className="mt-5 grid gap-3 sm:grid-cols-3"><Fact label="字段填充" value={`${activeProfile.filled} / ${total}`} /><Fact label="完整率" value={`${activeProfile.ratio}%`} /><Fact label="唯一值" value={String(activeProfile.unique)} /></div><section className="mt-6"><div className="flex items-center justify-between"><p className="text-xs font-medium">值分布</p><span className="text-[10px] text-muted-foreground">Top {distribution.length}</span></div><div className="mt-3 space-y-3">{distribution.map(([label, count]) => <div key={label} className="grid grid-cols-[minmax(8rem,15rem)_minmax(0,1fr)_3rem] items-center gap-3 text-xs"><span className="truncate font-mono text-muted-foreground" title={label}>{label}</span><span className="h-2 overflow-hidden rounded-full bg-muted"><span className="block h-full rounded-full bg-primary" style={{ width: `${Math.max(4, (count / max) * 100)}%` }} /></span><span className="text-right font-mono">{count}</span></div>)}</div></section></> : <p className="text-sm text-muted-foreground">当前数据没有可分析字段。</p>}</div></div>
 }
 
 function QualityView({ stats }: { stats: QualityStats }) {
-  return <div className="p-5"><div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="flex items-center gap-2 font-semibold"><ShieldCheck className="size-4 text-muted-foreground" />数据质量统计</h2><p className="mt-1 text-xs text-muted-foreground">全量筛选结果 · {stats.totalRecords.toLocaleString('zh-CN')} 条记录 · {stats.totalFields} 个字段</p></div><Badge variant="outline">不写回源数据</Badge></div><div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3"><QualityStat label="字段完整率" value={`${stats.completeness}%`} hint="非空字段单元格 / 总字段单元格" /><QualityStat label="重复额外行" value={String(stats.duplicateExtraRows)} hint="按 content_hash 统计" /><QualityStat label="处理失败" value={String(stats.failedRecords)} hint="status = error" /><QualityStat label="缺少标题" value={String(stats.missingTitles)} hint="title 与 name 均为空" /><QualityStat label="源时间缺失" value={String(stats.missingSourceTimes)} hint="未识别到源发布时间" /><QualityStat label="URL 有效率" value={stats.urlTotal ? `${Math.round((stats.validUrls / stats.urlTotal) * 100)}%` : '—'} hint={stats.urlTotal ? `${stats.validUrls} / ${stats.urlTotal} 个 URL` : '没有可检查的 URL'} /></div><div className="mt-6 grid gap-5 lg:grid-cols-2"><section className="rounded-lg border p-4"><h3 className="text-sm font-medium">处理状态分布</h3><div className="mt-4 space-y-3">{stats.statusCounts.length ? stats.statusCounts.map(([status, count]) => <div key={status} className="grid grid-cols-[minmax(6rem,10rem)_minmax(0,1fr)_3rem] items-center gap-3 text-xs"><span className="truncate font-mono text-muted-foreground">{status}</span><span className="h-2 overflow-hidden rounded-full bg-muted"><span className="block h-full rounded-full bg-primary" style={{ width: `${Math.max(4, (count / Math.max(1, stats.totalRecords)) * 100)}%` }} /></span><span className="text-right font-mono">{count}</span></div>) : <p className="text-xs text-muted-foreground">当前筛选没有记录。</p>}</div></section><section className="rounded-lg border p-4"><h3 className="text-sm font-medium">统计口径</h3><ul className="mt-3 space-y-2 text-xs leading-5 text-muted-foreground"><li>完整率只统计非空值与总字段单元格的比例。</li><li>重复额外行按 content_hash 统计，不计入空 hash。</li><li>URL 有效率只检查 http / https 格式。</li><li>字段分析和质量统计按当前筛选全量加载，数据集表仍按页展示。</li></ul></section></div></div>
+  return <div className="p-5"><div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="flex items-center gap-2 font-semibold"><ShieldCheck className="size-4 text-muted-foreground" />数据质量统计</h2><p className="mt-1 text-xs text-muted-foreground">全量筛选结果 · {stats.totalRecords.toLocaleString('zh-CN')} 条记录 · {stats.totalFields} 个字段</p></div><Badge variant="outline">不写回源数据</Badge></div><div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3"><QualityStat label="字段完整率" value={`${stats.completeness}%`} hint="非空字段单元格 / 总字段单元格" /><QualityStat label="重复额外行" value={String(stats.duplicateExtraRows)} hint="按 content_hash 统计" /><QualityStat label="处理失败" value={String(stats.failedRecords)} hint="status = error" /><QualityStat label="缺少可读主值" value={String(stats.missingReadableValues)} hint="没有任何非空文本字段" /><QualityStat label="源时间缺失" value={String(stats.missingSourceTimes)} hint="未识别到源发布时间" /><QualityStat label="URL 有效率" value={stats.urlTotal ? `${Math.round((stats.validUrls / stats.urlTotal) * 100)}%` : '—'} hint={stats.urlTotal ? `${stats.validUrls} / ${stats.urlTotal} 个 URL` : '没有可检查的 URL'} /></div><div className="mt-6 grid gap-5 lg:grid-cols-2"><section className="rounded-lg border p-4"><h3 className="text-sm font-medium">处理状态分布</h3><div className="mt-4 space-y-3">{stats.statusCounts.length ? stats.statusCounts.map(([status, count]) => <div key={status} className="grid grid-cols-[minmax(6rem,10rem)_minmax(0,1fr)_3rem] items-center gap-3 text-xs"><span className="truncate font-mono text-muted-foreground">{status}</span><span className="h-2 overflow-hidden rounded-full bg-muted"><span className="block h-full rounded-full bg-primary" style={{ width: `${Math.max(4, (count / Math.max(1, stats.totalRecords)) * 100)}%` }} /></span><span className="text-right font-mono">{count}</span></div>) : <p className="text-xs text-muted-foreground">当前筛选没有记录。</p>}</div></section><section className="rounded-lg border p-4"><h3 className="text-sm font-medium">统计口径</h3><ul className="mt-3 space-y-2 text-xs leading-5 text-muted-foreground"><li>字段集合按真实记录动态识别，不要求 title、url、content 或 author 等固定字段存在。</li><li>完整率只统计非空值与总字段单元格的比例。</li><li>重复额外行按 content_hash 统计，不计入空 hash。</li><li>URL 有效率只在识别到 URL 类字段时检查 http / https 格式。</li><li>字段分析和质量统计按当前筛选全量加载，数据集表仍按页展示。</li></ul></section></div></div>
 }
 
 function QualityStat({ label, value, hint }: { label: string; value: string; hint: string }) {
