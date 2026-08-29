@@ -1320,3 +1320,73 @@ export interface Automation {
   created_at: string
   updated_at: string
 }
+
+export interface WorkbenchRepository {
+  id: string
+  name: string
+  defaultRef: string
+}
+
+export interface WorkbenchRuntime {
+  id: string
+  name: string
+  publishedVersion: number
+  runtimeType: string
+}
+
+export interface WorkbenchTestEvidence {
+  command: string
+  outcome: 'passed' | 'failed' | 'unknown'
+  summary: string
+}
+
+export interface WorkbenchProposal {
+  id: string
+  status: 'pending_confirmation' | 'applied' | 'failed' | 'cancelled'
+  baseSha: string
+  checkpointSha: string
+  diff: string
+  modifiedFiles: string[]
+  tests: WorkbenchTestEvidence[]
+  errorMessage: string | null
+  confirmedAt: string | null
+}
+
+export interface WorkbenchTurn {
+  id: string
+  sequence: number
+  requestId: string
+  requirement: string
+  runtimeId: string
+  publishedVersion: number
+  runtimeType: string
+  status: 'queued' | 'running' | 'proposed' | 'applied' | 'failed' | 'cancelled'
+  baseSha: string
+  output: {
+    modifiedFiles: string[]
+    tests: WorkbenchTestEvidence[]
+    diff: string
+    proposal: WorkbenchProposal | null
+  } | null
+  errorMessage: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface WorkbenchThread {
+  id: string
+  repositoryId: string
+  title: string | null
+  status: 'active' | 'closed'
+  createdAt: string
+  updatedAt: string
+  turns: WorkbenchTurn[]
+}
+
+export interface WorkbenchEvent {
+  id: string
+  sequence: number
+  eventType: 'started' | 'text' | 'tool_call' | 'tool_result' | 'state' | 'proposal' | 'done' | 'error' | 'cancelled'
+  payload: Record<string, unknown>
+  createdAt: string
+}

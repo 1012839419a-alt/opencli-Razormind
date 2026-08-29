@@ -1,6 +1,7 @@
 import {
   Activity,
   Blocks,
+  Code2,
   Database,
   LayoutDashboard,
   PanelsTopLeft,
@@ -46,6 +47,7 @@ export const NAV_GROUPS: NavGroup[] = [
     label: '构建',
     items: [
       { href: '/studio', label: '项目', icon: PanelsTopLeft, match: ['/studio', '/canvas'] },
+      { href: '/agent-workbench', label: 'Coding Workbench', icon: Code2 },
       { href: '/plugins', label: '插件中心', icon: Blocks },
       {
         href: '/schedules',
@@ -105,6 +107,7 @@ export const ROUTE_LABELS: Record<string, string> = {
   '/studio': '项目',
   '/studio/workflow': '工作流编排',
   '/canvas': '节点工作流（兼容入口）',
+  '/agent-workbench': 'Coding Workbench',
   '/plugins': '插件中心',
   '/sources': '数据（兼容入口）',
   '/schedules': '触发与调度',

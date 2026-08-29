@@ -7,6 +7,7 @@ from backend.models.consumer_grant import ConsumerGrant
 from backend.models.control_action import ControlActionRecord
 from backend.models.cookie_jar import CookieJarEntry
 from backend.models.edge_node import EdgeNode, EdgeNodeEvent
+from backend.models.feed_provider import FeedProvider
 from backend.models.identity import (
     ServiceIdentity,
     Team,
@@ -16,7 +17,13 @@ from backend.models.identity import (
     WorkspaceMembership,
     WorkspaceRole,
 )
-from backend.models.feed_provider import FeedProvider
+from backend.models.image_studio import (
+    CanvasDocument,
+    CanvasSnapshot,
+    ImageGenerationJob,
+    ImageGenerationJobStatus,
+    MediaAsset,
+)
 from backend.models.intelligence import (
     IntelligenceArtifact,
     IntelligenceArtifactReference,
@@ -24,13 +31,6 @@ from backend.models.intelligence import (
     IntelligenceOutbox,
     IntelligenceSession,
     IntelligenceTransition,
-)
-from backend.models.image_studio import (
-    CanvasDocument,
-    CanvasSnapshot,
-    ImageGenerationJob,
-    ImageGenerationJobStatus,
-    MediaAsset,
 )
 from backend.models.model_default import ModelDefault
 from backend.models.notification import NotificationLog, NotificationRule
@@ -72,6 +72,13 @@ from backend.models.studio import (
     StudioWorkspace,
 )
 from backend.models.task import CollectionTask, TaskRun, TaskRunEvent
+from backend.models.workbench import (
+    WorkbenchProposal,
+    WorkbenchRepository,
+    WorkbenchThread,
+    WorkbenchTurn,
+    WorkbenchTurnEvent,
+)
 from backend.models.worker import WorkerNode
 from backend.models.workflow import Project, Workflow, WorkflowDraft, WorkflowVersion
 from backend.models.workflow_run import WorkflowRun, WorkflowRunEvent
@@ -101,6 +108,11 @@ __all__ = [
     "OperationsAgentDraft",
     "PublishedOperationsAgentVersion",
     "OperationsAgentRun",
+    "WorkbenchRepository",
+    "WorkbenchThread",
+    "WorkbenchTurn",
+    "WorkbenchTurnEvent",
+    "WorkbenchProposal",
     "FeedProvider",
     "IntelligenceSession",
     "IntelligenceArtifact",

@@ -37,6 +37,7 @@ from backend.api.v1 import (
     system,
     tasks,
     webhooks,
+    workbench,
     workers,
     workflows,
     workspace_sources,
@@ -76,6 +77,7 @@ v1_router.include_router(dify_imports.router)
 v1_router.include_router(notifications.router)
 v1_router.include_router(operations_inbox.router)
 v1_router.include_router(operations_agents.router)
+v1_router.include_router(workbench.router)
 v1_router.include_router(workers.router)
 v1_router.include_router(dashboard.router)
 v1_router.include_router(system.router)
