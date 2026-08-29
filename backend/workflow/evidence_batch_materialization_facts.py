@@ -1,0 +1,87 @@
+"""Validated, immutable fact joins for EvidenceBatch materialization."""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
+from uuid import UUID
+
+from backend.models.iii_collection import (
+    IIICollectionAttemptV1,
+    IIICollectionCommandV1,
+    IIICollectionExpectedKeyReportV1,
+    IIICollectionIngressReceiptV1,
+)
+from backend.odp.query_client import OdpRecordKey, OdpReconciliationDelegation
+from backend.workflow.iii_collection_store import CollectionScope
+
+_DELEGATION_TTL = timedelta(minutes=5)
+
+
+def matches_scope(command: IIICollectionCommandV1, scope: CollectionScope) -> bool:
+    return (
+        command.workspace_id == scope.workspace_id
+        and command.project_id == scope.project_id
+        and command.workflow_id == scope.workflow_id
+        and command.run_id == scope.run_id
+    )
+
+
+def report_keys(
+    report: IIICollectionExpectedKeyReportV1, command: IIICollectionCommandV1
+) -> tuple[list[OdpRecordKey], bool]:
+    try:
+        expected = [OdpRecordKey(UUID(key["source_id"]), key["event_id"]) for key in report.expected_keys]
+        command_source = UUID(command.odp_source_id)
+    except (KeyError, TypeError, ValueError):
+        return [], True
+    return expected, len(set(expected)) != len(expected) or any(
+        key.source_id != command_source for key in expected
+    )
+
+
+def receipt_outcomes(
+    receipts: list[IIICollectionIngressReceiptV1], keys: list[OdpRecordKey]
+) -> dict[OdpRecordKey, str] | None:
+    """Join retained receipts only when each covers every key identically."""
+    if not receipts:
+        return None
+    expected = {(str(key.source_id), key.event_id) for key in keys}
+    result: dict[OdpRecordKey, str] = {}
+    for receipt in receipts:
+        outcomes = receipt.outcomes
+        observed = {(item.get("source_id"), item.get("event_id")) for item in outcomes if isinstance(item, dict)}
+        if len(outcomes) != len(expected) or observed != expected:
+            return None
+        for key in keys:
+            outcome = next(
+                (
+                    item.get("outcome")
+                    for item in outcomes
+                    if item.get("source_id") == str(key.source_id) and item.get("event_id") == key.event_id
+                ),
+                None,
+            )
+            if outcome not in {"accepted", "duplicate", "rejected"}:
+                return None
+            if key in result and result[key] != outcome:
+                return None
+            result[key] = outcome
+    return result if len(result) == len(expected) else None
+
+
+def delegation(
+    command: IIICollectionCommandV1, attempt: IIICollectionAttemptV1, batch_id: str
+) -> OdpReconciliationDelegation:
+    return OdpReconciliationDelegation(
+        workspace_id=command.workspace_id,
+        project_id=command.project_id,
+        workflow_id=command.workflow_id,
+        run_id=command.run_id,
+        batch_id=batch_id,
+        attempt_id=attempt.id,
+        task_id=UUID(attempt.task_id),
+        trace_id=UUID(attempt.trace_id),
+        allowed_source_ids=(UUID(command.odp_source_id),),
+        allowed_modes=("exact", "attempt_page"),
+        expires_at=datetime.now(UTC) + _DELEGATION_TTL,
+    )

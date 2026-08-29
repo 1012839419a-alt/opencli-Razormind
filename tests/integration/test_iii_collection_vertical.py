@@ -2,15 +2,12 @@
 
 from __future__ import annotations
 
-import hashlib
-import hmac
 import os
 import uuid
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import httpx
-
 import pytest
 from sqlalchemy import select
 
@@ -22,19 +19,8 @@ from backend.models.iii_collection import (
     IIICollectionLifecycleObservationV1,
     IIICollectionOutboundV1,
 )
-from backend.models.studio import (
-    StudioProject,
-    StudioWorkflow,
-    StudioWorkflowValidationRun,
-    StudioWorkflowVersion,
-    StudioWorkspace,
-)
-from backend.models.workflow_run import WorkflowRun, WorkflowRunEvent
-from backend.schemas.iii_collection import (
-    CollectorFinalExpectedKeyReportV1,
-    IIICollectionRequestV1,
-    ODPIngressOutcomeReceiptV1,
-)
+from backend.models.workflow_run import WorkflowRunEvent
+from backend.schemas.iii_collection import IIICollectionRequestV1
 from backend.workflow.iii_collection_dispatch import (
     IIIBridgeUnavailableError,
     collector_trigger_payload,
@@ -43,162 +29,17 @@ from backend.workflow.iii_collection_dispatch import (
 from backend.workflow.iii_collection_store import (
     CollectionScope,
     _attempt_and_outbound,
-    _expected_key_set_hash,
-    _receipt_hash,
-    _report_hash,
     cancel_collection,
     submit_collection,
 )
-
-
-async def _create_scoped_run(db_session):
-    workspace = StudioWorkspace(id="iii-workspace", name="III", slug="iii")
-    project = StudioProject(
-        id="iii-project",
-        workspace_id=workspace.id,
-        name="III Project",
-        slug="iii-project",
-        created_by_user_id="operator",
-    )
-    workflow = StudioWorkflow(id="iii-workflow", project_id=project.id, name="III Workflow")
-    validation = StudioWorkflowValidationRun(
-        id="iii-validation",
-        workflow_id=workflow.id,
-        draft_revision=1,
-        status="valid",
-        valid=True,
-        errors=[],
-        warnings=[],
-        compile_version="v1",
-        resolved_graph={"nodes": [{"id": "opencli-source"}]},
-    )
-    version = StudioWorkflowVersion(
-        id="iii-version",
-        workflow_id=workflow.id,
-        version=1,
-        draft_revision=1,
-        graph={"nodes": [{"id": "opencli-source"}]},
-        compile_version="v1",
-        validation_run_id=validation.id,
-        published_by_user_id="operator",
-        reason="test",
-    )
-    run = WorkflowRun(
-        id="iii-run",
-        workflow_id=workflow.id,
-        studio_workflow_version_id=version.id,
-        trace_id="iii-trace",
-        status="queued",
-        request={},
-        projection={},
-    )
-    db_session.add_all([workspace, project, workflow, validation, version, run])
-    await db_session.commit()
-    return {
-        "workspace": workspace,
-        "project": project,
-        "workflow": workflow,
-        "version": version,
-        "run": run,
-    }
-
-
-def _route(scope: dict) -> str:
-    return (
-        f"/api/v1/workspaces/{scope['workspace'].id}/projects/{scope['project'].id}"
-        f"/workflows/{scope['workflow'].id}/runs/{scope['run'].id}/iii-collections"
-    )
-
-
-def _submit_body() -> dict:
-    return {
-        "version": "v1",
-        "idempotencyKey": "collection-key",
-        "nodeId": "opencli-source",
-        "collection": {
-            "site": "bilibili",
-            "command": "search",
-            "args": {"keyword": "AI"},
-            "sourceBindingId": "binding-1",
-            "sourceBindingRevisionId": "binding-revision-1",
-            "sourceBindingRevisionNumber": 1,
-        },
-    }
-
-
-def _fact_identity(command, attempt) -> dict:
-    return {
-        "version": "v1",
-        "workspaceId": command.workspace_id,
-        "projectId": command.project_id,
-        "workflowId": command.workflow_id,
-        "studioWorkflowVersionId": command.studio_workflow_version_id,
-        "runId": command.run_id,
-        "nodeId": command.node_id,
-        "commandId": command.id,
-        "attemptId": attempt.id,
-        "attemptNumber": attempt.attempt_number,
-        "taskId": attempt.task_id,
-        "traceId": attempt.trace_id,
-        "sourceId": command.odp_source_id,
-        "sourceBindingId": command.source_binding_id,
-        "sourceBindingRevisionId": command.source_binding_revision_id,
-        "sourceBindingRevisionNumber": command.source_binding_revision_number,
-        "payloadSha256": command.payload_sha256,
-    }
-def _report_body(command, attempt, *, event_id: str | None = "event-1") -> dict:
-    expected_keys = (
-        [{"sourceId": command.odp_source_id, "eventId": event_id}] if event_id is not None else []
-    )
-    body = {
-        **_fact_identity(command, attempt),
-        "reportId": "report-1",
-        "reportSequence": 1,
-        "expectedKeys": expected_keys,
-        "expectedKeySetSha256": "0" * 64,
-        "itemCount": len(expected_keys),
-        "zeroCount": int(not expected_keys),
-        "rejectedCount": 0,
-        "reportedAt": datetime(2026, 8, 30, tzinfo=UTC).isoformat(),
-        "reportHash": "0" * 64,
-    }
-    report = CollectorFinalExpectedKeyReportV1.model_validate(body)
-    body["expectedKeySetSha256"] = _expected_key_set_hash(report)
-    report = CollectorFinalExpectedKeyReportV1.model_validate(body)
-    body["reportHash"] = _report_hash(report)
-    return body
-
-
-def _receipt_body(command, attempt, report: dict, *, event_id: str = "event-1") -> dict:
-    return _sign_receipt_body(
-        {
-            **_fact_identity(command, attempt),
-            "receiptId": "receipt-1",
-            "idempotencyKey": "odp-ingest:receipt-1",
-            "producerId": "odp-ingest",
-            "producerKeyId": "odp-ingest-v1",
-            "expectedKeySetSha256": report["expectedKeySetSha256"],
-            "outcomes": [
-                {
-                    "sourceId": command.odp_source_id,
-                    "eventId": event_id,
-                    "outcome": "accepted",
-                }
-            ],
-            "issuedAt": datetime(2026, 8, 30, tzinfo=UTC).isoformat(),
-        }
-    )
-
-
-def _sign_receipt_body(body: dict) -> dict:
-    signed = {**body, "receiptHash": "0" * 64, "signature": "sha256=placeholder"}
-    receipt = ODPIngressOutcomeReceiptV1.model_validate(signed)
-    signed["receiptHash"] = _receipt_hash(receipt)
-    signed["signature"] = "sha256=" + hmac.new(
-        b"receipt-secret", signed["receiptHash"].encode(), hashlib.sha256
-    ).hexdigest()
-    return signed
-
+from tests.integration.iii_collection_test_support import (
+    create_scoped_run as _create_scoped_run,
+    receipt_body as _receipt_body,
+    report_body as _report_body,
+    route as _route,
+    sign_receipt_body as _sign_receipt_body,
+    submit_body as _submit_body,
+)
 
 @pytest.mark.asyncio
 async def test_submit_commits_admin_ledger_before_iii_trigger(client, db_session, monkeypatch):
