@@ -246,3 +246,11 @@ class EvidenceBatchMaterializationReadV1(_V1Model):
     page_snapshot_as_of: str | None = Field(default=None, max_length=64)
     redaction_profile_version: str | None = Field(default=None, max_length=64)
     finalized_at: datetime | None = None
+
+
+class StudioEvidenceBatchMaterializationListV1(_V1Model):
+    """Latest immutable redacted materializations visible from one Studio run."""
+
+    version: Literal["v1"] = "v1"
+    run_id: str = Field(min_length=1, max_length=36)
+    evidence_batches: list[EvidenceBatchMaterializationReadV1] = Field(default_factory=list)

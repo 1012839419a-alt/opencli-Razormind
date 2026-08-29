@@ -22,6 +22,7 @@ def matches_scope(command: IIICollectionCommandV1, scope: CollectionScope) -> bo
         command.workspace_id == scope.workspace_id
         and command.project_id == scope.project_id
         and command.workflow_id == scope.workflow_id
+        and command.studio_workflow_version_id == scope.studio_workflow_version_id
         and command.run_id == scope.run_id
     )
 
@@ -42,7 +43,7 @@ def report_keys(
 def receipt_outcomes(
     receipts: list[IIICollectionIngressReceiptV1], keys: list[OdpRecordKey]
 ) -> dict[OdpRecordKey, str] | None:
-    """Join retained receipts only when each covers every key identically."""
+    """Join complete receipts, treating accepted and duplicate as non-rejected."""
     if not receipts:
         return None
     expected = {(str(key.source_id), key.event_id) for key in keys}
@@ -63,9 +64,10 @@ def receipt_outcomes(
             )
             if outcome not in {"accepted", "duplicate", "rejected"}:
                 return None
-            if key in result and result[key] != outcome:
+            classification = "rejected" if outcome == "rejected" else "non_rejected"
+            if key in result and result[key] != classification:
                 return None
-            result[key] = outcome
+            result[key] = classification
     return result if len(result) == len(expected) else None
 
 
