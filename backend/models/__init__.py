@@ -18,6 +18,8 @@ from backend.models.identity import (
 )
 from backend.models.feed_provider import FeedProvider
 from backend.models.iii_collection import (
+    EvidenceBatchMaterializationEventV1,
+    EvidenceBatchMaterializationManifestV1,
     IIICollectionAttemptV1,
     IIICollectionCommandV1,
     IIICollectionExpectedKeyReportV1,
@@ -121,6 +123,8 @@ __all__ = [
     "IIICollectionAttemptV1",
     "IIICollectionOutboundV1",
     "IIICollectionLifecycleObservationV1",
+    "EvidenceBatchMaterializationManifestV1",
+    "EvidenceBatchMaterializationEventV1",
     "CanvasDocument",
     "CanvasSnapshot",
     "MediaAsset",

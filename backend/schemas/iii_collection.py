@@ -208,3 +208,41 @@ class ODPIngressOutcomeReceiptReadV1(_V1Model):
     attempt_id: str
     receipt_id: str
     duplicate: bool
+
+
+MaterializationStatusV1 = Literal[
+    "awaiting_final_report",
+    "reconciling",
+    "completed",
+    "completed_empty",
+    "partial",
+    "failed_definitive",
+    "indeterminate",
+]
+
+
+class EvidenceBatchRecordReferenceV1(_V1Model):
+    source_id: str = Field(min_length=1, max_length=36)
+    event_id: str = Field(min_length=1, max_length=512)
+    odp_record_id: int = Field(ge=1)
+    committed_at: str = Field(min_length=1, max_length=64)
+
+
+class EvidenceBatchMaterializationReadV1(_V1Model):
+    """Scoped, redacted materialization projection; never includes ODP payloads."""
+
+    version: Literal["v1"] = "v1"
+    batch_id: str = Field(min_length=1, max_length=36)
+    reconciliation_revision: int = Field(ge=1)
+    materialization_status: MaterializationStatusV1
+    legacy_status: Literal["running", "completed", "partial", "failed", "blocked"]
+    item_count: int = Field(ge=0)
+    record_count: int = Field(ge=0)
+    counts: dict[str, int]
+    record_references: list[EvidenceBatchRecordReferenceV1] = Field(default_factory=list, max_length=1000)
+    blocker: str | None = Field(default=None, max_length=256)
+    recovery_action: str
+    query_fingerprint: str | None = Field(default=None, max_length=64)
+    page_snapshot_as_of: str | None = Field(default=None, max_length=64)
+    redaction_profile_version: str | None = Field(default=None, max_length=64)
+    finalized_at: datetime | None = None

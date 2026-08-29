@@ -18,6 +18,7 @@ from backend.schemas.common import ApiResponse
 from backend.schemas.iii_collection import (
     CollectorFinalExpectedKeyReportReadV1,
     CollectorFinalExpectedKeyReportV1,
+    EvidenceBatchMaterializationReadV1,
     IIICollectionLifecycleReadV1,
     IIICollectionLifecycleV1,
     IIICollectionSubmitReadV1,
@@ -27,6 +28,10 @@ from backend.schemas.iii_collection import (
     VerticalStatusV1,
 )
 from backend.workflow.iii_collection_dispatch import dispatch_collection_attempt
+from backend.workflow.evidence_batch_materializer import (
+    get_materialization,
+    materialize_evidence_batch,
+)
 from backend.workflow.iii_collection_store import (
     CollectionScope,
     IIICollectionConflictError,
@@ -227,6 +232,83 @@ async def get_iii_collection_status(
     except IIICollectionNotFoundError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
     return ApiResponse.ok(await collection_status(db, command=command))
+
+
+@router.get(
+    "/workspaces/{workspace_id}/projects/{project_id}/workflows/{workflow_id}/runs/{run_id}/iii-collections/{command_id}/materialization",
+    response_model=ApiResponse[EvidenceBatchMaterializationReadV1],
+)
+async def get_iii_collection_materialization(
+    workspace_id: str,
+    project_id: str,
+    workflow_id: str,
+    run_id: str,
+    command_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> ApiResponse[EvidenceBatchMaterializationReadV1]:
+    scope, _, _ = await _scoped_run(
+        db,
+        workspace_id=workspace_id,
+        project_id=project_id,
+        workflow_id=workflow_id,
+        run_id=run_id,
+    )
+    materialization = await get_materialization(db, scope=scope, command_id=command_id)
+    if materialization is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Evidence batch materialization not found")
+    return ApiResponse.ok(materialization)
+
+
+@router.post(
+    "/workspaces/{workspace_id}/projects/{project_id}/workflows/{workflow_id}/runs/{run_id}/iii-collections/{command_id}/materialize",
+    response_model=ApiResponse[EvidenceBatchMaterializationReadV1],
+)
+async def materialize_iii_collection(
+    workspace_id: str,
+    project_id: str,
+    workflow_id: str,
+    run_id: str,
+    command_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> ApiResponse[EvidenceBatchMaterializationReadV1]:
+    """Reconcile retained facts and append one scoped immutable revision."""
+    scope, _, _ = await _scoped_run(
+        db,
+        workspace_id=workspace_id,
+        project_id=project_id,
+        workflow_id=workflow_id,
+        run_id=run_id,
+    )
+    try:
+        materialization = await materialize_evidence_batch(
+            db, scope=scope, command_id=command_id
+        )
+    except IIICollectionNotFoundError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    return ApiResponse.ok(materialization)
+
+
+@router.post(
+    "/workspaces/{workspace_id}/projects/{project_id}/workflows/{workflow_id}/runs/{run_id}/iii-collections/{command_id}/recover",
+    response_model=ApiResponse[EvidenceBatchMaterializationReadV1],
+)
+async def recover_iii_collection_materialization(
+    workspace_id: str,
+    project_id: str,
+    workflow_id: str,
+    run_id: str,
+    command_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> ApiResponse[EvidenceBatchMaterializationReadV1]:
+    """Safely retry reconciliation; it cannot alter a prior manifest."""
+    return await materialize_iii_collection(
+        workspace_id,
+        project_id,
+        workflow_id,
+        run_id,
+        command_id,
+        db,
+    )
 
 
 @router.post(
