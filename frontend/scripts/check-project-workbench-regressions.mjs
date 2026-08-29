@@ -116,7 +116,16 @@ test('project data workbench is project scoped and links data back to workflow e
   assert.doesNotMatch(page, /PRIORITY_FIELDS/)
   assert.doesNotMatch(page, /payload\.title \?\? payload\.name/)
   assert.match(page, /字段集合按真实记录动态识别/)
-  assert.doesNotMatch(page, />记录<\/TableHead>/)
+  assert.match(page, /type DataLayer/)
+  assert.match(page, /合并富化字段/)
+  assert.match(page, /标准化字段/)
+  assert.match(page, /原始输入字段/)
+  assert.match(page, /AI 富化字段/)
+  assert.match(page, /当前数据层/)
+  assert.match(page, /onMove=\{moveColumn\}/)
+  assert.match(page, /字段 \$\{field\} 下移/)
+  assert.match(page, /recordDataForLayer/)
+  assert.match(page, />记录<\/TableHead>/)
 })
 
 test('project data workbench keeps file controls and empty states view-specific', async () => {

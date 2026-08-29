@@ -12,6 +12,8 @@ import {
   FileStack,
   FileSpreadsheet,
   Filter,
+  ChevronDown,
+  ChevronUp,
   ListChecks,
   Rows3,
   Save,
@@ -51,6 +53,7 @@ const SOURCE_PUBLISHED_FALLBACK_KEYS = ['noticeDate', 'date', 'created_at', 'cre
 type WorkbenchView = 'dataset' | 'profile' | 'quality' | 'files'
 type ExportFormat = 'xlsx' | 'csv' | 'json'
 type ExportScope = 'filtered' | 'selected'
+type DataLayer = 'merged' | 'normalized' | 'raw' | 'enrichment'
 type SortField = 'created_at' | 'updated_at' | 'status' | 'source_id' | 'workflow_id' | 'workflow_run_id'
 type SortOrder = 'asc' | 'desc'
 type SortOption = `${SortField}:${SortOrder}`
@@ -61,6 +64,7 @@ type SavedView = {
   search: string
   status: string
   sortOption: SortOption
+  dataLayer: DataLayer
   selectedColumns: string[] | null
 }
 
@@ -72,14 +76,31 @@ const SORT_OPTIONS: Array<{ value: SortOption; label: string }> = [
   { value: 'status:asc', label: '状态 A-Z' },
   { value: 'source_id:asc', label: '来源 A-Z' },
 ]
+const DATA_LAYER_OPTIONS: Array<{ value: DataLayer; label: string }> = [
+  { value: 'merged', label: '合并富化字段' },
+  { value: 'normalized', label: '标准化字段' },
+  { value: 'raw', label: '原始输入字段' },
+  { value: 'enrichment', label: 'AI 富化字段' },
+]
 
 function splitSortOption(option: SortOption) {
   const [sort_by, sort_order] = option.split(':') as [SortField, SortOrder]
   return { sort_by, sort_order }
 }
 
+function dataLayerLabel(layer: DataLayer) {
+  return DATA_LAYER_OPTIONS.find((option) => option.value === layer)?.label ?? '合并富化字段'
+}
+
+function recordDataForLayer(record: CollectedRecord, layer: DataLayer = 'merged') {
+  if (layer === 'normalized') return record.normalized_data ?? {}
+  if (layer === 'raw') return record.raw_data ?? {}
+  if (layer === 'enrichment') return record.ai_enrichment ?? {}
+  return { ...(record.raw_data ?? {}), ...(record.normalized_data ?? {}), ...(record.ai_enrichment ?? {}) }
+}
+
 function recordPayload(record: CollectedRecord) {
-  return Object.keys(record.normalized_data ?? {}).length ? record.normalized_data : record.raw_data
+  return recordDataForLayer(record)
 }
 
 function recordTitle(record: CollectedRecord) {
@@ -122,9 +143,9 @@ function fieldKind(values: unknown[]) {
   return typeof sample
 }
 
-function collectRecordFields(records: CollectedRecord[], limit?: number) {
+function collectRecordFields(records: CollectedRecord[], limit?: number, layer: DataLayer = 'merged') {
   const firstSeen = new Map<string, number>()
-  records.forEach((record) => Object.keys(recordPayload(record)).forEach((key) => {
+  records.forEach((record) => Object.keys(recordDataForLayer(record, layer)).forEach((key) => {
     if (!key.startsWith('_') && !firstSeen.has(key)) firstSeen.set(key, firstSeen.size)
   }))
   const fields = [...firstSeen.keys()].sort((left, right) => (firstSeen.get(left) ?? 0) - (firstSeen.get(right) ?? 0))
@@ -140,8 +161,8 @@ function downloadBlob(filename: string, content: BlobPart, type: string) {
   URL.revokeObjectURL(url)
 }
 
-function exportRow(record: CollectedRecord, fields: string[]): Record<string, string> {
-  const payload = recordPayload(record)
+function exportRow(record: CollectedRecord, fields: string[], layer: DataLayer): Record<string, string> {
+  const payload = recordDataForLayer(record, layer)
   return {
     ...Object.fromEntries(fields.map((field) => [field, formatCell(payload[field])])),
     record_id: record.id,
@@ -209,10 +230,10 @@ type QualityStats = {
   statusCounts: Array<[string, number]>
 }
 
-function buildQualityStats(records: CollectedRecord[], fields: string[]): QualityStats {
+function buildQualityStats(records: CollectedRecord[], fields: string[], layer: DataLayer): QualityStats {
   const totalCells = records.length * fields.length
   const filledCells = records.reduce((sum, record) => {
-    const payload = recordPayload(record)
+    const payload = recordDataForLayer(record, layer)
     return sum + fields.reduce((fieldSum, field) => fieldSum + (hasMeaningfulValue(payload[field]) ? 1 : 0), 0)
   }, 0)
   const hashCounts = new Map<string, number>()
@@ -223,7 +244,7 @@ function buildQualityStats(records: CollectedRecord[], fields: string[]): Qualit
   const statusCounts = [...records.reduce((counts, record) => counts.set(record.status, (counts.get(record.status) ?? 0) + 1), new Map<string, number>()).entries()]
     .sort((left, right) => right[1] - left[1])
   const urlFields = fields.filter((field) => /url/i.test(field))
-  const urlValues = records.flatMap((record) => urlFields.map((field) => recordPayload(record)[field])).filter(hasMeaningfulValue)
+  const urlValues = records.flatMap((record) => urlFields.map((field) => recordDataForLayer(record, layer)[field])).filter(hasMeaningfulValue)
   return {
     totalRecords: records.length,
     totalFields: fields.length,
@@ -241,7 +262,7 @@ function buildQualityStats(records: CollectedRecord[], fields: string[]): Qualit
 function isSavedView(value: unknown): value is SavedView {
   if (!value || typeof value !== 'object') return false
   const candidate = value as Partial<SavedView>
-  return typeof candidate.id === 'string' && typeof candidate.name === 'string' && ['dataset', 'profile', 'quality', 'files'].includes(candidate.view ?? '') && typeof candidate.search === 'string' && typeof candidate.status === 'string' && SORT_OPTIONS.some((option) => option.value === candidate.sortOption) && (candidate.selectedColumns === null || Array.isArray(candidate.selectedColumns))
+  return typeof candidate.id === 'string' && typeof candidate.name === 'string' && ['dataset', 'profile', 'quality', 'files'].includes(candidate.view ?? '') && typeof candidate.search === 'string' && typeof candidate.status === 'string' && SORT_OPTIONS.some((option) => option.value === candidate.sortOption) && ['merged', 'normalized', 'raw', 'enrichment'].includes(candidate.dataLayer ?? '') && (candidate.selectedColumns === null || Array.isArray(candidate.selectedColumns))
 }
 
 export default function ProjectDataWorkbenchPage({ params }: { params: Promise<{ projectId: string }> }) {
@@ -253,6 +274,7 @@ export default function ProjectDataWorkbenchPage({ params }: { params: Promise<{
   const [search, setSearch] = useState(searchParams.get('search') ?? '')
   const [status, setStatus] = useState('all')
   const [sortOption, setSortOption] = useState<SortOption>('created_at:desc')
+  const [dataLayer, setDataLayer] = useState<DataLayer>('merged')
   const [page, setPage] = useState(1)
   const [selectedField, setSelectedField] = useState<string | null>(null)
   const [selectedRecord, setSelectedRecord] = useState<CollectedRecord | null>(null)
@@ -288,8 +310,8 @@ export default function ProjectDataWorkbenchPage({ params }: { params: Promise<{
   const workflowId = preferredWorkflowId ?? project?.primary_workflow_id ?? workflows[0]?.id ?? null
   const analysisView = view === 'profile' || view === 'quality'
 
-  const visibleFields = useMemo(() => collectRecordFields(records, 24), [records])
-  const analysisFields = useMemo(() => collectRecordFields(analysisRecords), [analysisRecords])
+  const visibleFields = useMemo(() => collectRecordFields(records, 24, dataLayer), [dataLayer, records])
+  const analysisFields = useMemo(() => collectRecordFields(analysisRecords, undefined, dataLayer), [analysisRecords, dataLayer])
   const tableFields = useMemo(() => {
     const fallback = visibleFields.slice(0, 4)
     if (selectedColumns === null) return fallback
@@ -299,22 +321,22 @@ export default function ProjectDataWorkbenchPage({ params }: { params: Promise<{
 
   const activeField = selectedField && analysisFields.includes(selectedField) ? selectedField : analysisFields[0] ?? null
   const fieldProfiles = useMemo(() => analysisFields.map((field) => {
-    const values = analysisRecords.map((record) => recordPayload(record)[field])
+    const values = analysisRecords.map((record) => recordDataForLayer(record, dataLayer)[field])
     const filled = values.filter((value) => value !== null && value !== undefined && value !== '')
     const unique = new Set(filled.map((value) => JSON.stringify(value))).size
     return { field, kind: fieldKind(values), filled: filled.length, unique, ratio: analysisRecords.length ? Math.round((filled.length / analysisRecords.length) * 100) : 0 }
-  }), [analysisFields, analysisRecords])
+  }), [analysisFields, analysisRecords, dataLayer])
   const activeProfile = fieldProfiles.find((profile) => profile.field === activeField) ?? null
   const valueDistribution = useMemo(() => {
     if (!activeField) return []
     const counts = new Map<string, number>()
     analysisRecords.forEach((record) => {
-      const label = formatCell(recordPayload(record)[activeField])
+      const label = formatCell(recordDataForLayer(record, dataLayer)[activeField])
       counts.set(label, (counts.get(label) ?? 0) + 1)
     })
     return [...counts.entries()].sort((left, right) => right[1] - left[1]).slice(0, 8)
-  }, [activeField, analysisRecords])
-  const qualityStats = useMemo(() => buildQualityStats(analysisRecords, analysisFields), [analysisFields, analysisRecords])
+  }, [activeField, analysisRecords, dataLayer])
+  const qualityStats = useMemo(() => buildQualityStats(analysisRecords, analysisFields, dataLayer), [analysisFields, analysisRecords, dataLayer])
   const sourceGroups = useMemo(() => {
     const groups = new Map<string, { count: number; updatedAt: string; statuses: Set<string> }>()
     records.forEach((record) => {
@@ -331,7 +353,7 @@ export default function ProjectDataWorkbenchPage({ params }: { params: Promise<{
     setPage(1)
     setSelectedRecord(null)
     setSelectedRecordIds([])
-  }, [search, sortOption, status])
+  }, [dataLayer, search, sortOption, status])
 
   useEffect(() => {
     try {
@@ -381,6 +403,19 @@ export default function ProjectDataWorkbenchPage({ params }: { params: Promise<{
     })
   }, [visibleFields])
 
+  const moveColumn = useCallback((field: string, direction: -1 | 1) => {
+    setSelectedColumns((current) => {
+      const active = [...(current ?? visibleFields.slice(0, 4))]
+      const index = active.indexOf(field)
+      const targetIndex = index + direction
+      if (index < 0 || targetIndex < 0 || targetIndex >= active.length) return active
+      const currentField = active[index]
+      active[index] = active[targetIndex]
+      active[targetIndex] = currentField
+      return active
+    })
+  }, [visibleFields])
+
   const allPageSelected = records.length > 0 && records.every((record) => selectedRecordIds.includes(record.id))
   const toggleCurrentPageSelection = useCallback(() => {
     const pageIds = records.map((record) => record.id)
@@ -413,19 +448,21 @@ export default function ProjectDataWorkbenchPage({ params }: { params: Promise<{
       search,
       status,
       sortOption,
+      dataLayer,
       selectedColumns,
     }
     persistSavedViews([savedView, ...savedViews.filter((candidate) => candidate.name !== name)])
     setNewViewName('')
     setSaveViewOpen(false)
     toast.success(`已保存视图：${name}`)
-  }, [newViewName, persistSavedViews, savedViews, search, selectedColumns, sortOption, status, view])
+  }, [dataLayer, newViewName, persistSavedViews, savedViews, search, selectedColumns, sortOption, status, view])
 
   const applySavedView = useCallback((savedView: SavedView) => {
     setView(savedView.view)
     setSearch(savedView.search)
     setStatus(savedView.status)
     setSortOption(savedView.sortOption)
+    setDataLayer(savedView.dataLayer)
     setSelectedColumns(savedView.selectedColumns)
     setPage(1)
     setSelectedRecordIds([])
@@ -448,8 +485,8 @@ export default function ProjectDataWorkbenchPage({ params }: { params: Promise<{
         toast.info('当前筛选条件没有可导出的数据')
         return
       }
-      const fields = collectRecordFields(exportRecords)
-      const rows = exportRecords.map((record) => exportRow(record, fields))
+      const fields = collectRecordFields(exportRecords, undefined, dataLayer)
+      const rows = exportRecords.map((record) => exportRow(record, fields, dataLayer))
       const base = exportFileBase(project?.name)
       if (format === 'json') {
         downloadBlob(`${base}.json`, JSON.stringify(exportRecords, null, 2), 'application/json;charset=utf-8')
@@ -475,7 +512,7 @@ export default function ProjectDataWorkbenchPage({ params }: { params: Promise<{
     } finally {
       setExporting(null)
     }
-  }, [project, projectId, search, selectedRecordIds, sort_by, sort_order, status])
+  }, [dataLayer, project, projectId, search, selectedRecordIds, sort_by, sort_order, status])
 
   return (
     <PageContainer
@@ -533,7 +570,7 @@ export default function ProjectDataWorkbenchPage({ params }: { params: Promise<{
             </div>
           </div>
           {view !== 'files' ? (
-            <div className="grid gap-3 p-3 lg:grid-cols-[minmax(0,1fr)_13rem_13rem_auto] lg:items-center">
+            <div className="grid gap-3 p-3 lg:grid-cols-[minmax(0,1fr)_13rem_13rem_13rem_auto] lg:items-center">
               <div className="relative">
                 <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
                 <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索标题、正文、URL 或字段值…" className="pl-9" />
@@ -553,9 +590,13 @@ export default function ProjectDataWorkbenchPage({ params }: { params: Promise<{
                 <SelectTrigger><ArrowDownUp className="size-4" /><SelectValue>{SORT_OPTIONS.find((option) => option.value === sortOption)?.label ?? '最新采集'}</SelectValue></SelectTrigger>
                 <SelectContent>{SORT_OPTIONS.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectContent>
               </Select>
+              <Select value={dataLayer} onValueChange={(value) => { if (value) { setDataLayer(value as DataLayer); setSelectedColumns(null) } }}>
+                <SelectTrigger><Braces className="size-4" /><SelectValue>{dataLayerLabel(dataLayer)}</SelectValue></SelectTrigger>
+                <SelectContent>{DATA_LAYER_OPTIONS.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectContent>
+              </Select>
               <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                <span className="flex items-center gap-2"><SlidersHorizontal className="size-3.5" />{view === 'dataset' ? '数据集按页加载' : '分析按当前筛选全量加载'}</span>
-                {view === 'dataset' ? <ColumnPicker fields={visibleFields} selectedFields={tableFields} onToggle={toggleColumn} onReset={() => setSelectedColumns(null)} /> : null}
+                <span className="flex items-center gap-2"><SlidersHorizontal className="size-3.5" />{view === 'dataset' ? `数据集按页加载 · ${dataLayerLabel(dataLayer)}` : `分析按当前筛选全量加载 · ${dataLayerLabel(dataLayer)}`}</span>
+                {view === 'dataset' ? <ColumnPicker fields={visibleFields} selectedFields={tableFields} onToggle={toggleColumn} onMove={moveColumn} onReset={() => setSelectedColumns(null)} /> : null}
               </div>
             </div>
           ) : null}
@@ -571,13 +612,13 @@ export default function ProjectDataWorkbenchPage({ params }: { params: Promise<{
         ) : view === 'profile' ? (
           <FieldProfileView profiles={fieldProfiles} activeField={activeField} activeProfile={activeProfile} distribution={valueDistribution} total={analysisRecords.length} onSelect={setSelectedField} />
         ) : view === 'quality' ? (
-          <QualityView stats={qualityStats} />
+          <QualityView stats={qualityStats} dataLayer={dataLayer} />
         ) : view === 'files' ? (
           <ProjectInputsView groups={sourceGroups} />
         ) : records.length === 0 ? (
           <EmptyState title="项目还没有可显示的数据" description="运行并完成业务工作流后，记录会按 workflow_id 自动归入当前项目。" />
         ) : (
-          <DatasetView records={records} visibleFields={tableFields} selectedRecordIds={selectedRecordIds} allPageSelected={allPageSelected} onToggleSelection={toggleRecordSelection} onTogglePageSelection={toggleCurrentPageSelection} onSelect={setSelectedRecord} />
+          <DatasetView records={records} visibleFields={tableFields} dataLayer={dataLayer} selectedRecordIds={selectedRecordIds} allPageSelected={allPageSelected} onToggleSelection={toggleRecordSelection} onTogglePageSelection={toggleCurrentPageSelection} onSelect={setSelectedRecord} />
         )}
 
         {view === 'dataset' ? (
@@ -618,22 +659,23 @@ function ViewButton({ active, children, icon: Icon, onClick }: { active: boolean
   return <button type="button" aria-pressed={active} onClick={onClick} className={cn('flex min-h-9 items-center gap-2 rounded-md px-3 text-xs transition-colors', active ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground')}><Icon className="size-3.5" />{children}</button>
 }
 
-function ColumnPicker({ fields, selectedFields, onToggle, onReset }: { fields: string[]; selectedFields: string[]; onToggle: (field: string) => void; onReset: () => void }) {
+function ColumnPicker({ fields, selectedFields, onToggle, onMove, onReset }: { fields: string[]; selectedFields: string[]; onToggle: (field: string) => void; onMove: (field: string, direction: -1 | 1) => void; onReset: () => void }) {
   return <DropdownMenu>
     <DropdownMenuTrigger render={<Button variant="ghost" size="sm" className="min-h-8 gap-1.5 px-2 text-xs" disabled={fields.length === 0} />}>
       <SlidersHorizontal className="size-3.5" />列管理
     </DropdownMenuTrigger>
     <DropdownMenuContent align="end" className="w-64">
-      <DropdownMenuLabel>显示字段（至少保留 1 列）</DropdownMenuLabel>
+      <DropdownMenuLabel>显示字段（来自当前数据层）</DropdownMenuLabel>
       {fields.map((field) => <DropdownMenuCheckboxItem key={field} checked={selectedFields.includes(field)} onCheckedChange={() => onToggle(field)}>{field}</DropdownMenuCheckboxItem>)}
+      {selectedFields.length ? <><DropdownMenuSeparator /><DropdownMenuLabel>当前顺序</DropdownMenuLabel>{selectedFields.map((field, index) => <div key={`order-${field}`} className="flex items-center justify-between gap-2 px-2 py-1 text-xs"><span className="min-w-0 truncate font-mono" title={field}>{index + 1}. {field}</span><span className="flex shrink-0 gap-1"><button type="button" aria-label={`字段 ${field} 上移`} disabled={index === 0} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.preventDefault(); event.stopPropagation(); onMove(field, -1) }} className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-30"><ChevronUp className="size-3.5" /></button><button type="button" aria-label={`字段 ${field} 下移`} disabled={index === selectedFields.length - 1} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.preventDefault(); event.stopPropagation(); onMove(field, 1) }} className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-30"><ChevronDown className="size-3.5" /></button></span></div>)}</> : null}
       <DropdownMenuSeparator />
       <DropdownMenuItem onClick={onReset}>恢复默认列</DropdownMenuItem>
     </DropdownMenuContent>
   </DropdownMenu>
 }
 
-function DatasetView({ records, visibleFields, selectedRecordIds, allPageSelected, onToggleSelection, onTogglePageSelection, onSelect }: { records: CollectedRecord[]; visibleFields: string[]; selectedRecordIds: string[]; allPageSelected: boolean; onToggleSelection: (recordId: string, checked: boolean) => void; onTogglePageSelection: () => void; onSelect: (record: CollectedRecord) => void }) {
-  return <div className="overflow-x-auto"><Table><TableHeader><TableRow><TableHead className="w-12"><input type="checkbox" aria-label="选择当前页全部记录" checked={allPageSelected} onChange={onTogglePageSelection} /></TableHead>{visibleFields.map((field) => <TableHead key={field} className="min-w-40">{field}</TableHead>)}<TableHead>状态</TableHead><TableHead>源发布时间</TableHead></TableRow></TableHeader><TableBody>{records.map((record) => { const payload = recordPayload(record); const sourcePublishedAt = recordSourcePublishedAt(record); const checked = selectedRecordIds.includes(record.id); return <TableRow key={record.id} className={cn('cursor-pointer', checked && 'bg-muted/30')} onClick={() => onSelect(record)}><TableCell onClick={(event) => event.stopPropagation()}><input type="checkbox" aria-label={`选择记录 ${recordTitle(record)}`} checked={checked} onChange={(event) => onToggleSelection(record.id, event.target.checked)} /></TableCell>{visibleFields.map((field) => <TableCell key={field}><span className="block max-w-64 truncate text-xs text-muted-foreground">{formatCell(payload[field])}</span></TableCell>)}<TableCell><Badge variant={record.status === 'error' ? 'destructive' : 'outline'}>{record.status}</Badge></TableCell><TableCell className="whitespace-nowrap text-xs text-muted-foreground" title={formatSourceDateTime(sourcePublishedAt)}><span className="block text-foreground/80">{formatFreshness(sourcePublishedAt)}</span><span className="mt-0.5 block text-[10px]">{formatSourceDateTime(sourcePublishedAt)}</span></TableCell></TableRow> })}</TableBody></Table></div>
+function DatasetView({ records, visibleFields, dataLayer, selectedRecordIds, allPageSelected, onToggleSelection, onTogglePageSelection, onSelect }: { records: CollectedRecord[]; visibleFields: string[]; dataLayer: DataLayer; selectedRecordIds: string[]; allPageSelected: boolean; onToggleSelection: (recordId: string, checked: boolean) => void; onTogglePageSelection: () => void; onSelect: (record: CollectedRecord) => void }) {
+  return <div className="overflow-x-auto"><Table><TableHeader><TableRow><TableHead className="w-12"><input type="checkbox" aria-label="选择当前页全部记录" checked={allPageSelected} onChange={onTogglePageSelection} /></TableHead><TableHead className="min-w-64">记录</TableHead>{visibleFields.map((field) => <TableHead key={field} className="min-w-40">{field}</TableHead>)}<TableHead>状态</TableHead><TableHead>源发布时间</TableHead></TableRow></TableHeader><TableBody>{records.map((record) => { const payload = recordDataForLayer(record, dataLayer); const sourcePublishedAt = recordSourcePublishedAt(record); const checked = selectedRecordIds.includes(record.id); return <TableRow key={record.id} className={cn('cursor-pointer', checked && 'bg-muted/30')} onClick={() => onSelect(record)}><TableCell onClick={(event) => event.stopPropagation()}><input type="checkbox" aria-label={`选择记录 ${recordTitle(record)}`} checked={checked} onChange={(event) => onToggleSelection(record.id, event.target.checked)} /></TableCell><TableCell><div className="max-w-80"><div className="truncate font-medium">{recordTitle(record)}</div><div className="mt-1 truncate font-mono text-[10px] text-muted-foreground">{record.id}</div></div></TableCell>{visibleFields.map((field) => <TableCell key={field}><span className="block max-w-64 truncate text-xs text-muted-foreground">{formatCell(payload[field])}</span></TableCell>)}<TableCell><Badge variant={record.status === 'error' ? 'destructive' : 'outline'}>{record.status}</Badge></TableCell><TableCell className="whitespace-nowrap text-xs text-muted-foreground" title={formatSourceDateTime(sourcePublishedAt)}><span className="block text-foreground/80">{formatFreshness(sourcePublishedAt)}</span><span className="mt-0.5 block text-[10px]">{formatSourceDateTime(sourcePublishedAt)}</span></TableCell></TableRow> })}</TableBody></Table></div>
 }
 
 function FieldProfileView({ profiles, activeField, activeProfile, distribution, total, onSelect }: { profiles: Array<{ field: string; kind: string; filled: number; unique: number; ratio: number }>; activeField: string | null; activeProfile: { field: string; kind: string; filled: number; unique: number; ratio: number } | null; distribution: Array<[string, number]>; total: number; onSelect: (field: string) => void }) {
@@ -641,8 +683,8 @@ function FieldProfileView({ profiles, activeField, activeProfile, distribution, 
   return <div className="grid min-h-[32rem] lg:grid-cols-[16rem_minmax(0,1fr)]"><aside className="border-b p-3 lg:border-b-0 lg:border-r"><p className="px-2 pb-2 text-[10px] font-medium uppercase tracking-widest text-muted-foreground">字段 · {profiles.length}</p><div className="max-h-[30rem] space-y-1 overflow-y-auto">{profiles.map((profile) => <button type="button" key={profile.field} onClick={() => onSelect(profile.field)} className={cn('flex w-full items-center justify-between gap-2 rounded-md px-2.5 py-2 text-left text-xs', activeField === profile.field ? 'bg-muted text-foreground' : 'text-muted-foreground hover:bg-muted/50 hover:text-foreground')}><span className="truncate font-mono">{profile.field}</span><span>{profile.ratio}%</span></button>)}</div></aside><div className="p-5">{activeProfile ? <><div className="flex flex-wrap items-start justify-between gap-3"><div><div className="flex items-center gap-2"><Braces className="size-4 text-muted-foreground" /><h2 className="font-mono text-base font-semibold">{activeProfile.field}</h2></div><p className="mt-1 text-xs text-muted-foreground">按当前筛选全量即时计算，不写回源数据。</p></div><Badge variant="outline">{activeProfile.kind}</Badge></div><div className="mt-5 grid gap-3 sm:grid-cols-3"><Fact label="字段填充" value={`${activeProfile.filled} / ${total}`} /><Fact label="完整率" value={`${activeProfile.ratio}%`} /><Fact label="唯一值" value={String(activeProfile.unique)} /></div><section className="mt-6"><div className="flex items-center justify-between"><p className="text-xs font-medium">值分布</p><span className="text-[10px] text-muted-foreground">Top {distribution.length}</span></div><div className="mt-3 space-y-3">{distribution.map(([label, count]) => <div key={label} className="grid grid-cols-[minmax(8rem,15rem)_minmax(0,1fr)_3rem] items-center gap-3 text-xs"><span className="truncate font-mono text-muted-foreground" title={label}>{label}</span><span className="h-2 overflow-hidden rounded-full bg-muted"><span className="block h-full rounded-full bg-primary" style={{ width: `${Math.max(4, (count / max) * 100)}%` }} /></span><span className="text-right font-mono">{count}</span></div>)}</div></section></> : <p className="text-sm text-muted-foreground">当前数据没有可分析字段。</p>}</div></div>
 }
 
-function QualityView({ stats }: { stats: QualityStats }) {
-  return <div className="p-5"><div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="flex items-center gap-2 font-semibold"><ShieldCheck className="size-4 text-muted-foreground" />数据质量统计</h2><p className="mt-1 text-xs text-muted-foreground">全量筛选结果 · {stats.totalRecords.toLocaleString('zh-CN')} 条记录 · {stats.totalFields} 个字段</p></div><Badge variant="outline">不写回源数据</Badge></div><div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3"><QualityStat label="字段完整率" value={`${stats.completeness}%`} hint="非空字段单元格 / 总字段单元格" /><QualityStat label="重复额外行" value={String(stats.duplicateExtraRows)} hint="按 content_hash 统计" /><QualityStat label="处理失败" value={String(stats.failedRecords)} hint="status = error" /><QualityStat label="缺少可读主值" value={String(stats.missingReadableValues)} hint="没有任何非空文本字段" /><QualityStat label="源时间缺失" value={String(stats.missingSourceTimes)} hint="未识别到源发布时间" /><QualityStat label="URL 有效率" value={stats.urlTotal ? `${Math.round((stats.validUrls / stats.urlTotal) * 100)}%` : '—'} hint={stats.urlTotal ? `${stats.validUrls} / ${stats.urlTotal} 个 URL` : '没有可检查的 URL'} /></div><div className="mt-6 grid gap-5 lg:grid-cols-2"><section className="rounded-lg border p-4"><h3 className="text-sm font-medium">处理状态分布</h3><div className="mt-4 space-y-3">{stats.statusCounts.length ? stats.statusCounts.map(([status, count]) => <div key={status} className="grid grid-cols-[minmax(6rem,10rem)_minmax(0,1fr)_3rem] items-center gap-3 text-xs"><span className="truncate font-mono text-muted-foreground">{status}</span><span className="h-2 overflow-hidden rounded-full bg-muted"><span className="block h-full rounded-full bg-primary" style={{ width: `${Math.max(4, (count / Math.max(1, stats.totalRecords)) * 100)}%` }} /></span><span className="text-right font-mono">{count}</span></div>) : <p className="text-xs text-muted-foreground">当前筛选没有记录。</p>}</div></section><section className="rounded-lg border p-4"><h3 className="text-sm font-medium">统计口径</h3><ul className="mt-3 space-y-2 text-xs leading-5 text-muted-foreground"><li>字段集合按真实记录动态识别，不要求 title、url、content 或 author 等固定字段存在。</li><li>完整率只统计非空值与总字段单元格的比例。</li><li>重复额外行按 content_hash 统计，不计入空 hash。</li><li>URL 有效率只在识别到 URL 类字段时检查 http / https 格式。</li><li>字段分析和质量统计按当前筛选全量加载，数据集表仍按页展示。</li></ul></section></div></div>
+function QualityView({ stats, dataLayer }: { stats: QualityStats; dataLayer: DataLayer }) {
+  return <div className="p-5"><div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="flex items-center gap-2 font-semibold"><ShieldCheck className="size-4 text-muted-foreground" />数据质量统计</h2><p className="mt-1 text-xs text-muted-foreground">全量筛选结果 · {stats.totalRecords.toLocaleString('zh-CN')} 条记录 · {stats.totalFields} 个字段</p></div><div className="flex gap-2"><Badge variant="outline">{dataLayerLabel(dataLayer)}</Badge><Badge variant="outline">不写回源数据</Badge></div></div><div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3"><QualityStat label="字段完整率" value={`${stats.completeness}%`} hint="非空字段单元格 / 总字段单元格" /><QualityStat label="重复额外行" value={String(stats.duplicateExtraRows)} hint="按 content_hash 统计" /><QualityStat label="处理失败" value={String(stats.failedRecords)} hint="status = error" /><QualityStat label="缺少可读主值" value={String(stats.missingReadableValues)} hint="没有任何非空文本字段" /><QualityStat label="源时间缺失" value={String(stats.missingSourceTimes)} hint="未识别到源发布时间" /><QualityStat label="URL 有效率" value={stats.urlTotal ? `${Math.round((stats.validUrls / stats.urlTotal) * 100)}%` : '—'} hint={stats.urlTotal ? `${stats.validUrls} / ${stats.urlTotal} 个 URL` : '没有可检查的 URL'} /></div><div className="mt-6 grid gap-5 lg:grid-cols-2"><section className="rounded-lg border p-4"><h3 className="text-sm font-medium">处理状态分布</h3><div className="mt-4 space-y-3">{stats.statusCounts.length ? stats.statusCounts.map(([status, count]) => <div key={status} className="grid grid-cols-[minmax(6rem,10rem)_minmax(0,1fr)_3rem] items-center gap-3 text-xs"><span className="truncate font-mono text-muted-foreground">{status}</span><span className="h-2 overflow-hidden rounded-full bg-muted"><span className="block h-full rounded-full bg-primary" style={{ width: `${Math.max(4, (count / Math.max(1, stats.totalRecords)) * 100)}%` }} /></span><span className="text-right font-mono">{count}</span></div>) : <p className="text-xs text-muted-foreground">当前筛选没有记录。</p>}</div></section><section className="rounded-lg border p-4"><h3 className="text-sm font-medium">统计口径</h3><ul className="mt-3 space-y-2 text-xs leading-5 text-muted-foreground"><li>字段集合按真实记录动态识别，不要求 title、url、content 或 author 等固定字段存在。</li><li>完整率只统计非空值与总字段单元格的比例。</li><li>重复额外行按 content_hash 统计，不计入空 hash。</li><li>URL 有效率只在识别到 URL 类字段时检查 http / https 格式。</li><li>字段分析和质量统计按当前筛选全量加载，数据集表仍按页展示。</li></ul></section></div></div>
 }
 
 function QualityStat({ label, value, hint }: { label: string; value: string; hint: string }) {
