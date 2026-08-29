@@ -38,6 +38,7 @@ from backend.workflow.evidence_batch_materialization_facts import (
     report_keys,
 )
 from backend.workflow.iii_collection_store import CollectionScope, IIICollectionNotFoundError
+from backend.workflow.workflow_run_lock import lock_scoped_workflow_run
 
 _MAX_QUERY_KEYS = 100
 _MAX_RECORD_REFERENCES = 1000
@@ -235,6 +236,16 @@ async def materialize_evidence_batch(
     _race_retries_remaining: int = 1,
 ) -> EvidenceBatchMaterializationReadV1:
     """Append a revision, or replay immutable terminal facts without querying ODP."""
+    # Match V2 mutation and delivery authorization lock order before reading
+    # mutable materialization inputs or appending a manifest revision.
+    run = await lock_scoped_workflow_run(
+        db,
+        workflow_id=scope.workflow_id,
+        studio_workflow_version_id=scope.studio_workflow_version_id,
+        run_id=scope.run_id,
+    )
+    if run is None:
+        raise IIICollectionNotFoundError("Scoped workflow run not found")
     command = await db.get(IIICollectionCommandV1, command_id)
     if command is None or not matches_scope(command, scope):
         raise IIICollectionNotFoundError("Collection command not found")
