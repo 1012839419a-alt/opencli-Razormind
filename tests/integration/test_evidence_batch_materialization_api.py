@@ -14,6 +14,7 @@ from backend.models.iii_collection import (
     IIICollectionAttemptV1,
     IIICollectionCommandV1,
     IIICollectionExpectedKeyReportV1,
+    EvidenceBatchMaterializationManifestV1,
     IIICollectionIngressReceiptV1,
 )
 from backend.odp.query_client import OdpQueryUnavailable, OdpRecordKey
@@ -85,6 +86,57 @@ def _completed_query(command, calls: list[str] | None = None):
         }
 
     return query
+
+
+def _stored_manifest(command, attempt, *, batch_id: str, revision: int, marker: int):
+    return EvidenceBatchMaterializationManifestV1(
+        version="v1",
+        batch_id=batch_id,
+        derivation="test",
+        reconciliation_revision=revision,
+        workspace_id=command.workspace_id,
+        project_id=command.project_id,
+        workflow_id=command.workflow_id,
+        studio_workflow_version_id=command.studio_workflow_version_id,
+        run_id=command.run_id,
+        node_id=command.node_id,
+        command_id=command.id,
+        attempt_id=attempt.id,
+        task_id=attempt.task_id,
+        trace_id=attempt.trace_id,
+        source_binding_id=command.source_binding_id,
+        source_binding_revision_id=command.source_binding_revision_id,
+        report_id=None,
+        report_hash=None,
+        expected_key_set_hash=None,
+        receipt_hashes=[],
+        query_fingerprint=None,
+        page_snapshot_as_of=None,
+        redaction_profile_version=None,
+        item_count=1,
+        counts={
+            "expected": 1,
+            "record_present": 1,
+            "inserted": 0,
+            "duplicate_existing": 0,
+            "rejected": 0,
+            "dlq": 0,
+            "unknown": 0,
+        },
+        materialization_status="completed",
+        record_references=[
+            {
+                "source_id": command.odp_source_id,
+                "event_id": f"event-{marker}",
+                "odp_record_id": marker,
+                "committed_at": "2026-08-30T00:00:00Z",
+            }
+        ],
+        retention_state="unknown",
+        finalization_reason="exact_presence_reconciled",
+        finalized_at=datetime(2026, 8, 30, tzinfo=UTC),
+        manifest_hash=f"{marker:064x}",
+    )
 
 
 def test_rejected_and_non_rejected_receipts_remain_indeterminate():
@@ -346,6 +398,8 @@ async def test_studio_evidence_routes_project_latest_redacted_scoped_status(
     list_data = listed.json()["data"]
     assert list_data["runId"] == scope["run"].id
     assert list_data["evidenceBatches"][0]["materializationStatus"] == "completed"
+    assert "recordReferences" not in list_data["evidenceBatches"][0]
+    assert list_data["nextCursor"] is None
     assert detail.json()["data"]["recordReferences"] == materialized.json()["data"]["recordReferences"]
     assert status_response.json()["data"]["legacyStatus"] == "completed"
     for forbidden in ("payloadSha256", "signature", "expectedKeySet", "rejectionReason"):
@@ -427,3 +481,88 @@ async def test_integrity_race_returns_matching_persisted_winner(
     assert latest_calls == 3
     assert result.reconciliation_revision == 1
     assert result.materialization_status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_studio_materialization_list_pages_sql_latest_summaries(client, db_session, monkeypatch):
+    scope, command = await submit_report_and_receipt(client, db_session, monkeypatch)
+    first_attempt = (
+        await db_session.execute(
+            select(IIICollectionAttemptV1).where(IIICollectionAttemptV1.command_id == command.id)
+        )
+    ).scalar_one()
+    second_attempt = IIICollectionAttemptV1(
+        command_id=command.id,
+        attempt_number=2,
+        task_id="00000000-0000-4000-8000-000000000002",
+        trace_id="test-trace-2",
+    )
+    third_attempt = IIICollectionAttemptV1(
+        command_id=command.id,
+        attempt_number=3,
+        task_id="00000000-0000-4000-8000-000000000003",
+        trace_id="test-trace-3",
+    )
+    db_session.add_all([second_attempt, third_attempt])
+    await db_session.flush()
+    batch_one = "00000000-0000-0000-0000-000000000001"
+    batch_two = "00000000-0000-0000-0000-000000000002"
+    batch_three = "00000000-0000-0000-0000-000000000003"
+    db_session.add_all(
+        [
+            _stored_manifest(command, first_attempt, batch_id=batch_one, revision=1, marker=10),
+            _stored_manifest(command, first_attempt, batch_id=batch_one, revision=2, marker=11),
+            _stored_manifest(command, second_attempt, batch_id=batch_two, revision=1, marker=12),
+            _stored_manifest(command, third_attempt, batch_id=batch_three, revision=1, marker=13),
+        ]
+    )
+    await db_session.commit()
+    studio_run = route(scope).removesuffix("/iii-collections")
+
+    first = await client.get(f"{studio_run}/evidence-batches/v1?limit=1")
+    first_data = first.json()["data"]
+    second = await client.get(
+        f"{studio_run}/evidence-batches/v1?limit=1&cursor={first_data['nextCursor']}"
+    )
+    second_data = second.json()["data"]
+    third = await client.get(
+        f"{studio_run}/evidence-batches/v1?limit=1&cursor={second_data['nextCursor']}"
+    )
+    detail = await client.get(f"{studio_run}/evidence-batches/v1/{batch_one}")
+    invalid_limit = await client.get(f"{studio_run}/evidence-batches/v1?limit=201")
+
+    assert first.status_code == second.status_code == third.status_code == detail.status_code == 200
+    assert invalid_limit.status_code == 422
+    assert first_data["evidenceBatches"] == [
+        {
+            "version": "v1",
+            "batchId": batch_one,
+            "reconciliationRevision": 2,
+            "materializationStatus": "completed",
+            "legacyStatus": "completed",
+            "itemCount": 1,
+            "recordCount": 1,
+            "counts": {
+                "expected": 1,
+                "record_present": 1,
+                "inserted": 0,
+                "duplicate_existing": 0,
+                "rejected": 0,
+                "dlq": 0,
+                "unknown": 0,
+            },
+            "blocker": None,
+            "recoveryAction": "none",
+            "queryFingerprint": None,
+            "pageSnapshotAsOf": None,
+            "redactionProfileVersion": None,
+            "finalizedAt": "2026-08-30T00:00:00",
+        }
+    ]
+    assert first_data["nextCursor"] == batch_one
+    assert second_data["evidenceBatches"][0]["batchId"] == batch_two
+    assert second_data["nextCursor"] == batch_two
+    assert third.json()["data"]["evidenceBatches"][0]["batchId"] == batch_three
+    assert third.json()["data"]["nextCursor"] is None
+    assert "recordReferences" not in first_data["evidenceBatches"][0]
+    assert detail.json()["data"]["recordReferences"][0]["eventId"] == "event-11"
