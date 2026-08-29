@@ -108,7 +108,9 @@ class InfiniteChannel(AbstractChannel):
 async def test_runner_drives_pagination_and_saves_cursor_each_page():
     chan = PagedChannel(total_pages=3)
     store = InMemoryCursorStore()
-    items = (await run_channel(_source(), {}, channel=chan, cursor_store=store, http=object())).items
+    items = (
+        await run_channel(_source(), {}, channel=chan, cursor_store=store, http=object())
+    ).items
 
     assert len(items) == 6  # 3 pages x 2 items
     assert [i["id"] for i in items] == ["0-0", "0-1", "1-0", "1-1", "2-0", "2-1"]
@@ -123,7 +125,9 @@ async def test_runner_resumes_from_stored_cursor():
     chan = PagedChannel(total_pages=3)
     store = InMemoryCursorStore()
     await store.save("s1", {"page": 2})  # pretend a prior run got to page 2
-    items = (await run_channel(_source(), {}, channel=chan, cursor_store=store, http=object())).items
+    items = (
+        await run_channel(_source(), {}, channel=chan, cursor_store=store, http=object())
+    ).items
 
     assert chan.cursors_seen[0] == {"page": 2}  # started where it left off
     assert [i["id"] for i in items] == ["2-0", "2-1"]  # only the remaining page

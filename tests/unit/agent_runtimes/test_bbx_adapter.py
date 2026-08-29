@@ -19,7 +19,9 @@ def test_active_tab_ignores_browser_owned_pages():
 
 
 def test_logged_in_doubao_page_is_not_misclassified_as_login_required():
-    assert _looks_like_doubao_login_page("豆包 - 字节跳动旗下 AI 智能助手\n有什么我能帮你的吗？") is False
+    assert _looks_like_doubao_login_page(
+        "豆包 - 字节跳动旗下 AI 智能助手\n有什么我能帮你的吗？"
+    ) is False
     assert _looks_like_doubao_login_page("手机号登录\n扫码登录") is True
 
 
@@ -102,6 +104,8 @@ async def test_doubao_workflow_uses_bbx_browser_and_returns_structured_evidence(
         calls.append(args)
         if args == ["call", "tabs.create", '{"url":"https://www.doubao.com/chat"}']:
             return {"ok": True, "tabId": 7}
+        if args == ["call", "tabs.close", '{"tabId":7}']:
+            return {"closed": True, "tabId": 7}
         if args[0:3] == ["call", "--tab", "7"]:
             method = args[3]
             if method == "dom.query":
@@ -153,6 +157,7 @@ async def test_doubao_workflow_uses_bbx_browser_and_returns_structured_evidence(
         "call",
         "call",
         "call",
+        "call",
     ]
     assert events[-1]["type"] == "done"
     response = __import__("json").loads(events[-1]["result"]["text"])
@@ -169,6 +174,8 @@ async def test_doubao_workflow_requeries_stale_input_reference(monkeypatch):
         nonlocal fill_calls
         if args == ["call", "tabs.create", '{"url":"https://www.doubao.com/chat"}']:
             return {"ok": True, "tabId": 8}
+        if args == ["call", "tabs.close", '{"tabId":8}']:
+            return {"closed": True, "tabId": 8}
         if args[0:3] == ["call", "--tab", "8"]:
             method = args[3]
             if method == "dom.query":

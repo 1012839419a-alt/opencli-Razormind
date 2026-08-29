@@ -235,6 +235,7 @@ class BbxRuntimeAdapter(RuntimeAdapter):
             )
             visible_text = _page_text(page_text)
             login_required = _looks_like_doubao_login_page(visible_text)
+            await self._close_created_doubao_tab(task, tab_id, created_new)
             for event in _drain_bbx_events(task):
                 yield event
             yield event_done(
@@ -251,7 +252,10 @@ class BbxRuntimeAdapter(RuntimeAdapter):
                             "message": (
                                 "Doubao login session is unavailable; please log in through noVNC."
                                 if login_required
-                                else "Doubao page loaded, but its input editor did not become available."
+                                else (
+                                    "Doubao page loaded, but its input editor did not become "
+                                    "available."
+                                )
                             ),
                             "answer": "",
                             "data": [],
@@ -444,6 +448,7 @@ class BbxRuntimeAdapter(RuntimeAdapter):
                 "suggested_keywords": suggested_keywords,
                 "page_text": page_text,
             }
+            await self._close_created_doubao_tab(task, tab_id, created_new)
             for event in _drain_bbx_events(task):
                 yield event
             yield event_done(
@@ -464,6 +469,7 @@ class BbxRuntimeAdapter(RuntimeAdapter):
             "session_share_data": share_data or [],
             "suggested_keywords": suggested_keywords,
         }
+        await self._close_created_doubao_tab(task, tab_id, created_new)
         for event in _drain_bbx_events(task):
             yield event
         yield event_done(
@@ -493,6 +499,24 @@ class BbxRuntimeAdapter(RuntimeAdapter):
             },
         )
         return _editable_ref(dom)
+
+    async def _close_created_doubao_tab(
+        self, task: AgentTask, tab_id: int | str, created_new: bool
+    ) -> None:
+        """Close only tabs opened for this item; preserve the user's session tab."""
+        if not created_new:
+            return
+        try:
+            await self._doubao_call(
+                task,
+                "call",
+                None,
+                {"method": "tabs.close", "params": {"tabId": tab_id}},
+            )
+        except RuntimeInvocationError:
+            # Cleanup must never turn an otherwise valid Doubao answer into a
+            # failed collection item. The next run can still recover the tab.
+            return
 
     async def _wait_for_doubao_input_ref(
         self, task: AgentTask, tab_id: int | str
