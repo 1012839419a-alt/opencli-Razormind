@@ -103,22 +103,28 @@ async fn process_events(
     let mut dedup = state.dedup.write().await;
 
     for (index, event) in events.into_iter().enumerate() {
-        let source_id = event.source_id.to_string();
-        let event_id = event.event_id.clone();
         if let Err(e) = event.validate() {
             let reason = bounded_reason(e.to_string());
             rejected += 1;
-            errors.push(IngestReject {
-                index,
-                event_id: Some(event_id.clone()),
-                reason: reason.clone(),
-            });
             if let Some(outcomes) = outcomes.as_mut() {
+                let source_id = event.source_id.to_string();
+                let event_id = event.event_id;
+                errors.push(IngestReject {
+                    index,
+                    event_id: Some(event_id.clone()),
+                    reason: reason.clone(),
+                });
                 outcomes.push(IngressOutcomeV1 {
                     source_id,
                     event_id,
                     outcome: IngressOutcomeKindV1::Rejected,
                     rejection_reason: Some(reason),
+                });
+            } else {
+                errors.push(IngestReject {
+                    index,
+                    event_id: Some(event.event_id),
+                    reason,
                 });
             }
             continue;
@@ -132,8 +138,8 @@ async fn process_events(
                         accepted += 1;
                         if let Some(outcomes) = outcomes.as_mut() {
                             outcomes.push(IngressOutcomeV1 {
-                                source_id,
-                                event_id,
+                                source_id: event.source_id.to_string(),
+                                event_id: event.event_id.clone(),
                                 outcome: IngressOutcomeKindV1::Accepted,
                                 rejection_reason: None,
                             });
@@ -143,17 +149,24 @@ async fn process_events(
                         let reason = bounded_reason(format!("bus publish failed: {e}"));
                         rejected += 1;
                         dedup.remove(dedup_source_id, dedup_event_id);
-                        errors.push(IngestReject {
-                            index,
-                            event_id: Some(event_id.clone()),
-                            reason: reason.clone(),
-                        });
                         if let Some(outcomes) = outcomes.as_mut() {
+                            let event_id = event.event_id.clone();
+                            errors.push(IngestReject {
+                                index,
+                                event_id: Some(event_id.clone()),
+                                reason: reason.clone(),
+                            });
                             outcomes.push(IngressOutcomeV1 {
-                                source_id,
+                                source_id: event.source_id.to_string(),
                                 event_id,
                                 outcome: IngressOutcomeKindV1::Rejected,
                                 rejection_reason: Some(reason),
+                            });
+                        } else {
+                            errors.push(IngestReject {
+                                index,
+                                event_id: Some(event.event_id),
+                                reason,
                             });
                         }
                     }
@@ -161,17 +174,24 @@ async fn process_events(
             } else {
                 let reason = "no bus configured; event not persisted".to_string();
                 rejected += 1;
-                errors.push(IngestReject {
-                    index,
-                    event_id: Some(event_id.clone()),
-                    reason: reason.clone(),
-                });
                 if let Some(outcomes) = outcomes.as_mut() {
+                    let event_id = event.event_id.clone();
+                    errors.push(IngestReject {
+                        index,
+                        event_id: Some(event_id.clone()),
+                        reason: reason.clone(),
+                    });
                     outcomes.push(IngressOutcomeV1 {
-                        source_id,
+                        source_id: event.source_id.to_string(),
                         event_id,
                         outcome: IngressOutcomeKindV1::Rejected,
                         rejection_reason: Some(reason),
+                    });
+                } else {
+                    errors.push(IngestReject {
+                        index,
+                        event_id: Some(event.event_id),
+                        reason,
                     });
                 }
             }
@@ -179,8 +199,8 @@ async fn process_events(
             duplicates += 1;
             if let Some(outcomes) = outcomes.as_mut() {
                 outcomes.push(IngressOutcomeV1 {
-                    source_id,
-                    event_id,
+                    source_id: event.source_id.to_string(),
+                    event_id: event.event_id.clone(),
                     outcome: IngressOutcomeKindV1::Duplicate,
                     rejection_reason: None,
                 });
