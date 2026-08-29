@@ -15,6 +15,12 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use crate::state::AppState;
 
+const MAX_GOVERNED_RECEIPT_OUTCOMES: usize = 1_000;
+
+#[cfg(test)]
+static SIGNED_RECEIPT_ATTEMPTS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
 pub async fn health() -> impl IntoResponse {
     Json(json!({
         "status": "ok",
@@ -26,16 +32,24 @@ pub async fn health() -> impl IntoResponse {
 pub async fn ingest_batch(
     State(state): State<AppState>,
     Json(body): Json<IngestBatchRequest>,
-) -> impl IntoResponse {
+) -> (StatusCode, Json<IngestBatchResponse>) {
     let IngestBatchRequest {
         events,
         receipt_context,
     } = body;
-    let mut result = process_events(&state, events).await;
-    if let Some(context) = receipt_context {
-        result.ingress_receipt = signed_receipt(context, &result.outcomes);
-    }
-    (StatusCode::ACCEPTED, Json(result))
+    let (status, result) = match receipt_context {
+        Some(_) if events.len() > MAX_GOVERNED_RECEIPT_OUTCOMES => (
+            StatusCode::BAD_REQUEST,
+            governed_batch_limit_response(events.len()),
+        ),
+        Some(context) => {
+            let mut result = process_events(&state, events, true).await;
+            result.ingress_receipt = signed_receipt(context, std::mem::take(&mut result.outcomes));
+            (StatusCode::ACCEPTED, result)
+        }
+        None => (StatusCode::ACCEPTED, process_events(&state, events, false).await),
+    };
+    (status, Json(result))
 }
 
 /// NDJSON: one RecordEvent per line (high-throughput clients).
@@ -72,16 +86,20 @@ pub async fn ingest_ndjson(
             }
         }
     }
-    let result = process_events(&state, events).await;
+    let result = process_events(&state, events, false).await;
     (StatusCode::ACCEPTED, Json(result)).into_response()
 }
 
-async fn process_events(state: &AppState, events: Vec<RecordEvent>) -> IngestBatchResponse {
+async fn process_events(
+    state: &AppState,
+    events: Vec<RecordEvent>,
+    capture_outcomes: bool,
+) -> IngestBatchResponse {
     let mut accepted = 0usize;
     let mut duplicates = 0usize;
     let mut rejected = 0usize;
     let mut errors = Vec::new();
-    let mut outcomes = Vec::new();
+    let mut outcomes = capture_outcomes.then(Vec::new);
     let mut dedup = state.dedup.write().await;
 
     for (index, event) in events.into_iter().enumerate() {
@@ -95,12 +113,14 @@ async fn process_events(state: &AppState, events: Vec<RecordEvent>) -> IngestBat
                 event_id: Some(event_id.clone()),
                 reason: reason.clone(),
             });
-            outcomes.push(IngressOutcomeV1 {
-                source_id,
-                event_id,
-                outcome: IngressOutcomeKindV1::Rejected,
-                rejection_reason: Some(reason),
-            });
+            if let Some(outcomes) = outcomes.as_mut() {
+                outcomes.push(IngressOutcomeV1 {
+                    source_id,
+                    event_id,
+                    outcome: IngressOutcomeKindV1::Rejected,
+                    rejection_reason: Some(reason),
+                });
+            }
             continue;
         }
 
@@ -110,12 +130,14 @@ async fn process_events(state: &AppState, events: Vec<RecordEvent>) -> IngestBat
                 match bus.publish_ingest(&event).await {
                     Ok(_) => {
                         accepted += 1;
-                        outcomes.push(IngressOutcomeV1 {
-                            source_id,
-                            event_id,
-                            outcome: IngressOutcomeKindV1::Accepted,
-                            rejection_reason: None,
-                        });
+                        if let Some(outcomes) = outcomes.as_mut() {
+                            outcomes.push(IngressOutcomeV1 {
+                                source_id,
+                                event_id,
+                                outcome: IngressOutcomeKindV1::Accepted,
+                                rejection_reason: None,
+                            });
+                        }
                     }
                     Err(e) => {
                         let reason = bounded_reason(format!("bus publish failed: {e}"));
@@ -126,12 +148,14 @@ async fn process_events(state: &AppState, events: Vec<RecordEvent>) -> IngestBat
                             event_id: Some(event_id.clone()),
                             reason: reason.clone(),
                         });
-                        outcomes.push(IngressOutcomeV1 {
-                            source_id,
-                            event_id,
-                            outcome: IngressOutcomeKindV1::Rejected,
-                            rejection_reason: Some(reason),
-                        });
+                        if let Some(outcomes) = outcomes.as_mut() {
+                            outcomes.push(IngressOutcomeV1 {
+                                source_id,
+                                event_id,
+                                outcome: IngressOutcomeKindV1::Rejected,
+                                rejection_reason: Some(reason),
+                            });
+                        }
                     }
                 }
             } else {
@@ -142,21 +166,25 @@ async fn process_events(state: &AppState, events: Vec<RecordEvent>) -> IngestBat
                     event_id: Some(event_id.clone()),
                     reason: reason.clone(),
                 });
-                outcomes.push(IngressOutcomeV1 {
-                    source_id,
-                    event_id,
-                    outcome: IngressOutcomeKindV1::Rejected,
-                    rejection_reason: Some(reason),
-                });
+                if let Some(outcomes) = outcomes.as_mut() {
+                    outcomes.push(IngressOutcomeV1 {
+                        source_id,
+                        event_id,
+                        outcome: IngressOutcomeKindV1::Rejected,
+                        rejection_reason: Some(reason),
+                    });
+                }
             }
         } else {
             duplicates += 1;
-            outcomes.push(IngressOutcomeV1 {
-                source_id,
-                event_id,
-                outcome: IngressOutcomeKindV1::Duplicate,
-                rejection_reason: None,
-            });
+            if let Some(outcomes) = outcomes.as_mut() {
+                outcomes.push(IngressOutcomeV1 {
+                    source_id,
+                    event_id,
+                    outcome: IngressOutcomeKindV1::Duplicate,
+                    rejection_reason: None,
+                });
+            }
         }
     }
 
@@ -165,7 +193,24 @@ async fn process_events(state: &AppState, events: Vec<RecordEvent>) -> IngestBat
         duplicates,
         rejected,
         errors,
-        outcomes,
+        outcomes: outcomes.unwrap_or_default(),
+        ingress_receipt: None,
+    }
+}
+
+fn governed_batch_limit_response(events_len: usize) -> IngestBatchResponse {
+    IngestBatchResponse {
+        accepted: 0,
+        duplicates: 0,
+        rejected: events_len,
+        errors: vec![IngestReject {
+            index: 0,
+            event_id: None,
+            reason: format!(
+                "governed receipt batch exceeds the {MAX_GOVERNED_RECEIPT_OUTCOMES}-event bound"
+            ),
+        }],
+        outcomes: vec![],
         ingress_receipt: None,
     }
 }
@@ -176,20 +221,18 @@ fn bounded_reason(reason: String) -> String {
 
 fn signed_receipt(
     context: odp_contracts::IngressReceiptContextV1,
-    outcomes: &[IngressOutcomeV1],
+    mut outcomes: Vec<IngressOutcomeV1>,
 ) -> Option<ODPIngressOutcomeReceiptV1> {
-    if outcomes.len() > 1000 {
+    #[cfg(test)]
+    SIGNED_RECEIPT_ATTEMPTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+    if outcomes.len() > MAX_GOVERNED_RECEIPT_OUTCOMES {
         return None;
     }
     let secret = std::env::var("ODP_INGRESS_RECEIPT_SECRET").ok().filter(|value| !value.is_empty())?;
-    let outcomes: Vec<_> = outcomes
-        .iter()
-        .cloned()
-        .map(|mut outcome| {
-            outcome.rejection_reason = outcome.rejection_reason.map(bounded_reason);
-            outcome
-        })
-        .collect();
+    for outcome in &mut outcomes {
+        outcome.rejection_reason = outcome.rejection_reason.take().map(bounded_reason);
+    }
     let identity = serde_json::to_vec(&(&context, &outcomes)).ok()?;
     let idempotency_key = hex_sha256(&identity);
     let now = Utc::now();
@@ -247,159 +290,4 @@ fn hex_sha256(bytes: &[u8]) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::dedup::DedupIndex;
-    use chrono::Utc;
-    use odp_contracts::{IngressOutcomeKindV1, IngressReceiptContextV1, IngestMode};
-    use std::sync::Arc;
-    use tokio::sync::RwLock;
-    use uuid::Uuid;
-
-    fn sample_event(event_id: &str) -> RecordEvent {
-        RecordEvent {
-            schema_version: odp_contracts::SCHEMA_VERSION,
-            provider: "rss/feed".into(),
-            source_id: Uuid::new_v4(),
-            event_id: event_id.into(),
-            ingest_mode: IngestMode::Snapshot,
-            source_ts: Utc::now(),
-            cursor: None,
-            payload: serde_json::json!({"title": "t"}),
-            raw_data: serde_json::Value::Null,
-            trace_id: None,
-            task_id: None,
-        }
-    }
-
-    fn state_without_bus() -> AppState {
-        AppState {
-            dedup: Arc::new(RwLock::new(DedupIndex::new())),
-            bus: None,
-        }
-    }
-
-    /// P0-2: with no bus configured (the ODP_INGEST_ALLOW_NO_BUS=1 opt-in dev
-    /// mode — main.rs refuses to start in this state otherwise), every event
-    /// must be rejected, NEVER accepted — an "accepted" count with no bus
-    /// would be a black hole: the event is not persisted anywhere.
-    #[tokio::test]
-    async fn process_events_with_no_bus_rejects_everything() {
-        let state = state_without_bus();
-        let events = vec![
-            sample_event("e1"),
-            sample_event("e2"),
-            sample_event("e3"),
-        ];
-
-        let result = process_events(&state, events).await;
-
-        assert_eq!(result.accepted, 0);
-        assert_eq!(result.rejected, 3);
-        assert_eq!(result.duplicates, 0);
-        assert_eq!(result.errors.len(), 3);
-        for e in &result.errors {
-            assert!(e.reason.contains("no bus configured"));
-        }
-    }
-
-    /// A duplicate event_id (same source_id/event_id already seen) must still
-    /// count as a duplicate, not a rejection, even with no bus — dedup runs
-    /// before the bus check.
-    #[tokio::test]
-    async fn process_events_with_no_bus_still_detects_duplicates() {
-        let state = state_without_bus();
-        let ev1 = sample_event("dup-1");
-        // Same (source_id, event_id) as ev1 — the dedup key — so this is a
-        // true duplicate of the first, not just a coincidentally-equal id.
-        let ev2 = RecordEvent {
-            source_id: ev1.source_id,
-            ..sample_event("dup-1")
-        };
-
-        let result = process_events(&state, vec![ev1, ev2]).await;
-
-        assert_eq!(result.accepted, 0);
-        assert_eq!(result.rejected, 1); // first one: rejected, no bus
-        assert_eq!(result.duplicates, 1); // second one: same (source_id, event_id)
-    }
-
-    /// An invalid event must still be rejected for validation reasons, not
-    /// counted as a bus-related rejection — validation happens first.
-    #[tokio::test]
-    async fn process_events_validation_failure_before_bus_check() {
-        let state = state_without_bus();
-        let mut bad = sample_event("bad-1");
-        bad.provider = String::new(); // fails RecordEvent::validate()
-
-        let result = process_events(&state, vec![bad]).await;
-
-        assert_eq!(result.accepted, 0);
-        assert_eq!(result.rejected, 1);
-        assert!(!result.errors[0].reason.contains("no bus configured"));
-    }
-
-    fn receipt_context() -> IngressReceiptContextV1 {
-        IngressReceiptContextV1 {
-            workspace_id: "workspace".into(),
-            project_id: "project".into(),
-            workflow_id: "workflow".into(),
-            studio_workflow_version_id: "version".into(),
-            run_id: "run".into(),
-            node_id: "node".into(),
-            command_id: "command".into(),
-            attempt_id: "attempt".into(),
-            attempt_number: 1,
-            task_id: "task".into(),
-            trace_id: "trace".into(),
-            source_id: "source".into(),
-            source_binding_id: None,
-            source_binding_revision_id: None,
-            source_binding_revision_number: None,
-            payload_sha256: "a".repeat(64),
-            expected_key_set_sha256: "b".repeat(64),
-        }
-    }
-
-    #[test]
-    fn signed_receipt_has_stable_identity_and_bounded_exact_outcomes() {
-        std::env::set_var("ODP_INGRESS_RECEIPT_SECRET", "receipt-test-secret");
-        let outcomes = vec![
-            IngressOutcomeV1 {
-                source_id: "source".into(),
-                event_id: "accepted".into(),
-                outcome: IngressOutcomeKindV1::Accepted,
-                rejection_reason: None,
-            },
-            IngressOutcomeV1 {
-                source_id: "source".into(),
-                event_id: "duplicate".into(),
-                outcome: IngressOutcomeKindV1::Duplicate,
-                rejection_reason: None,
-            },
-            IngressOutcomeV1 {
-                source_id: "source".into(),
-                event_id: "rejected".into(),
-                outcome: IngressOutcomeKindV1::Rejected,
-                rejection_reason: Some("x".repeat(300)),
-            },
-        ];
-        let first = signed_receipt(receipt_context(), &outcomes).expect("signed receipt");
-        let replay = signed_receipt(receipt_context(), &outcomes).expect("signed receipt");
-        assert!(signed_receipt(receipt_context(), &vec![outcomes[0].clone(); 1001]).is_none());
-        std::env::remove_var("ODP_INGRESS_RECEIPT_SECRET");
-
-        assert_eq!(first.receipt_id, replay.receipt_id);
-        assert_eq!(first.idempotency_key, replay.idempotency_key);
-        assert_eq!(first.producer_id, "odp-ingest");
-        assert_eq!(first.receipt_hash.len(), 64);
-        assert!(first.signature.starts_with("sha256="));
-        assert_eq!(first.signature.len(), 71);
-        assert_eq!(first.outcomes.len(), 3);
-        assert!(matches!(first.outcomes[0].outcome, IngressOutcomeKindV1::Accepted));
-        assert!(matches!(first.outcomes[1].outcome, IngressOutcomeKindV1::Duplicate));
-        assert!(matches!(first.outcomes[2].outcome, IngressOutcomeKindV1::Rejected));
-        assert_eq!(first.outcomes[2].rejection_reason.as_ref().unwrap().chars().count(), 256);
-        assert_eq!(first.issued_at.nanosecond() % 1_000, 0);
-    }
-}
+mod tests;

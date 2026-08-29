@@ -40,6 +40,12 @@ from backend.workflow.workflow_run_events import append_workflow_run_events
 OPENCLI_FUNCTION_ID = "odp.collect::opencli_snapshot"
 
 
+def _utc_timestamp(value: datetime) -> datetime:
+    """Normalize SQLite's timezone-naive values before comparing ledger evidence."""
+
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+
 class IIICollectionConflictError(ValueError):
     """A replay changed immutable command or lifecycle content."""
 
@@ -757,22 +763,22 @@ async def collection_status(
     state = outbound.state
     if outbound.cancel_requested_at is not None and state != "cancelled":
         state = "cancel_requested"
-    if receipts and report is not None:
+    if state == "cancelled":
+        blocking_stage, action, uncertain = None, "none", False
+    elif state == "cancel_requested":
+        blocking_stage, action, uncertain = "cancellation", "await_lifecycle", True
+    elif receipts and report is not None:
         blocking_stage, action, uncertain = "reconciliation", "await_reconciliation", True
-    elif receipts and state not in {"cancelled", "cancel_requested"}:
+    elif receipts:
         blocking_stage, action, uncertain = "collector_report", "await_collector_report", True
     elif report is not None and report.zero_count == 1:
         blocking_stage, action, uncertain = "reconciliation", "await_reconciliation", True
-    elif report is not None and state not in {"cancelled", "cancel_requested"}:
+    elif report is not None:
         blocking_stage, action, uncertain = "ingress", "await_ingress_receipt", True
     elif state == "pending":
         blocking_stage, action, uncertain = "dispatch", "resume_dispatch", False
     elif state == "bridge_unavailable":
         blocking_stage, action, uncertain = "bridge", "resume_dispatch", True
-    elif state == "cancelled":
-        blocking_stage, action, uncertain = None, "none", False
-    elif state == "cancel_requested":
-        blocking_stage, action, uncertain = "cancellation", "await_lifecycle", True
     elif state == "bridge_accepted":
         blocking_stage, action, uncertain = "collector", "await_lifecycle", True
     elif state == "collector_started":
@@ -816,11 +822,14 @@ async def collection_status(
         recovery_action=action,
         side_effect_uncertainty=uncertain,
         updated_at=max(
-            command.updated_at,
-            outbound.updated_at,
-            *(observation.created_at for observation in observations),
-            *((report.created_at,) if report is not None else ()),
-            *(receipt.created_at for receipt in receipts),
+            _utc_timestamp(value)
+            for value in (
+                command.updated_at,
+                outbound.updated_at,
+                *(observation.created_at for observation in observations),
+                *((report.created_at,) if report is not None else ()),
+                *(receipt.created_at for receipt in receipts),
+            )
         ),
     )
 
