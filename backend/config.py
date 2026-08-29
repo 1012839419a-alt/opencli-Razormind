@@ -53,6 +53,9 @@ class Settings(BaseSettings):
     # Required for governed V1 collection dispatch: without a callback target,
     # Admin refuses to invoke III rather than losing lifecycle authority.
     iii_lifecycle_url: str = ""
+    # HMAC key shared only with the authenticated odp-ingest producer. Empty
+    # means signed ingress receipts fail closed.
+    iii_ingress_receipt_secret: str = ""
     iii_dispatch_lease_seconds: float = 60.0
 
     # Redis / Celery — only required when task_executor="celery"
