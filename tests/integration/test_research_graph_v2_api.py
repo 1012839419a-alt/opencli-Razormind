@@ -119,6 +119,19 @@ async def test_authenticated_studio_review_rejects_self_review_and_pins_fold(cli
         )
         assert proposed.status_code == 201
         proposal = proposed.json()["data"]
+        for action in ("reject", "retract"):
+            self_review_action = await client.post(
+                f"{route}/mutations",
+                json={
+                    "idempotencyKey": f"self-{action}",
+                    "action": action,
+                    "expectedSequence": proposal["sequence"],
+                    "expectedRevision": proposal["researchRevisionId"],
+                    "nodeId": "opencli-source",
+                    "claimId": "claim-1",
+                },
+            )
+            assert self_review_action.status_code == 409
 
         self_review = await client.post(
             f"{route}/mutations",
@@ -162,6 +175,17 @@ async def test_authenticated_studio_review_rejects_self_review_and_pins_fold(cli
         pinned_graph = pinned.json()["data"]
         assert pinned_graph["pinnedFold"]["blocked"] is False
         assert "signature" not in json.dumps(pinned.json())
+        exact = pinned_graph["pinnedFold"]
+        matched = await client.get(
+            f"{route}?expected_pin_sequence={exact['sequence']}&expected_pin_revision={exact['researchRevisionId']}&expected_pin_manifest_set_hash={exact['manifestSetHash']}"
+        )
+        assert matched.json()["data"]["pinnedFold"]["blocked"] is False
+        mismatch = await client.get(
+            f"{route}?expected_pin_sequence=999&expected_pin_revision={exact['researchRevisionId']}&expected_pin_manifest_set_hash={exact['manifestSetHash']}"
+        )
+        assert mismatch.json()["data"]["blocker"] == "pinned_reference_mismatch"
+        partial = await client.get(f"{route}?expected_pin_sequence={exact['sequence']}")
+        assert partial.json()["data"]["blocker"] == "pinned_reference_mismatch"
 
         current_identity = RequestIdentity(subject="graph-proposer")
         replay = await client.post(
@@ -258,6 +282,18 @@ async def test_authenticated_studio_review_rejects_self_review_and_pins_fold(cli
         )
         assert superseded.status_code == 201
         assert superseded.json()["data"]["pinnedFold"]["blocked"] is True
+        superseder_self_verify = await client.post(
+            f"{route}/mutations",
+            json={
+                "idempotencyKey": "superseder-self-verify",
+                "action": "verify",
+                "expectedSequence": superseded.json()["data"]["sequence"],
+                "expectedRevision": superseded.json()["data"]["researchRevisionId"],
+                "nodeId": "opencli-source",
+                "claimId": "claim-1",
+            },
+        )
+        assert superseder_self_verify.status_code == 409
         read = await client.get(route)
         assert read.status_code == 200
         assert read.json()["data"]["claims"][0]["state"] == "superseded"

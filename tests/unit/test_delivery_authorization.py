@@ -90,6 +90,43 @@ def test_target_configuration_rejects_nonopaque_values_and_policy_is_stable(fiel
     assert _policy_hash() == _policy_hash()
 
 
+def test_controlled_receiver_v2_policy_snapshot_is_complete_and_hash_bound(monkeypatch) -> None:
+    version, snapshot, policy_hash = delivery_authorization._current_policy()
+    assert version == "controlled-receiver-policy-v2"
+    assert snapshot == {
+        "receipt": {
+            "required": True,
+            "schemaVersion": "signed-receipt-v2",
+            "invalidOrMissing": "unknown-fail-closed",
+            "validRejected": "terminal",
+        },
+        "redirects": {"mode": "forbidden"},
+        "timeout": {"perAttemptSeconds": 30},
+        "retry": {
+            "mode": "exact-idempotent",
+            "retryOn": ["transport-timeout", "network-error", "http-5xx"],
+            "maxAttempts": 3,
+            "backoff": {
+                "kind": "deterministic-exponential",
+                "initialDelaySeconds": 1,
+                "multiplier": 2,
+                "maxDelaySeconds": 4,
+            },
+            "terminalOn": ["http-4xx", "valid-rejected-receipt"],
+        },
+        "continuation": {
+            "exhaustedUnknown": "requires-reconciliation-blocked",
+            "cancellation": "stop-new-attempts",
+        },
+        "compensation": {"automatic": False},
+    }
+    assert policy_hash == delivery_authorization._canonical_hash(
+        {"version": version, "snapshot": snapshot}
+    )
+    monkeypatch.setitem(delivery_authorization._CONTROLLED_RECEIVER_POLICY, "timeout", {"perAttemptSeconds": 31})
+    assert delivery_authorization._policy_hash() != policy_hash
+
+
 @pytest.mark.parametrize("cursor", ("%%not-a-cursor%%", "!!!!", ""))
 def test_cursor_rejects_malformed_values_without_widening_a_scoped_list(cursor) -> None:
     with pytest.raises(Exception, match="Invalid cursor"):
