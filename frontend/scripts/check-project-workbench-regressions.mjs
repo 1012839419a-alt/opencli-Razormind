@@ -92,6 +92,7 @@ test('project data workbench is project scoped and links data back to workflow e
   assert.match(page, /active="data"/)
   assert.match(page, /数据集/)
   assert.match(page, /字段分析/)
+  assert.match(page, /质量统计/)
   assert.match(page, /项目文件/)
   assert.match(page, /FieldProfileView/)
   assert.match(page, /ProjectInputsView/)
@@ -105,6 +106,13 @@ test('project data workbench is project scoped and links data back to workflow e
   assert.match(page, /JSON（保留完整结构）/)
   assert.match(page, /列管理/)
   assert.match(page, /limit: EXPORT_PAGE_SIZE/)
+  assert.match(page, /全选当前页/)
+  assert.match(page, /selectedRecordIds/)
+  assert.match(page, /sort_by/)
+  assert.match(page, /保存视图/)
+  assert.match(page, /localStorage/)
+  assert.match(page, /全量筛选结果/)
+  assert.match(page, /buildQualityStats/)
 })
 
 test('project data workbench keeps file controls and empty states view-specific', async () => {
@@ -114,7 +122,7 @@ test('project data workbench keeps file controls and empty states view-specific'
   const filesBranch = content.indexOf("view === 'files'")
   const datasetEmptyBranch = content.indexOf('records.length === 0')
 
-  assert.equal(page.match(/\{view !== 'files' \? \(/g)?.length, 2)
+  assert.equal(page.match(/\{view === 'dataset' \? \(/g)?.length, 2)
   assert.ok(profileBranch >= 0 && profileBranch < datasetEmptyBranch)
   assert.ok(filesBranch >= 0 && filesBranch < datasetEmptyBranch)
 })

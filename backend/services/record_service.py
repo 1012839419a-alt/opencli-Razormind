@@ -16,8 +16,20 @@ async def list_records(
     search: Optional[str] = None,
     page: int = 1,
     limit: int = 20,
+    sort_by: str = "created_at",
+    sort_order: str = "desc",
 ) -> tuple[list[CollectedRecord], int]:
-    query = select(CollectedRecord).order_by(CollectedRecord.created_at.desc())
+    sort_column = {
+        "created_at": CollectedRecord.created_at,
+        "updated_at": CollectedRecord.updated_at,
+        "status": CollectedRecord.status,
+        "source_id": CollectedRecord.source_id,
+        "workflow_id": CollectedRecord.workflow_id,
+        "workflow_run_id": CollectedRecord.workflow_run_id,
+    }.get(sort_by, CollectedRecord.created_at)
+    query = select(CollectedRecord).order_by(
+        sort_column.asc() if sort_order == "asc" else sort_column.desc()
+    )
     count_query = select(func.count()).select_from(CollectedRecord)
 
     filters = []
