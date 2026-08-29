@@ -16,6 +16,7 @@ from backend.api.v1 import (
     geo_acquisition,
     iii_collections,
     identity,
+    odp_reconciliation,
     image_studio,
     model_defaults,
     nodes,
@@ -50,6 +51,7 @@ v1_router.include_router(agents.router)
 v1_router.include_router(geo_acquisition.router)
 v1_router.include_router(iii_collections.router)
 v1_router.include_router(automations.router)
+v1_router.include_router(odp_reconciliation.router)
 v1_router.include_router(image_studio.router)
 v1_router.include_router(browser_act.router)
 v1_router.include_router(browsers.router)

@@ -160,6 +160,10 @@ services:
       OPENCLI_MCP_ALLOWED_ORIGINS: ${OPENCLI_MCP_ALLOWED_ORIGINS:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      # Internal-only ODP reconciliation transport; service availability is
+      # intentionally optional outside the odp/nas compose profiles.
+      ODP_QUERY_URL: ${ODP_QUERY_URL:-http://odp-query:8042}
+      ODP_QUERY_ADMIN_CREDENTIAL: ${ODP_QUERY_ADMIN_CREDENTIAL:-}
       # Built-in interactive browser endpoint.
       # For COLLECTION_MODE=local this is pre-loaded into the browser pool.
       OPENCLI_CDP_ENDPOINT: ${OPENCLI_CDP_ENDPOINT:-http://agent-1:19222}
@@ -390,7 +394,7 @@ services:
     build:
       context: ./odp-rs
       dockerfile: Dockerfile.store
-    environment:
+    environment: &odp-database-environment
       ODP_REDIS_URL: redis://redis:6379/2
       ODP_DATABASE_URL: postgresql://${POSTGRES_USER:-opencli}:${POSTGRES_PASSWORD:-opencli_secret}@postgres:5432/${POSTGRES_DB:-opencli_admin}
       ODP_STORE_BATCH_SIZE: ${ODP_STORE_BATCH_SIZE:-500}
@@ -410,6 +414,31 @@ services:
       postgres:
         condition: service_healthy
       odp-ingest:
+        condition: service_healthy
+    restart: unless-stopped
+
+  odp-query:
+    profiles: ["odp", "nas"]
+    build:
+      context: ./odp-rs
+      dockerfile: Dockerfile.query
+    environment:
+      ODP_QUERY_HOST: 0.0.0.0
+      ODP_QUERY_PORT: 8042
+      <<: *odp-database-environment
+      ODP_QUERY_ADMIN_CREDENTIAL: ${ODP_QUERY_ADMIN_CREDENTIAL:-}
+      ODP_QUERY_CURSOR_SECRET: ${ODP_QUERY_CURSOR_SECRET:-}
+      RUST_LOG: info,odp_query=debug
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8042/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      odp-store:
         condition: service_healthy
     restart: unless-stopped
 
