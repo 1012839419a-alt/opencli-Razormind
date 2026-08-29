@@ -15,9 +15,28 @@ from backend.workflow.gaojixing_runtime import (
 from backend.workflow.opencli_hda_tracer import (
     _execute_gaojixing_fixture_source,
     _execute_gaojixing_source,
+    _gaojixing_execution_mode,
+    _is_gaojixing_source_node,
     _store_record_sink_outputs,
     replay_downstream_from_persisted_gaojixing_source,
 )
+
+
+def test_compiled_doubao_adapter_selects_live_gaojixing_path():
+    node = SimpleNamespace(
+        id="doubao-research",
+        kind="source",
+        params={"question": "{{keyword}}"},
+        adapter=SimpleNamespace(
+            provider="doubao_research",
+            mode="live",
+            config={"channelType": "doubao_research"},
+        ),
+        runtime={"binding": {"input": {}}},
+    )
+
+    assert _is_gaojixing_source_node(node) is True
+    assert _gaojixing_execution_mode(node) == "live"
 
 
 def test_question_package_uses_runtime_question_and_stable_digest():
@@ -267,6 +286,74 @@ async def test_capture_agent_mode_dispatches_native_runtime_and_maps_browser_evi
     assert item["conversation_url"] == "https://www.doubao.com/chat/123"
     assert item["suggested_keywords"] == ["follow-up"]
     assert item["provenance"] == "agent:codex:browser:opencli"
+
+
+@pytest.mark.asyncio
+async def test_capture_agent_mode_can_dispatch_bbx_on_the_same_vnc_agent(monkeypatch):
+    package = build_question_package(
+        node_params={"question": "q"},
+        adapter_config={"executionMode": "agent", "agentRuntime": "bbx"},
+        runtime_payload={},
+    )
+
+    class _Rows:
+        def scalars(self):
+            return self
+
+        def all(self):
+            return [
+                SimpleNamespace(
+                    url="http://agent-1:19823",
+                    protocol="ws",
+                    status="online",
+                    runtime_capabilities={"bbx": ["browser", "tool_events"]},
+                )
+            ]
+
+    class _Session:
+        async def execute(self, _query):
+            return _Rows()
+
+    captured = {}
+
+    async def fake_send(agent_url, task, on_event, timeout):
+        captured.update({"agent_url": agent_url, "task": task, "timeout": timeout})
+        return {
+            "type": "done",
+            "result": {
+                "text": (
+                    '{"status":"completed","answer":"answer",'
+                    '"data":[],"links":[],"conversation_url":"https://www.doubao.com/chat/123",'
+                    '"session_share_data":{"url":"https://www.doubao.com/chat/123"},'
+                    '"suggested_keywords":["follow-up"]}'
+                )
+            },
+        }
+
+    monkeypatch.setattr(runtime.ws_agent_manager, "list_connected", lambda: ["http://agent-1:19823"])
+    monkeypatch.setattr("backend.ws_agent_manager.send_agent_task", fake_send)
+
+    result = await capture_live_doubao(
+        package=package,
+        node_params={},
+        adapter_config={
+            "capabilityId": GAOJIXING_CAPABILITY_ID,
+            "executionMode": "agent",
+            "agentRuntime": "bbx",
+        },
+        network_allowed=True,
+        external_mutation_allowed=True,
+        session=_Session(),
+        workflow_id="workflow",
+        run_id="run",
+    )
+
+    assert result.success
+    assert captured["agent_url"] == "http://agent-1:19823"
+    assert captured["task"]["runtime"] == "bbx"
+    assert captured["task"]["required_capabilities"] == ["browser", "tool_events"]
+    assert captured["task"]["permissions"]["tool_scope"] == ["bbx.browser"]
+    assert result.items[0]["provenance"] == "agent:bbx:browser:bbx"
 
 
 def test_capture_mapping_keeps_package_and_independent_evidence():

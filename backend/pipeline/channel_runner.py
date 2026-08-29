@@ -127,9 +127,15 @@ async def run_channel(
 
             # Persist the cursor after each page: a crash mid-pagination resumes
             # from here instead of re-fetching everything.
-            if cap.incremental and result.next_cursor is not None:
+            # Paginated channels must advance within this invocation even when
+            # they are not incremental. Feishu table pagination is one such
+            # channel: its cursor is a page-local offset, not a resume cursor.
+            # Only persist the cursor for channels that explicitly support
+            # resuming across runs.
+            if result.next_cursor is not None:
                 cursor = result.next_cursor
-                await store.save(source.id, cursor)
+                if cap.incremental:
+                    await store.save(source.id, cursor)
 
             pages += 1
             if not (cap.paginated and result.has_more):

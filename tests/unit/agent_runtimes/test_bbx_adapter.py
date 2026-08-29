@@ -1,9 +1,26 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from backend.agent_runtimes.base import AgentTask
-from backend.agent_runtimes.bbx_adapter import BbxRuntimeAdapter
+from backend.agent_runtimes.bbx_adapter import (
+    BbxRuntimeAdapter,
+    _active_tab,
+    _answer_after_question,
+    _looks_like_doubao_login_page,
+    _suggested_keywords_from_page_text,
+)
+
+
+def test_active_tab_ignores_browser_owned_pages():
+    assert _active_tab([{"tabId": 1, "active": True, "origin": "chrome://extensions"}]) is None
+
+
+def test_logged_in_doubao_page_is_not_misclassified_as_login_required():
+    assert _looks_like_doubao_login_page("豆包 - 字节跳动旗下 AI 智能助手\n有什么我能帮你的吗？") is False
+    assert _looks_like_doubao_login_page("手机号登录\n扫码登录") is True
 
 
 async def _collect(adapter: BbxRuntimeAdapter, task: AgentTask) -> list[dict]:
@@ -75,3 +92,151 @@ async def test_call_tool_passes_tab_and_json_params_to_bbx(monkeypatch):
     ]
     assert events[-1]["type"] == "done"
     assert events[-1]["result"]["result"]["evidence"]["text"] == "OpenCLI"
+
+
+@pytest.mark.asyncio
+async def test_doubao_workflow_uses_bbx_browser_and_returns_structured_evidence(monkeypatch):
+    calls: list[list[str]] = []
+
+    async def fake_run(self, args, config):
+        calls.append(args)
+        if args == ["call", "tabs.create", '{"url":"https://www.doubao.com/chat"}']:
+            return {"ok": True, "tabId": 7}
+        if args[0:3] == ["call", "--tab", "7"]:
+            method = args[3]
+            if method == "dom.query":
+                params = json.loads(args[4])
+                if params["selector"] == "#flow-end-msg-send":
+                    return {"nodes": [{"elementRef": "el_send", "tag": "button"}]}
+                return {"nodes": [{"elementRef": "el_input", "tag": "textarea"}]}
+            if method == "input.fill":
+                return {"ok": True}
+            if method == "input.click":
+                return {"ok": True}
+            if method == "page.get_state":
+                return {"url": "https://www.doubao.com/chat/123", "title": "豆包"}
+            if method == "page.get_text":
+                return {"text": "问题 q\n答案 answer\n推荐问题 follow-up"}
+            if method == "page.evaluate":
+                return {
+                    "value": {
+                        "answer": "answer",
+                        "data": [{"point": "value"}],
+                        "links": [{"url": "https://example.test/source", "title": "source"}],
+                        "suggested_keywords": ["follow-up"],
+                        "session_share_data": {
+                            "url": "https://www.doubao.com/chat/123",
+                            "type": "conversation",
+                        },
+                    }
+                }
+        raise AssertionError(f"unexpected BBX call: {args}")
+
+    monkeypatch.setattr(BbxRuntimeAdapter, "_run_cli", fake_run)
+    events = await _collect(
+        BbxRuntimeAdapter(),
+        AgentTask(
+            task_id="bbx-doubao",
+            workflow="workflow.gaojixing.doubao.browser",
+            input={"question": "q", "message": "q"},
+            config={"settle_seconds": 0},
+        ),
+    )
+
+    assert [args[0] for args in calls] == [
+        "call",
+        "call",
+        "call",
+        "call",
+        "call",
+        "call",
+        "call",
+        "call",
+        "call",
+    ]
+    assert events[-1]["type"] == "done"
+    response = __import__("json").loads(events[-1]["result"]["text"])
+    assert response["answer"] == "answer"
+    assert response["links"] == [{"url": "https://example.test/source", "title": "source"}]
+    assert response["suggested_keywords"] == ["follow-up"]
+
+
+@pytest.mark.asyncio
+async def test_doubao_workflow_requeries_stale_input_reference(monkeypatch):
+    fill_calls = 0
+
+    async def fake_run(self, args, config):
+        nonlocal fill_calls
+        if args == ["call", "tabs.create", '{"url":"https://www.doubao.com/chat"}']:
+            return {"ok": True, "tabId": 8}
+        if args[0:3] == ["call", "--tab", "8"]:
+            method = args[3]
+            if method == "dom.query":
+                params = json.loads(args[4])
+                if params["selector"] == "#flow-end-msg-send":
+                    return {"nodes": [{"elementRef": "el_send", "tag": "button"}]}
+                return {"nodes": [{"elementRef": f"el_input_{fill_calls}", "tag": "textarea"}]}
+            if method == "input.fill":
+                fill_calls += 1
+                if fill_calls == 1:
+                    return {"ok": False, "error": "Element reference is stale."}
+                return {"ok": True}
+            if method == "input.click":
+                return {"ok": True}
+            if method == "page.get_state":
+                return {"url": "https://www.doubao.com/chat/456", "title": "豆包"}
+            if method == "page.get_text":
+                return {"text": "问题 q\n答案 answer"}
+            if method == "page.evaluate":
+                return {"value": {"answer": "answer", "data": [], "links": []}}
+        raise AssertionError(f"unexpected BBX call: {args}")
+
+    monkeypatch.setattr(BbxRuntimeAdapter, "_run_cli", fake_run)
+    events = await _collect(
+        BbxRuntimeAdapter(),
+        AgentTask(
+            task_id="bbx-doubao-stale-ref",
+            workflow="workflow.gaojixing.doubao.browser",
+            input={"question": "q"},
+            config={"settle_seconds": 0},
+        ),
+    )
+
+    assert events[-1]["type"] == "done"
+    assert json.loads(events[-1]["result"]["text"])["answer"] == "answer"
+    assert fill_calls == 2
+
+
+def test_answer_after_question_requires_visible_answer_tail():
+    assert _answer_after_question("页面\n问题 q", "q") == ""
+    assert _answer_after_question(
+        "问题 q\n对话\n帮我写作\nPPT 生成\n豆包 快速",
+        "q",
+    ) == ""
+    assert _answer_after_question(
+        "问题 q\n搜索 2 个关键词，参考 12 篇资料\n对话\n帮我写作\n豆包 快速",
+        "q",
+    ) == ""
+    assert _answer_after_question("问题 q\n答案 answer\n推荐问题 follow-up", "q") == (
+        "答案 answer\n推荐问题 follow-up"
+    )
+    assert _answer_after_question("豆包 快速\n问题 q\n答案 answer", "q") == "答案 answer"
+    assert _answer_after_question(
+        "常见的富含 DHA 的食物有哪些？\n答案 answer",
+        "常见的富含DHA的食物有哪些？",
+    ) == "答案 answer"
+
+
+def test_suggested_keywords_are_read_from_the_visible_tail_before_footer():
+    page_text = (
+        "问题 q\n答案 answer\n"
+        "哪些食物不能和 q 一起吃？\n如何搭配 q？\n"
+        "对话\n帮我写作\nPPT 生成\n豆包 快速"
+    )
+    assert _suggested_keywords_from_page_text(page_text) == [
+        "哪些食物不能和 q 一起吃？",
+        "如何搭配 q？",
+    ]
+    assert _suggested_keywords_from_page_text(
+        "问题 q\n答案最后一句是问句吗？\n对话\n豆包 快速"
+    ) == []

@@ -194,6 +194,12 @@ services:
       BOOTSTRAP_ADMIN_TOKEN: ${BOOTSTRAP_ADMIN_TOKEN:-}
       OPENCLI_MCP_ALLOWED_HOSTS: ${OPENCLI_MCP_ALLOWED_HOSTS:-}
       OPENCLI_MCP_ALLOWED_ORIGINS: ${OPENCLI_MCP_ALLOWED_ORIGINS:-}
+      # Docker cannot read the Windows credential manager used by lark-cli.
+      # Keep Feishu CLI authentication on the host and call its read-only bridge.
+      LARK_CLI_BRIDGE_URL: ${LARK_CLI_BRIDGE_URL:-http://host.docker.internal:18765/feishu/records}
+      # Reuse the deployment's existing local API secret unless a dedicated
+      # bridge token is supplied; never run a non-loopback bridge unauthenticated.
+      LARK_CLI_BRIDGE_TOKEN: ${LARK_CLI_BRIDGE_TOKEN:-${API_AUTH_TOKEN}}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       # Built-in interactive browser endpoint.
@@ -382,15 +388,37 @@ services:
         condition: service_healthy
 
   # ── Built-in interactive browser ─────────────────────────────────────────
-  # noVNC is loopback-only by default; use an SSH tunnel for remote servers.
+  # This is the single VNC Agent: persistent Chrome + noVNC + Browser Bridge
+  # (BBX) + the reverse-channel Agent server all share agent_profile_1.
   agent-1:
-    image: ${DOCKER_REGISTRY:-ghcr.io/}${DOCKER_IMAGE_NAMESPACE:-2233admin}/opencli-admin-chrome:${IMAGE_TAG:-0.4.0}
+    image: ${DOCKER_REGISTRY:-ghcr.io/}${DOCKER_IMAGE_NAMESPACE:-2233admin}/opencli-admin-agent:${IMAGE_TAG:-0.4.0}${CHROME_SUFFIX:-}
     environment:
-      CHROME_HOSTNAME: agent-1
+      CENTRAL_API_URL: ${CENTRAL_API_URL:-http://api:8000}
+      AGENT_ADVERTISE_URL: ${AGENT_ADVERTISE_URL:-http://agent-1:19823}
+      AGENT_PORT: ${AGENT_PORT:-19823}
+      AGENT_MODE: ${AGENT_MODE:-bridge}
+      AGENT_DEPLOY_TYPE: docker
+      AGENT_HAS_CHROME: "true"
+      AGENT_LABEL: ${AGENT_LABEL:-VNC Doubao Browser Bridge Agent}
+      AGENT_REGISTER: ${AGENT_REGISTER:-ws}
+      API_AUTH_TOKEN: ${API_AUTH_TOKEN:-}
+      AGENT_API_TOKEN: ${AGENT_API_TOKEN:-}
+      OPENCLI_BROWSER_PROFILE_KIND: ${OPENCLI_BROWSER_PROFILE_KIND:-authenticated}
+      OPENCLI_CDP_ENDPOINT: http://127.0.0.1:9222
+      OPENCLI_DAEMON_PORT: ${OPENCLI_DAEMON_PORT:-19825}
+      BBX_TCP_PORT: ${BBX_TCP_PORT:-19826}
+      BBX_TCP_HOST: 127.0.0.1
+      BBX_TCP_BIND_HOST: 127.0.0.1
+      OPENCLI_TIMEOUT: ${OPENCLI_TIMEOUT:-120}
+      MINIFLOW_WORKFLOW_ROOT: ${MINIFLOW_WORKFLOW_ROOT:-/app/workflows}
+      HTTP_PROXY: ${HTTP_PROXY:-}
+      HTTPS_PROXY: ${HTTPS_PROXY:-}
+      NO_PROXY: api,localhost,127.0.0.1,${NO_PROXY:-}
     volumes:
-      - agent_profile_1:/home/chrome/.config/chromium
+      - agent_profile_1:/home/agent/.config/chromium
     ports:
       - "127.0.0.1:${NOVNC_PORT:-6080}:6080"
+      - "${AGENT_PORT:-19823}:19823"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9222/json/version"]
       interval: 10s

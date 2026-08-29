@@ -3327,9 +3327,7 @@ async def _execute_gaojixing_source(
     """Run live Gaojixing once for every upstream keyword item."""
     del trace_id
     binding_input = _binding_input(node)
-    adapter_config = _read_dict(binding_input.get("adapterConfig"))
-    if not adapter_config:
-        adapter_config = binding_input
+    adapter_config = _gaojixing_adapter_config(node)
     source_group = _source_group(node, node.id)
     upstream_items = _upstream_outputs(node, outputs_by_node) or [None]
     mapped_items: list[dict[str, Any]] = []
@@ -3499,11 +3497,15 @@ def _gaojixing_question_for_upstream(
 
 def _is_gaojixing_source_node(node: CompiledWorkflowNode) -> bool:
     binding_input = _binding_input(node)
+    adapter_config = _gaojixing_adapter_config(node)
+    adapter_provider = _read_string(getattr(node.adapter, "provider", ""))
     return (
         node.kind == "source"
         and (
             _read_string(binding_input.get("channelType"))
             or _read_string(node.params.get("channelType"))
+            or _read_string(adapter_config.get("channelType"))
+            or adapter_provider
         )
         == GAOJIXING_CHANNEL_TYPE
     )
@@ -3511,13 +3513,28 @@ def _is_gaojixing_source_node(node: CompiledWorkflowNode) -> bool:
 
 def _gaojixing_execution_mode(node: CompiledWorkflowNode) -> str:
     binding_input = _binding_input(node)
-    adapter_config = _read_dict(binding_input.get("adapterConfig"))
+    adapter_config = _gaojixing_adapter_config(node)
     return (
         _read_string(binding_input.get("liveMode"))
         or _read_string(adapter_config.get("liveMode"))
         or _read_string(node.params.get("liveMode"))
+        or _read_string(getattr(node.adapter, "mode", ""))
         or GAOJIXING_LIVE_MODE
     )
+
+
+def _gaojixing_adapter_config(node: CompiledWorkflowNode) -> dict[str, Any]:
+    """Resolve source config from both the compiled adapter and binding input.
+
+    Older published graphs keep the Doubao provider on the adapter object,
+    while newer graphs copy it into ``binding.input``.  Both representations
+    describe the same source and must select the same live capture path.
+    """
+    binding_input = _binding_input(node)
+    adapter = node.adapter
+    adapter_config = _read_dict(getattr(adapter, "config", {}))
+    input_config = _read_dict(binding_input.get("adapterConfig"))
+    return {**adapter_config, **binding_input, **input_config}
 
 
 def _source_live_mode(node: CompiledWorkflowNode) -> bool:

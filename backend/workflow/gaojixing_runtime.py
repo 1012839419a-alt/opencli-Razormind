@@ -132,10 +132,11 @@ async def capture_live_doubao(
     """Preflight and execute one live Doubao question.
 
     ``executionMode=agent`` is the workflow-native path: the control plane
-    selects a connected local Codex/Claude Code runtime and the edge Agent
-    operates the real browser.  The legacy OpenCLI Doubao channel remains
-    available when no Agent mode is selected so old published workflows keep
-    their behavior.
+    selects a connected local Browser Bridge (BBX) or native Agent runtime and
+    the edge Agent operates the real browser. The default is BBX so the
+    workflow and the noVNC browser profile are one execution boundary. The
+    legacy OpenCLI Doubao channel remains available when no Agent mode is
+    selected so old published workflows keep their behavior.
     """
 
     capability_id = (
@@ -181,7 +182,7 @@ async def capture_live_doubao(
             raise GaojixingReadinessError(
                 "gaojixing_agent_runtime_required",
                 "Agent-mode Gaojixing capture requires a database session to select a local Agent.",
-                details={"requiredRuntime": "codex or claude-code"},
+                details={"requiredRuntime": "bbx, codex, or claude-code"},
             )
         agent_config = {
             **adapter_config,
@@ -248,13 +249,16 @@ async def _capture_live_doubao_via_agent(
     }
     if isinstance(chrome, bool):
         config["chrome"] = chrome
+    for key in ("settle_seconds",):
+        if key in adapter_config:
+            config[key] = adapter_config[key]
 
     instructions = (
         "You are the browser execution worker for a workflow. This is an exact, "
         "bounded research task. Do not use a Doubao CLI, Doubao HTTP/API request, "
-        "curl, requests, or any provider SDK. Use the locally installed OpenCLI "
-        "browser capability and the real logged-in browser session only. Read the "
-        "local opencli-browser instructions if needed. Open or reuse Doubao, submit "
+        "curl, requests, or any provider SDK. Use the locally installed BBX/Browser "
+        "Bridge browser capability and the real logged-in browser session only. "
+        "Open or reuse Doubao, submit "
         "the exact question, wait for the final answer, and inspect the visible page. "
         "If a CAPTCHA or human verification appears, do not bypass it: return the "
         "blocked JSON below immediately. Do not invent URLs or data. Return ONLY one "
@@ -283,10 +287,10 @@ async def _capture_live_doubao_via_agent(
         "session_id": None,
         "provider": None,
         "model": _string(adapter_config.get("agentModel")),
-        "required_capabilities": ["streaming", "tool_events"],
+        "required_capabilities": list(_required_agent_capabilities(runtime)),
         "permissions": {
             "mode": "full_auto",
-            "tool_scope": ["opencli.browser"],
+            "tool_scope": ["bbx.browser" if runtime == "bbx" else "opencli.browser"],
             "action_scope": ["doubao.ask", "doubao.read"],
             "workflow_id": workflow_id,
             "run_id": run_id,
@@ -398,7 +402,7 @@ async def _capture_live_doubao_via_agent(
         "citations": citations,
         "citation_count": len(citations),
         "citation_capture": "agent_browser_observation",
-        "provenance": f"agent:{runtime}:browser:opencli",
+        "provenance": f"agent:{runtime}:browser:{'bbx' if runtime == 'bbx' else 'opencli'}",
         "agent_runtime": runtime,
         "agent_url": agent_url,
     }
@@ -417,7 +421,11 @@ async def _select_local_agent(
     adapter_config: dict[str, Any],
 ) -> tuple[str, str]:
     preferred_runtime = _string(adapter_config.get("agentRuntime"))
-    preferred_runtimes = [preferred_runtime] if preferred_runtime else ["codex", "claude-code"]
+    preferred_runtimes = (
+        [preferred_runtime]
+        if preferred_runtime
+        else ["bbx", "codex", "claude-code"]
+    )
     preferred_url = _string(adapter_config.get("agentUrl"))
     nodes = list(
         (
@@ -433,7 +441,9 @@ async def _select_local_agent(
     )
     connected = set(ws_agent_manager.list_connected())
     candidates: list[tuple[tuple[int, int], tuple[int, int], str, str]] = []
-    required = {"streaming", "tool_events"}
+    required = set().union(
+        *[set(_required_agent_capabilities(runtime)) for runtime in preferred_runtimes]
+    )
     for node in nodes:
         if node.url not in connected or (preferred_url and node.url != preferred_url):
             continue
@@ -451,7 +461,7 @@ async def _select_local_agent(
     if not candidates:
         raise GaojixingReadinessError(
             "gaojixing_agent_runtime_unavailable",
-            "No connected local Agent advertises the requested Codex/Claude Code runtime.",
+            "No connected local Agent advertises the requested BBX/Codex/Claude Code runtime.",
             details={
                 "preferredRuntimes": preferred_runtimes,
                 "preferredAgentUrl": preferred_url,
@@ -460,6 +470,13 @@ async def _select_local_agent(
         )
     _, _, agent_url, runtime = min(candidates, key=lambda item: item[:2] + item[2:])
     return agent_url, runtime
+
+
+def _required_agent_capabilities(runtime: str) -> tuple[str, ...]:
+    """Capabilities required by the browser workflow for one runtime."""
+    if runtime == "bbx":
+        return ("browser", "tool_events")
+    return ("streaming", "tool_events")
 
 
 def _execution_mode(node_params: dict[str, Any], adapter_config: dict[str, Any]) -> str:

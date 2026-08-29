@@ -136,7 +136,8 @@ def _feishu_overrides(values: dict[str, Any]) -> dict[str, Any]:
     return {
         mapping.get(key, key): value
         for key, value in values.items()
-        if key in mapping or key in {"page_size", "view_id", "field_names", "source_group"}
+        if key in mapping
+        or key in {"max_rows", "page_size", "view_id", "field_names", "source_group"}
     }
 
 
