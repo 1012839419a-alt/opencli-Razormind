@@ -139,7 +139,7 @@ async fn process_events(
                         if let Some(outcomes) = outcomes.as_mut() {
                             outcomes.push(IngressOutcomeV1 {
                                 source_id: event.source_id.to_string(),
-                                event_id: event.event_id.clone(),
+                                event_id: event.event_id,
                                 outcome: IngressOutcomeKindV1::Accepted,
                                 rejection_reason: None,
                             });
@@ -200,7 +200,7 @@ async fn process_events(
             if let Some(outcomes) = outcomes.as_mut() {
                 outcomes.push(IngressOutcomeV1 {
                     source_id: event.source_id.to_string(),
-                    event_id: event.event_id.clone(),
+                    event_id: event.event_id,
                     outcome: IngressOutcomeKindV1::Duplicate,
                     rejection_reason: None,
                 });
