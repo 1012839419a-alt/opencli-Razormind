@@ -377,8 +377,12 @@ def _facts_from_driver(
     overlay: Path,
 ) -> dict[str, Any]:
     supported = {
-        "admin-crash", "iii-unreachable", "no-report", "signed-zero",
+        "admin-crash",
+        "iii-unreachable",
+        "no-report",
+        "signed-zero",
         "ingest-redis-store-loss",
+        "duplicate-dlq",
     }
     if ledger.scenario not in supported:
         raise FailureRunRejectedError(
@@ -394,11 +398,11 @@ def _facts_from_driver(
         command, cwd=ROOT, env=env, text=True,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )
-    if ledger.scenario == "ingest-redis-store-loss":
+    if ledger.scenario in {"ingest-redis-store-loss", "duplicate-dlq"}:
         stdout, stderr = process.communicate(timeout=360)
         if process.returncode:
             raise FailureRunRejectedError(
-                stderr.strip() or stdout.strip() or "storage-loss driver failed"
+                stderr.strip() or stdout.strip() or f"{ledger.scenario} driver failed"
             )
         return normalize_public_facts(json.loads(stdout))
     if ledger.scenario == "signed-zero":

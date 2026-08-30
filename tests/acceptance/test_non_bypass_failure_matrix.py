@@ -484,6 +484,8 @@ def test_duplicate_dlq_row_binds_replay_duplicate_and_retention_public_outcomes(
             "unknown_retention_materialization",
         )
     )
+    runner = (ROOT / "scripts/run_non_bypass_failure_matrix.py").read_text(encoding="utf-8")
+    assert '"duplicate-dlq"' in runner
 
 
 def _runner_module():
