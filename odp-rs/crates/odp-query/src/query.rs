@@ -219,6 +219,12 @@ impl QueryService {
             r#"
             SELECT requested.source_id AS requested_source_id,
                    requested.event_id AS requested_event_id,
+                   record.id AS odp_record_id,
+                   record.source_id,
+                   record.event_id,
+                   record.committed_at,
+                   record.provider,
+                   record.source_ts,
                    EXISTS (
                        SELECT 1
                        FROM odp_dlq AS dlq
@@ -226,6 +232,9 @@ impl QueryService {
                          AND dlq.event_id = requested.event_id
                    ) AS has_dlq
             FROM UNNEST($1::uuid[], $2::text[]) AS requested(source_id, event_id)
+            LEFT JOIN odp_records AS record
+              ON record.source_id = requested.source_id
+             AND record.event_id = requested.event_id
             ORDER BY requested.source_id, requested.event_id
             "#,
         )
@@ -245,8 +254,9 @@ impl QueryService {
                     .try_get("requested_event_id")
                     .map_err(|_| RequestError::Unavailable)?,
             };
+            let record = sanitized_ref(&row)?;
             let has_dlq: bool = row.try_get("has_dlq").map_err(|_| RequestError::Unavailable)?;
-            results.push(reconcile_dlq(key, has_dlq));
+            results.push(reconcile_dlq(key, record, has_dlq));
         }
         Ok(base_response(
             QueryModeName::Dlq,
@@ -421,7 +431,14 @@ fn reconcile_exact(key: RecordKey, record: Option<SanitizedRecordRef>) -> Reconc
     }
 }
 
-fn reconcile_dlq(key: RecordKey, has_dlq: bool) -> ReconciliationResult {
+fn reconcile_dlq(
+    key: RecordKey,
+    record: Option<SanitizedRecordRef>,
+    has_dlq: bool,
+) -> ReconciliationResult {
+    if let Some(record) = record {
+        return reconcile_exact(key, Some(record));
+    }
     ReconciliationResult {
         key,
         classification: if has_dlq {
@@ -528,19 +545,32 @@ mod tests {
     }
 
     #[test]
-    fn dlq_reports_only_durable_rows_and_aggregate_retention() {
+    fn dlq_rechecks_exact_precedence_and_reports_durable_rows() {
         let key = RecordKey {
             source_id: uuid::Uuid::nil(),
             event_id: "event".into(),
         };
-        let retained = reconcile_dlq(key.clone(), true);
+        let retained = reconcile_dlq(key.clone(), None, true);
         assert_eq!(retained.classification, ReconciliationClassification::Dlq);
         assert_eq!(retained.retention_state, RetentionState::Retained);
         assert!(retained.record.is_none());
 
-        let missing = reconcile_dlq(key, false);
+        let missing = reconcile_dlq(key.clone(), None, false);
         assert_eq!(missing.classification, ReconciliationClassification::Unknown);
         assert_eq!(missing.retention_state, RetentionState::Unknown);
+
+        let reference = record();
+        let present = reconcile_dlq(
+            RecordKey {
+                source_id: reference.source_id,
+                event_id: reference.event_id.clone(),
+            },
+            Some(reference),
+            true,
+        );
+        assert_eq!(present.classification, ReconciliationClassification::Present);
+        assert_eq!(present.retention_state, RetentionState::Unknown);
+        assert!(present.record.is_some());
 
         let all_dlq = base_response(
             QueryModeName::Dlq,
@@ -748,7 +778,26 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS odp_records (
+                id BIGSERIAL PRIMARY KEY,
+                task_id UUID NOT NULL,
+                trace_id UUID NOT NULL,
+                source_id UUID NOT NULL,
+                event_id TEXT NOT NULL,
+                committed_at TIMESTAMPTZ NOT NULL,
+                provider TEXT NOT NULL,
+                source_ts TIMESTAMPTZ NOT NULL
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
         sqlx::query("TRUNCATE odp_dlq RESTART IDENTITY")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("TRUNCATE odp_records RESTART IDENTITY")
             .execute(&pool)
             .await
             .unwrap();
@@ -794,7 +843,7 @@ mod tests {
         };
         delegation.query_fingerprint = delegation.fingerprint();
         let service =
-            QueryService::new(pool, "a sufficiently long cursor signing key").unwrap();
+            QueryService::new(pool.clone(), "a sufficiently long cursor signing key").unwrap();
 
         let mixed = service
             .dlq(&delegation, vec![retained.clone(), missing])
@@ -811,8 +860,27 @@ mod tests {
             ReconciliationClassification::Dlq
         );
 
-        let only_retained = service.dlq(&delegation, vec![retained]).await.unwrap();
+        let only_retained = service.dlq(&delegation, vec![retained.clone()]).await.unwrap();
         assert_eq!(only_retained.retention_state, RetentionState::Retained);
         assert!(only_retained.records.is_empty());
+
+        sqlx::query(
+            "INSERT INTO odp_records
+             (task_id, trace_id, source_id, event_id, committed_at, provider, source_ts)
+             VALUES ($1, $2, $3, $4, NOW(), 'rss', NOW())",
+        )
+        .bind(delegation.task_id)
+        .bind(delegation.trace_id)
+        .bind(source_id)
+        .bind(&retained.event_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let present = service.dlq(&delegation, vec![retained]).await.unwrap();
+        assert_eq!(
+            present.results[0].classification,
+            ReconciliationClassification::Present
+        );
+        assert!(present.results[0].record.is_some());
     }
 }

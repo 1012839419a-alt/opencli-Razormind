@@ -1203,3 +1203,151 @@ async def test_terminal_amendment_recover_keeps_pinned_completed_revision_immuta
         assert stale.json()["data"]["recoveryAction"] == "re_review"
     finally:
         app.dependency_overrides.pop(get_request_identity, None)
+
+
+@pytest.mark.asyncio
+async def test_dlq_recheck_promotes_new_exact_record_to_completed(
+    client, db_session, monkeypatch
+):
+    scope, command = await submit_report_and_receipt(client, db_session, monkeypatch)
+    record = _record(command)
+
+    async def query(request):
+        key = {"source_id": command.odp_source_id, "event_id": "event-1"}
+        if request["mode"] == "exact":
+            return {
+                **_base(request),
+                "mode": "exact",
+                "records": [],
+                "results": [{"key": key, "classification": "unknown", "retention_state": "unknown"}],
+            }
+        if request["mode"] == "dlq":
+            return {
+                **_base(request),
+                "mode": "dlq",
+                "records": [record],
+                "results": [
+                    {
+                        "key": key,
+                        "classification": "present",
+                        "retention_state": "unknown",
+                        "record": record,
+                    }
+                ],
+            }
+        return {**_base(request), "mode": "attempt_page", "records": [], "results": []}
+
+    monkeypatch.setattr("backend.workflow.evidence_batch_materializer.post_reconciliation_query", query)
+    response = await client.post(f"{route(scope)}/{command.id}/materialize")
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["materializationStatus"] == "completed"
+    assert data["counts"] == {
+        "expected": 1,
+        "record_present": 1,
+        "inserted": 0,
+        "duplicate_existing": 0,
+        "rejected": 0,
+        "dlq": 0,
+        "unknown": 0,
+    }
+    assert data["recordReferences"] == [
+        {
+            "sourceId": command.odp_source_id,
+            "eventId": "event-1",
+            "odpRecordId": 42,
+            "committedAt": "2026-08-30T00:00:00Z",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_dlq_outage_keeps_exact_classification_count_invariant(
+    client, db_session, monkeypatch
+):
+    scope, command = await submit_report_and_receipt(
+        client, db_session, monkeypatch, event_ids=["present", "unresolved"]
+    )
+    record = _record(command, event_id="present")
+
+    async def query(request):
+        if request["mode"] == "exact":
+            return {
+                **_base(request),
+                "mode": "exact",
+                "records": [record],
+                "results": [
+                    {
+                        "key": {"source_id": command.odp_source_id, "event_id": "present"},
+                        "classification": "present",
+                        "retention_state": "unknown",
+                        "record": record,
+                    },
+                    {
+                        "key": {"source_id": command.odp_source_id, "event_id": "unresolved"},
+                        "classification": "unknown",
+                        "retention_state": "unknown",
+                    },
+                ],
+            }
+        if request["mode"] == "dlq":
+            raise OdpQueryUnavailable("unavailable")
+        raise AssertionError("page must not run after a DLQ outage")
+
+    monkeypatch.setattr("backend.workflow.evidence_batch_materializer.post_reconciliation_query", query)
+    response = await client.post(f"{route(scope)}/{command.id}/materialize")
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["materializationStatus"] == "indeterminate"
+    assert data["counts"]["record_present"] == 1
+    assert data["counts"]["unknown"] == 1
+    assert data["counts"]["expected"] == sum(
+        data["counts"][name]
+        for name in ("record_present", "rejected", "dlq", "unknown")
+    )
+
+
+@pytest.mark.asyncio
+async def test_page_fingerprint_conflict_preserves_resolved_count_invariant(
+    client, db_session, monkeypatch
+):
+    scope, command = await submit_report_and_receipt(client, db_session, monkeypatch)
+    record = _record(command)
+
+    async def query(request):
+        if request["mode"] == "exact":
+            return {
+                **_base(request),
+                "mode": "exact",
+                "records": [record],
+                "results": [
+                    {
+                        "key": {"source_id": command.odp_source_id, "event_id": "event-1"},
+                        "classification": "present",
+                        "retention_state": "unknown",
+                        "record": record,
+                    }
+                ],
+            }
+        return {
+            **_base(request),
+            "mode": "attempt_page",
+            "query_fingerprint": "different-fingerprint",
+            "records": [],
+            "results": [],
+        }
+
+    monkeypatch.setattr("backend.workflow.evidence_batch_materializer.post_reconciliation_query", query)
+    response = await client.post(f"{route(scope)}/{command.id}/materialize")
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["materializationStatus"] == "indeterminate"
+    assert data["counts"]["record_present"] == 1
+    assert data["counts"]["unknown"] == 0
+    assert data["counts"]["expected"] == sum(
+        data["counts"][name]
+        for name in ("record_present", "rejected", "dlq", "unknown")
+    )

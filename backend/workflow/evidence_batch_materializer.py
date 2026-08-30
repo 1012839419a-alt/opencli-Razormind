@@ -514,12 +514,32 @@ async def _reconcile(
     if outcomes is None:
         counts["unknown"] = len(keys)
         return _outcome(common, "indeterminate", "signed_outcome_receipt_missing_or_conflicting")
-    rejected = {key for key, outcome in outcomes.items() if outcome == "rejected"}
-    counts["rejected"] = len(rejected)
-    exact_keys = [key for key in keys if key not in rejected]
+
+    rejected_keys = {key for key, outcome in outcomes.items() if outcome == "rejected"}
+    exact_keys = [key for key in keys if key not in rejected_keys]
+    present_keys: set[OdpRecordKey] = set()
+    dlq_keys: set[OdpRecordKey] = set()
+    unresolved = set(exact_keys)
+
+    def finish(status: str, reason: str) -> dict[str, Any]:
+        counts["record_present"] = len(present_keys)
+        counts["rejected"] = len(rejected_keys)
+        counts["dlq"] = len(dlq_keys)
+        counts["unknown"] = len(unresolved)
+        return _outcome(common, status, reason)
+
+    def accept_present(key: OdpRecordKey, result: dict[str, Any]) -> None:
+        if key in present_keys or len(common["record_references"]) >= _MAX_RECORD_REFERENCES:
+            return
+        record = result.get("record")
+        if not isinstance(record, dict):
+            return
+        present_keys.add(key)
+        unresolved.discard(key)
+        common["record_references"].append(_reference(record))
+
     try:
         delegation_request = delegation(command, attempt, common["batch_id"])
-        exact_missing: list[OdpRecordKey] = []
         for offset in range(0, len(exact_keys), _MAX_QUERY_KEYS):
             requested_keys = exact_keys[offset : offset + _MAX_QUERY_KEYS]
             exact = await post_reconciliation_query(
@@ -529,8 +549,7 @@ async def _reconcile(
                 common["query_fingerprint"] is not None
                 and common["query_fingerprint"] != exact["query_fingerprint"]
             ):
-                counts["unknown"] = len(exact_keys)
-                return _outcome(common, "indeterminate", "query_fingerprint_conflict")
+                return finish("indeterminate", "query_fingerprint_conflict")
             common["query_fingerprint"] = exact["query_fingerprint"]
             common["redaction_profile_version"] = exact["redaction_profile_version"]
             common["retention_state"] = exact["retention_state"]
@@ -540,23 +559,20 @@ async def _reconcile(
             }
             for key in requested_keys:
                 result = result_by_key.get((str(key.source_id), key.event_id))
-                if result is None or result["classification"] != "present" or "record" not in result:
-                    exact_missing.append(key)
-                    continue
-                if len(common["record_references"]) >= _MAX_RECORD_REFERENCES:
-                    counts["unknown"] += 1
-                    continue
-                counts["record_present"] += 1
-                common["record_references"].append(_reference(result["record"]))
+                if result is not None and result["classification"] == "present":
+                    accept_present(key, result)
 
-        for offset in range(0, len(exact_missing), _MAX_QUERY_KEYS):
-            requested_keys = exact_missing[offset : offset + _MAX_QUERY_KEYS]
+        for offset in range(0, len(exact_keys), _MAX_QUERY_KEYS):
+            requested_keys = [
+                key for key in exact_keys[offset : offset + _MAX_QUERY_KEYS] if key in unresolved
+            ]
+            if not requested_keys:
+                continue
             dlq = await post_reconciliation_query(
                 build_dlq_request(delegation_request, requested_keys)
             )
             if common["query_fingerprint"] != dlq["query_fingerprint"]:
-                counts["unknown"] = len(exact_keys)
-                return _outcome(common, "indeterminate", "query_fingerprint_conflict")
+                return finish("indeterminate", "query_fingerprint_conflict")
             common["redaction_profile_version"] = dlq["redaction_profile_version"]
             common["retention_state"] = dlq["retention_state"]
             result_by_key = {
@@ -565,14 +581,15 @@ async def _reconcile(
             }
             for key in requested_keys:
                 result = result_by_key.get((str(key.source_id), key.event_id))
-                if (
+                if result is not None and result["classification"] == "present":
+                    accept_present(key, result)
+                elif (
                     result is not None
                     and result["classification"] == "dlq"
                     and result["retention_state"] == "retained"
                 ):
-                    counts["dlq"] += 1
-                else:
-                    counts["unknown"] += 1
+                    dlq_keys.add(key)
+                    unresolved.discard(key)
 
         page = await post_reconciliation_query(
             build_attempt_page_request(delegation_request, page_size=_MAX_QUERY_KEYS)
@@ -580,22 +597,19 @@ async def _reconcile(
         if common["query_fingerprint"] is None:
             common["query_fingerprint"] = page["query_fingerprint"]
         elif common["query_fingerprint"] != page["query_fingerprint"]:
-            counts["unknown"] += len(keys) - counts["rejected"]
-            return _outcome(common, "indeterminate", "query_fingerprint_conflict")
+            return finish("indeterminate", "query_fingerprint_conflict")
         common["page_snapshot_as_of"] = page.get("as_of")
         common["redaction_profile_version"] = page["redaction_profile_version"]
         common["retention_state"] = page["retention_state"]
     except (OdpQueryError, ValueError, TypeError, KeyError):
-        counts["unknown"] = max(counts["unknown"], len(exact_keys))
-        return _outcome(common, "indeterminate", "odp_reconciliation_unavailable_or_invalid")
-    if counts["unknown"]:
-        return _outcome(common, "indeterminate", "exact_reconciliation_unknown")
-    if counts["rejected"] or counts["dlq"]:
-        return _outcome(common, "partial", "explicit_retained_rejection_or_dlq")
-    if counts["record_present"] != len(keys):
-        counts["unknown"] = len(keys) - counts["record_present"]
-        return _outcome(common, "indeterminate", "incomplete_exact_reconciliation")
-    return _outcome(common, "completed", "exact_presence_reconciled")
+        return finish("indeterminate", "odp_reconciliation_unavailable_or_invalid")
+    if unresolved:
+        return finish("indeterminate", "exact_reconciliation_unknown")
+    if rejected_keys or dlq_keys:
+        return finish("partial", "explicit_retained_rejection_or_dlq")
+    if len(present_keys) != len(keys):
+        return finish("indeterminate", "incomplete_exact_reconciliation")
+    return finish("completed", "exact_presence_reconciled")
 
 
 def _outcome(common: dict[str, Any], status: str, reason: str) -> dict[str, Any]:
