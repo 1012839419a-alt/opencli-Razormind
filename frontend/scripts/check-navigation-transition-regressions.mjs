@@ -12,7 +12,7 @@ test('Next View Transition integration is enabled and stays locally opt-in', asy
     read('components/motion/app-route-transition.tsx'),
   ])
 
-  assert.match(config, /viewTransition:\s*VIEW_TRANSITIONS_ENABLED/)
+  assert.doesNotMatch(config, /viewTransition/)
   assert.match(localTransition, /<ViewTransition name=\{name\}>/)
   assert.doesNotMatch(shell, /<ViewTransition\b/)
   assert.doesNotMatch(routeTransition, /<ViewTransition\b/)
