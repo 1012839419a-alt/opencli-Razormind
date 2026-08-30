@@ -201,6 +201,7 @@ def test_crash_after_ingest_uses_isolated_two_phase_orchestration():
         ("admin-crash", "admin_crash"), ("no-report", "admin_crash"),
         ("signed-zero", "admin_crash"), ("iii-unreachable", "iii_unreachable"),
         ("crash-after-ingest", "crash_after_ingest"),
+        ("ingest-redis-store-loss", "ingest_redis_store_loss"),
     ],
 )
 def test_failure_driver_dispatches_every_implemented_scenario(monkeypatch, capsys, scenario, handler):
@@ -212,6 +213,7 @@ def test_failure_driver_dispatches_every_implemented_scenario(monkeypatch, capsy
     driver_spec.loader.exec_module(driver)
     monkeypatch.setattr(driver, "admin_crash", lambda run, name: {"handler": "admin_crash", "scenario": name})
     monkeypatch.setattr(driver, "iii_unreachable", lambda run: {"handler": "iii_unreachable", "scenario": "iii-unreachable"})
+    monkeypatch.setattr(driver, "ingest_redis_store_loss", lambda run: {"handler": "ingest_redis_store_loss", "scenario": "ingest-redis-store-loss"})
     monkeypatch.setattr(driver, "crash_after_ingest", lambda run: {"handler": "crash_after_ingest", "scenario": "crash-after-ingest"})
     monkeypatch.setattr(sys, "argv", ["driver", "--scenario", scenario, "--run", "r1"])
     assert driver.main() == 0
@@ -227,3 +229,12 @@ def test_failure_overlay_routes_all_odp_writers_through_named_fault_gateways():
     assert services["proof-odp-ingest"]["environment"]["ODP_REDIS_URL"] == "redis://proof-odp-ingest-redis-gateway:6379/2"
     assert services["proof-odp-store"]["environment"]["ODP_REDIS_URL"] == "redis://proof-odp-store-redis-gateway:6379/2"
     assert "@proof-odp-store-pg-gateway:5432/" in services["proof-odp-store"]["environment"]["ODP_DATABASE_URL"]
+
+
+def test_storage_loss_row_uses_public_helpers_and_single_scenario_runner_selection():
+    driver = (ROOT / "tests/acceptance/non_bypass_failure_driver.py").read_text(encoding="utf-8")
+    runner = (ROOT / "scripts/run_non_bypass_failure_matrix.py").read_text(encoding="utf-8")
+    assert all(f"def {name}(" in driver for name in ("public_setup", "public_submit", "public_status", "public_materialize", "public_recover", "ingest_redis_store_loss"))
+    assert "store-redis-committed-xadd" in driver and "store-commit-ready" in driver
+    assert 'parser.add_argument("--scenario", choices=SCENARIO_ORDER)' in runner
+    assert "selected = (scenario,) if scenario else SCENARIO_ORDER" in runner

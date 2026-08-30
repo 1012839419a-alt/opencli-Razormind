@@ -14,6 +14,20 @@ tests/
 .gitignore
 *.md
 
+.artifacts/
+node_modules/
+**/target/
+odp-rs/target/
+.nx/
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+.sentrux/
+_bmad/
+_bmad-output/
+.agents/
+.claude/
+.omc/
 # The acceptance-only Docker target copies these deterministic harness inputs.
 !tests/
 !tests/acceptance/

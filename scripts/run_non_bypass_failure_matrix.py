@@ -21,23 +21,31 @@ from pathlib import Path
 from typing import Any
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-from scripts.run_non_bypass_happy_vertical import (
-    RunLedger as HappyRunLedger,
-    _make_identities,
-    _make_secrets,
-)
 
 from scripts.non_bypass_failure_proof_contract import canonical, content_hash, validate
 from scripts.proof_bundle_governance import Principal, ProofBundleStore
-from tests.acceptance.non_bypass_failure_matrix import SCENARIO_ORDER, SCENARIOS, normalize_public_facts
+from scripts.run_non_bypass_happy_vertical import (
+    RunLedger as HappyRunLedger,
+)
+from scripts.run_non_bypass_happy_vertical import (
+    _make_identities,
+    _make_secrets,
+)
+from tests.acceptance.non_bypass_failure_matrix import (
+    SCENARIO_ORDER,
+    normalize_public_facts,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / "tests/acceptance/fixtures/opencli-failure-proof"
 FIXTURE_DIGEST = ROOT / "tests/acceptance/fixtures/opencli-failure-proof.sha256"
-PINNED_III = "iiidev/iii:0.19.4@sha256:14ed48b463d8a2e0d3583512acf106b3514f406c5e9965a5854710ff936e1e86"
+PINNED_III = (
+    "iiidev/iii:0.19.4@sha256:"
+    "14ed48b463d8a2e0d3583512acf106b3514f406c5e9965a5854710ff936e1e86"
+)
 
 
-class FailureRunRejected(RuntimeError):
+class FailureRunRejectedError(RuntimeError):
     pass
 
 
@@ -49,13 +57,30 @@ class ScenarioLedger:
     artifact: Path
 
 
-def _run(command: list[str], *, env: dict[str, str], input: str | None = None, timeout: int = 360) -> str:
+def _run(
+    command: list[str],
+    *,
+    env: dict[str, str],
+    input: str | None = None,
+    timeout: int = 360,
+) -> str:
     try:
-        completed = subprocess.run(command, cwd=ROOT, env=env, input=input, text=True, capture_output=True, timeout=timeout, check=False)
+        completed = subprocess.run(
+            command,
+            cwd=ROOT,
+            env=env,
+            input=input,
+            text=True,
+            capture_output=True,
+            timeout=timeout,
+            check=False,
+        )
     except subprocess.TimeoutExpired as exc:
-        raise FailureRunRejected(f"command timed out: {' '.join(command)}") from exc
+        raise FailureRunRejectedError(f"command timed out: {' '.join(command)}") from exc
     if completed.returncode:
-        raise FailureRunRejected(completed.stderr.strip() or completed.stdout.strip() or "command failed")
+        raise FailureRunRejectedError(
+            completed.stderr.strip() or completed.stdout.strip() or "command failed"
+        )
     return completed.stdout
 
 
@@ -63,13 +88,25 @@ def _fixture_digest() -> str:
     expected = FIXTURE_DIGEST.read_text("utf-8").split()[0]
     actual = hashlib.sha256(FIXTURE.read_bytes()).hexdigest()
     if actual != expected:
-        raise FailureRunRejected("failure fixture digest is not pinned")
+        raise FailureRunRejectedError("failure fixture digest is not pinned")
     return actual
 
 
-def _compose(ledger: ScenarioLedger, env: dict[str, str], base: Path, overlay: Path, *args: str, input: str | None = None, timeout: int = 360) -> str:
-    return _run(["docker", "compose", "-p", ledger.project, "-f", str(base), "-f", str(overlay), *args], env=env, input=input, timeout=timeout)
-
+def _compose(
+    ledger: ScenarioLedger,
+    env: dict[str, str],
+    base: Path,
+    overlay: Path,
+    *args: str,
+    input: str | None = None,
+    timeout: int = 360,
+) -> str:
+    return _run(
+        ["docker", "compose", "-p", ledger.project, "-f", str(base), "-f", str(overlay), *args],
+        env=env,
+        input=input,
+        timeout=timeout,
+    )
 
 
 def _configure_failure_receiver(ledger: ScenarioLedger, values: dict[str, str]) -> None:
@@ -82,18 +119,25 @@ def _configure_failure_receiver(ledger: ScenarioLedger, values: dict[str, str]) 
     credential_reference, request_key = next(iter(credentials.items()))
     request_key_id = next(iter(inbound))
     receipt_key_id = next(iter(receipts))
-    values["CONTROLLED_RECEIVER_REGISTRY_JSON"] = json.dumps({
-        "receiver-channel-proof": {
-            "url": f"https://{ip}:8000/api/v1/controlled-receiver/v2/deliver",
-            "receiverIdentity": "controlled-receiver-proof",
-            "credentialReference": credential_reference,
-            "requestKeyId": request_key_id,
-            "receiptKeyId": receipt_key_id,
-            "allowedNetworks": [subnet],
-            "durableStatus": "accepted",
-        }
-    }, sort_keys=True, separators=(",", ":"))
-    (ledger.scratch / "controlled_receiver_registry_json").write_text(values["CONTROLLED_RECEIVER_REGISTRY_JSON"], encoding="utf-8")
+    values["CONTROLLED_RECEIVER_REGISTRY_JSON"] = json.dumps(
+        {
+            "receiver-channel-proof": {
+                "url": f"https://{ip}:8000/api/v1/controlled-receiver/v2/deliver",
+                "receiverIdentity": "controlled-receiver-proof",
+                "credentialReference": credential_reference,
+                "requestKeyId": request_key_id,
+                "receiptKeyId": receipt_key_id,
+                "allowedNetworks": [subnet],
+                "durableStatus": "accepted",
+            }
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    (ledger.scratch / "controlled_receiver_registry_json").write_text(
+        values["CONTROLLED_RECEIVER_REGISTRY_JSON"],
+        encoding="utf-8",
+    )
     os.chmod(ledger.scratch / "controlled_receiver_registry_json", 0o600)
     (ledger.scratch / "receiver.ext").write_text(
         "basicConstraints=critical,CA:FALSE\n"
@@ -102,26 +146,42 @@ def _configure_failure_receiver(ledger: ScenarioLedger, values: dict[str, str]) 
         f"subjectAltName=DNS:proof-controlled-receiver,IP:{ip}\n",
         encoding="utf-8",
     )
-    _run([
-        "openssl", "x509", "-req", "-days", "1", "-in", str(ledger.scratch / "receiver.csr"),
-        "-CA", str(ledger.scratch / "ca.pem"), "-CAkey", str(ledger.scratch / "ca-key.pem"),
-        "-CAcreateserial", "-extfile", str(ledger.scratch / "receiver.ext"),
-        "-out", str(ledger.scratch / "receiver-cert.pem"),
-    ], env={**os.environ})
-def _admit(ledger: ScenarioLedger, env: dict[str, str], base: Path, overlay: Path) -> dict[str, Any]:
+    _run(
+        [
+            "openssl", "x509", "-req", "-days", "1",
+            "-in", str(ledger.scratch / "receiver.csr"),
+            "-CA", str(ledger.scratch / "ca.pem"),
+            "-CAkey", str(ledger.scratch / "ca-key.pem"),
+            "-CAcreateserial", "-extfile", str(ledger.scratch / "receiver.ext"),
+            "-out", str(ledger.scratch / "receiver-cert.pem"),
+        ],
+        env={**os.environ},
+    )
+def _admit(
+    ledger: ScenarioLedger,
+    env: dict[str, str],
+    base: Path,
+    overlay: Path,
+) -> dict[str, Any]:
     """Build one scenario-private catalog, then admit it before `up --no-build`."""
     digest = _fixture_digest()
     _compose(ledger, env, base, overlay, "config", "--quiet", timeout=120)
-    _compose(ledger, env, base, overlay, "build", "--pull", timeout=1200)
-    images = _compose(ledger, env, base, overlay, "config", "--images", timeout=120).splitlines()
+    _compose(ledger, env, base, overlay, "build", timeout=120)
+    images = _compose(
+        ledger, env, base, overlay, "config", "--images", timeout=120
+    ).splitlines()
     if PINNED_III not in images:
-        raise FailureRunRejected("pinned III catalog image is absent")
+        raise FailureRunRejectedError("pinned III catalog image is absent")
     image_ids = {
-        image: _run(["docker", "image", "inspect", "--format", "{{.Id}}", image], env=env, timeout=120).strip()
+        image: _run(
+            ["docker", "image", "inspect", "--format", "{{.Id}}", image],
+            env=env,
+            timeout=120,
+        ).strip()
         for image in images
     }
     if any(not image_id.startswith("sha256:") for image_id in image_ids.values()):
-        raise FailureRunRejected("catalog image identity is not immutable")
+        raise FailureRunRejectedError("catalog image identity is not immutable")
     report = {
         "scenario": ledger.scenario,
         "fixtureDigest": digest,
@@ -134,9 +194,27 @@ def _admit(ledger: ScenarioLedger, env: dict[str, str], base: Path, overlay: Pat
     return report
 
 
-def _facts_from_crash_after_ingest(ledger: ScenarioLedger, env: dict[str, str], base: Path, overlay: Path) -> dict[str, Any]:
-    command = ["docker", "compose", "-p", ledger.project, "-f", str(base), "-f", str(overlay), "exec", "-T", "proof-driver", "python", "tests/acceptance/non_bypass_failure_driver.py", "--scenario", ledger.scenario, "--run", ledger.project]
-    process = subprocess.Popen(command, cwd=ROOT, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+def _facts_from_crash_after_ingest(
+    ledger: ScenarioLedger,
+    env: dict[str, str],
+    base: Path,
+    overlay: Path,
+) -> dict[str, Any]:
+    command = [
+        "docker", "compose", "-p", ledger.project, "-f", str(base),
+        "-f", str(overlay), "exec", "-T", "proof-driver", "python",
+        "tests/acceptance/non_bypass_failure_driver.py",
+        "--scenario", ledger.scenario, "--run", ledger.project,
+    ]
+    process = subprocess.Popen(
+        command,
+        cwd=ROOT,
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+
     def wait_for(name: str) -> None:
         path = ledger.artifact / "coordination" / f"{ledger.project}.{name}"
         deadline = time.monotonic() + 90
@@ -145,56 +223,98 @@ def _facts_from_crash_after_ingest(ledger: ScenarioLedger, env: dict[str, str], 
         if not path.exists():
             process.kill()
             out, err = process.communicate(timeout=30)
-            raise FailureRunRejected(err.strip() or out.strip() or f"crash driver missed {name}")
+            raise FailureRunRejectedError(
+                err.strip() or out.strip() or f"crash driver missed {name}"
+            )
+
     wait_for("arm-report-hold")
-    _compose(ledger, env, base, overlay, "exec", "-T", "proof-driver", "curl", "-fsS", "-X", "POST", "-H", f"X-API-Token: {env['API_AUTH_TOKEN']}", "-H", "Content-Type: application/json", "-d", '{"mode":"hold"}', "http://proof-relay:8080/_gate/report", timeout=30)
-    (ledger.artifact / "coordination" / f"{ledger.project}.report-hold-armed").write_text("armed", encoding="utf-8")
+    _compose(
+        ledger, env, base, overlay, "exec", "-T", "proof-driver", "curl", "-fsS",
+        "-X", "POST", "-H", f"X-API-Token: {env['API_AUTH_TOKEN']}",
+        "-H", "Content-Type: application/json", "-d", '{"mode":"hold"}',
+        "http://proof-relay:8080/_gate/report", timeout=30,
+    )
+    (ledger.artifact / "coordination" / f"{ledger.project}.report-hold-armed").write_text(
+        "armed", encoding="utf-8"
+    )
     wait_for("ingress-observed")
     _compose(ledger, env, base, overlay, "stop", "proof-collector", timeout=30)
-    (ledger.artifact / "coordination" / f"{ledger.project}.collector-stopped").write_text("stopped", encoding="utf-8")
+    (ledger.artifact / "coordination" / f"{ledger.project}.collector-stopped").write_text(
+        "stopped", encoding="utf-8"
+    )
     stdout, stderr = process.communicate(timeout=120)
     if process.returncode:
-        raise FailureRunRejected(stderr.strip() or stdout.strip() or "crash-after-ingest driver failed")
+        raise FailureRunRejectedError(
+            stderr.strip() or stdout.strip() or "crash-after-ingest driver failed"
+        )
     return normalize_public_facts(json.loads(stdout))
 
 
-def _facts_from_driver(ledger: ScenarioLedger, env: dict[str, str], base: Path, overlay: Path) -> dict[str, Any]:
-    if ledger.scenario not in {"admin-crash", "iii-unreachable", "no-report", "signed-zero"}:
-        raise FailureRunRejected(f"in-network driver is not implemented for {ledger.scenario}")
+def _facts_from_driver(
+    ledger: ScenarioLedger,
+    env: dict[str, str],
+    base: Path,
+    overlay: Path,
+) -> dict[str, Any]:
+    supported = {
+        "admin-crash", "iii-unreachable", "no-report", "signed-zero",
+        "ingest-redis-store-loss",
+    }
+    if ledger.scenario not in supported:
+        raise FailureRunRejectedError(
+            f"in-network driver is not implemented for {ledger.scenario}"
+        )
     command = [
-        "docker", "compose", "-p", ledger.project, "-f", str(base), "-f", str(overlay),
-        "exec", "-T", "proof-driver", "python", "tests/acceptance/non_bypass_failure_driver.py",
+        "docker", "compose", "-p", ledger.project, "-f", str(base),
+        "-f", str(overlay), "exec", "-T", "proof-driver", "python",
+        "tests/acceptance/non_bypass_failure_driver.py",
         "--scenario", ledger.scenario, "--run", ledger.project,
     ]
-    process = subprocess.Popen(command, cwd=ROOT, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    process = subprocess.Popen(
+        command, cwd=ROOT, env=env, text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    if ledger.scenario == "ingest-redis-store-loss":
+        stdout, stderr = process.communicate(timeout=360)
+        if process.returncode:
+            raise FailureRunRejectedError(
+                stderr.strip() or stdout.strip() or "storage-loss driver failed"
+            )
+        return normalize_public_facts(json.loads(stdout))
     if ledger.scenario == "signed-zero":
         stdout, stderr = process.communicate(timeout=120)
         if process.returncode:
             diagnostic = _compose(
-                ledger, env, base, overlay, "exec", "-T", "proof-driver", "curl", "-fsS",
-                "-H", f"X-API-Token: {env['API_AUTH_TOKEN']}",
+                ledger, env, base, overlay, "exec", "-T", "proof-driver",
+                "curl", "-fsS", "-H", f"X-API-Token: {env['API_AUTH_TOKEN']}",
                 "http://proof-relay:8080/_gate/report-diagnostics", timeout=30,
             )
             collector_log = _compose(
-                ledger, env, base, overlay, "logs", "--tail", "80", "proof-collector", timeout=30,
+                ledger, env, base, overlay, "logs", "--tail", "80",
+                "proof-collector", timeout=30,
             )
             hash_program = (
                 "import hashlib,os; "
                 "v=os.environ.get(os.environ['PROOF_HASH_KEY'],''); "
-                "print(f'{os.environ[\"PROOF_HASH_KEY\"]}:len={len(v)}:sha256={hashlib.sha256(v.encode()).hexdigest()}')"
+                "print(f'{os.environ[\"PROOF_HASH_KEY\"]}:len={len(v)}:"
+                "sha256={hashlib.sha256(v.encode()).hexdigest()}')"
             )
             collector_token = _compose(
-                ledger, env, base, overlay, "exec", "-T", "-e", "PROOF_HASH_KEY=ADMIN_III_LIFECYCLE_TOKEN",
-                "proof-collector", "python", "-c", hash_program, timeout=30,
+                ledger, env, base, overlay, "exec", "-T", "-e",
+                "PROOF_HASH_KEY=ADMIN_III_LIFECYCLE_TOKEN", "proof-collector",
+                "python", "-c", hash_program, timeout=30,
             )
             admin_token = _compose(
-                ledger, env, base, overlay, "exec", "-T", "-e", "PROOF_HASH_KEY=III_LIFECYCLE_TOKEN",
-                "proof-admin", "python", "-c", hash_program, timeout=30,
+                ledger, env, base, overlay, "exec", "-T", "-e",
+                "PROOF_HASH_KEY=III_LIFECYCLE_TOKEN", "proof-admin",
+                "python", "-c", hash_program, timeout=30,
             )
-            raise FailureRunRejected(
+            raise FailureRunRejectedError(
                 (stderr.strip() or stdout.strip() or "signed-zero driver failed")
-                + f"; relay report diagnostic: {diagnostic}; collector diagnostic: {collector_log}"
-                + f"; collector token: {collector_token.strip()}; admin token: {admin_token.strip()}"
+                + f"; relay report diagnostic: {diagnostic}; "
+                f"collector diagnostic: {collector_log}"
+                + f"; collector token: {collector_token.strip()}; "
+                f"admin token: {admin_token.strip()}"
             )
         return normalize_public_facts(json.loads(stdout))
     signal_name = "iii-ready" if ledger.scenario == "iii-unreachable" else "submitted"
@@ -205,32 +325,35 @@ def _facts_from_driver(ledger: ScenarioLedger, env: dict[str, str], base: Path, 
     if not signal.exists():
         process.kill()
         _stdout, stderr = process.communicate(timeout=30)
-        raise FailureRunRejected(
+        raise FailureRunRejectedError(
             f"{ledger.scenario} driver did not reach its public gate boundary: "
             + (stderr.strip() or _stdout.strip() or "no driver output")
         )
     if ledger.scenario == "admin-crash":
         _compose(ledger, env, base, overlay, "kill", "proof-admin", timeout=30)
         _compose(
-            ledger, env, base, overlay, "exec", "-T", "proof-driver", "curl", "-fsS",
-            "-X", "POST", "-H", f"X-API-Token: {env['API_AUTH_TOKEN']}",
+            ledger, env, base, overlay, "exec", "-T", "proof-driver", "curl",
+            "-fsS", "-X", "POST", "-H", f"X-API-Token: {env['API_AUTH_TOKEN']}",
             "-H", "Content-Type: application/json", "-d", '{"upstream":"control"}',
             "http://proof-relay:8080/_gate/callback-upstream", timeout=30,
         )
         release_name = "resume"
     elif ledger.scenario == "no-report":
         _compose(
-            ledger, env, base, overlay, "exec", "-T", "proof-driver", "curl", "-fsS",
-            "-X", "POST", "-H", f"X-API-Token: {env['API_AUTH_TOKEN']}",
+            ledger, env, base, overlay, "exec", "-T", "proof-driver", "curl",
+            "-fsS", "-X", "POST", "-H", f"X-API-Token: {env['API_AUTH_TOKEN']}",
             "-H", "Content-Type: application/json", "-d", '{"mode":"drop"}',
             "http://proof-relay:8080/_gate/report", timeout=30,
         )
         release_name = "resume"
     else:
         _run(
-            ["docker", "network", "disconnect", f"{ledger.project}_proof-iii-admin", f"{ledger.project}-proof-admin-1"],
-            env=env,
-            timeout=30,
+            [
+                "docker", "network", "disconnect",
+                f"{ledger.project}_proof-iii-admin",
+                f"{ledger.project}-proof-admin-1",
+            ],
+            env=env, timeout=30,
         )
         release_name = "iii-release"
     (ledger.artifact / "coordination" / f"{ledger.project}.{release_name}").write_text(
@@ -238,52 +361,105 @@ def _facts_from_driver(ledger: ScenarioLedger, env: dict[str, str], base: Path, 
     )
     stdout, stderr = process.communicate(timeout=120)
     if process.returncode:
-        raise FailureRunRejected(stderr.strip() or stdout.strip() or "in-network admin-crash driver failed")
+        raise FailureRunRejectedError(
+            stderr.strip() or stdout.strip() or "in-network admin-crash driver failed"
+        )
     try:
-        facts = json.loads(stdout)
-        return normalize_public_facts(facts)
+        return normalize_public_facts(json.loads(stdout))
     except (json.JSONDecodeError, RuntimeError) as exc:
-        raise FailureRunRejected(
+        raise FailureRunRejectedError(
             f"in-network driver facts failed normalization: {exc}"
         ) from exc
 
 
 def _govern(ledger: ScenarioLedger, result: dict[str, Any], now: int) -> dict[str, Any]:
-    scope = {"workspace": "failure", "project": ledger.project, "workflow": "failure-matrix", "run": result["run"]}
+    scope = {
+        "workspace": "failure",
+        "project": ledger.project,
+        "workflow": "failure-matrix",
+        "run": result["run"],
+    }
     # The durable store contains only redacted records/audit data. The generated
     # audit private key is process-only scratch material and is never written.
     root = ledger.artifact / "g"
-    store = ProofBundleStore(root, audit_private_key=Ed25519PrivateKey.generate(), now=lambda: now)
-    admin, writer = Principal("key-admin", "key-admin", scope), Principal("bundle-writer", "bundle-writer", scope)
-    key = store.bootstrap_active(admin, key_id="failure-active-v1", not_before=now - 1, not_after=now + 86400)
+    store = ProofBundleStore(
+        root, audit_private_key=Ed25519PrivateKey.generate(), now=lambda: now
+    )
+    admin = Principal("key-admin", "key-admin", scope)
+    writer = Principal("bundle-writer", "bundle-writer", scope)
+    key = store.bootstrap_active(
+        admin, key_id="failure-active-v1", not_before=now - 1, not_after=now + 86400
+    )
     artifact_id = f"{ledger.scenario[:8]}-{uuid.uuid4().hex[:12]}"
-    result["governance"] = {"artifactId": artifact_id, "contentHash": content_hash({key: value for key, value in result.items() if key != "governance"}), "keyId": key.key_id, "trustRootFingerprint": store.trust_root_fingerprint}
+    result["governance"] = {
+        "artifactId": artifact_id,
+        "contentHash": content_hash(
+            {key: value for key, value in result.items() if key != "governance"}
+        ),
+        "keyId": key.key_id,
+        "trustRootFingerprint": store.trust_root_fingerprint,
+    }
     validate(result, scenario=ledger.scenario)
     envelope = {
-        "governanceSchemaVersion": "ProofBundleGovernanceV1", "artifactId": artifact_id, "scenarioId": ledger.scenario,
-        "run": result["run"], "contentHash": content_hash(result), "sourceSchemaVersion": "ScenarioResultV1",
-        "createdAt": now, "expiresAt": now + 86400, "retentionClass": "release-proof", "retentionPolicyVersion": "v1",
-        "scope": scope, "redactionProfile": result["redactionProfile"], "signatureAlgorithm": "Ed25519", "keyId": key.key_id,
+        "governanceSchemaVersion": "ProofBundleGovernanceV1",
+        "artifactId": artifact_id,
+        "scenarioId": ledger.scenario,
+        "run": result["run"],
+        "contentHash": content_hash(result),
+        "sourceSchemaVersion": "ScenarioResultV1",
+        "createdAt": now,
+        "expiresAt": now + 86400,
+        "retentionClass": "release-proof",
+        "retentionPolicyVersion": "v1",
+        "scope": scope,
+        "redactionProfile": result["redactionProfile"],
+        "signatureAlgorithm": "Ed25519",
+        "keyId": key.key_id,
     }
-    saved = store.create(writer, artifact_id=artifact_id, payload=result, envelope=envelope)
+    saved = store.create(
+        writer, artifact_id=artifact_id, payload=result, envelope=envelope
+    )
     store.verify(writer, artifact_id=artifact_id)
     return saved
 
 
-def _cleanup(ledger: ScenarioLedger, env: dict[str, str], base: Path, overlay: Path) -> None:
+def _cleanup(
+    ledger: ScenarioLedger,
+    env: dict[str, str],
+    base: Path,
+    overlay: Path,
+) -> None:
     try:
-        _compose(ledger, env, base, overlay, "down", "--volumes", "--remove-orphans", timeout=60)
+        _compose(
+            ledger, env, base, overlay, "down", "--volumes",
+            "--remove-orphans", timeout=60,
+        )
     finally:
         shutil.rmtree(ledger.scratch, ignore_errors=True)
 
-def run_matrix(artifact_dir: Path, *, compose_file: Path, overlay_file: Path) -> list[Path]:
+
+def run_matrix(
+    artifact_dir: Path,
+    *,
+    compose_file: Path,
+    overlay_file: Path,
+    scenario: str | None = None,
+) -> list[Path]:
     results: list[Path] = []
-    for scenario in SCENARIO_ORDER:
+    selected = (scenario,) if scenario else SCENARIO_ORDER
+    for scenario in selected:
         run_id = f"nbf-{scenario}-{uuid.uuid4().hex[:12]}"
-        ledger = ScenarioLedger(scenario, run_id, Path(tempfile.mkdtemp(prefix=f"{run_id}-")), artifact_dir / scenario)
+        ledger = ScenarioLedger(
+            scenario,
+            run_id,
+            Path(tempfile.mkdtemp(prefix=f"{run_id}-")),
+            artifact_dir / scenario,
+        )
         os.chmod(ledger.scratch, 0o700)
         ledger.artifact.mkdir(mode=0o700, parents=True, exist_ok=True)
-        base_ledger = HappyRunLedger(run_id, ledger.project, ledger.scratch, ledger.artifact)
+        base_ledger = HappyRunLedger(
+            run_id, ledger.project, ledger.scratch, ledger.artifact
+        )
         values = _make_secrets(base_ledger)
         _configure_failure_receiver(ledger, values)
         _make_identities(base_ledger, values)
@@ -299,10 +475,18 @@ def run_matrix(artifact_dir: Path, *, compose_file: Path, overlay_file: Path) ->
         started = time.monotonic()
         try:
             _admit(ledger, env, compose_file, overlay_file)
-            _compose(ledger, env, compose_file, overlay_file, "up", "--detach", "--no-build", timeout=120)
-            result = (_facts_from_crash_after_ingest if scenario == "crash-after-ingest" else _facts_from_driver)(ledger, env, compose_file, overlay_file)
+            _compose(
+                ledger, env, compose_file, overlay_file,
+                "up", "--detach", "--no-build", timeout=120,
+            )
+            gather = (
+                _facts_from_crash_after_ingest
+                if scenario == "crash-after-ingest"
+                else _facts_from_driver
+            )
+            result = gather(ledger, env, compose_file, overlay_file)
             if time.monotonic() - started > 360:
-                raise FailureRunRejected("scenario exceeded the 360 second bound")
+                raise FailureRunRejectedError("scenario exceeded the 360 second bound")
             saved = _govern(ledger, result, int(time.time()))
             path = ledger.artifact / "proof.json"
             path.write_bytes(canonical(saved))
@@ -314,13 +498,25 @@ def run_matrix(artifact_dir: Path, *, compose_file: Path, overlay_file: Path) ->
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--compose-file", type=Path, default=ROOT / "docker-compose.non-bypass-acceptance.yml")
-    parser.add_argument("--overlay-file", type=Path, default=ROOT / "docker-compose.non-bypass-failure.yml")
+    parser.add_argument(
+        "--compose-file", type=Path,
+        default=ROOT / "docker-compose.non-bypass-acceptance.yml",
+    )
+    parser.add_argument(
+        "--overlay-file", type=Path,
+        default=ROOT / "docker-compose.non-bypass-failure.yml",
+    )
     parser.add_argument("--artifact-dir", type=Path, required=True)
+    parser.add_argument("--scenario", choices=SCENARIO_ORDER)
     args = parser.parse_args(argv)
     try:
-        run_matrix(args.artifact_dir, compose_file=args.compose_file, overlay_file=args.overlay_file)
-    except FailureRunRejected as exc:
+        run_matrix(
+            args.artifact_dir,
+            compose_file=args.compose_file,
+            overlay_file=args.overlay_file,
+            scenario=args.scenario,
+        )
+    except FailureRunRejectedError as exc:
         print(f"failure matrix rejected: {exc}")
         return 2
     return 0

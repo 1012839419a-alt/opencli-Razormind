@@ -241,6 +241,107 @@ def iii_unreachable(run: str) -> dict[str, Any]:
     return {"scenario": "iii-unreachable", "run": run, "fault": "primary-to-iii-disconnected", "actuator": {"name": "proof-iii-actuator", "invocationHash": hashlib.sha256(command_id.encode()).hexdigest()}, "correlation": {"commandId": command_id, "attemptId": attempt_id, "workflowRunId": workflow_run["runId"], "hashes": {"submission": submission["payloadSha256"]}}, "collection": {"blockingStage": "bridge_unavailable", "recoveryAction": "retry", "sideEffectUncertainty": True}, "materialization": {"status": "unknown", "blocker": "none", "recoveryAction": "none", "manifestHash": None, "reconciliationRevision": None, "pageSnapshotAsOf": None}, "graph": {"pin": None, "sequence": None, "readBlocker": "none", "mutationStatus": "unchanged"}, "delivery": {"state": "none", "outcome": "none", "attemptCount": 0, "receiptHash": None, "reconciliation": "none"}, "redactionProfile": "failure-v1", "timing": {"startedAt": 0, "completedAt": 1, "deadlineSeconds": 360}, "governanceReference": {"artifactId": "pending", "keyId": "pending", "trustRootFingerprint": "pending"}, "authority": "authenticated-scoped-public-api"}
 
 
+def public_setup(client: httpx.Client, run: str) -> dict[str, Any]:
+    """Create one public workspace/run used by the four isolated loss commands."""
+    fleet = {"X-API-Token": os.environ["API_AUTH_TOKEN"]}
+    bootstrap = {**fleet, "Authorization": f"Bearer {os.environ['BOOTSTRAP_ADMIN_TOKEN']}"}
+    proposer = {**fleet, "Authorization": f"Bearer {os.environ['PROOF_PROPOSER_JWT']}"}
+    primary = "http://proof-admin:8000/api/v1"
+    workspace = _post(client, primary, "/platform/workspaces", {"name": "ODP loss proof", "slug": run, "first_admin_subject": "bootstrap-admin", "first_admin_email": "bootstrap@proof.invalid", "first_admin_display_name": "Proof bootstrap"}, bootstrap)
+    workspace_id = workspace["id"]
+    _post(client, primary, f"/workspaces/{workspace_id}/members", {"subject": "proof-proposer", "email": "proof-proposer@proof.invalid", "display_name": "proof-proposer", "role": "operator"}, bootstrap)
+    asyncio.run(_seed(workspace_id, run))
+    boot = _post(client, primary, f"/workspaces/{workspace_id}/projects/bootstrap", {"project": {"name": "ODP loss proof", "slug": run}, "workflow": {"name": "ODP loss proof", "graph": _graph()}}, bootstrap)
+    route = f"/workspaces/{workspace_id}/projects/{boot['project']['id']}/workflows/{boot['primary_workflow']['id']}/runs"
+    validation = _post(client, primary, route.rsplit("/runs", 1)[0] + "/draft/validation-runs", {}, proposer)
+    if not validation.get("valid"):
+        raise RuntimeError("public workflow validation failed")
+    _post(client, primary, route.rsplit("/runs", 1)[0] + "/versions", {"reason": "ODP loss proof", "expectedRevision": 1, "validationRunId": validation["runId"]}, proposer)
+    workflow_run = _post_published_run(client, primary, route, {"inputs": {}, "responseMode": "async", "user": "proof-proposer", "requestId": run, "idempotencyKey": run}, proposer)
+    return {"primary": primary, "proposer": proposer, "route": route, "runId": workflow_run["runId"], "collections": f"{route}/{workflow_run['runId']}/iii-collections"}
+
+
+def public_submit(client: httpx.Client, setup: dict[str, Any], *, source_id: str, site: str, command: str) -> dict[str, Any]:
+    return _post(client, setup["primary"], setup["collections"], {"version": "v1", "idempotencyKey": source_id, "nodeId": "opencli-source", "collection": {"site": site, "command": command, "args": {"keyword": source_id}, "sourceBindingId": source_id, "sourceBindingRevisionId": f"{source_id}-v1", "sourceBindingRevisionNumber": 1}}, setup["proposer"])
+
+
+def public_status(client: httpx.Client, setup: dict[str, Any], command_id: str) -> dict[str, Any]:
+    return _get(client, setup["primary"], f"{setup['collections']}/{command_id}", setup["proposer"])
+
+
+def public_materialize(client: httpx.Client, setup: dict[str, Any], command_id: str, *, recover: bool = False) -> dict[str, Any]:
+    action = "recover" if recover else "materialize"
+    batch = _post(client, setup["primary"], f"{setup['collections']}/{command_id}/{action}", {}, setup["proposer"])
+    return _get(client, setup["primary"], f"{setup['route']}/{setup['runId']}/evidence-batches/v1/{batch['batchId']}/status", setup["proposer"])
+
+
+def public_recover(client: httpx.Client, setup: dict[str, Any], command_id: str) -> dict[str, Any]:
+    return public_materialize(client, setup, command_id, recover=True)
+
+
+def _arm_gateway(client: httpx.Client, name: str, armed: bool) -> None:
+    controls = {
+        "http-schema-mutator": "http://proof-odp-http-gateway:8040",
+        "ingest-redis-cut": "http://proof-odp-ingest-redis-gateway:8081",
+        "store-pg-cut": "http://proof-odp-store-pg-gateway:8082",
+        "store-redis-committed-xadd": "http://proof-odp-store-redis-gateway:8083",
+    }
+    response = client.post(f"{controls[name]}/_gate/{name}/arm", json={"armed": armed}, headers={"X-API-Token": os.environ["API_AUTH_TOKEN"]})
+    if response.status_code != 200:
+        raise RuntimeError(f"authenticated gateway arm failed: {response.status_code}")
+
+
+def _public_hash(value: dict[str, Any]) -> str:
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def ingest_redis_store_loss(run: str) -> dict[str, Any]:
+    """Exercise four real loss seams while preserving only public API facts."""
+    cases = (
+        ("http-schema-mutator", "http-schema-mutator", "bilibili", "search"),
+        ("ingest-redis-cut", "ingest-redis-cut", "youtube", "videos"),
+        ("store-pg-cut", "store-pg-cut", "github", "issues"),
+        ("store-redis-committed-xadd", "store-redis-committed-xadd", "reddit", "posts"),
+    )
+    observations: dict[str, dict[str, Any]] = {}
+    with httpx.Client(timeout=60) as client:
+        setup = public_setup(client, run)
+        for index, (gateway, source, site, command) in enumerate(cases):
+            source_id = f"{run}-{index}-{source}"
+            if gateway == "store-redis-committed-xadd":
+                marker = Path("/proof-artifacts/gateway-coordination/store-commit-ready")
+                marker.unlink(missing_ok=True)
+                time.sleep(1)
+            _arm_gateway(client, gateway, True)
+            try:
+                submission = public_submit(client, setup, source_id=source_id, site=site, command=command)
+                command_id = submission["commandId"]
+                status = public_status(client, setup, command_id)
+                if gateway == "store-redis-committed-xadd":
+                    deadline = time.monotonic() + 60
+                    while not marker.exists() and time.monotonic() < deadline:
+                        time.sleep(0.2)
+                    if not marker.exists():
+                        raise RuntimeError("store commit did not make notification loss eligible")
+                materialization = public_materialize(client, setup, command_id)
+            finally:
+                _arm_gateway(client, gateway, False)
+            recovered = public_recover(client, setup, command_id)
+            if not isinstance(recovered.get("reconciliationRevision"), int) or not recovered.get("materializationStatus"):
+                raise RuntimeError("public recovery did not expose outcome and revision")
+            observations[gateway] = {"submission": submission, "status": status, "materialization": recovered, "commandId": command_id, "attemptId": submission["attemptId"]}
+    final = observations["store-redis-committed-xadd"]
+    hashes = {
+        f"{name}_status": _public_hash(value["status"])
+        for name, value in observations.items()
+    } | {
+        f"{name}_materialization": _public_hash(value["materialization"])
+        for name, value in observations.items()
+    }
+    final_status = final["materialization"]
+    status = final_status.get("materializationStatus")
+    normalized = status if status in {"indeterminate", "completed_empty", "rejected", "unknown", "completed"} else "unknown"
+    return {"scenario": "ingest-redis-store-loss", "run": run, "fault": "ingest-redis-store-notification-loss", "actuator": {"name": "proof-iii-actuator", "invocationHash": hashlib.sha256(final["commandId"].encode()).hexdigest()}, "correlation": {"commandId": final["commandId"], "attemptId": final["attemptId"], "workflowRunId": setup["runId"], "hashes": hashes}, "collection": {"blockingStage": "ingress_unknown", "recoveryAction": "recover", "sideEffectUncertainty": True}, "materialization": {"status": normalized, "blocker": "none", "recoveryAction": "recover", "manifestHash": None, "reconciliationRevision": final_status["reconciliationRevision"], "pageSnapshotAsOf": final_status.get("pageSnapshotAsOf")}, "graph": {"pin": None, "sequence": None, "readBlocker": "none", "mutationStatus": "none"}, "delivery": {"state": "none", "outcome": "none", "attemptCount": 0, "receiptHash": None, "reconciliation": "none"}, "redactionProfile": "failure-v1", "timing": {"startedAt": 0, "completedAt": 1, "deadlineSeconds": 360}, "governanceReference": {"artifactId": "pending", "keyId": "pending", "trustRootFingerprint": "pending"}, "authority": "authenticated-scoped-public-api"}
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--scenario", required=True)
@@ -252,6 +353,8 @@ def main() -> int:
         result = iii_unreachable(args.run)
     elif args.scenario == "crash-after-ingest":
         result = crash_after_ingest(args.run)
+    elif args.scenario == "ingest-redis-store-loss":
+        result = ingest_redis_store_loss(args.run)
     else:
         raise RuntimeError("scenario driver is not implemented")
     print(json.dumps(result, sort_keys=True))
