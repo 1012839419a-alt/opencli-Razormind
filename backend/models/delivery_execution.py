@@ -81,7 +81,6 @@ class ControlledReceiverDelivery(TimestampMixin):
     decision_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     payload_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
-    canonical_body: Mapped[str] = mapped_column(Text, nullable=False)
     durable_status: Mapped[str] = mapped_column(String(16), nullable=False)
     receipt_id: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
     receipt_timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

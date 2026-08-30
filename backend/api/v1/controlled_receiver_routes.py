@@ -47,7 +47,7 @@ async def _parse(request: Request) -> tuple[ControlledReceiverDeliveryV2, bytes]
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid controlled receiver v2 body") from exc
     if raw != canonical_json(value.model_dump(by_alias=True)):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Controlled receiver body is not canonical")
-    if canonical_hash(value.payload) != value.payload_hash:
+    if canonical_hash(value.payload.model_dump(by_alias=True)) != value.payload_hash:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Controlled receiver payload hash mismatch")
     return value, raw
 
@@ -111,7 +111,6 @@ async def deliver(request: Request, db: AsyncSession = Depends(get_db)) -> dict[
         decision_hash=value.decision_hash,
         payload_hash=value.payload_hash,
         request_hash=request_hash,
-        canonical_body=raw.decode("utf-8"),
         durable_status=endpoint.durable_status,
         receipt_id=receipt_id,
         receipt_timestamp=now,
