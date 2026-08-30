@@ -1044,7 +1044,7 @@ async def test_missing_dlq_remains_indeterminate_and_recover_requeries_terminal_
 
 
 @pytest.mark.asyncio
-async def test_recover_amends_a_pinned_terminal_manifest_after_duplicate_ingress(
+async def test_terminal_amendment_recover_keeps_pinned_completed_revision_immutable(
     client, db_session, monkeypatch
 ):
     scope, command = await submit_report_and_receipt(client, db_session, monkeypatch)
@@ -1156,12 +1156,19 @@ async def test_recover_amends_a_pinned_terminal_manifest_after_duplicate_ingress
         )
         duplicate["outcomes"][0]["outcome"] = "duplicate"
         duplicate = sign_receipt_body(duplicate)
+        assert duplicate["receiptHash"]
         callback = await client.post(
             "/api/v1/iii-collections/ingress-receipts",
             json=duplicate,
             headers={"x-iii-bridge-token": "bridge-token"},
         )
         assert callback.status_code == 200
+
+        calls.clear()
+        replayed = await client.post(f"{collection_route}/{command.id}/materialize")
+        assert replayed.status_code == 200
+        assert calls == []
+        assert replayed.json()["data"]["reconciliationRevision"] == 1
 
         current_identity = RequestIdentity(subject=proposer.subject)
         calls.clear()
