@@ -134,6 +134,30 @@ def _admit(ledger: ScenarioLedger, env: dict[str, str], base: Path, overlay: Pat
     return report
 
 
+def _facts_from_crash_after_ingest(ledger: ScenarioLedger, env: dict[str, str], base: Path, overlay: Path) -> dict[str, Any]:
+    command = ["docker", "compose", "-p", ledger.project, "-f", str(base), "-f", str(overlay), "exec", "-T", "proof-driver", "python", "tests/acceptance/non_bypass_failure_driver.py", "--scenario", ledger.scenario, "--run", ledger.project]
+    process = subprocess.Popen(command, cwd=ROOT, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    def wait_for(name: str) -> None:
+        path = ledger.artifact / "coordination" / f"{ledger.project}.{name}"
+        deadline = time.monotonic() + 90
+        while not path.exists() and time.monotonic() < deadline:
+            time.sleep(0.2)
+        if not path.exists():
+            process.kill()
+            out, err = process.communicate(timeout=30)
+            raise FailureRunRejected(err.strip() or out.strip() or f"crash driver missed {name}")
+    wait_for("arm-report-hold")
+    _compose(ledger, env, base, overlay, "exec", "-T", "proof-driver", "curl", "-fsS", "-X", "POST", "-H", f"X-API-Token: {env['API_AUTH_TOKEN']}", "-H", "Content-Type: application/json", "-d", '{"mode":"hold"}', "http://proof-relay:8080/_gate/report", timeout=30)
+    (ledger.artifact / "coordination" / f"{ledger.project}.report-hold-armed").write_text("armed", encoding="utf-8")
+    wait_for("ingress-observed")
+    _compose(ledger, env, base, overlay, "stop", "proof-collector", timeout=30)
+    (ledger.artifact / "coordination" / f"{ledger.project}.collector-stopped").write_text("stopped", encoding="utf-8")
+    stdout, stderr = process.communicate(timeout=120)
+    if process.returncode:
+        raise FailureRunRejected(stderr.strip() or stdout.strip() or "crash-after-ingest driver failed")
+    return normalize_public_facts(json.loads(stdout))
+
+
 def _facts_from_driver(ledger: ScenarioLedger, env: dict[str, str], base: Path, overlay: Path) -> dict[str, Any]:
     if ledger.scenario not in {"admin-crash", "iii-unreachable", "no-report", "signed-zero"}:
         raise FailureRunRejected(f"in-network driver is not implemented for {ledger.scenario}")
@@ -276,7 +300,7 @@ def run_matrix(artifact_dir: Path, *, compose_file: Path, overlay_file: Path) ->
         try:
             _admit(ledger, env, compose_file, overlay_file)
             _compose(ledger, env, compose_file, overlay_file, "up", "--detach", "--no-build", timeout=120)
-            result = _facts_from_driver(ledger, env, compose_file, overlay_file)
+            result = (_facts_from_crash_after_ingest if scenario == "crash-after-ingest" else _facts_from_driver)(ledger, env, compose_file, overlay_file)
             if time.monotonic() - started > 360:
                 raise FailureRunRejected("scenario exceeded the 360 second bound")
             saved = _govern(ledger, result, int(time.time()))

@@ -150,6 +150,58 @@ def admin_crash(run: str, scenario: str = "admin-crash") -> dict[str, Any]:
             )
         return {"scenario": "signed-zero", "run": run, "fault": "pinned-zero-fixture", "actuator": {"name": "proof-iii-actuator", "invocationHash": hashlib.sha256(command_id.encode()).hexdigest()}, "correlation": {"commandId": command_id, "attemptId": attempt_id, "workflowRunId": run_id, "hashes": hashes}, "collection": {"blockingStage": "none", "recoveryAction": "none", "sideEffectUncertainty": False}, "materialization": {"status": "completed_empty", "blocker": "none", "recoveryAction": "none", "manifestHash": None, "reconciliationRevision": materialization["reconciliationRevision"], "pageSnapshotAsOf": materialization.get("pageSnapshotAsOf")}, "graph": {"pin": None, "sequence": None, "readBlocker": "none", "mutationStatus": "none"}, "delivery": {"state": "none", "outcome": "none", "attemptCount": 0, "receiptHash": None, "reconciliation": "none"}, "redactionProfile": "failure-v1", "timing": {"startedAt": 0, "completedAt": 1, "deadlineSeconds": 360}, "governanceReference": {"artifactId": "pending", "keyId": "pending", "trustRootFingerprint": "pending"}, "authority": "authenticated-scoped-public-api"}
     return {"scenario": "admin-crash", "run": run, "fault": "primary-admin-crash", "actuator": {"name": "proof-iii-actuator", "invocationHash": hashlib.sha256(command_id.encode()).hexdigest()}, "correlation": {"commandId": command_id, "attemptId": attempt_id, "workflowRunId": run_id, "hashes": hashes}, "collection": {"blockingStage": "none", "recoveryAction": "resume", "sideEffectUncertainty": True}, "materialization": {"status": "unknown", "blocker": "none", "recoveryAction": "none", "manifestHash": None, "reconciliationRevision": None, "pageSnapshotAsOf": None}, "graph": {"pin": None, "sequence": None, "readBlocker": "none", "mutationStatus": "none"}, "delivery": {"state": "none", "outcome": "none", "attemptCount": 0, "receiptHash": None, "reconciliation": "none"}, "redactionProfile": "failure-v1", "timing": {"startedAt": 0, "completedAt": 1, "deadlineSeconds": 360}, "governanceReference": {"artifactId": "pending", "keyId": "pending", "trustRootFingerprint": "pending"}, "authority": "authenticated-scoped-public-api"}
+def crash_after_ingest(run: str) -> dict[str, Any]:
+    """Prove report loss only after a public ingress receipt is observable."""
+    fleet = {"X-API-Token": os.environ["API_AUTH_TOKEN"]}
+    bootstrap = {**fleet, "Authorization": f"Bearer {os.environ['BOOTSTRAP_ADMIN_TOKEN']}"}
+    proposer = {**fleet, "Authorization": f"Bearer {os.environ['PROOF_PROPOSER_JWT']}"}
+    primary = "http://proof-admin:8000/api/v1"
+    with httpx.Client(timeout=60) as client:
+        workspace = _post(client, primary, "/platform/workspaces", {"name": "Crash after ingest", "slug": run, "first_admin_subject": "bootstrap-admin", "first_admin_email": "bootstrap@proof.invalid", "first_admin_display_name": "Proof bootstrap"}, bootstrap)
+        workspace_id = workspace["id"]
+        _post(client, primary, f"/workspaces/{workspace_id}/members", {"subject": "proof-proposer", "email": "proof-proposer@proof.invalid", "display_name": "proof-proposer", "role": "operator"}, bootstrap)
+        asyncio.run(_seed(workspace_id, run))
+        boot = _post(client, primary, f"/workspaces/{workspace_id}/projects/bootstrap", {"project": {"name": "Crash after ingest", "slug": run}, "workflow": {"name": "Crash after ingest", "graph": _graph()}}, bootstrap)
+        route = f"/workspaces/{workspace_id}/projects/{boot['project']['id']}/workflows/{boot['primary_workflow']['id']}/runs"
+        validation = _post(client, primary, route.rsplit("/runs", 1)[0] + "/draft/validation-runs", {}, proposer)
+        if not validation.get("valid"):
+            raise RuntimeError("public workflow validation failed")
+        _post(client, primary, route.rsplit("/runs", 1)[0] + "/versions", {"reason": "crash after ingest", "expectedRevision": 1, "validationRunId": validation["runId"]}, proposer)
+        workflow_run = _post_published_run(client, primary, route, {"inputs": {}, "responseMode": "async", "user": "proof-proposer", "requestId": run, "idempotencyKey": run}, proposer)
+        collections = f"{route}/{workflow_run['runId']}/iii-collections"
+        _coordination(f"{run}.arm-report-hold").write_text(json.dumps({"route": collections}), encoding="utf-8")
+        _wait_coordination(run, "report-hold-armed")
+        submission = _post(client, primary, collections, {"version": "v1", "idempotencyKey": run, "nodeId": "opencli-source", "collection": {"site": "bilibili", "command": "search", "args": {"keyword": "vertical-proof"}, "sourceBindingId": "proof-binding", "sourceBindingRevisionId": "proof-binding-v1", "sourceBindingRevisionNumber": 1}}, proposer)
+        command_id, attempt_id = submission["commandId"], submission["attemptId"]
+        deadline = time.monotonic() + 60
+        status: dict[str, Any] = {}
+        receipt_hash = None
+        while time.monotonic() < deadline:
+            status = _get(client, primary, f"{collections}/{command_id}", proposer)
+            receipt_hash = next((item.get("hash") for item in status.get("evidenceReferences", []) if item.get("kind") == "ingress_receipt" and item.get("hash")), None)
+            if receipt_hash:
+                break
+            time.sleep(0.5)
+        if not receipt_hash:
+            raise RuntimeError("public status did not expose ingress receipt hash")
+        _coordination(f"{run}.ingress-observed").write_text(json.dumps({"receiptHash": receipt_hash}), encoding="utf-8")
+        _wait_coordination(run, "collector-stopped")
+        materialized = _post(client, primary, f"{collections}/{command_id}/materialize", {}, proposer)
+        materialization = _get(client, primary, f"{route}/{workflow_run['runId']}/evidence-batches/v1/{materialized['batchId']}/status", proposer)
+    if materialization.get("materializationStatus") != "indeterminate":
+        raise RuntimeError("public materialization was not indeterminate after collector stop")
+    return {"scenario": "crash-after-ingest", "run": run, "fault": "collector-stopped-after-ingress", "actuator": {"name": "proof-iii-actuator", "invocationHash": hashlib.sha256(command_id.encode()).hexdigest()}, "correlation": {"commandId": command_id, "attemptId": attempt_id, "workflowRunId": workflow_run["runId"], "hashes": {"submission": submission["payloadSha256"], "ingress_receipt": receipt_hash}}, "collection": {"blockingStage": "callback_missing", "recoveryAction": "recover", "sideEffectUncertainty": True}, "materialization": {"status": "indeterminate", "blocker": "missing_report", "recoveryAction": "recover", "manifestHash": None, "reconciliationRevision": materialization["reconciliationRevision"], "pageSnapshotAsOf": materialization.get("pageSnapshotAsOf")}, "graph": {"pin": None, "sequence": None, "readBlocker": "none", "mutationStatus": "none"}, "delivery": {"state": "none", "outcome": "none", "attemptCount": 0, "receiptHash": None, "reconciliation": "none"}, "redactionProfile": "failure-v1", "timing": {"startedAt": 0, "completedAt": 1, "deadlineSeconds": 360}, "governanceReference": {"artifactId": "pending", "keyId": "pending", "trustRootFingerprint": "pending"}, "authority": "authenticated-scoped-public-api"}
+
+
+def _wait_coordination(run: str, name: str) -> None:
+    release = _coordination(f"{run}.{name}")
+    deadline = time.monotonic() + 90
+    while not release.exists() and time.monotonic() < deadline:
+        time.sleep(0.2)
+    if not release.exists():
+        raise RuntimeError(f"orchestrator did not acknowledge {name}")
+
+
 def iii_unreachable(run: str) -> dict[str, Any]:
     fleet = {"X-API-Token": os.environ["API_AUTH_TOKEN"]}
     bootstrap = {**fleet, "Authorization": f"Bearer {os.environ['BOOTSTRAP_ADMIN_TOKEN']}"}
@@ -196,8 +248,8 @@ def main() -> int:
     args = parser.parse_args()
     if args.scenario in {"admin-crash", "no-report", "signed-zero"}:
         result = admin_crash(args.run, args.scenario)
-    elif args.scenario == "iii-unreachable":
-        result = iii_unreachable(args.run)
+    elif args.scenario == "crash-after-ingest":
+        result = crash_after_ingest(args.run)
     else:
         raise RuntimeError("scenario driver is not implemented")
     print(json.dumps(result, sort_keys=True))

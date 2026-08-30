@@ -183,3 +183,13 @@ def test_published_run_retries_only_the_documented_visibility_409(monkeypatch):
     monkeypatch.setattr(driver.time, "monotonic", lambda: 0)
     monkeypatch.setattr(driver.time, "sleep", lambda _seconds: None)
     assert driver._post_published_run(Client(), "http://api", "/run", {"idempotencyKey": "same"}, {}) == {"runId": "run-1"}
+
+
+def test_crash_after_ingest_uses_isolated_two_phase_orchestration():
+    driver = (ROOT / "tests/acceptance/non_bypass_failure_driver.py").read_text(encoding="utf-8")
+    runner = (ROOT / "scripts/run_non_bypass_failure_matrix.py").read_text(encoding="utf-8")
+    assert "def crash_after_ingest(" in driver
+    assert all(name in driver for name in ("arm-report-hold", "ingress-observed", "collector-stopped"))
+    assert "def _facts_from_crash_after_ingest(" in runner
+    assert '"stop", "proof-collector"' in runner
+    assert '{"mode":"hold"}' in runner
