@@ -6,6 +6,7 @@ from backend.api.v1 import (
     agents,
     automations,
     browser_act,
+    browser_containers,
     browsers,
     chat,
     consumer_grants,
@@ -58,7 +59,9 @@ v1_router.include_router(automations.router)
 v1_router.include_router(odp_reconciliation.router)
 v1_router.include_router(image_studio.router)
 v1_router.include_router(browser_act.router)
+v1_router.include_router(browser_containers.router)
 v1_router.include_router(browsers.router)
+v1_router.include_router(browsers.runtime_router)
 v1_router.include_router(chat.router)
 v1_router.include_router(control.router)
 v1_router.include_router(consumer_grants.router)

@@ -18,7 +18,7 @@ def test_contract_verifier_accepts_the_pinned_real_command(tmp_path):
             _completed([], stdout=f"{PINNED_COMMIT}\n"),
             _completed([]),
             _completed([]),
-            _completed([], stdout="opencli 1.8.5\n"),
+            _completed([], stdout="opencli 1.8.7\n"),
             _completed([], stdout="Usage: opencli official-site observe"),
             _completed(
                 [],
@@ -56,7 +56,7 @@ def test_live_verifier_requires_a_real_versioned_payload_and_trace(tmp_path):
             _completed([], stdout=f"{PINNED_COMMIT}\n"),
             _completed([]),
             _completed([]),
-            _completed([], stdout="opencli 1.8.5\n"),
+            _completed([], stdout="opencli 1.8.7\n"),
             _completed([], stdout="Usage: opencli official-site observe"),
             _completed(
                 [],
@@ -94,7 +94,7 @@ def test_live_verifier_rejects_success_without_a_trace(tmp_path):
             _completed([], stdout=f"{PINNED_COMMIT}\n"),
             _completed([]),
             _completed([]),
-            _completed([], stdout="opencli 1.8.5\n"),
+            _completed([], stdout="opencli 1.8.7\n"),
             _completed([], stdout="Usage: opencli official-site observe"),
             _completed(
                 [],

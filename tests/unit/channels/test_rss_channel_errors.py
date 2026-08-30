@@ -7,6 +7,8 @@ import pytest
 
 from backend.channels.rss_channel import RSSChannel
 
+pytestmark = pytest.mark.usefixtures("mock_rss_public_client")
+
 
 @pytest.fixture
 def channel():

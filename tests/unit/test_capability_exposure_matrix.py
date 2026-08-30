@@ -10,7 +10,7 @@ from backend.workflow.capability_projection import build_workflow_capabilities
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MATRIX_PATH = REPO_ROOT / "docs" / "backend-capability-exposure-matrix.yaml"
-ENDPOINTS_PATH = REPO_ROOT / "frontend" / "lib" / "api" / "endpoints.ts"
+ENDPOINTS_PATHS = sorted((REPO_ROOT / "frontend" / "lib" / "api").glob("*endpoints.ts"))
 HTTP_METHODS = {"get", "post", "put", "patch", "delete", "options", "head"}
 DISPOSITIONS = {
     "operator_ui",
@@ -85,8 +85,12 @@ def _openapi_operations() -> set[tuple[str, str, str]]:
 
 
 def _exported_api_wrappers() -> set[str]:
-    source = ENDPOINTS_PATH.read_text(encoding="utf-8")
-    return set(re.findall(r"^export const (\w+)", source, flags=re.MULTILINE))
+    sources = (path.read_text(encoding="utf-8") for path in ENDPOINTS_PATHS)
+    return {
+        name
+        for source in sources
+        for name in re.findall(r"^export const (\w+)", source, flags=re.MULTILINE)
+    }
 
 
 def _referenced_api_wrappers() -> set[str]:
@@ -98,7 +102,13 @@ def _referenced_api_wrappers() -> set[str]:
     sources: list[str] = []
     for root in source_roots:
         for path in root.rglob("*"):
-            if path == ENDPOINTS_PATH or path.suffix not in {".ts", ".tsx", ".js", ".jsx", ".mjs"}:
+            if path in ENDPOINTS_PATHS or path.suffix not in {
+                ".ts",
+                ".tsx",
+                ".js",
+                ".jsx",
+                ".mjs",
+            }:
                 continue
             sources.append(path.read_text(encoding="utf-8", errors="ignore"))
     combined = "\n".join(sources)
@@ -112,10 +122,7 @@ def _referenced_api_wrappers() -> set[str]:
 def _workflow_node_ids() -> set[str]:
     projection = build_workflow_capabilities().model_dump(mode="python")
     return {
-        row["id"]
-        for surface, rows in projection.items()
-        if surface != "version"
-        for row in rows
+        row["id"] for surface, rows in projection.items() if surface != "version" for row in rows
     }
 
 
@@ -143,10 +150,7 @@ def test_capability_exposure_matrix_covers_every_openapi_operation() -> None:
     matrix = _load_matrix()
     entries = matrix["operations"]
     exported_wrappers = _exported_api_wrappers()
-    recorded = {
-        (entry["method"], entry["path"], entry["operation_id"])
-        for entry in entries
-    }
+    recorded = {(entry["method"], entry["path"], entry["operation_id"]) for entry in entries}
     linked_wrappers = [entry["wrapper"] for entry in entries if entry["wrapper"]]
 
     assert recorded == _openapi_operations()
@@ -226,9 +230,7 @@ def test_capability_groups_follow_the_closed_schema() -> None:
     assert len(ids) == len(set(ids)), "capability_id values must be unique"
 
     operations_by_capability = {
-        entry.get("capability_id")
-        for entry in matrix["operations"]
-        if entry.get("capability_id")
+        entry.get("capability_id") for entry in matrix["operations"] if entry.get("capability_id")
     }
     for group in groups:
         projection = group.get("projection")
@@ -252,9 +254,9 @@ def test_capability_groups_follow_the_closed_schema() -> None:
         assert group["lifecycle"] in LIFECYCLES
         assert isinstance(group["owner"], str) and group["owner"].strip()
         if group["lifecycle"] == "deprecated":
-            assert isinstance(group.get("lifecycle_note"), str) and group[
-                "lifecycle_note"
-            ].strip(), "deprecated groups require lifecycle_note"
+            assert (
+                isinstance(group.get("lifecycle_note"), str) and group["lifecycle_note"].strip()
+            ), "deprecated groups require lifecycle_note"
 
         wrapper_names = _assert_sorted_unique(
             group["wrapper_names"], f"{group['capability_id']}.wrapper_names"
@@ -263,9 +265,7 @@ def test_capability_groups_follow_the_closed_schema() -> None:
             group["workflow_node_ids"], f"{group['capability_id']}.workflow_node_ids"
         )
         assert (
-            group["capability_id"] in operations_by_capability
-            or wrapper_names
-            or workflow_node_ids
+            group["capability_id"] in operations_by_capability or wrapper_names or workflow_node_ids
         ), f"{group['capability_id']} must have at least one authoritative reference"
 
         if projection != "plugin_provider":
@@ -316,12 +316,8 @@ def test_capability_group_references_are_unique_and_resolvable() -> None:
     exported_wrappers = _exported_api_wrappers()
     workflow_node_ids = _workflow_node_ids()
 
-    group_wrappers = [
-        wrapper for group in groups for wrapper in group.get("wrapper_names", [])
-    ]
-    group_nodes = [
-        node_id for group in groups for node_id in group.get("workflow_node_ids", [])
-    ]
+    group_wrappers = [wrapper for group in groups for wrapper in group.get("wrapper_names", [])]
+    group_nodes = [node_id for group in groups for node_id in group.get("workflow_node_ids", [])]
     provider_identifiers = [
         identifier
         for group in groups

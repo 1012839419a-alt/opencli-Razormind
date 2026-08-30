@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.browser_pool import get_pool
+from backend.browser_pool import LocalBrowserPool, get_pool
 from backend.config import get_settings
 from backend.database import get_db
 from backend.schemas.common import ApiResponse
@@ -97,33 +97,69 @@ def _container_status(hostname: str) -> str:
 
 
 @router.get("/chrome-pool", response_model=ApiResponse[dict])
-async def chrome_pool_status() -> ApiResponse:
-    """Return agent pool status and available endpoints."""
+async def chrome_pool_status(db: AsyncSession = Depends(get_db)) -> ApiResponse:
+    """Return pool availability together with persisted desired and loaded runtime facts."""
+    from backend.models.browser import (
+        BrowserInstance,
+        BrowserRuntimeBundle,
+        BrowserRuntimeDeployment,
+    )
+
     pool = get_pool()
     base_port = get_settings().novnc_base_port
-    from backend.browser_pool import LocalBrowserPool
-
-    endpoints = [
-        {
-            "url": ep,
-            "available": pool.available_for(ep),
-            "novnc_port": _novnc_port(ep, base_port),
-            "container_status": _container_status(urlparse(ep).hostname or ""),
-            "mode": pool.get_mode(ep),
-            "agent_url": pool.get_agent_url(ep) if isinstance(pool, LocalBrowserPool) else None,
-            "agent_protocol": (
-                pool.get_agent_protocol(ep) if isinstance(pool, LocalBrowserPool) else None
-            ),
-            "profile_kind": pool.get_profile_kind(ep),
-        }
-        for ep in pool.endpoints
-    ]
+    instances = {
+        item.endpoint: item for item in (await db.execute(select(BrowserInstance))).scalars().all()
+    }
+    bundles = {
+        item.id: item for item in (await db.execute(select(BrowserRuntimeBundle))).scalars().all()
+    }
+    deployments = {
+        item.browser_instance_id: item
+        for item in (await db.execute(select(BrowserRuntimeDeployment))).scalars().all()
+    }
+    endpoints = []
+    for endpoint in pool.endpoints:
+        instance = instances.get(endpoint)
+        deployment = deployments.get(instance.id) if instance else None
+        endpoints.append(
+            {
+                "url": endpoint,
+                "available": pool.available_for(endpoint),
+                "novnc_port": _novnc_port(endpoint, base_port),
+                "container_status": _container_status(urlparse(endpoint).hostname or ""),
+                "mode": pool.get_mode(endpoint),
+                "agent_url": (
+                    pool.get_agent_url(endpoint) if isinstance(pool, LocalBrowserPool) else None
+                ),
+                "agent_protocol": (
+                    pool.get_agent_protocol(endpoint)
+                    if isinstance(pool, LocalBrowserPool)
+                    else None
+                ),
+                "profile_kind": pool.get_profile_kind(endpoint),
+                "profile_name": pool.get_profile_name(endpoint),
+                "runtime_status": pool.runtime_status(endpoint),
+                "runtime_bundle_id": instance.runtime_bundle_id if instance else None,
+                "runtime_bundle_name": (
+                    bundles[instance.runtime_bundle_id].name
+                    if instance and instance.runtime_bundle_id in bundles
+                    else None
+                ),
+                "runtime_bundle_version": (
+                    bundles[instance.runtime_bundle_id].version
+                    if instance and instance.runtime_bundle_id in bundles
+                    else None
+                ),
+                "resource_class": instance.resource_class if instance else None,
+                "startup_pages": instance.startup_pages if instance else [],
+                "network_policy": instance.network_policy if instance else {},
+                "loaded_bundle_name": (deployment.loaded_bundle_name if deployment else None),
+                "loaded_bundle_version": (deployment.loaded_bundle_version if deployment else None),
+                "runtime_diagnostics": deployment.diagnostics if deployment else [],
+            }
+        )
     return ApiResponse.ok(
-        {
-            "endpoints": endpoints,
-            "total": pool.total,
-            "available": pool.available,
-        }
+        {"endpoints": endpoints, "total": pool.total, "available": pool.available}
     )
 
 
@@ -161,7 +197,7 @@ async def update_endpoint_mode(
     if inst:
         inst.mode = body.mode
     else:
-        inst = BrowserInstance(endpoint=endpoint, mode=body.mode, label="")
+        inst = BrowserInstance(endpoint=endpoint, mode=body.mode, label="", profile_name=endpoint)
         db.add(inst)
     await db.commit()
 

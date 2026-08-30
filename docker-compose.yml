@@ -320,6 +320,8 @@ services:
     image: ${DOCKER_REGISTRY:-ghcr.io/}${DOCKER_IMAGE_NAMESPACE:-2233admin}/opencli-admin-chrome:${IMAGE_TAG:-0.4.0}
     environment:
       CHROME_HOSTNAME: agent-1
+      BROWSER_RUNTIME_BUNDLE_ROOT: /opt/browser-runtime-bundles
+      BROWSER_RUNTIME_BUNDLE_MANIFEST: /opt/browser-runtime-bundles/opencli-default/2/manifest.json
     volumes:
       - agent_profile_1:/home/chrome/.config/chromium
     ports:
@@ -362,6 +364,8 @@ services:
       AGENT_API_TOKEN: ${AGENT_API_TOKEN:-}
       HTTP_PROXY: ${HTTP_PROXY:-}
       HTTPS_PROXY: ${HTTPS_PROXY:-}
+      BROWSER_RUNTIME_BUNDLE_ROOT: /opt/browser-runtime-bundles
+      BROWSER_RUNTIME_BUNDLE_MANIFEST: /opt/browser-runtime-bundles/opencli-default/2/manifest.json
     volumes:
       - agent_profile:/home/agent/.config/chromium
     ports:
