@@ -248,6 +248,8 @@ def main() -> int:
     args = parser.parse_args()
     if args.scenario in {"admin-crash", "no-report", "signed-zero"}:
         result = admin_crash(args.run, args.scenario)
+    elif args.scenario == "iii-unreachable":
+        result = iii_unreachable(args.run)
     elif args.scenario == "crash-after-ingest":
         result = crash_after_ingest(args.run)
     else:

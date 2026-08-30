@@ -193,3 +193,26 @@ def test_crash_after_ingest_uses_isolated_two_phase_orchestration():
     assert "def _facts_from_crash_after_ingest(" in runner
     assert '"stop", "proof-collector"' in runner
     assert '{"mode":"hold"}' in runner
+
+
+@pytest.mark.parametrize(
+    ("scenario", "handler"),
+    [
+        ("admin-crash", "admin_crash"), ("no-report", "admin_crash"),
+        ("signed-zero", "admin_crash"), ("iii-unreachable", "iii_unreachable"),
+        ("crash-after-ingest", "crash_after_ingest"),
+    ],
+)
+def test_failure_driver_dispatches_every_implemented_scenario(monkeypatch, capsys, scenario, handler):
+    driver_path = ROOT / "tests/acceptance/non_bypass_failure_driver.py"
+    driver_spec = importlib.util.spec_from_file_location(f"failure_driver_{scenario}", driver_path)
+    assert driver_spec and driver_spec.loader
+    driver = importlib.util.module_from_spec(driver_spec)
+    sys.modules[driver_spec.name] = driver
+    driver_spec.loader.exec_module(driver)
+    monkeypatch.setattr(driver, "admin_crash", lambda run, name: {"handler": "admin_crash", "scenario": name})
+    monkeypatch.setattr(driver, "iii_unreachable", lambda run: {"handler": "iii_unreachable", "scenario": "iii-unreachable"})
+    monkeypatch.setattr(driver, "crash_after_ingest", lambda run: {"handler": "crash_after_ingest", "scenario": "crash-after-ingest"})
+    monkeypatch.setattr(sys, "argv", ["driver", "--scenario", scenario, "--run", "r1"])
+    assert driver.main() == 0
+    assert __import__("json").loads(capsys.readouterr().out)["handler"] == handler
