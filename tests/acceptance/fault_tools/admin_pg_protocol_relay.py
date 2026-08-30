@@ -154,10 +154,21 @@ class BackendFrames:
 
     def __init__(self) -> None:
         self._buffer = bytearray()
+        self._negotiation_response_pending = False
+
+    def expect_negotiation_response(self) -> None:
+        self._negotiation_response_pending = True
 
     def feed(self, data: bytes) -> list[BackendFrame]:
         self._buffer.extend(data)
         frames: list[BackendFrame] = []
+        if self._negotiation_response_pending:
+            if not self._buffer:
+                return frames
+            response = bytes(self._buffer[:1])
+            del self._buffer[:1]
+            self._negotiation_response_pending = False
+            frames.append(BackendFrame(response, b"", b""))
         while len(self._buffer) >= 5:
             length = int.from_bytes(self._buffer[1:5], "big")
             total = 1 + length
@@ -264,9 +275,11 @@ _gate = CancellationGate()
 
 
 async def _relay_backend(
-    reader: asyncio.StreamReader, writer: asyncio.StreamWriter, flow: ConnectionFlow
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter,
+    flow: ConnectionFlow,
+    frames: BackendFrames,
 ) -> None:
-    frames = BackendFrames()
     try:
         while data := await reader.read(65536):
             for frame in frames.feed(data):
@@ -278,6 +291,14 @@ async def _relay_backend(
         await writer.wait_closed()
 
 
+def _negotiates_tls(frame: FrontendFrame) -> bool:
+    return (
+        frame.message_type == b""
+        and len(frame.wire) == 8
+        and int.from_bytes(frame.wire[4:8], "big") in {80877103, 80877104}
+    )
+
+
 async def _handle_client(
     client_reader: asyncio.StreamReader, client_writer: asyncio.StreamWriter
 ) -> None:
@@ -286,10 +307,15 @@ async def _handle_client(
     try:
         upstream_reader, upstream_writer = await asyncio.open_connection(_TARGET_HOST, _TARGET_PORT)
         flow = ConnectionFlow()
-        backend_task = asyncio.create_task(_relay_backend(upstream_reader, client_writer, flow))
+        backend_frames = BackendFrames()
+        backend_task = asyncio.create_task(
+            _relay_backend(upstream_reader, client_writer, flow, backend_frames)
+        )
         frames = FrontendFrames()
         while data := await client_reader.read(65536):
             for frame in frames.feed(data):
+                if _negotiates_tls(frame):
+                    backend_frames.expect_negotiation_response()
                 if flow.should_hold(frame) and await _gate.claim():
                     await _gate.wait_for_release()
                 upstream_writer.write(frame.wire)

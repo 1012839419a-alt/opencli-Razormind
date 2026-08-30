@@ -81,6 +81,18 @@ def test_backend_frames_accept_fragmented_and_coalesced_messages():
     ]
 
 
+def test_backend_frames_forward_postgres_ssl_negotiation_byte_before_messages():
+    frames = relay.BackendFrames()
+    frames.expect_negotiation_response()
+
+    parsed = frames.feed(b"N" + _backend(b"R", b"\0\0\0\0"))
+
+    assert [(frame.message_type, frame.wire) for frame in parsed] == [
+        (b"", b"N"),
+        (b"R", _backend(b"R", b"\0\0\0\0")),
+    ]
+
+
 def test_connection_flow_holds_only_post_commit_locked_execution_read():
     flow = relay.ConnectionFlow()
 
