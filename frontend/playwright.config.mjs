@@ -7,7 +7,7 @@ export default defineConfig({
     browserName: 'chromium',
   },
   webServer: {
-    command: 'node .next/standalone/server.js',
+    command: 'node scripts/start-standalone.mjs',
     env: {
       HOSTNAME: '127.0.0.1',
       NODE_ENV: 'production',
