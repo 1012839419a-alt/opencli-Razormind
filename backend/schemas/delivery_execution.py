@@ -27,6 +27,13 @@ class DeliveryExecutionAttemptEvidenceV1(_Model):
     observed_at: datetime
 
 
+
+class DeliveryExecutionReconciliationEvidenceV1(_Model):
+    outcome: Literal["accepted", "rejected"]
+    receipt_hash: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")
+    observed_at: datetime
+
+
 class DeliveryExecutionReadV1(_Model):
     execution_id: str
     decision_id: str
@@ -37,6 +44,7 @@ class DeliveryExecutionReadV1(_Model):
     outcome: Literal["accepted", "rejected", "unknown"] | None = None
     attempt_count: int
     attempts: list[DeliveryExecutionAttemptEvidenceV1] = Field(max_length=3)
+    reconciliations: list[DeliveryExecutionReconciliationEvidenceV1] = Field(default_factory=list, max_length=10)
     created_at: datetime
     updated_at: datetime
 

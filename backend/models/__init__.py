@@ -26,6 +26,7 @@ from backend.models.delivery_execution import (
     ControlledReceiverDelivery,
     ControlledReceiverNonce,
     DeliveryExecution,
+    DeliveryExecutionReconciliation,
     DeliveryExecutionResult,
 )
 
@@ -138,6 +139,7 @@ __all__ = [
     "DeliveryAuthorizationDecisionV1",
     "DeliveryExecution",
     "DeliveryExecutionResult",
+    "DeliveryExecutionReconciliation",
     "ControlledReceiverDelivery",
     "ControlledReceiverNonce",
     "IIICollectionAttemptV1",

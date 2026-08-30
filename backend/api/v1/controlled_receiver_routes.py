@@ -136,12 +136,12 @@ async def deliver(request: Request, db: AsyncSession = Depends(get_db)) -> dict[
             return {"receipt": _receipt(replay)}
         raise HTTPException(status.HTTP_409_CONFLICT, "Controlled receiver durable delivery conflicts") from exc
     return {"receipt": _receipt(row)}
-
-
 @router.post("/status")
 async def delivery_status(request: Request, db: AsyncSession = Depends(get_db)) -> dict[str, dict[str, str]]:
-    value, _, _, _, _ = await _authenticated(request)
+    value, raw, _, _, _ = await _authenticated(request)
     row = await _existing(db, value)
     if row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Controlled receiver delivery not found")
+    if row.payload_hash != value.payload_hash or row.request_hash != canonical_hash(raw):
+        raise HTTPException(status.HTTP_409_CONFLICT, "Controlled receiver durable delivery conflicts")
     return {"receipt": _receipt(row)}

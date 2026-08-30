@@ -1,5 +1,6 @@
 import hashlib
 import json
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import func, select
@@ -26,6 +27,24 @@ def _route(scope: dict) -> str:
         f"/workflows/{scope['workflow'].id}/runs/{scope['run'].id}"
     )
 
+
+
+@pytest.fixture(autouse=True)
+def controlled_receiver_registry(monkeypatch):
+    def resolve(endpoint_identity: str, credential_reference: str):
+        receiver_endpoint = endpoint_identity.removesuffix("-revised").removesuffix("-drifted")
+        return SimpleNamespace(
+            identity=endpoint_identity,
+            receiver_identity=receiver_endpoint.replace("receiver-channel", "controlled-receiver"),
+            credential_reference=credential_reference,
+        )
+
+    monkeypatch.setattr(delivery_authorization, "resolve_endpoint", resolve)
+    monkeypatch.setattr(
+        delivery_authorization,
+        "endpoint_config_hash",
+        lambda endpoint: hashlib.sha256(endpoint.identity.encode()).hexdigest(),
+    )
 
 @pytest.mark.asyncio
 async def test_authenticated_authorization_freezes_pinned_claims_replays_and_redacts(client, db_session, monkeypatch):
@@ -96,7 +115,6 @@ async def test_authenticated_authorization_freezes_pinned_claims_replays_and_red
             json={
                 "receiverIdentity": "controlled-receiver-1",
                 "endpointIdentity": "receiver-channel-1",
-                "nonSecretConfigHash": "c" * 64,
                 "credentialReference": "credential-reference-1",
             },
         )
@@ -109,7 +127,6 @@ async def test_authenticated_authorization_freezes_pinned_claims_replays_and_red
                 "targetId": target["targetId"],
                 "receiverIdentity": "controlled-receiver-1",
                 "endpointIdentity": "receiver-channel-1-revised",
-                "nonSecretConfigHash": "r" * 64,
                 "credentialReference": "credential-reference-1",
             },
         )
@@ -121,7 +138,6 @@ async def test_authenticated_authorization_freezes_pinned_claims_replays_and_red
             json={
                 "receiverIdentity": "controlled-receiver-2",
                 "endpointIdentity": "receiver-channel-2",
-                "nonSecretConfigHash": "d" * 64,
                 "credentialReference": "credential-reference-2",
             },
         )
@@ -301,7 +317,6 @@ async def test_authenticated_authorization_freezes_pinned_claims_replays_and_red
                 "targetId": target["targetId"],
                 "receiverIdentity": "controlled-receiver-1",
                 "endpointIdentity": "receiver-channel-1-drifted",
-                "nonSecretConfigHash": "s" * 64,
                 "credentialReference": "credential-reference-1",
             },
         )
@@ -407,7 +422,6 @@ async def test_authorization_rejects_self_approval_and_unpinned_graph(client, db
                 "endpointIdentity": "receiver-channel-denial",
 
 
-                "nonSecretConfigHash": "c" * 64,
                 "credentialReference": "credential-reference-denial",
             },
         )
@@ -456,7 +470,6 @@ async def test_delivery_routes_enforce_mutation_permissions(client, db_session):
     target_body = {
         "receiverIdentity": "controlled-receiver-scope",
         "endpointIdentity": "receiver-channel-scope",
-        "nonSecretConfigHash": "c" * 64,
         "credentialReference": "credential-reference-scope",
     }
     denied_authorization = {

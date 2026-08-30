@@ -18,6 +18,11 @@ from backend.models.delivery_authorization import (
     DeliveryTargetRevision,
 )
 from backend.models.studio import StudioWorkspace
+from backend.security.controlled_receiver import (
+    ControlledReceiverSecurityError,
+    endpoint_config_hash,
+    resolve_endpoint,
+)
 from backend.schemas.delivery_authorization import (
     DeliveryAuthorizationCreateV1,
     DeliveryAuthorizationListV1,
@@ -208,6 +213,13 @@ async def configure_delivery_target(
     )
     if workspace is None:
         raise DeliveryAuthorizationConflictError("Controlled receiver workspace not found")
+    try:
+        endpoint = resolve_endpoint(request.endpoint_identity, request.credential_reference)
+    except ControlledReceiverSecurityError as exc:
+        raise DeliveryAuthorizationConflictError("Controlled receiver registry configuration is unavailable") from exc
+    if endpoint.receiver_identity != request.receiver_identity:
+        raise DeliveryAuthorizationConflictError("Controlled receiver identity does not match registry configuration")
+
 
     target: DeliveryTarget | None = None
     if request.target_id:
@@ -267,9 +279,9 @@ async def configure_delivery_target(
             workflow_id=scope.workflow_id,
             studio_workflow_version_id=scope.studio_workflow_version_id,
             run_id=scope.run_id,
-            endpoint_identity=request.endpoint_identity,
-            non_secret_config_hash=request.non_secret_config_hash,
-            credential_reference=request.credential_reference,
+            endpoint_identity=endpoint.identity,
+            non_secret_config_hash=endpoint_config_hash(endpoint),
+            credential_reference=endpoint.credential_reference,
             policy_version=policy_version,
             policy_snapshot=policy_snapshot,
             policy_hash=policy_hash,

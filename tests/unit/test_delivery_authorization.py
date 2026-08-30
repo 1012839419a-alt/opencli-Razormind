@@ -82,12 +82,13 @@ def test_target_configuration_rejects_nonopaque_values_and_policy_is_stable(fiel
     values = {
         "receiverIdentity": "controlled-receiver-1",
         "endpointIdentity": "receiver-channel-1",
-        "nonSecretConfigHash": "c" * 64,
         "credentialReference": "credential-reference-1",
     }
     with pytest.raises(ValidationError):
         DeliveryTargetConfigureV1.model_validate({**values, field: unsafe_value})
     assert _policy_hash() == _policy_hash()
+    with pytest.raises(ValidationError):
+        DeliveryTargetConfigureV1.model_validate({**values, "nonSecretConfigHash": "c" * 64})
 
 
 def test_controlled_receiver_v2_policy_snapshot_is_complete_and_hash_bound(monkeypatch) -> None:
@@ -163,7 +164,14 @@ class _ConcurrentTargetSession:
 
 
 @pytest.mark.asyncio
-async def test_concurrent_new_receiver_reselects_unique_winner_before_revision() -> None:
+async def test_concurrent_new_receiver_reselects_unique_winner_before_revision(monkeypatch) -> None:
+    endpoint = SimpleNamespace(
+        identity="receiver-channel-1",
+        receiver_identity="controlled-receiver-1",
+        credential_reference="credential-reference-1",
+    )
+    monkeypatch.setattr(delivery_authorization, "resolve_endpoint", lambda *_args: endpoint)
+    monkeypatch.setattr(delivery_authorization, "endpoint_config_hash", lambda _endpoint: "c" * 64)
     winner = DeliveryTarget(
         id="target-1",
         workspace_id="workspace-1",
@@ -177,7 +185,6 @@ async def test_concurrent_new_receiver_reselects_unique_winner_before_revision()
         request=DeliveryTargetConfigureV1(
             receiver_identity="controlled-receiver-1",
             endpoint_identity="receiver-channel-1",
-            non_secret_config_hash="c" * 64,
             credential_reference="credential-reference-1",
         ),
     )

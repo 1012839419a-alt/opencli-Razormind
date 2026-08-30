@@ -144,6 +144,14 @@ async def test_non_api_ws_path_passes_through_even_with_token(auth_enabled):
 
 
 @pytest.mark.asyncio
+async def test_lifespan_scope_without_path_passes_through(auth_enabled):
+    recorder = _Recorder()
+    scope = {"type": "lifespan"}
+    await _wrapped(recorder)(scope, recorder.receive, recorder.send)
+    assert recorder.app_called is True
+
+
+@pytest.mark.asyncio
 async def test_ws_no_token_configured_passes_through(auth_disabled):
     recorder = _Recorder()
     scope = _ws_scope("/api/v1/nodes/ws")

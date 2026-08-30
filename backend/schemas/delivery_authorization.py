@@ -37,7 +37,6 @@ class DeliveryTargetConfigureV1(_V1Model):
     target_id: str | None = Field(default=None, min_length=1, max_length=36)
     receiver_identity: str = Field(min_length=1, max_length=255)
     endpoint_identity: str = Field(min_length=1, max_length=255)
-    non_secret_config_hash: str = Field(min_length=64, max_length=64)
     credential_reference: str = Field(min_length=1, max_length=255)
 
     @field_validator("receiver_identity")
