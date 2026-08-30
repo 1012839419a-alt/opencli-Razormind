@@ -115,13 +115,29 @@ def public_facts(scenario: str) -> dict:
             pageSnapshotAsOf="2026-08-30T00:00:00Z",
         )
     elif scenario == "graph-stale-auth-cas-retract":
+        collection = {
+            "blockingStage": "none",
+            "recoveryAction": "recover",
+            "sideEffectUncertainty": False,
+        }
+        materialization.update(
+            status="completed",
+            recoveryAction="recover",
+            manifestHash=_hash("manifest"),
+            reconciliationRevision=1,
+        )
         graph = {
-            "pin": None,
+            "pin": _hash("retracted-pin"),
             "sequence": 7,
-            "readBlocker": "stale_manifest",
-            "mutationStatus": "denied",
+            "readBlocker": "retract",
+            "mutationStatus": "re_review_required",
         }
     elif scenario == "amendment-decision-conflict":
+        collection = {
+            "blockingStage": "none",
+            "recoveryAction": "recover",
+            "sideEffectUncertainty": False,
+        }
         materialization.update(
             status="completed",
             recoveryAction="recover",
@@ -131,7 +147,7 @@ def public_facts(scenario: str) -> dict:
         graph = {
             "pin": _hash("new-pin"),
             "sequence": 8,
-            "readBlocker": "none",
+            "readBlocker": "stale_manifest",
             "mutationStatus": "re_review_required",
         }
     elif scenario == "receiver-recovery":
@@ -578,6 +594,104 @@ def test_failure_driver_dispatches_query_page_race(monkeypatch, capsys):
         "handler": "query_page_race",
         "run": "r1",
     }
+
+def test_graph_stale_auth_cas_retract_uses_public_graph_boundaries():
+    driver = (ROOT / "tests/acceptance/non_bypass_failure_driver.py").read_text(
+        encoding="utf-8"
+    )
+    runner = (ROOT / "scripts/run_non_bypass_failure_matrix.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert all(
+        name in driver
+        for name in (
+            "def graph_stale_auth_cas_retract(",
+            "proof-reviewer",
+            "wrong-capability verification",
+            "stale reviewer retraction",
+            "pinned_reference_mismatch",
+            "reviewer legal retraction",
+            "graph_final_authenticated_read_two",
+            '"readBlocker": "retract"',
+            '"mutationStatus": "re_review_required"',
+        )
+    )
+    assert "AsyncSessionLocal" not in driver
+    assert "StudioWorkspace" not in driver
+    assert '"graph-stale-auth-cas-retract"' in runner
+    assert "communicate(timeout=360)" in runner
+
+
+def test_failure_driver_dispatches_graph_stale_auth_cas_retract(monkeypatch, capsys):
+    driver = _failure_driver_module()
+    monkeypatch.setattr(
+        driver,
+        "graph_stale_auth_cas_retract",
+        lambda run: {"handler": "graph-stale-auth-cas-retract", "run": run},
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["driver", "--scenario", "graph-stale-auth-cas-retract", "--run", "r1"],
+    )
+
+    assert driver.main() == 0
+    assert __import__("json").loads(capsys.readouterr().out) == {
+        "handler": "graph-stale-auth-cas-retract",
+        "run": "r1",
+    }
+
+
+def test_amendment_decision_conflict_uses_public_duplicate_recovery_and_bindings():
+    driver = (ROOT / "tests/acceptance/non_bypass_failure_driver.py").read_text(
+        encoding="utf-8"
+    )
+    runner = (ROOT / "scripts/run_non_bypass_failure_matrix.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert all(
+        name in driver
+        for name in (
+            "def amendment_decision_conflict(",
+            "_fixture_one_event_id",
+            "amendment_duplicate",
+            "signed_duplicate_receipt",
+            "materialization_n_plus_one",
+            "manifest_superseded",
+            "supersedesEventId",
+            "old_blocked_pin_conflict",
+            "changed_decision_replay_conflict",
+            '"readBlocker": "stale_manifest"',
+            '"mutationStatus": "re_review_required"',
+        )
+    )
+    assert "AsyncSessionLocal" not in driver
+    assert "StudioWorkspace" not in driver
+    assert '"amendment-decision-conflict"' in runner
+    assert "communicate(timeout=360)" in runner
+
+
+def test_failure_driver_dispatches_amendment_decision_conflict(monkeypatch, capsys):
+    driver = _failure_driver_module()
+    monkeypatch.setattr(
+        driver,
+        "amendment_decision_conflict",
+        lambda run: {"handler": "amendment-decision-conflict", "run": run},
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["driver", "--scenario", "amendment-decision-conflict", "--run", "r1"],
+    )
+
+    assert driver.main() == 0
+    assert __import__("json").loads(capsys.readouterr().out) == {
+        "handler": "amendment-decision-conflict",
+        "run": "r1",
+    }
+
 
 def _runner_module():
     path = ROOT / "scripts/run_non_bypass_failure_matrix.py"

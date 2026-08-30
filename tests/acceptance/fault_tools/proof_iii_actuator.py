@@ -22,7 +22,7 @@ app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
 
 class IngressRequest(BaseModel):
-    phase: Literal["pre_snapshot_101", "late_102"]
+    phase: Literal["pre_snapshot_101", "late_102", "amendment_duplicate"]
     workspace_id: str = Field(min_length=1, max_length=36)
     project_id: str = Field(min_length=1, max_length=36)
     workflow_id: str = Field(min_length=1, max_length=36)

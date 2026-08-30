@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import asyncio
 import hashlib
 import json
 import os
@@ -15,8 +14,6 @@ from typing import Any
 
 import httpx
 
-from backend.database import AsyncSessionLocal
-from backend.models.studio import StudioWorkspace
 from tests.acceptance.non_bypass_vertical import graph as _base_graph
 
 
@@ -62,10 +59,6 @@ def _post_published_run(
         time.sleep(0.5)
 
 
-async def _seed(workspace_id: str, slug: str) -> None:
-    async with AsyncSessionLocal() as session:
-        session.add(StudioWorkspace(id=workspace_id, name="Failure proof", slug=slug))
-        await session.commit()
 
 def _graph() -> dict[str, Any]:
     return _base_graph()
@@ -88,6 +81,7 @@ def _failure_result(
     hashes: dict[str, Any],
     collection: dict[str, Any],
     materialization: dict[str, Any],
+    graph: dict[str, Any] | None = None,
     mutation_status: str = "none",
 ) -> dict[str, Any]:
     return {
@@ -106,7 +100,8 @@ def _failure_result(
         },
         "collection": collection,
         "materialization": materialization,
-        "graph": {
+        "graph": graph
+        or {
             "pin": None,
             "sequence": None,
             "readBlocker": "none",
@@ -147,7 +142,6 @@ def admin_crash(run: str, scenario: str = "admin-crash") -> dict[str, Any]:
         "email": "proof-proposer@proof.invalid", "display_name": "proof-proposer",
         "role": "operator"},
         bootstrap)
-        asyncio.run(_seed(workspace_id, run))
         boot = _post(client, primary, f"/workspaces/{workspace_id}/projects/bootstrap",
         {"project": {"name": "Failure proof", "slug": run}, "workflow": {"name": "Failure proof",
         "graph": _graph()}}, bootstrap)
@@ -332,7 +326,6 @@ def crash_after_ingest(run: str) -> dict[str, Any]:
         "email": "proof-proposer@proof.invalid", "display_name": "proof-proposer",
         "role": "operator"},
         bootstrap)
-        asyncio.run(_seed(workspace_id, run))
         boot = _post(client, primary, f"/workspaces/{workspace_id}/projects/bootstrap",
         {"project": {"name": "Crash after ingest", "slug": run},
         "workflow": {"name": "Crash after ingest",
@@ -436,7 +429,6 @@ def iii_unreachable(run: str) -> dict[str, Any]:
         "email": "proof-proposer@proof.invalid", "display_name": "proof-proposer",
         "role": "operator"},
         bootstrap)
-        asyncio.run(_seed(workspace_id, run))
         boot = _post(client, primary, f"/workspaces/{workspace_id}/projects/bootstrap",
         {"project": {"name": "III unreachable", "slug": run},
         "workflow": {"name": "III unreachable",
@@ -515,10 +507,18 @@ def public_setup(client: httpx.Client, run: str) -> dict[str, Any]:
     "first_admin_email": "bootstrap@proof.invalid", "first_admin_display_name": "Proof bootstrap"},
     bootstrap)
     workspace_id = workspace["id"]
-    _post(client, primary, f"/workspaces/{workspace_id}/members", {"subject": "proof-proposer",
-    "email": "proof-proposer@proof.invalid", "display_name": "proof-proposer", "role": "operator"},
-    bootstrap)
-    asyncio.run(_seed(workspace_id, run))
+    proposer_member = _post(
+        client,
+        primary,
+        f"/workspaces/{workspace_id}/members",
+        {
+            "subject": "proof-proposer",
+            "email": "proof-proposer@proof.invalid",
+            "display_name": "proof-proposer",
+            "role": "operator",
+        },
+        bootstrap,
+    )
     boot = _post(client, primary, f"/workspaces/{workspace_id}/projects/bootstrap",
     {"project": {"name": "ODP loss proof", "slug": run}, "workflow": {"name": "ODP loss proof",
     "graph": _graph()}}, bootstrap)
@@ -546,6 +546,9 @@ def public_setup(client: httpx.Client, run: str) -> dict[str, Any]:
         "route": route,
         "runId": workflow_run["runId"],
         "collections": f"{route}/{workflow_run['runId']}/iii-collections",
+        "workspaceId": workspace_id,
+        "bootstrap": bootstrap,
+        "proposerMember": proposer_member,
         "immutableScope": {
             "workspace_id": workspace_id,
             "project_id": boot["project"]["id"],
@@ -741,6 +744,17 @@ def _public_hash(value: dict[str, Any]) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",",
     ":")).encode()).hexdigest()
 
+def _public_response_hash(response: httpx.Response) -> str:
+    return hashlib.sha256(response.content).hexdigest()
+
+
+def _require_status(response: httpx.Response, expected: int, label: str) -> None:
+    if response.status_code != expected:
+        raise RuntimeError(
+            f"{label} returned {response.status_code}, expected {expected}: "
+            f"{response.text[:300]}"
+        )
+
 
 def _wait_for_ingress_receipt(
     client: httpx.Client, setup: dict[str, Any], command_id: str, *, timeout: int = 90
@@ -761,6 +775,53 @@ def _wait_for_ingress_receipt(
         "authenticated public status never exposed an ingress-receipt reference: "
         + json.dumps(last, sort_keys=True)
     )
+
+def _ingress_receipt_hashes(status: dict[str, Any]) -> set[str]:
+    return {
+        reference["hash"]
+        for reference in status.get("evidenceReferences", [])
+        if reference.get("kind") == "ingress_receipt"
+        and isinstance(reference.get("hash"), str)
+        and len(reference["hash"]) == 64
+    }
+
+
+def _wait_for_new_ingress_receipt(
+    client: httpx.Client,
+    setup: dict[str, Any],
+    command_id: str,
+    *,
+    prior_hashes: set[str],
+    timeout: int = 30,
+) -> tuple[dict[str, Any], str]:
+    deadline = time.monotonic() + timeout
+    last: dict[str, Any] | None = None
+    while time.monotonic() < deadline:
+        last = public_status(client, setup, command_id)
+        new_hashes = _ingress_receipt_hashes(last) - prior_hashes
+        if len(new_hashes) == 1:
+            return last, new_hashes.pop()
+        time.sleep(0.5)
+    raise RuntimeError(
+        "authenticated public status never exposed one new signed ingress receipt: "
+        + json.dumps(last, sort_keys=True)
+    )
+
+
+def _fixture_one_event_id(source_id: str) -> str:
+    source_event = {"sourceEventKey": "failure-proof-001", "title": "one"}
+    digest = hashlib.sha256(
+        json.dumps(source_event, ensure_ascii=False, sort_keys=True).encode()
+    ).hexdigest()
+    return f"{source_id}:{digest[:32]}"
+
+
+def _pinned_reference(pinned_fold: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "sequence": pinned_fold["sequence"],
+        "researchRevisionId": pinned_fold["researchRevisionId"],
+        "manifestSetHash": pinned_fold["manifestSetHash"],
+    }
 
 
 def _wait_for_expected_key_report(
@@ -810,6 +871,725 @@ def _completed_exact(value: dict[str, Any]) -> bool:
         and isinstance(counts, dict)
         and counts.get("record_present") == 1
         and counts.get("unknown") == 0
+    )
+
+
+def graph_stale_auth_cas_retract(run: str) -> dict[str, Any]:
+    """Prove graph authorization, stale-CAS, pinned-read, and re-review guarantees."""
+    source_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"proof-graph/{run}"))
+    keyword = f"graph-{hashlib.sha256(run.encode()).hexdigest()[:16]}"
+    hashes: dict[str, str] = {}
+    with httpx.Client(timeout=60) as client:
+        setup = public_setup(client, run)
+        reviewer = {
+            "X-API-Token": os.environ["API_AUTH_TOKEN"],
+            "Authorization": f"Bearer {os.environ['PROOF_REVIEWER_JWT']}",
+        }
+        reviewer_member_response = client.post(
+            f"{setup['primary']}/workspaces/{setup['workspaceId']}/members",
+            json={
+                "subject": "proof-reviewer",
+                "email": "proof-reviewer@proof.invalid",
+                "display_name": "proof-reviewer",
+                "role": "maintainer",
+            },
+            headers=setup["bootstrap"],
+        )
+        reviewer_member = _data(reviewer_member_response)
+        hashes["reviewer_membership"] = _public_response_hash(reviewer_member_response)
+        if reviewer_member["role"] != "maintainer":
+            raise RuntimeError("proof reviewer did not receive reviewer capability")
+
+        submission = public_submit(
+            client,
+            setup,
+            source_id=keyword,
+            stable_odp_source_id=source_id,
+            site="bilibili",
+            command="search",
+        )
+        hashes["submission"] = _public_hash(submission)
+        report = _wait_for_expected_key_report(client, setup, submission["commandId"])
+        hashes["expected_key_report_read"] = _public_hash(report)
+        materialization = _wait_for_materialization(
+            client,
+            setup,
+            submission["commandId"],
+            predicate=_completed_exact,
+        )
+        hashes["completed_materialization"] = _public_hash(materialization)
+        manifest_ref = materialization.get("researchGraphManifestRef")
+        if (
+            not isinstance(manifest_ref, dict)
+            or manifest_ref.get("materializationStatus") != "completed"
+            or not isinstance(manifest_ref.get("manifestHash"), str)
+        ):
+            raise RuntimeError("authenticated materialization lacked a completed graph manifest")
+
+        graph_route = f"{setup['route']}/{setup['runId']}/research-graph-v2"
+        initial_response = client.get(
+            setup["primary"] + graph_route, headers=setup["proposer"]
+        )
+        initial = _data(initial_response)
+        hashes["graph_initial_read"] = _public_response_hash(initial_response)
+        claim_id = f"graph-stale-auth-cas-retract-{run}"
+        claim_hash = manifest_ref["manifestHash"]
+
+        proposed_response = client.post(
+            setup["primary"] + graph_route + "/mutations",
+            json={
+                "idempotencyKey": f"{run}-propose",
+                "action": "propose",
+                "expectedSequence": initial["sequence"],
+                "expectedRevision": initial["researchRevisionId"],
+                "nodeId": "opencli-source",
+                "claimId": claim_id,
+                "claimContentHash": claim_hash,
+                "manifestRefs": [manifest_ref],
+            },
+            headers=setup["proposer"],
+        )
+        _require_status(proposed_response, 201, "proposer graph proposal")
+        proposed = _data(proposed_response)
+        hashes["graph_propose_mutation"] = _public_response_hash(proposed_response)
+
+        verified_response = client.post(
+            setup["primary"] + graph_route + "/mutations",
+            json={
+                "idempotencyKey": f"{run}-verify",
+                "action": "verify",
+                "expectedSequence": proposed["sequence"],
+                "expectedRevision": proposed["researchRevisionId"],
+                "nodeId": "opencli-source",
+                "claimId": claim_id,
+                "claimContentHash": claim_hash,
+                "manifestRefs": [manifest_ref],
+            },
+            headers=reviewer,
+        )
+        _require_status(verified_response, 201, "reviewer graph verification")
+        verified = _data(verified_response)
+        hashes["graph_verify_mutation"] = _public_response_hash(verified_response)
+
+        pinned_response = client.post(
+            setup["primary"] + graph_route + "/mutations",
+            json={
+                "idempotencyKey": f"{run}-pin",
+                "action": "pin",
+                "expectedSequence": verified["sequence"],
+                "expectedRevision": verified["researchRevisionId"],
+                "nodeId": "opencli-source",
+                "manifestRefs": [manifest_ref],
+            },
+            headers=reviewer,
+        )
+        _require_status(pinned_response, 201, "reviewer graph pin")
+        pinned = _data(pinned_response)
+        hashes["graph_pin_mutation"] = _public_response_hash(pinned_response)
+        pinned_fold = pinned.get("pinnedFold")
+        if not isinstance(pinned_fold, dict) or pinned_fold.get("blocked"):
+            raise RuntimeError("reviewer pin was not publicly readable")
+
+        pinned_read_response = client.get(
+            setup["primary"] + graph_route, headers=reviewer
+        )
+        pinned_read = _data(pinned_read_response)
+        hashes["graph_pinned_read"] = _public_response_hash(pinned_read_response)
+        if pinned_read.get("pinnedFold") != pinned_fold:
+            raise RuntimeError("pinned graph read diverged from pin mutation")
+
+        downgrade_response = client.patch(
+            f"{setup['primary']}/workspaces/{setup['workspaceId']}/members/"
+            f"{setup['proposerMember']['user_id']}",
+            json={"role": "viewer"},
+            headers=setup["bootstrap"],
+        )
+        _require_status(downgrade_response, 200, "proposer capability downgrade")
+        hashes["proposer_capability_downgrade"] = _public_response_hash(
+            downgrade_response
+        )
+
+        denied_before_response = client.get(
+            setup["primary"] + graph_route, headers=setup["proposer"]
+        )
+        denied_before = _data(denied_before_response)
+        hashes["graph_before_wrong_capability"] = _public_response_hash(
+            denied_before_response
+        )
+        if denied_before != pinned_read:
+            raise RuntimeError("capability downgrade mutated the graph")
+
+        denied_verify_response = client.post(
+            setup["primary"] + graph_route + "/mutations",
+            json={
+                "idempotencyKey": f"{run}-wrong-verify",
+                "action": "verify",
+                "expectedSequence": denied_before["sequence"],
+                "expectedRevision": denied_before["researchRevisionId"],
+                "nodeId": "opencli-source",
+                "claimId": claim_id,
+                "claimContentHash": claim_hash,
+                "manifestRefs": [manifest_ref],
+            },
+            headers=setup["proposer"],
+        )
+        _require_status(denied_verify_response, 403, "wrong-capability verification")
+        hashes["graph_wrong_capability_verify_denial"] = _public_response_hash(
+            denied_verify_response
+        )
+        denied_retract_response = client.post(
+            setup["primary"] + graph_route + "/mutations",
+            json={
+                "idempotencyKey": f"{run}-wrong-retract",
+                "action": "retract",
+                "expectedSequence": denied_before["sequence"],
+                "expectedRevision": denied_before["researchRevisionId"],
+                "nodeId": "opencli-source",
+                "claimId": claim_id,
+                "claimContentHash": claim_hash,
+                "manifestRefs": [manifest_ref],
+            },
+            headers=setup["proposer"],
+        )
+        _require_status(denied_retract_response, 403, "wrong-capability retraction")
+        hashes["graph_wrong_capability_retract_denial"] = _public_response_hash(
+            denied_retract_response
+        )
+        denied_after_response = client.get(
+            setup["primary"] + graph_route, headers=setup["proposer"]
+        )
+        denied_after = _data(denied_after_response)
+        hashes["graph_after_wrong_capability"] = _public_response_hash(
+            denied_after_response
+        )
+        if denied_before_response.content != denied_after_response.content:
+            raise RuntimeError("403 graph mutation attempts changed authenticated graph bytes")
+        if denied_after != denied_before:
+            raise RuntimeError("403 graph mutation attempts changed public graph data")
+
+        stale_before_response = client.get(setup["primary"] + graph_route, headers=reviewer)
+        stale_before = _data(stale_before_response)
+        hashes["graph_before_stale_cas"] = _public_response_hash(stale_before_response)
+        stale_response = client.post(
+            setup["primary"] + graph_route + "/mutations",
+            json={
+                "idempotencyKey": f"{run}-stale-retract",
+                "action": "retract",
+                "expectedSequence": stale_before["sequence"] - 1,
+                "expectedRevision": f"{stale_before['researchRevisionId']}-stale",
+                "nodeId": "opencli-source",
+                "claimId": claim_id,
+                "claimContentHash": claim_hash,
+                "manifestRefs": [manifest_ref],
+            },
+            headers=reviewer,
+        )
+        _require_status(stale_response, 409, "stale reviewer retraction")
+        hashes["graph_stale_cas_denial"] = _public_response_hash(stale_response)
+        stale_after_response = client.get(setup["primary"] + graph_route, headers=reviewer)
+        stale_after = _data(stale_after_response)
+        hashes["graph_after_stale_cas"] = _public_response_hash(stale_after_response)
+        if stale_before_response.content != stale_after_response.content:
+            raise RuntimeError("409 stale-CAS graph mutation changed authenticated graph bytes")
+        if stale_after != stale_before:
+            raise RuntimeError("409 stale-CAS graph mutation changed public graph data")
+
+        mismatch_before_response = client.get(
+            setup["primary"] + graph_route, headers=reviewer
+        )
+        mismatch_before = _data(mismatch_before_response)
+        hashes["graph_before_pinned_mismatch"] = _public_response_hash(
+            mismatch_before_response
+        )
+        mismatch_response = client.get(
+            setup["primary"] + graph_route,
+            params={
+                "expected_pin_sequence": pinned_fold["sequence"],
+                "expected_pin_revision": pinned_fold["researchRevisionId"],
+                "expected_pin_manifest_set_hash": "0" * 64,
+            },
+            headers=reviewer,
+        )
+        mismatch = _data(mismatch_response)
+        hashes["graph_pinned_reference_mismatch_read"] = _public_response_hash(
+            mismatch_response
+        )
+        if (
+            mismatch.get("blocker") != "pinned_reference_mismatch"
+            or mismatch.get("recoveryAction") != "re_review"
+            or mismatch.get("pinnedFold", {}).get("blocked") is not True
+        ):
+            raise RuntimeError("mismatched pin did not return the required blocked read")
+        mismatch_after_response = client.get(
+            setup["primary"] + graph_route, headers=reviewer
+        )
+        mismatch_after = _data(mismatch_after_response)
+        hashes["graph_after_pinned_mismatch"] = _public_response_hash(
+            mismatch_after_response
+        )
+        if mismatch_before_response.content != mismatch_after_response.content:
+            raise RuntimeError("pinned-reference mismatch mutated graph bytes")
+        if mismatch_after != mismatch_before:
+            raise RuntimeError("pinned-reference mismatch mutated graph data")
+
+        retract_response = client.post(
+            setup["primary"] + graph_route + "/mutations",
+            json={
+                "idempotencyKey": f"{run}-legal-retract",
+                "action": "retract",
+                "expectedSequence": mismatch_after["sequence"],
+                "expectedRevision": mismatch_after["researchRevisionId"],
+                "nodeId": "opencli-source",
+                "claimId": claim_id,
+                "claimContentHash": claim_hash,
+                "manifestRefs": [manifest_ref],
+            },
+            headers=reviewer,
+        )
+        _require_status(retract_response, 201, "reviewer legal retraction")
+        retracted = _data(retract_response)
+        hashes["graph_legal_retract_mutation"] = _public_response_hash(retract_response)
+        if retracted.get("sequence") != mismatch_after["sequence"] + 1:
+            raise RuntimeError("legal retract did not advance graph CAS exactly once")
+
+        final_one_response = client.get(setup["primary"] + graph_route, headers=reviewer)
+        final_one = _data(final_one_response)
+        hashes["graph_final_authenticated_read_one"] = _public_response_hash(
+            final_one_response
+        )
+        final_two_response = client.get(
+            setup["primary"] + graph_route, headers=setup["proposer"]
+        )
+        final_two = _data(final_two_response)
+        hashes["graph_final_authenticated_read_two"] = _public_response_hash(
+            final_two_response
+        )
+        if final_one_response.content != final_two_response.content:
+            raise RuntimeError("authenticated final graph reads were not byte-equivalent")
+        final_claim = next(
+            (
+                claim
+                for claim in final_one.get("claims", [])
+                if claim.get("claimId") == claim_id
+            ),
+            None,
+        )
+        if (
+            final_one != final_two
+            or final_one.get("sequence") != retracted["sequence"]
+            or final_one.get("pinnedFold", {}).get("blocked") is not True
+            or final_one.get("recoveryAction") != "re_review"
+            or final_claim is None
+            or final_claim.get("state") != "retracted"
+        ):
+            raise RuntimeError("retracted graph did not preserve its durable re-review blocker")
+
+    return _failure_result(
+        scenario="graph-stale-auth-cas-retract",
+        run=run,
+        fault="graph-stale-auth-cas-retract",
+        command_id=submission["commandId"],
+        attempt_id=submission["attemptId"],
+        workflow_run_id=setup["runId"],
+        hashes=hashes,
+        collection={
+            "blockingStage": "none",
+            "recoveryAction": "recover",
+            "sideEffectUncertainty": False,
+        },
+        materialization={
+            "status": "completed",
+            "blocker": "none",
+            "recoveryAction": "recover",
+            "manifestHash": manifest_ref["manifestHash"],
+            "reconciliationRevision": materialization["reconciliationRevision"],
+            "pageSnapshotAsOf": materialization.get("pageSnapshotAsOf"),
+        },
+        mutation_status="re_review_required",
+        graph={
+            "pin": _public_hash(final_one["pinnedFold"]),
+            "sequence": final_one["sequence"],
+            "readBlocker": "retract",
+            "mutationStatus": "re_review_required",
+        },
+    )
+
+
+def amendment_decision_conflict(run: str) -> dict[str, Any]:
+    """Prove an authenticated duplicate receipt amends evidence and invalidates pins."""
+    stable_source_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"proof-amendment/{run}"))
+    keyword = f"amendment-{hashlib.sha256(run.encode()).hexdigest()[:16]}"
+    hashes: dict[str, str] = {}
+    with httpx.Client(timeout=60) as client:
+        setup = public_setup(client, run)
+        reviewer = {
+            "X-API-Token": os.environ["API_AUTH_TOKEN"],
+            "Authorization": f"Bearer {os.environ['PROOF_REVIEWER_JWT']}",
+        }
+        reviewer_member_response = client.post(
+            f"{setup['primary']}/workspaces/{setup['workspaceId']}/members",
+            json={
+                "subject": "proof-reviewer",
+                "email": "proof-reviewer@proof.invalid",
+                "display_name": "proof-reviewer",
+                "role": "maintainer",
+            },
+            headers=setup["bootstrap"],
+        )
+        reviewer_member = _data(reviewer_member_response)
+        hashes["reviewer_membership"] = _public_response_hash(reviewer_member_response)
+        if reviewer_member["role"] != "maintainer":
+            raise RuntimeError("proof reviewer did not receive approval capability")
+
+        submission = public_submit(
+            client,
+            setup,
+            source_id=keyword,
+            stable_odp_source_id=stable_source_id,
+            site="bilibili",
+            command="search",
+        )
+        hashes["submission"] = _public_hash(submission)
+        expected_report = _wait_for_expected_key_report(
+            client, setup, submission["commandId"]
+        )
+        hashes["expected_key_report_read"] = _public_hash(expected_report)
+        receipt_status, accepted_receipt = _wait_for_ingress_receipt(
+            client, setup, submission["commandId"]
+        )
+        hashes["initial_signed_receipt"] = accepted_receipt
+        n_materialization = _wait_for_materialization(
+            client,
+            setup,
+            submission["commandId"],
+            predicate=_completed_exact,
+        )
+        hashes["materialization_n"] = _public_hash(n_materialization)
+        manifest_n = n_materialization.get("researchGraphManifestRef")
+        if (
+            not isinstance(manifest_n, dict)
+            or manifest_n.get("materializationStatus") != "completed"
+            or not isinstance(manifest_n.get("manifestHash"), str)
+        ):
+            raise RuntimeError("terminal N materialization lacked a graph manifest")
+
+        graph_route = f"{setup['route']}/{setup['runId']}/research-graph-v2"
+        graph_initial_response = client.get(
+            setup["primary"] + graph_route, headers=setup["proposer"]
+        )
+        graph_initial = _data(graph_initial_response)
+        hashes["graph_before_n_pin"] = _public_response_hash(graph_initial_response)
+        claim_id = f"amendment-decision-conflict-{run}"
+
+        proposed_response = client.post(
+            setup["primary"] + graph_route + "/mutations",
+            json={
+                "idempotencyKey": f"{run}-amend-propose",
+                "action": "propose",
+                "expectedSequence": graph_initial["sequence"],
+                "expectedRevision": graph_initial["researchRevisionId"],
+                "nodeId": "opencli-source",
+                "claimId": claim_id,
+                "claimContentHash": manifest_n["manifestHash"],
+                "manifestRefs": [manifest_n],
+            },
+            headers=setup["proposer"],
+        )
+        _require_status(proposed_response, 201, "N manifest proposal")
+        proposed = _data(proposed_response)
+        hashes["graph_propose_n"] = _public_response_hash(proposed_response)
+
+        verified_response = client.post(
+            setup["primary"] + graph_route + "/mutations",
+            json={
+                "idempotencyKey": f"{run}-amend-verify-n",
+                "action": "verify",
+                "expectedSequence": proposed["sequence"],
+                "expectedRevision": proposed["researchRevisionId"],
+                "nodeId": "opencli-source",
+                "claimId": claim_id,
+                "claimContentHash": manifest_n["manifestHash"],
+                "manifestRefs": [manifest_n],
+            },
+            headers=reviewer,
+        )
+        _require_status(verified_response, 201, "independent N verification")
+        verified = _data(verified_response)
+        hashes["graph_verify_n"] = _public_response_hash(verified_response)
+
+        pin_n_response = client.post(
+            setup["primary"] + graph_route + "/mutations",
+            json={
+                "idempotencyKey": f"{run}-amend-pin-n",
+                "action": "pin",
+                "expectedSequence": verified["sequence"],
+                "expectedRevision": verified["researchRevisionId"],
+                "nodeId": "opencli-source",
+                "manifestRefs": [manifest_n],
+            },
+            headers=reviewer,
+        )
+        _require_status(pin_n_response, 201, "N manifest pin")
+        pin_n = _data(pin_n_response)
+        hashes["graph_pin_n"] = _public_response_hash(pin_n_response)
+        old_pin = pin_n.get("pinnedFold")
+        if not isinstance(old_pin, dict) or old_pin.get("blocked"):
+            raise RuntimeError("N manifest was not publicly pinned")
+
+        graph_old_response = client.get(setup["primary"] + graph_route, headers=reviewer)
+        graph_old = _data(graph_old_response)
+        hashes["graph_old_pinned_read"] = _public_response_hash(graph_old_response)
+        if graph_old.get("pinnedFold") != old_pin:
+            raise RuntimeError("N pinned read diverged before the amendment")
+
+        target_response = client.post(
+            f"{setup['primary']}{setup['route']}/{setup['runId']}/delivery-targets",
+            json={
+                "receiverIdentity": "controlled-receiver-proof",
+                "endpointIdentity": "receiver-channel-proof",
+                "credentialReference": "credential-reference-proof",
+            },
+            headers=reviewer,
+        )
+        _require_status(target_response, 201, "controlled delivery target creation")
+        target = _data(target_response)
+        hashes["old_delivery_target"] = _public_response_hash(target_response)
+        old_decision_body = {
+            "version": "v1",
+            "operationId": f"{run}-operation-n",
+            "idempotencyKey": f"{run}-decision-n",
+            "nodeId": "opencli-source",
+            "targetId": target["targetId"],
+            "pinnedReference": _pinned_reference(old_pin),
+            "selectedClaimIds": [claim_id],
+        }
+        old_decision_response = client.post(
+            f"{setup['primary']}{setup['route']}/{setup['runId']}/delivery-authorizations",
+            json=old_decision_body,
+            headers=reviewer,
+        )
+        _require_status(old_decision_response, 201, "N-bound delivery authorization")
+        old_decision = _data(old_decision_response)
+        hashes["old_delivery_decision"] = _public_response_hash(old_decision_response)
+
+        original_event_id = _fixture_one_event_id(stable_source_id)
+        prior_receipts = _ingress_receipt_hashes(receipt_status)
+        _actuate_correlated_ingress(
+            setup,
+            submission,
+            source_id=stable_source_id,
+            phase="amendment_duplicate",
+            event_id=original_event_id,
+        )
+        duplicate_status, duplicate_receipt = _wait_for_new_ingress_receipt(
+            client,
+            setup,
+            submission["commandId"],
+            prior_hashes=prior_receipts,
+        )
+        hashes["signed_duplicate_receipt"] = duplicate_receipt
+        hashes["status_after_duplicate_receipt"] = _public_hash(duplicate_status)
+
+        n_plus_one = public_recover(client, setup, submission["commandId"])
+        hashes["materialization_n_plus_one"] = _public_hash(n_plus_one)
+        manifest_n_plus_one = n_plus_one.get("researchGraphManifestRef")
+        record_keys = {
+            (reference.get("sourceId"), reference.get("eventId"))
+            for reference in n_plus_one.get("recordReferences", [])
+        }
+        if (
+            not _completed_exact(n_plus_one)
+            or n_plus_one.get("reconciliationRevision")
+            != n_materialization["reconciliationRevision"] + 1
+            or not isinstance(manifest_n_plus_one, dict)
+            or manifest_n_plus_one.get("manifestHash") == manifest_n["manifestHash"]
+            or (stable_source_id, original_event_id) not in record_keys
+        ):
+            raise RuntimeError(
+                "authenticated recover did not append terminal N+1 for the exact key"
+            )
+
+        graph_stale_response = client.get(
+            setup["primary"] + graph_route, headers=reviewer
+        )
+        graph_stale = _data(graph_stale_response)
+        hashes["graph_stale_manifest_read"] = _public_response_hash(graph_stale_response)
+        if (
+            graph_stale.get("blocker") != "manifest_superseded"
+            or graph_stale.get("recoveryAction") != "re_review"
+            or graph_stale.get("pinnedFold", {}).get("blocked") is not True
+        ):
+            raise RuntimeError("N+1 did not block the old pin for re-review")
+
+        old_pin_conflict_response = client.post(
+            f"{setup['primary']}{setup['route']}/{setup['runId']}/delivery-authorizations",
+            json={
+                **old_decision_body,
+                "operationId": f"{run}-operation-old-pin-conflict",
+                "idempotencyKey": f"{run}-decision-old-pin-conflict",
+            },
+            headers=reviewer,
+        )
+        _require_status(
+            old_pin_conflict_response, 409, "old blocked-pin authorization"
+        )
+        hashes["old_blocked_pin_conflict"] = _public_response_hash(
+            old_pin_conflict_response
+        )
+
+        supersede_response = client.post(
+            setup["primary"] + graph_route + "/mutations",
+            json={
+                "idempotencyKey": f"{run}-amend-supersede",
+                "action": "supersede",
+                "expectedSequence": graph_stale["sequence"],
+                "expectedRevision": graph_stale["researchRevisionId"],
+                "nodeId": "opencli-source",
+                "claimId": claim_id,
+                "manifestRefs": [manifest_n_plus_one],
+                "supersedesEventId": f"research-graph-v2:{run}-amend-propose",
+            },
+            headers=reviewer,
+        )
+        _require_status(supersede_response, 201, "N+1 manifest supersession")
+        superseded = _data(supersede_response)
+        hashes["graph_supersede_n_plus_one"] = _public_response_hash(
+            supersede_response
+        )
+
+        second_review_response = client.post(
+            setup["primary"] + graph_route + "/mutations",
+            json={
+                "idempotencyKey": f"{run}-amend-verify-n-plus-one",
+                "action": "verify",
+                "expectedSequence": superseded["sequence"],
+                "expectedRevision": superseded["researchRevisionId"],
+                "nodeId": "opencli-source",
+                "claimId": claim_id,
+                "claimContentHash": manifest_n["manifestHash"],
+                "manifestRefs": [manifest_n_plus_one],
+            },
+            headers=setup["proposer"],
+        )
+        _require_status(second_review_response, 201, "second independent verification")
+        second_review = _data(second_review_response)
+        hashes["graph_verify_n_plus_one"] = _public_response_hash(
+            second_review_response
+        )
+
+        pin_n_plus_one_response = client.post(
+            setup["primary"] + graph_route + "/mutations",
+            json={
+                "idempotencyKey": f"{run}-amend-pin-n-plus-one",
+                "action": "pin",
+                "expectedSequence": second_review["sequence"],
+                "expectedRevision": second_review["researchRevisionId"],
+                "nodeId": "opencli-source",
+                "manifestRefs": [manifest_n_plus_one],
+            },
+            headers=setup["proposer"],
+        )
+        _require_status(pin_n_plus_one_response, 201, "N+1 manifest pin")
+        pin_n_plus_one = _data(pin_n_plus_one_response)
+        hashes["graph_pin_n_plus_one"] = _public_response_hash(
+            pin_n_plus_one_response
+        )
+        new_pin = pin_n_plus_one.get("pinnedFold")
+        if not isinstance(new_pin, dict) or new_pin.get("blocked"):
+            raise RuntimeError("N+1 did not produce a fresh public graph pin")
+
+        graph_new_response = client.get(
+            setup["primary"] + graph_route, headers=setup["proposer"]
+        )
+        graph_new = _data(graph_new_response)
+        hashes["graph_new_pinned_read"] = _public_response_hash(graph_new_response)
+        if (
+            graph_new.get("pinnedFold") != new_pin
+            or graph_new.get("blocker") is not None
+            or graph_new.get("recoveryAction") != "none"
+        ):
+            raise RuntimeError("N+1 graph pin did not clear the stale-manifest blocker")
+
+        new_decision_body = {
+            "version": "v1",
+            "operationId": f"{run}-operation-n-plus-one",
+            "idempotencyKey": f"{run}-decision-n-plus-one",
+            "nodeId": "opencli-source",
+            "targetId": target["targetId"],
+            "pinnedReference": _pinned_reference(new_pin),
+            "selectedClaimIds": [claim_id],
+        }
+        new_decision_response = client.post(
+            f"{setup['primary']}{setup['route']}/{setup['runId']}/delivery-authorizations",
+            json=new_decision_body,
+            headers=setup["proposer"],
+        )
+        _require_status(new_decision_response, 201, "N+1-bound delivery authorization")
+        new_decision = _data(new_decision_response)
+        hashes["new_delivery_decision"] = _public_response_hash(new_decision_response)
+        if (
+            old_decision["decisionId"] == new_decision["decisionId"]
+            or old_decision["decisionHash"] == new_decision["decisionHash"]
+        ):
+            raise RuntimeError("N and N+1 delivery decisions were not separately bound")
+
+        revised_target_response = client.post(
+            f"{setup['primary']}{setup['route']}/{setup['runId']}/delivery-targets",
+            json={
+                "targetId": target["targetId"],
+                "receiverIdentity": "controlled-receiver-proof",
+                "endpointIdentity": "receiver-channel-proof-amended",
+                "credentialReference": "credential-reference-proof",
+            },
+            headers=reviewer,
+        )
+        _require_status(revised_target_response, 201, "delivery target revision")
+        revised_target = _data(revised_target_response)
+        hashes["revised_delivery_target"] = _public_response_hash(
+            revised_target_response
+        )
+        if revised_target["revision"] != target["revision"] + 1:
+            raise RuntimeError("new delivery target revision was not created")
+
+        replay_conflict_response = client.post(
+            f"{setup['primary']}{setup['route']}/{setup['runId']}/delivery-authorizations",
+            json=new_decision_body,
+            headers=setup["proposer"],
+        )
+        _require_status(
+            replay_conflict_response, 409, "changed delivery decision replay"
+        )
+        hashes["changed_decision_replay_conflict"] = _public_response_hash(
+            replay_conflict_response
+        )
+
+    return _failure_result(
+        scenario="amendment-decision-conflict",
+        run=run,
+        fault="terminal-manifest-amendment-and-delivery-binding-conflict",
+        command_id=submission["commandId"],
+        attempt_id=submission["attemptId"],
+        workflow_run_id=setup["runId"],
+        hashes=hashes,
+        collection={
+            "blockingStage": "none",
+            "recoveryAction": "recover",
+            "sideEffectUncertainty": False,
+        },
+        materialization={
+            "status": "completed",
+            "blocker": "none",
+            "recoveryAction": "recover",
+            "manifestHash": manifest_n_plus_one["manifestHash"],
+            "reconciliationRevision": n_plus_one["reconciliationRevision"],
+            "pageSnapshotAsOf": n_plus_one.get("pageSnapshotAsOf"),
+        },
+        graph={
+            "pin": _public_hash(new_pin),
+            "sequence": graph_new["sequence"],
+            "readBlocker": "stale_manifest",
+            "mutationStatus": "re_review_required",
+        },
     )
 
 
@@ -1222,6 +2002,10 @@ def main() -> int:
         result = duplicate_dlq(args.run)
     elif args.scenario == "query-page-race":
         result = query_page_race(args.run)
+    elif args.scenario == "graph-stale-auth-cas-retract":
+        result = graph_stale_auth_cas_retract(args.run)
+    elif args.scenario == "amendment-decision-conflict":
+        result = amendment_decision_conflict(args.run)
     else:
         raise RuntimeError("scenario driver is not implemented")
     print(json.dumps(result, sort_keys=True))

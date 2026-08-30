@@ -92,6 +92,30 @@ def test_actor_triggers_pinned_iii_batch_with_correlated_record(monkeypatch):
     assert payload["events"][0]["payload"]["phase"] == "pre_snapshot_101"
 
 
+def test_actor_accepts_the_amendment_duplicate_phase():
+    actuator = _actuator_module()
+
+    request = actuator.IngressRequest(
+        phase="amendment_duplicate",
+        workspace_id="workspace-1",
+        project_id="project-1",
+        workflow_id="workflow-1",
+        studio_workflow_version_id="version-1",
+        run_id="run-1",
+        node_id="opencli-source",
+        command_id="command-1",
+        attempt_id="attempt-1",
+        attempt_number=1,
+        task_id="task-1",
+        trace_id="trace-1",
+        source_id="00000000-0000-0000-0000-000000000001",
+        payload_sha256="a" * 64,
+        event_id="original-event",
+    )
+
+    assert request.phase == "amendment_duplicate"
+
+
 def test_actor_rejects_an_unauthenticated_request(monkeypatch):
     actuator = _actuator_module()
     monkeypatch.setenv("API_AUTH_TOKEN", "actor-token")
