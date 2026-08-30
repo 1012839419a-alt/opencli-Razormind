@@ -61,6 +61,7 @@ replace_env() {
 }
 
 api_token="$(random_hex 32)"
+bootstrap_token="$(random_hex 32)"
 local_admin_password="$(random_hex 24)"
 credential_encryption_key="$(random_fernet)"
 if [ -z "$credential_encryption_key" ]; then
@@ -68,6 +69,7 @@ if [ -z "$credential_encryption_key" ]; then
   exit 1
 fi
 replace_env API_AUTH_TOKEN "$api_token"
+replace_env BOOTSTRAP_ADMIN_TOKEN "$bootstrap_token"
 replace_env SECRET_KEY "$(random_hex 32)"
 replace_env CREDENTIAL_ENCRYPTION_KEY "$credential_encryption_key"
 chmod 600 "$INSTALL_DIR/.env"
@@ -93,4 +95,5 @@ done
 printf '\nOpenCLI Admin %s is ready.\n' "$VERSION"
 printf 'URL: http://localhost:%s\n' "${FRONTEND_PORT:-3010}"
 printf 'Local login: admin / %s\n' "$local_admin_password"
+printf 'Emergency BOOTSTRAP_ADMIN_TOKEN is generated and stored in %s/.env\n' "$INSTALL_DIR"
 printf 'API_AUTH_TOKEN is generated for Fleet/Agent/API transport and stored in %s/.env\n' "$INSTALL_DIR"
