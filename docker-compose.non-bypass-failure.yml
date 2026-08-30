@@ -24,7 +24,7 @@ services:
     environment:
       PROOF_SCENARIO: ${PROOF_SCENARIO:-unbound}
       ODP_INGEST_URL: http://proof-odp-http-gateway:8040
-    command: [/bin/sh, -ec, 'if [ "$PROOF_SCENARIO" = signed-zero ]; then printf "%s\n" "#!/bin/sh" "exec /proof/opencli-failure-proof zero" > /tmp/opencli-proof && chmod 0555 /tmp/opencli-proof; else install -m 0555 /proof/opencli-proof /tmp/opencli-proof; fi; exec python worker/src/main.py']
+    command: [/bin/sh, -ec, 'case "$$PROOF_SCENARIO" in signed-zero) mode=zero;; query-page-race) mode=hundred;; *) mode=one;; esac; printf "%s\n" "#!/bin/sh" "exec /proof/opencli-failure-proof $$mode" > /tmp/opencli-proof; chmod 0555 /tmp/opencli-proof; exec python worker/src/main.py']
     volumes:
       - ./tests/acceptance/fixtures/opencli-failure-proof:/proof/opencli-failure-proof:ro
   proof-bridge:
@@ -167,6 +167,8 @@ services:
       CONTROL_PORT: "8082"
       UPSTREAM_HOST: proof-odp-postgres
       UPSTREAM_PORT: "5432"
+    volumes:
+      - ${PROOF_ARTIFACT_DIR:-./.artifacts/non-bypass-failures}/gateway-coordination:/coordination
     networks: [proof-odp, proof-fault]
     labels: *failure-labels
   proof-odp-store-redis-gateway:
@@ -179,6 +181,8 @@ services:
       CONTROL_PORT: "8083"
       UPSTREAM_HOST: proof-redis
       UPSTREAM_PORT: "6379"
+    volumes:
+      - ${PROOF_ARTIFACT_DIR:-./.artifacts/non-bypass-failures}/gateway-coordination:/coordination
     networks: [proof-odp, proof-fault]
     labels: *failure-labels
   proof-odp-store:

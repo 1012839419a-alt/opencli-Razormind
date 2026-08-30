@@ -4,6 +4,7 @@ import importlib.util
 import json
 import sys
 import threading
+import tempfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -40,14 +41,14 @@ def test_http_mutator_forwards_to_real_upstream_and_preserves_context(monkeypatc
     monkeypatch.setenv("HTTP_UPSTREAM_URL", f"http://127.0.0.1:{upstream.server_port}")
     gateways.STATES["http-schema-mutator"].armed = False
     client = TestClient(gateways.app)
-    payload = b'{"schema_version":1,"command_id":"fixed","context":{"attempt":"a1"}}'
+    payload = b'{"batch_id":"batch-fixed","context":{"attempt":"a1"},"events":[{"schema_version":1,"event_id":"event-1","context":{"event":"keep"}},{"schema_version":2,"event_id":"event-2"}]}'
     plain = client.post("/ingest", content=payload, headers={"Authorization": "Bearer real-token", "Content-Type": "application/json"})
     assert plain.status_code == 207 and plain.content == b'{"upstream":"real"}'
     assert seen == {"path": "/ingest", "body": payload, "authorization": "Bearer real-token"}
     assert client.post("/_gate/http-schema-mutator/arm", json={"armed": True}, headers={"X-API-Token": "control-token"}).status_code == 200
     mutated = client.post("/ingest", content=payload, headers={"Authorization": "Bearer real-token", "Content-Type": "application/json"})
     assert mutated.status_code == 207
-    assert json.loads(seen["body"]) == {"schema_version": 999, "command_id": "fixed", "context": {"attempt": "a1"}}
+    assert json.loads(seen["body"]) == {"batch_id": "batch-fixed", "context": {"attempt": "a1"}, "events": [{"schema_version": 999, "event_id": "event-1", "context": {"event": "keep"}}, {"schema_version": 2, "event_id": "event-2"}]}
     upstream.shutdown()
 
 
@@ -59,6 +60,27 @@ def test_resp_buffer_forwards_fragmented_commands_and_identifies_only_committed_
     assert gateways._is_committed_xadd(command)
     assert not gateways._is_committed_xadd(b"*2\r\n$4\r\nXACK\r\n$3\r\nkey\r\n")
 
+
+
+def test_store_redis_filter_requires_successful_fragmented_postgres_commit(monkeypatch):
+    with tempfile.TemporaryDirectory() as directory:
+        marker = Path(directory) / "commit-ready"
+        monkeypatch.setenv("COMMIT_MARKER_PATH", str(marker))
+        pg = gateways.GatewayState("store-pg-cut")
+        redis = gateways.GatewayState("store-redis-committed-xadd", armed=True)
+        committed = b"*3\r\n$4\r\nXADD\r\n$20\r\nodp.record.committed\r\n$1\r\n*\r\n"
+        assert not gateways._redis_filter_enabled(redis)
+        assert gateways._is_committed_xadd(committed)
+        gateways._observe_postgres_chunk(pg, b"COM", outbound=True)
+        assert not marker.exists()
+        gateways._observe_postgres_chunk(pg, b"MIT", outbound=True)
+        gateways._observe_postgres_chunk(pg, b"Z\x00\x00\x00\x05E", outbound=False)
+        assert not marker.exists()
+        gateways._observe_postgres_chunk(pg, b"COMMIT", outbound=True)
+        gateways._observe_postgres_chunk(pg, b"Z\x00\x00\x00\x05I", outbound=False)
+        assert marker.exists()
+        assert gateways._redis_filter_enabled(redis)
+        assert not gateways._is_committed_xadd(b"*2\r\n$4\r\nXACK\r\n$3\r\nkey\r\n")
 
 def test_cut_modes_arm_only_after_explicit_control(monkeypatch):
     monkeypatch.setenv("API_AUTH_TOKEN", "control-token")

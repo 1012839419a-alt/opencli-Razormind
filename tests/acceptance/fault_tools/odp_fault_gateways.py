@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from pathlib import Path
 from dataclasses import dataclass
 from typing import Literal
 
@@ -24,11 +25,12 @@ GatewayMode = Literal[
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
-
 @dataclass
 class GatewayState:
     mode: GatewayMode
     armed: bool = False
+    pending_commit: bool = False
+    postgres_frontend_buffer: bytes = b""
 
 
 STATES = {
@@ -55,6 +57,31 @@ def _authenticated(token: str | None) -> None:
         raise HTTPException(401, "gateway credential denied")
 
 
+def _commit_marker() -> Path:
+    return Path(os.environ.get("COMMIT_MARKER_PATH", "/coordination/store-commit-ready"))
+
+
+def _mark_commit_ready() -> None:
+    path = _commit_marker()
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path.write_text("ready", encoding="ascii")
+
+
+
+def _observe_postgres_chunk(state: GatewayState, chunk: bytes, *, outbound: bool) -> None:
+    if outbound:
+        state.postgres_frontend_buffer = (state.postgres_frontend_buffer + chunk.upper())[-64:]
+        if b"COMMIT" in state.postgres_frontend_buffer:
+            state.pending_commit = True
+    if not outbound and state.pending_commit and b"Z" in chunk:
+        if chunk.endswith(b"I"):
+            _mark_commit_ready()
+        state.pending_commit = False
+
+
+def _redis_filter_enabled(state: GatewayState) -> bool:
+    return state.armed and _commit_marker().exists()
+
 @app.post("/_gate/{name}/arm")
 async def arm(name: str, body: ArmRequest, x_api_token: str | None = Header(default=None)) -> dict[str, bool]:
     _authenticated(x_api_token)
@@ -66,9 +93,10 @@ async def http_schema_mutator(path: str, request: Request) -> Response:
     body = await request.body()
     if _state("http-schema-mutator").armed:
         document = json.loads(body)
-        if not isinstance(document, dict) or "schema_version" not in document:
-            raise HTTPException(422, "ingress document has no schema_version")
-        document["schema_version"] = 999
+        event = document["events"][0] if isinstance(document, dict) and isinstance(document.get("events"), list) and document["events"] else document
+        if not isinstance(event, dict) or "schema_version" not in event:
+            raise HTTPException(422, "ingress document has no event schema_version")
+        event["schema_version"] = 999
         body = json.dumps(document, separators=(",", ":"), ensure_ascii=False).encode()
     headers = {
         name: value for name, value in request.headers.items()
@@ -151,22 +179,19 @@ class RespCommandBuffer:
 async def _copy(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, state: GatewayState, *, outbound: bool) -> None:
     resp = RespCommandBuffer() if state.mode == "store-redis-committed-xadd" and outbound else None
     while data := await reader.read(65536):
-        chunks = resp.feed(data) if resp else [data]
-        for chunk in chunks:
+        for chunk in (resp.feed(data) if resp else [data]):
+            if state.mode == "store-pg-cut":
+                _observe_postgres_chunk(state, chunk, outbound=outbound)
             if state.armed and state.mode in {"ingest-redis-cut", "store-pg-cut"} and outbound:
                 writer.close()
                 await writer.wait_closed()
                 return
-            if state.armed and state.mode == "store-redis-committed-xadd" and outbound and _is_committed_xadd(chunk):
-                # Same-length stream rewrite preserves RESP framing and yields a
-                # real Redis XADD response without publishing the target stream.
+            if state.mode == "store-redis-committed-xadd" and outbound and _is_committed_xadd(chunk) and _redis_filter_enabled(state):
                 chunk = chunk.replace(b"odp.record.committed", b"odp.record.discarded")
             writer.write(chunk)
             await writer.drain()
     writer.close()
     await writer.wait_closed()
-
-
 async def relay(client_reader: asyncio.StreamReader, client_writer: asyncio.StreamWriter, state: GatewayState) -> None:
     upstream_reader, upstream_writer = await asyncio.open_connection(os.environ["UPSTREAM_HOST"], int(os.environ["UPSTREAM_PORT"]))
     await asyncio.gather(
