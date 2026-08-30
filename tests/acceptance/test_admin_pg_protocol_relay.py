@@ -139,6 +139,34 @@ def test_connection_flow_holds_only_post_commit_locked_execution_read():
     assert flow.stage == "held"
 
 
+def test_cancellation_gate_holds_post_commit_read_after_pool_reconnect(monkeypatch, tmp_path):
+    async def exercise() -> None:
+        monkeypatch.setattr(relay, "_COORDINATION_ROOT", tmp_path)
+        gate = relay.CancellationGate()
+        first = relay.ConnectionFlow()
+        second = relay.ConnectionFlow()
+
+        await gate.arm("run-1")
+        assert await gate.should_hold(first, _parse(b"claim", CLAIM)) is False
+        assert await gate.should_hold(first, _parse(b"reserve", RESERVE)) is False
+        assert await gate.should_hold(
+            first,
+            relay.FrontendFrame(
+                _frontend(b"Q", b"COMMIT\0"), b"Q", b"COMMIT\0", sql=b"COMMIT"
+            ),
+        ) is False
+        await gate.observe_backend(
+            first, relay.BackendFrame(_backend(b"C", b"COMMIT\0"), b"C", b"COMMIT\0")
+        )
+        await gate.observe_backend(first, relay.BackendFrame(_backend(b"Z", b"I"), b"Z", b"I"))
+
+        assert await gate.should_hold(second, _parse(b"locked", LOCKED_READ)) is True
+        assert (tmp_path / "run-1.cancel-before-dispatch-held").read_text() == "held"
+        await gate.release()
+
+    asyncio.run(exercise())
+
+
 def test_interleaved_connection_does_not_inherit_armed_flow_state():
     first = relay.ConnectionFlow()
     second = relay.ConnectionFlow()

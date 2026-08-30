@@ -263,6 +263,10 @@ class CancellationGate:
         self._run: str | None = None
         self._release = asyncio.Event()
         self._release.set()
+        self._stage = "await_claim"
+        self._reservation_flow: ConnectionFlow | None = None
+        self._claim_flow: ConnectionFlow | None = None
+        self._commit_completed = False
 
     async def arm(self, run: str) -> None:
         async with self._lock:
@@ -270,20 +274,60 @@ class CancellationGate:
             self._held = False
             self._run = run
             self._release.clear()
+            self._stage = "await_claim"
+            self._reservation_flow = None
+            self._claim_flow = None
+            self._commit_completed = False
             signal = _COORDINATION_ROOT / f"{run}.cancel-before-dispatch-held"
             signal.unlink(missing_ok=True)
         await _connections.close_all()
 
-    async def claim(self) -> bool:
+    async def should_hold(self, flow: ConnectionFlow, frame: FrontendFrame) -> bool:
+        flow.should_hold(frame)
+        sql = flow._sql(frame)
         async with self._lock:
-            if not self._armed or self._held or self._run is None:
+            if not self._armed or self._held:
                 return False
-            self._held = True
-            _COORDINATION_ROOT.mkdir(parents=True, exist_ok=True)
-            (_COORDINATION_ROOT / f"{self._run}.cancel-before-dispatch-held").write_text(
-                "held", encoding="utf-8"
-            )
-            return True
+            if self._stage == "await_claim" and _execution_claim(sql):
+                self._claim_flow = flow
+                self._stage = "await_reservation"
+            elif (
+                self._stage == "await_reservation"
+                and self._claim_flow is flow
+                and _reservation_update(sql)
+            ):
+                self._reservation_flow = flow
+                self._stage = "await_commit"
+            elif (
+                self._stage == "await_commit"
+                and self._reservation_flow is flow
+                and _commit(sql)
+            ):
+                self._stage = "await_commit_success"
+                self._commit_completed = False
+            elif self._stage == "await_locked_read" and _locked_execution_read(sql):
+                self._held = True
+                _COORDINATION_ROOT.mkdir(parents=True, exist_ok=True)
+                (
+                    _COORDINATION_ROOT / f"{self._run}.cancel-before-dispatch-held"
+                ).write_text("held", encoding="utf-8")
+                return True
+            return False
+
+    async def observe_backend(self, flow: ConnectionFlow, frame: BackendFrame) -> None:
+        flow.observe_backend(frame)
+        async with self._lock:
+            if self._stage != "await_commit_success" or self._reservation_flow is not flow:
+                return
+            if frame.message_type == b"E":
+                self._stage = "await_claim"
+                self._claim_flow = None
+                self._reservation_flow = None
+                self._commit_completed = False
+            elif frame.message_type == b"C" and frame.body.startswith(b"COMMIT\0"):
+                self._commit_completed = True
+            elif frame.message_type == b"Z" and self._commit_completed:
+                self._stage = "await_locked_read"
 
     async def wait_for_release(self) -> None:
         try:
@@ -308,7 +352,7 @@ async def _relay_backend(
     try:
         while data := await reader.read(65536):
             for frame in frames.feed(data):
-                flow.observe_backend(frame)
+                await _gate.observe_backend(flow, frame)
                 writer.write(frame.wire)
                 await writer.drain()
     finally:
@@ -342,7 +386,7 @@ async def _handle_client(
             for frame in frames.feed(data):
                 if _negotiates_tls(frame):
                     backend_frames.expect_negotiation_response()
-                if flow.should_hold(frame) and await _gate.claim():
+                if await _gate.should_hold(flow, frame):
                     await _gate.wait_for_release()
                 upstream_writer.write(frame.wire)
                 await upstream_writer.drain()
