@@ -10,6 +10,8 @@ services:
   proof-driver:
     labels: *failure-labels
     networks: [proof-control, proof-fault]
+    volumes:
+      - ${PROOF_ARTIFACT_DIR:-./.artifacts/non-bypass-failures}:/proof-artifacts
   proof-admin-postgres:
     labels: *failure-labels
   proof-redis:
@@ -34,6 +36,7 @@ services:
       API_AUTH_TOKEN: ${API_AUTH_TOKEN:-runtime-secret-required}
       PROOF_PRIMARY_ADMIN: http://proof-admin:8000
       PROOF_CONTROL_ADMIN: http://proof-admin-control:8000
+    networks: [proof-control, proof-callback, proof-iii-worker, proof-fault]
     labels: *failure-labels
   proof-odp-query:
     labels: *failure-labels

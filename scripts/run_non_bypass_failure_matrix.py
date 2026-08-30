@@ -97,23 +97,38 @@ def _admit(ledger: ScenarioLedger, env: dict[str, str], base: Path, overlay: Pat
     return report
 
 
-def _facts_from_driver(ledger: ScenarioLedger, env: dict[str, str], base: Path, overlay: Path, facts_dir: Path) -> dict[str, Any]:
-    path = facts_dir / f"{ledger.scenario}.public.json"
-    try:
-        raw = path.read_text("utf-8")
-    except FileNotFoundError as exc:
-        raise FailureRunRejected(f"missing authenticated public facts for {ledger.scenario}") from exc
-    # The only data piped into the container driver is the fact document collected
-    # at public HTTP boundaries. No DB/proxy/gate/container input is accepted.
-    output = _compose(
-        ledger, env, base, overlay, "exec", "-T", "proof-driver", "python",
-        "tests/acceptance/non_bypass_failure_matrix.py", "--scenario", ledger.scenario,
-        input=raw,
+def _facts_from_driver(ledger: ScenarioLedger, env: dict[str, str], base: Path, overlay: Path) -> dict[str, Any]:
+    if ledger.scenario != "admin-crash":
+        raise FailureRunRejected(f"in-network driver is not implemented for {ledger.scenario}")
+    command = [
+        "docker", "compose", "-p", ledger.project, "-f", str(base), "-f", str(overlay),
+        "exec", "-T", "proof-driver", "python", "tests/acceptance/non_bypass_failure_driver.py",
+        "--scenario", ledger.scenario, "--run", ledger.run,
+    ]
+    process = subprocess.Popen(command, cwd=ROOT, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    signal = ledger.artifact / "coordination" / f"{ledger.run}.submitted"
+    deadline = time.monotonic() + 90
+    while not signal.exists() and time.monotonic() < deadline:
+        time.sleep(0.2)
+    if not signal.exists():
+        process.kill()
+        raise FailureRunRejected("admin-crash driver did not reach its public submit boundary")
+    _compose(ledger, env, base, overlay, "kill", "proof-admin", timeout=30)
+    _compose(
+        ledger, env, base, overlay, "exec", "-T", "proof-driver", "curl", "-fsS",
+        "-X", "POST", "-H", f"X-API-Token: {env['API_AUTH_TOKEN']}",
+        "-H", "Content-Type: application/json", "-d", '{"upstream":"control"}',
+        "http://proof-relay:8080/_gate/callback-upstream", timeout=30,
     )
+    (ledger.artifact / "coordination" / f"{ledger.run}.resume").write_text("released", encoding="utf-8")
+    stdout, stderr = process.communicate(timeout=120)
+    if process.returncode:
+        raise FailureRunRejected(stderr.strip() or stdout.strip() or "in-network admin-crash driver failed")
     try:
-        return json.loads(output)
-    except json.JSONDecodeError as exc:
-        raise FailureRunRejected("in-network driver did not emit ScenarioResultV1") from exc
+        facts = json.loads(stdout)
+        return normalize_public_facts(facts)
+    except (json.JSONDecodeError, RuntimeError) as exc:
+        raise FailureRunRejected("in-network driver did not emit normalized public facts") from exc
 
 
 def _govern(ledger: ScenarioLedger, result: dict[str, Any], now: int) -> dict[str, Any]:
@@ -145,7 +160,7 @@ def _cleanup(ledger: ScenarioLedger, env: dict[str, str], base: Path, overlay: P
         shutil.rmtree(ledger.scratch, ignore_errors=True)
 
 
-def run_matrix(artifact_dir: Path, *, compose_file: Path, overlay_file: Path, public_facts_dir: Path) -> list[Path]:
+def run_matrix(artifact_dir: Path, *, compose_file: Path, overlay_file: Path) -> list[Path]:
     results: list[Path] = []
     for scenario in sorted(SCENARIOS):
         run_id = f"nbf-{scenario}-{uuid.uuid4().hex[:12]}"
@@ -168,7 +183,7 @@ def run_matrix(artifact_dir: Path, *, compose_file: Path, overlay_file: Path, pu
         try:
             _admit(ledger, env, compose_file, overlay_file)
             _compose(ledger, env, compose_file, overlay_file, "up", "--detach", "--no-build", timeout=120)
-            result = _facts_from_driver(ledger, env, compose_file, overlay_file, public_facts_dir)
+            result = _facts_from_driver(ledger, env, compose_file, overlay_file)
             if time.monotonic() - started > 360:
                 raise FailureRunRejected("scenario exceeded the 360 second bound")
             saved = _govern(ledger, result, int(time.time()))
@@ -185,10 +200,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--compose-file", type=Path, default=ROOT / "docker-compose.non-bypass-acceptance.yml")
     parser.add_argument("--overlay-file", type=Path, default=ROOT / "docker-compose.non-bypass-failure.yml")
     parser.add_argument("--artifact-dir", type=Path, required=True)
-    parser.add_argument("--public-facts-dir", type=Path, default=ROOT / ".artifacts/non-bypass-failures/public-facts")
     args = parser.parse_args(argv)
     try:
-        run_matrix(args.artifact_dir, compose_file=args.compose_file, overlay_file=args.overlay_file, public_facts_dir=args.public_facts_dir)
+        run_matrix(args.artifact_dir, compose_file=args.compose_file, overlay_file=args.overlay_file)
     except FailureRunRejected as exc:
         print(f"failure matrix rejected: {exc}")
         return 2

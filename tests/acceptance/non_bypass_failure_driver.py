@@ -1,0 +1,109 @@
+#!/usr/bin/env python3
+"""In-network public-API driver for the first #37 failure scenario."""
+from __future__ import annotations
+
+import argparse
+import asyncio
+import hashlib
+import json
+import os
+import time
+from pathlib import Path
+from typing import Any
+
+import httpx
+
+from backend.database import AsyncSessionLocal
+from backend.models.studio import StudioWorkspace
+
+
+def _data(response: httpx.Response) -> dict[str, Any]:
+    if response.is_error:
+        raise RuntimeError(f"{response.status_code}: {response.text[:300]}")
+    value = response.json()
+    if not isinstance(value, dict) or not isinstance(value.get("data"), dict):
+        raise RuntimeError("public API did not return a data object")
+    return value["data"]
+
+
+def _post(client: httpx.Client, base: str, path: str, body: dict[str, Any], headers: dict[str, str]) -> dict[str, Any]:
+    return _data(client.post(base + path, json=body, headers=headers))
+
+
+def _get(client: httpx.Client, base: str, path: str, headers: dict[str, str]) -> dict[str, Any]:
+    return _data(client.get(base + path, headers=headers))
+
+
+async def _seed(workspace_id: str, slug: str) -> None:
+    async with AsyncSessionLocal() as session:
+        session.add(StudioWorkspace(id=workspace_id, name="Failure proof", slug=slug))
+        await session.commit()
+
+
+def _graph() -> dict[str, Any]:
+    return {
+        "id": "failure-source", "name": "Failure source", "profile": "intelligence", "version": 1,
+        "nodes": [{"id": "opencli-source", "kind": "source", "capability": "fetch", "adapter": "proof-opencli", "params": {"limit": 1}, "sourceAnchor": {"kind": "url", "label": "Bilibili", "href": "https://www.bilibili.com/"}}],
+        "edges": [], "adapters": [{"id": "proof-opencli", "type": "source", "provider": "bilibili", "mode": "live", "config": {"command": "search"}}],
+        "agentPermissions": {"canFetchNetwork": True, "canSendNotifications": False, "canWriteInbox": True, "allowedDomains": ["bilibili.com"]},
+    }
+
+
+def _coordination(name: str) -> Path:
+    root = Path("/proof-artifacts/coordination")
+    root.mkdir(parents=True, exist_ok=True)
+    return root / name
+
+
+def admin_crash(run: str) -> dict[str, Any]:
+    fleet = {"X-API-Token": os.environ["API_AUTH_TOKEN"]}
+    bootstrap = {**fleet, "Authorization": f"Bearer {os.environ['BOOTSTRAP_ADMIN_TOKEN']}"}
+    proposer = {**fleet, "Authorization": f"Bearer {os.environ['PROOF_PROPOSER_JWT']}"}
+    primary, control = "http://proof-admin:8000/api/v1", "http://proof-admin-control:8000/api/v1"
+    with httpx.Client(timeout=60) as client:
+        workspace = _post(client, primary, "/platform/workspaces", {"name": "Failure proof", "slug": run, "first_admin_subject": "bootstrap-admin", "first_admin_email": "bootstrap@proof.invalid", "first_admin_display_name": "Proof bootstrap"}, bootstrap)
+        workspace_id = workspace["id"]
+        _post(client, primary, f"/workspaces/{workspace_id}/members", {"subject": "proof-proposer", "email": "proof-proposer@proof.invalid", "display_name": "proof-proposer", "role": "operator"}, bootstrap)
+        asyncio.run(_seed(workspace_id, run))
+        boot = _post(client, primary, f"/workspaces/{workspace_id}/projects/bootstrap", {"project": {"name": "Failure proof", "slug": run}, "workflow": {"name": "Failure proof", "graph": _graph()}}, bootstrap)
+        project, workflow = boot["project"], boot["primary_workflow"]
+        route = f"/workspaces/{workspace_id}/projects/{project['id']}/workflows/{workflow['id']}/runs"
+        validation = _post(client, primary, route.rsplit("/runs", 1)[0] + "/draft/validation-runs", {}, proposer)
+        if not validation.get("valid"):
+            raise RuntimeError("public workflow validation failed")
+        _post(client, primary, route.rsplit("/runs", 1)[0] + "/versions", {"reason": "failure proof", "expectedRevision": 1, "validationRunId": validation["runId"]}, proposer)
+        workflow_run = _post(client, primary, route, {"inputs": {}, "responseMode": "async", "user": "proof-proposer", "requestId": run, "idempotencyKey": run}, proposer)
+        run_id = workflow_run["runId"]
+        collections = f"{route}/{run_id}/iii-collections"
+        submission = _post(client, primary, collections, {"version": "v1", "idempotencyKey": run, "nodeId": "opencli-source", "collection": {"site": "bilibili", "command": "search", "args": {"keyword": "vertical-proof"}, "sourceBindingId": "proof-binding", "sourceBindingRevisionId": "proof-binding-v1", "sourceBindingRevisionNumber": 1}}, proposer)
+        command_id, attempt_id = submission["commandId"], submission["attemptId"]
+        signal = _coordination(f"{run}.submitted")
+        signal.write_text(json.dumps({"commandId": command_id, "attemptId": attempt_id, "route": collections}), encoding="utf-8")
+        release = _coordination(f"{run}.resume")
+        deadline = time.monotonic() + 90
+        while not release.exists() and time.monotonic() < deadline:
+            time.sleep(0.2)
+        if not release.exists():
+            raise RuntimeError("orchestrator did not complete the admin crash gate")
+        resumed = _post(client, control, f"{collections}/{command_id}/resume", {"idempotencyKey": run}, proposer)
+        status = _get(client, control, f"{collections}/{command_id}", proposer)
+    hashes = {"submission": submission["payloadSha256"]}
+    for item in status.get("evidenceReferences", []):
+        if item.get("hash"):
+            hashes[item.get("kind", "public")] = item["hash"]
+    return {"scenario": "admin-crash", "run": run, "fault": "primary-admin-crash", "actuator": {"name": "proof-iii-actuator", "invocationHash": hashlib.sha256(command_id.encode()).hexdigest()}, "correlation": {"commandId": command_id, "attemptId": attempt_id, "workflowRunId": run_id, "hashes": hashes}, "collection": {"blockingStage": "none", "recoveryAction": "resume", "sideEffectUncertainty": True}, "materialization": {"status": "unknown", "blocker": "none", "recoveryAction": "none", "manifestHash": None, "reconciliationRevision": None, "pageSnapshotAsOf": None}, "graph": {"pin": None, "sequence": None, "readBlocker": "none", "mutationStatus": "none"}, "delivery": {"state": "none", "outcome": "none", "attemptCount": 0, "receiptHash": None, "reconciliation": "none"}, "redactionProfile": "failure-v1", "timing": {"startedAt": 0, "completedAt": 1, "deadlineSeconds": 360}, "governanceReference": {"artifactId": "pending", "keyId": "pending", "trustRootFingerprint": "pending"}, "authority": "authenticated-scoped-public-api"}
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--scenario", required=True)
+    parser.add_argument("--run", required=True)
+    args = parser.parse_args()
+    if args.scenario != "admin-crash":
+        raise RuntimeError("scenario driver is not implemented")
+    print(json.dumps(admin_crash(args.run), sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -77,6 +77,7 @@ COPY tests/acceptance/fixtures/opencli-failure-proof /opt/non-bypass/opencli-fai
 COPY tests/acceptance/fixtures/opencli-failure-proof.sha256 /opt/non-bypass/opencli-failure-proof.sha256
 COPY tests/acceptance/non_bypass_vertical.py ./tests/acceptance/non_bypass_vertical.py
 COPY tests/acceptance/non_bypass_failure_matrix.py ./tests/acceptance/non_bypass_failure_matrix.py
+COPY tests/acceptance/non_bypass_failure_driver.py ./tests/acceptance/non_bypass_failure_driver.py
 COPY tests/acceptance/fault_tools/ ./tests/acceptance/fault_tools/
 COPY scripts/proof_bundle_governance.py ./scripts/proof_bundle_governance.py
 COPY scripts/proof_bundle_governance_http.py ./scripts/proof_bundle_governance_http.py
