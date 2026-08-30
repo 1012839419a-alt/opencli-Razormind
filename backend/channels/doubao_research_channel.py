@@ -5,6 +5,8 @@ import os
 import re
 from typing import Any
 
+import httpx
+
 from backend.channels.base import AbstractChannel, Capabilities, ChannelResult
 from backend.channels.registry import register_channel
 
@@ -121,6 +123,29 @@ def _structured_response(text: str) -> dict[str, Any]:
 
 async def _run_doubao_command(command: list[str]) -> tuple[int, str, str]:
     """Late import avoids the channel registry's legacy OpenCLI import cycle."""
+    bridge_url = str(os.getenv("DOUBAO_CLI_BRIDGE_URL") or "").strip()
+    if bridge_url:
+        try:
+            async with httpx.AsyncClient(timeout=130, follow_redirects=False) as client:
+                headers: dict[str, str] = {}
+                bridge_token = str(os.getenv("DOUBAO_CLI_BRIDGE_TOKEN") or "").strip()
+                if bridge_token:
+                    headers["X-Lark-CLI-Bridge-Token"] = bridge_token
+                response = await client.post(
+                    bridge_url,
+                    json={"command": command[2] if len(command) > 2 else "", "args": command[3:]},
+                    headers=headers,
+                )
+                response.raise_for_status()
+                payload = response.json()
+            return (
+                int(payload.get("returncode", 1)),
+                str(payload.get("stdout", "")),
+                str(payload.get("stderr", "")),
+            )
+        except (httpx.HTTPError, ValueError, TypeError, KeyError) as exc:
+            return 1, "", f"Doubao CLI bridge failed: {exc}"
+
     from backend.channels.opencli_channel import _run_opencli
 
     return await _run_opencli(command, os.environ.copy())

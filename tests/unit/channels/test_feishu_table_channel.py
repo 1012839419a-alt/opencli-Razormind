@@ -16,6 +16,22 @@ class FakeClient:
         return httpx.Response(200, json=self.payload, request=httpx.Request("GET", url))
 
 
+class FakeBridgeClient:
+    def __init__(self, payload):
+        self.payload = payload
+        self.calls = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_):
+        return None
+
+    async def post(self, url, **kwargs):
+        self.calls.append((url, kwargs))
+        return httpx.Response(200, json=self.payload, request=httpx.Request("POST", url))
+
+
 def _config(**overrides):
     return {
         "transport": "http",
@@ -111,3 +127,69 @@ def test_cli_matrix_response_becomes_record_rows():
         {"record_id": "rec-1", "fields": {"序号": "1", "关键词": "高吉星"}},
         {"record_id": "rec-2", "fields": {"序号": "2", "关键词": "DHA"}},
     ]
+
+
+@pytest.mark.asyncio
+async def test_cli_transport_uses_host_bridge_when_configured(monkeypatch):
+    bridge = FakeBridgeClient(
+        {
+            "ok": True,
+            "data": {
+                "fields": ["序号", "关键词", "状态"],
+                "data": [["1", "高吉星", "待采集"]],
+                "record_id_list": ["rec-1"],
+                "has_more": False,
+            },
+        }
+    )
+    monkeypatch.setattr(
+        "backend.channels.feishu_table_channel.httpx.AsyncClient",
+        lambda **_: bridge,
+    )
+    monkeypatch.setenv("LARK_CLI_BRIDGE_URL", "http://host.docker.internal:18765/feishu/records")
+    monkeypatch.setenv("LARK_CLI_BRIDGE_TOKEN", "bridge-token")
+
+    result = await FeishuTableChannel().fetch(
+        FetchContext(
+            config={**_config(transport="cli"), "max_rows": 500},
+            params={},
+            source_id="source-1",
+        )
+    )
+
+    assert [item["keyword"] for item in result.items] == ["高吉星"]
+    assert result.metadata["transport"] == "lark-cli-bridge"
+    assert bridge.calls[0][0].endswith("/feishu/records")
+    assert bridge.calls[0][1]["headers"] == {"X-Lark-CLI-Bridge-Token": "bridge-token"}
+
+
+@pytest.mark.asyncio
+async def test_cli_bridge_applies_max_rows_across_a_page(monkeypatch):
+    bridge = FakeBridgeClient(
+        {
+            "ok": True,
+            "data": {
+                "fields": ["序号", "关键词", "状态"],
+                "data": [["1", "高吉星", "待采集"], ["2", "DHA", "待采集"]],
+                "record_id_list": ["rec-1", "rec-2"],
+                "has_more": True,
+            },
+        }
+    )
+    monkeypatch.setattr(
+        "backend.channels.feishu_table_channel.httpx.AsyncClient",
+        lambda **_: bridge,
+    )
+    monkeypatch.setenv("LARK_CLI_BRIDGE_URL", "http://host.docker.internal:18765/feishu/records")
+
+    result = await FeishuTableChannel().fetch(
+        FetchContext(
+            config={**_config(transport="cli"), "max_rows": 1},
+            params={},
+            source_id="source-1",
+        )
+    )
+
+    assert [item["keyword"] for item in result.items] == ["高吉星"]
+    assert not result.has_more
+    assert bridge.calls[0][1]["json"]["limit"] == 1

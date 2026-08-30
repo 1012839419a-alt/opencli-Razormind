@@ -51,6 +51,7 @@ async def list_records(
             or_(
                 func.lower(func.cast(CollectedRecord.normalized_data, String)).contains(term),
                 func.lower(func.cast(CollectedRecord.raw_data, String)).contains(term),
+                func.lower(func.cast(CollectedRecord.ai_enrichment, String)).contains(term),
             )
         )
 

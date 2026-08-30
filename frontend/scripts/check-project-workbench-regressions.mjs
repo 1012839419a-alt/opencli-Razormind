@@ -88,6 +88,7 @@ test('backend project API runs published versions and exposes project-scoped log
 
 test('project data workbench is project scoped and links data back to workflow evidence', async () => {
   const page = await source('app/(app)/studio/projects/[projectId]/data/page.tsx')
+  const recordService = await source('../backend/services/record_service.py')
   assert.match(page, /project_id: projectId/)
   assert.match(page, /active="data"/)
   assert.match(page, /数据集/)
@@ -125,7 +126,10 @@ test('project data workbench is project scoped and links data back to workflow e
   assert.match(page, /onMove=\{moveColumn\}/)
   assert.match(page, /字段 \$\{field\} 下移/)
   assert.match(page, /recordDataForLayer/)
+  assert.match(page, /collectRecordFields\(records, undefined, dataLayer\)/)
+  assert.match(page, /candidate\.dataLayer \?\? 'merged'/)
   assert.match(page, />记录<\/TableHead>/)
+  assert.match(recordService, /CollectedRecord\.ai_enrichment/)
 })
 
 test('project data workbench keeps file controls and empty states view-specific', async () => {

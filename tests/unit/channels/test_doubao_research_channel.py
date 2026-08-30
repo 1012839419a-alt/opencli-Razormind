@@ -3,6 +3,7 @@ import pytest
 from backend.channels.doubao_research_channel import (
     DoubaoResearchChannel,
     _citations,
+    _run_doubao_command,
     _structured_response,
 )
 from backend.schemas.source import DataSourceCreate
@@ -115,3 +116,36 @@ def test_source_schema_accepts_doubao_research_channel():
         name="Doubao research", channel_type="doubao_research", channel_config={"question": "test"}
     )
     assert source.channel_type == "doubao_research"
+
+
+@pytest.mark.asyncio
+async def test_doubao_command_uses_host_bridge_when_configured(monkeypatch):
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"returncode": 0, "stdout": "logged_in: true", "stderr": ""}
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return None
+
+        async def post(self, url, **kwargs):
+            assert url.endswith("/doubao")
+            assert kwargs["json"] == {"command": "status", "args": []}
+            return FakeResponse()
+
+    monkeypatch.setattr(
+        "backend.channels.doubao_research_channel.httpx.AsyncClient",
+        lambda **_: FakeClient(),
+    )
+    monkeypatch.setenv("DOUBAO_CLI_BRIDGE_URL", "http://host.docker.internal:18765/doubao")
+    monkeypatch.setenv("DOUBAO_CLI_BRIDGE_TOKEN", "bridge-token")
+
+    result = await _run_doubao_command(["opencli", "doubao", "status"])
+
+    assert result == (0, "logged_in: true", "")

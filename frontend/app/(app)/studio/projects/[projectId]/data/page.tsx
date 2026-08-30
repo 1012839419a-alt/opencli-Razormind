@@ -202,8 +202,8 @@ function hasMeaningfulValue(value: unknown) {
   return value !== null && value !== undefined && value !== '' && !(typeof value === 'string' && !value.trim())
 }
 
-function hasReadableValue(record: CollectedRecord) {
-  const payload = recordPayload(record)
+function hasReadableValue(record: CollectedRecord, layer: DataLayer = 'merged') {
+  const payload = recordDataForLayer(record, layer)
   return Object.entries(payload).some(([key, value]) => !key.startsWith('_') && typeof value === 'string' && Boolean(value.trim()))
 }
 
@@ -251,7 +251,7 @@ function buildQualityStats(records: CollectedRecord[], fields: string[], layer: 
     completeness: totalCells ? Math.round((filledCells / totalCells) * 100) : 0,
     duplicateExtraRows,
     failedRecords: records.filter((record) => record.status === 'error').length,
-    missingReadableValues: records.filter((record) => !hasReadableValue(record)).length,
+    missingReadableValues: records.filter((record) => !hasReadableValue(record, layer)).length,
     missingSourceTimes: records.filter((record) => !recordSourcePublishedAt(record)).length,
     urlTotal: urlValues.length,
     validUrls: urlValues.filter(isHttpUrl).length,
@@ -259,10 +259,12 @@ function buildQualityStats(records: CollectedRecord[], fields: string[], layer: 
   }
 }
 
-function isSavedView(value: unknown): value is SavedView {
-  if (!value || typeof value !== 'object') return false
+function parseSavedView(value: unknown): SavedView | null {
+  if (!value || typeof value !== 'object') return null
   const candidate = value as Partial<SavedView>
-  return typeof candidate.id === 'string' && typeof candidate.name === 'string' && ['dataset', 'profile', 'quality', 'files'].includes(candidate.view ?? '') && typeof candidate.search === 'string' && typeof candidate.status === 'string' && SORT_OPTIONS.some((option) => option.value === candidate.sortOption) && ['merged', 'normalized', 'raw', 'enrichment'].includes(candidate.dataLayer ?? '') && (candidate.selectedColumns === null || Array.isArray(candidate.selectedColumns))
+  const dataLayer = candidate.dataLayer ?? 'merged'
+  if (typeof candidate.id !== 'string' || typeof candidate.name !== 'string' || !['dataset', 'profile', 'quality', 'files'].includes(candidate.view ?? '') || typeof candidate.search !== 'string' || typeof candidate.status !== 'string' || !SORT_OPTIONS.some((option) => option.value === candidate.sortOption) || !DATA_LAYER_OPTIONS.some((option) => option.value === dataLayer) || (candidate.selectedColumns !== null && !Array.isArray(candidate.selectedColumns))) return null
+  return { ...candidate, dataLayer } as SavedView
 }
 
 export default function ProjectDataWorkbenchPage({ params }: { params: Promise<{ projectId: string }> }) {
@@ -310,7 +312,7 @@ export default function ProjectDataWorkbenchPage({ params }: { params: Promise<{
   const workflowId = preferredWorkflowId ?? project?.primary_workflow_id ?? workflows[0]?.id ?? null
   const analysisView = view === 'profile' || view === 'quality'
 
-  const visibleFields = useMemo(() => collectRecordFields(records, 24, dataLayer), [dataLayer, records])
+  const visibleFields = useMemo(() => collectRecordFields(records, undefined, dataLayer), [dataLayer, records])
   const analysisFields = useMemo(() => collectRecordFields(analysisRecords, undefined, dataLayer), [analysisRecords, dataLayer])
   const tableFields = useMemo(() => {
     const fallback = visibleFields.slice(0, 4)
@@ -359,7 +361,7 @@ export default function ProjectDataWorkbenchPage({ params }: { params: Promise<{
     try {
       const raw = window.localStorage.getItem(`opencli:data-workbench:${projectId}:views`)
       const parsed: unknown = raw ? JSON.parse(raw) : []
-      setSavedViews(Array.isArray(parsed) ? parsed.filter(isSavedView) : [])
+      setSavedViews(Array.isArray(parsed) ? parsed.map(parseSavedView).filter((savedView): savedView is SavedView => savedView !== null) : [])
     } catch {
       setSavedViews([])
     }
