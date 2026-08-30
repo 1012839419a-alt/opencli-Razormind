@@ -5,6 +5,7 @@ Only the fixed III callback routes are proxied. Switch state is gate control,
 never a proof input; callers obtain evidence from scoped Admin reads.
 """
 from __future__ import annotations
+import asyncio
 
 import os
 from typing import Literal
@@ -23,6 +24,9 @@ UPSTREAMS = {
     "control": os.environ.get("PROOF_CONTROL_ADMIN", "http://proof-admin-control:8000"),
 }
 active: Literal["primary", "control"] = "primary"
+report_mode: Literal["forward", "drop", "hold"] = "forward"
+report_release = asyncio.Event()
+report_release.set()
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
 
@@ -30,6 +34,23 @@ class Switch(BaseModel):
     upstream: Literal["primary", "control"]
 
 
+
+
+class ReportMode(BaseModel):
+    mode: Literal["forward", "drop", "hold"]
+
+
+@app.post("/_gate/report")
+async def set_report_mode(body: ReportMode, x_api_token: str | None = Header(default=None)) -> dict[str, str]:
+    if x_api_token != os.environ.get("API_AUTH_TOKEN"):
+        raise HTTPException(401, "gate credential denied")
+    global report_mode
+    report_mode = body.mode
+    if body.mode == "hold":
+        report_release.clear()
+    else:
+        report_release.set()
+    return {"status": "updated"}
 @app.post("/_gate/callback-upstream")
 async def switch(body: Switch, x_api_token: str | None = Header(default=None)) -> dict[str, str]:
     if x_api_token != os.environ.get("API_AUTH_TOKEN"):
@@ -49,6 +70,14 @@ async def callback(path: str, request: Request) -> Response:
     route = "/" + path
     if route not in CALLBACKS:
         raise HTTPException(404, "callback route is not allowlisted")
+    if route == "/api/v1/iii-collections/expected-key-reports":
+        if report_mode == "drop":
+            return Response(status_code=202, content=b'{"data":{"accepted":true}}', media_type="application/json")
+        if report_mode == "hold":
+            try:
+                await asyncio.wait_for(report_release.wait(), 30)
+            except TimeoutError as exc:
+                raise HTTPException(504, "report gate timed out") from exc
     body = await request.body()
     headers = {"X-III-Bridge-Token": request.headers.get("x-iii-bridge-token", "")}
     try:
