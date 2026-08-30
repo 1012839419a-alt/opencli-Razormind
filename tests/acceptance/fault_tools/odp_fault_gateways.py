@@ -8,10 +8,13 @@ public APIs.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from dataclasses import dataclass
 from typing import Literal
 
+import httpx
+import uvicorn
 from fastapi import FastAPI, Header, HTTPException, Request, Response
 from pydantic import BaseModel
 
@@ -19,7 +22,7 @@ GatewayMode = Literal[
     "http-schema-mutator", "ingest-redis-cut", "store-pg-cut", "store-redis-committed-xadd",
 ]
 
-app = FastAPI(docs_url=None, redoc=None, openapi_url=None)
+app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
 
 @dataclass
@@ -57,19 +60,34 @@ async def arm(name: str, body: ArmRequest, x_api_token: str | None = Header(defa
     _authenticated(x_api_token)
     _state(name).armed = body.armed
     return {"armed": body.armed}
-
-
-@app.post("/http/{path:path}")
-async def http_schema_mutator(path: str, request: Request, x_api_token: str | None = Header(default=None)) -> Response:
-    """Proxy an actual ingress request, mutating only schema_version when armed."""
-    _authenticated(x_api_token)
+@app.api_route("/http/{path:path}", methods=["POST", "PUT"])
+async def http_schema_mutator(path: str, request: Request) -> Response:
+    """Forward the actual ingress request, changing only JSON schema_version."""
     body = await request.body()
-    state = _state("http-schema-mutator")
-    if state.armed:
-        body = body.replace(b'"schema_version":1', b'"schema_version":999', 1)
-    # HTTP forwarding is intentionally implemented by the production bridge in
-    # the live overlay.  This endpoint is the narrow, testable byte transform.
-    return Response(content=body, media_type="application/json")
+    if _state("http-schema-mutator").armed:
+        document = json.loads(body)
+        if not isinstance(document, dict) or "schema_version" not in document:
+            raise HTTPException(422, "ingress document has no schema_version")
+        document["schema_version"] = 999
+        body = json.dumps(document, separators=(",", ":"), ensure_ascii=False).encode()
+    headers = {
+        name: value for name, value in request.headers.items()
+        if name.lower() in {"authorization", "content-type", "x-api-token", "x-iii-bridge-token"}
+    }
+    async with httpx.AsyncClient() as client:
+        upstream = await client.request(
+            request.method,
+            os.environ["HTTP_UPSTREAM_URL"].rstrip("/") + "/" + path,
+            content=body,
+            headers=headers,
+            timeout=10,
+        )
+    return Response(
+        content=upstream.content,
+        status_code=upstream.status_code,
+        media_type=upstream.headers.get("content-type"),
+    )
+    
 
 
 def _is_committed_xadd(chunk: bytes) -> bool:
@@ -136,9 +154,13 @@ async def _copy(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, stat
         chunks = resp.feed(data) if resp else [data]
         for chunk in chunks:
             if state.armed and state.mode in {"ingest-redis-cut", "store-pg-cut"} and outbound:
-                continue
+                writer.close()
+                await writer.wait_closed()
+                return
             if state.armed and state.mode == "store-redis-committed-xadd" and outbound and _is_committed_xadd(chunk):
-                continue
+                # Same-length stream rewrite preserves RESP framing and yields a
+                # real Redis XADD response without publishing the target stream.
+                chunk = chunk.replace(b"odp.record.committed", b"odp.record.discarded")
             writer.write(chunk)
             await writer.drain()
     writer.close()
@@ -155,9 +177,16 @@ async def relay(client_reader: asyncio.StreamReader, client_writer: asyncio.Stre
 
 async def serve_tcp(mode: GatewayMode) -> None:
     state = _state(mode)
-    server = await asyncio.start_server(lambda reader, writer: relay(reader, writer, state), "0.0.0.0", int(os.environ["GATEWAY_PORT"]))
-    async with server:
-        await server.serve_forever()
+    tcp_server = await asyncio.start_server(
+        lambda reader, writer: relay(reader, writer, state),
+        "0.0.0.0",
+        int(os.environ["GATEWAY_PORT"]),
+    )
+    control = uvicorn.Server(
+        uvicorn.Config(app, host="0.0.0.0", port=int(os.environ.get("CONTROL_PORT", "8080")), log_level="warning")
+    )
+    async with tcp_server:
+        await asyncio.gather(tcp_server.serve_forever(), control.serve())
 
 
 if __name__ == "__main__":

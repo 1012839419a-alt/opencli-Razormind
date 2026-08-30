@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import importlib.util
-import os
+import json
 import sys
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -16,16 +18,37 @@ sys.modules[spec.name] = gateways
 spec.loader.exec_module(gateways)
 
 
-def test_http_mutator_forwards_unchanged_bytes_until_armed(monkeypatch):
+def test_http_mutator_forwards_to_real_upstream_and_preserves_context(monkeypatch):
+    seen: dict[str, object] = {}
+
+    class Upstream(BaseHTTPRequestHandler):
+        def do_POST(self):
+            body = self.rfile.read(int(self.headers["Content-Length"]))
+            seen.update(path=self.path, body=body, authorization=self.headers.get("Authorization"))
+            self.send_response(207)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"upstream":"real"}')
+
+        def log_message(self, *_args):
+            pass
+
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), Upstream)
+    thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+    thread.start()
     monkeypatch.setenv("API_AUTH_TOKEN", "control-token")
+    monkeypatch.setenv("HTTP_UPSTREAM_URL", f"http://127.0.0.1:{upstream.server_port}")
+    gateways.STATES["http-schema-mutator"].armed = False
     client = TestClient(gateways.app)
-    payload = b'{"schema_version":1,"command_id":"fixed"}'
-    plain = client.post("/http/ingest", content=payload, headers={"X-API-Token": "control-token"})
-    assert plain.status_code == 200 and plain.content == payload
-    assert b"control-token" not in plain.content
+    payload = b'{"schema_version":1,"command_id":"fixed","context":{"attempt":"a1"}}'
+    plain = client.post("/http/ingest", content=payload, headers={"Authorization": "Bearer real-token", "Content-Type": "application/json"})
+    assert plain.status_code == 207 and plain.content == b'{"upstream":"real"}'
+    assert seen == {"path": "/ingest", "body": payload, "authorization": "Bearer real-token"}
     assert client.post("/_gate/http-schema-mutator/arm", json={"armed": True}, headers={"X-API-Token": "control-token"}).status_code == 200
-    mutated = client.post("/http/ingest", content=payload, headers={"X-API-Token": "control-token"})
-    assert mutated.content == b'{"schema_version":999,"command_id":"fixed"}'
+    mutated = client.post("/http/ingest", content=payload, headers={"Authorization": "Bearer real-token", "Content-Type": "application/json"})
+    assert mutated.status_code == 207
+    assert json.loads(seen["body"]) == {"schema_version": 999, "command_id": "fixed", "context": {"attempt": "a1"}}
+    upstream.shutdown()
 
 
 def test_resp_buffer_forwards_fragmented_commands_and_identifies_only_committed_xadd():
