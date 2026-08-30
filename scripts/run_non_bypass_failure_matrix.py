@@ -137,7 +137,13 @@ def _catalog_digest(base: Path, overlay: Path) -> str:
         files = (
             (input_path,)
             if input_path.is_file()
-            else sorted(path for path in input_path.rglob("*") if path.is_file())
+            else sorted(
+                path
+                for path in input_path.rglob("*")
+                if path.is_file()
+                and "__pycache__" not in path.parts
+                and path.suffix != ".pyc"
+            )
         )
         for path in files:
             digest.update(path.resolve().relative_to(ROOT).as_posix().encode())
