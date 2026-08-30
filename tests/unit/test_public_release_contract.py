@@ -21,7 +21,7 @@ def test_public_release_has_a_runnable_frontend_and_safe_compose_defaults() -> N
     assert "./backend:/app/backend" not in compose
     assert "${INVOKEAI_ATTESTED_IMAGE:?" not in compose
     assert "${API_AUTH_TOKEN:?" in compose
-    assert "${BOOTSTRAP_ADMIN_TOKEN:?" in compose
+    assert "BOOTSTRAP_ADMIN_TOKEN: ${BOOTSTRAP_ADMIN_TOKEN:-}" in compose
     assert 'output: "standalone"' in frontend_config
     assert (ROOT / "frontend" / "Dockerfile").is_file()
 
@@ -36,9 +36,9 @@ def test_public_release_has_one_ci_frontend_job_and_installers() -> None:
     assert (ROOT / "scripts" / "install.sh").is_file()
     assert (ROOT / "scripts" / "install.ps1").is_file()
     assert (ROOT / ".env.docker.example").is_file()
-    assert "BOOTSTRAP_ADMIN_TOKEN" in source(".env.docker.example")
-    assert "BOOTSTRAP_ADMIN_TOKEN" in unix_installer
-    assert "BOOTSTRAP_ADMIN_TOKEN" in windows_installer
+    assert "BOOTSTRAP_ADMIN_TOKEN=" in source(".env.docker.example")
+    assert "BOOTSTRAP_ADMIN_TOKEN" not in unix_installer
+    assert "BOOTSTRAP_ADMIN_TOKEN" not in windows_installer
     assert 'OPENCLI_ADMIN_VERSION:-0.4.1' in unix_installer
     assert 'OPENCLI_ADMIN_REPOSITORY:-2233admin/opencli-Razormind' in unix_installer
     assert '"0.4.1"' in windows_installer
