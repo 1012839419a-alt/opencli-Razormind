@@ -275,7 +275,7 @@ def _configure_failure_receiver(ledger: ScenarioLedger, values: dict[str, str]) 
         "basicConstraints=critical,CA:FALSE\n"
         "keyUsage=critical,digitalSignature,keyEncipherment\n"
         "extendedKeyUsage=serverAuth\n"
-        f"subjectAltName=DNS:proof-controlled-receiver,IP:{ip}\n",
+        f"subjectAltName=DNS:proof-controlled-receiver,DNS:proof-delivery-proxy,IP:{ip}\n",
         encoding="utf-8",
     )
     _run(
@@ -375,6 +375,65 @@ def _facts_from_crash_after_ingest(
     return normalize_public_facts(json.loads(stdout))
 
 
+def _facts_from_receiver_recovery(
+    ledger: ScenarioLedger,
+    env: dict[str, str],
+    base: Path,
+    overlay: Path,
+) -> dict[str, Any]:
+    """Restart only the delivery boundary after all faulted sends are durable."""
+    command = [
+        "docker", "compose", "-p", ledger.project, "-f", str(base),
+        "-f", str(overlay), "exec", "-T", "proof-driver", "python",
+        "tests/acceptance/non_bypass_failure_driver.py",
+        "--scenario", ledger.scenario, "--run", ledger.project,
+    ]
+    process = subprocess.Popen(
+        command, cwd=ROOT, env=env, text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    signal = ledger.artifact / "coordination" / f"{ledger.project}.receiver-restart-ready"
+    deadline = time.monotonic() + 180
+    while not signal.exists() and time.monotonic() < deadline:
+        time.sleep(0.2)
+    if not signal.exists():
+        process.kill()
+        stdout, stderr = process.communicate(timeout=30)
+        raise FailureRunRejectedError(
+            stderr.strip() or stdout.strip() or "receiver recovery driver missed restart signal"
+        )
+    _compose(
+        ledger, env, base, overlay, "restart",
+        "proof-delivery-proxy", "proof-controlled-receiver", timeout=60,
+    )
+    readiness_deadline = time.monotonic() + 30
+    while True:
+        try:
+            _compose(
+                ledger, env, base, overlay, "exec", "-T", "proof-driver",
+                "curl", "-fsS", "--cacert", "/run/proof/ca.pem",
+                "https://proof-delivery-proxy:8000/health", timeout=10,
+            )
+            break
+        except FailureRunRejectedError:
+            if time.monotonic() >= readiness_deadline:
+                process.kill()
+                stdout, stderr = process.communicate(timeout=30)
+                raise FailureRunRejectedError(
+                    stderr.strip() or stdout.strip() or "delivery proxy did not recover"
+                )
+            time.sleep(0.2)
+    (ledger.artifact / "coordination" / f"{ledger.project}.receiver-restarted").write_text(
+        "restarted", encoding="utf-8"
+    )
+    stdout, stderr = process.communicate(timeout=180)
+    if process.returncode:
+        raise FailureRunRejectedError(
+            stderr.strip() or stdout.strip() or "receiver recovery driver failed"
+        )
+    return normalize_public_facts(json.loads(stdout))
+
+
 def _facts_from_driver(
     ledger: ScenarioLedger,
     env: dict[str, str],
@@ -391,6 +450,7 @@ def _facts_from_driver(
         "query-page-race",
         "graph-stale-auth-cas-retract",
         "amendment-decision-conflict",
+        "receiver-recovery",
     }
     if ledger.scenario not in supported:
         raise FailureRunRejectedError(
@@ -619,11 +679,12 @@ def run_matrix(
                 ledger, env, compose_file, overlay_file,
                 "up", "--detach", "--no-build", timeout=120,
             )
-            gather = (
-                _facts_from_crash_after_ingest
-                if scenario == "crash-after-ingest"
-                else _facts_from_driver
-            )
+            if scenario == "crash-after-ingest":
+                gather = _facts_from_crash_after_ingest
+            elif scenario == "receiver-recovery":
+                gather = _facts_from_receiver_recovery
+            else:
+                gather = _facts_from_driver
             result = gather(ledger, env, compose_file, overlay_file)
             if time.monotonic() - started > 360:
                 raise FailureRunRejectedError("scenario exceeded the 360 second bound")

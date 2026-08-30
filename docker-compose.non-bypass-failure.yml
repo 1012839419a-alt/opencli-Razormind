@@ -69,13 +69,39 @@ services:
     labels: *failure-labels
   proof-oidc:
     labels: *failure-labels
-  proof-controlled-receiver:
+  # Admin's public registry address resolves to the proxy only.  The actual
+  # receiver and its database have no shared Admin route.
+  proof-delivery-proxy:
     image: "opencli-proof-root:${PROOF_CATALOG_DIGEST:-unbound}"
-    networks: !override
+    build:
+      context: .
+      target: non-bypass-acceptance
+    command: [uvicorn, tests.acceptance.fault_tools.proof_delivery_proxy:app, --host, 0.0.0.0, --port, "8000", --ssl-keyfile, /run/proof/receiver-key.pem, --ssl-certfile, /run/proof/receiver-cert.pem]
+    environment:
+      API_AUTH_TOKEN: ${API_AUTH_TOKEN:-runtime-secret-required}
+      PROOF_RECEIVER_BACKEND_URL: https://proof-controlled-receiver:8000
+      SSL_CERT_FILE: /run/proof/ca.pem
+    volumes:
+      - ${PROOF_SECRETS_DIR:-./.artifacts/non-bypass-secrets}:/run/proof:ro
+    networks:
       proof-failure-receiver:
         ipv4_address: ${PROOF_RECEIVER_IP:-1.1.1.1}
+      proof-receiver-backend: {}
+      proof-fault: {}
+    depends_on:
+      proof-controlled-receiver: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, curl, -fsS, https://localhost:8000/health, -k]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    labels: *failure-labels
+  proof-controlled-receiver:
+    image: "opencli-proof-root:${PROOF_CATALOG_DIGEST:-unbound}"
+    networks: !override [proof-receiver-backend, proof-receiver-db]
     labels: *failure-labels
   proof-receiver-postgres:
+    networks: !override [proof-receiver-db]
     labels: *failure-labels
 
   proof-admin-control:
@@ -258,3 +284,7 @@ networks:
       config:
         - subnet: ${PROOF_RECEIVER_SUBNET:-1.1.1.0/24}
           gateway: ${PROOF_RECEIVER_GATEWAY:-1.1.1.254}
+  proof-receiver-backend:
+    internal: true
+  proof-receiver-db:
+    internal: true

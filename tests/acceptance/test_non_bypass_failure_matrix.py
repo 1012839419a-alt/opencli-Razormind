@@ -151,12 +151,30 @@ def public_facts(scenario: str) -> dict:
             "mutationStatus": "re_review_required",
         }
     elif scenario == "receiver-recovery":
+        collection = {
+            "blockingStage": "none",
+            "recoveryAction": "recover",
+            "sideEffectUncertainty": False,
+        }
         materialization.update(
             status="completed",
             recoveryAction="recover",
-            manifestHash=_hash("amendment"),
-            reconciliationRevision=2,
+            manifestHash=_hash("receiver"),
+            reconciliationRevision=1,
         )
+        graph = {
+            "pin": _hash("receiver-pin"),
+            "sequence": 3,
+            "readBlocker": "none",
+            "mutationStatus": "none",
+        }
+        delivery = {
+            "state": "settled",
+            "outcome": "accepted",
+            "attemptCount": 3,
+            "receiptHash": _hash("receiver-receipt"),
+            "reconciliation": "signed_accepted",
+        }
     elif scenario == "cancel-before-dispatch":
         delivery = {
             "state": "cancelled",
@@ -694,6 +712,90 @@ def test_failure_driver_dispatches_amendment_decision_conflict(monkeypatch, caps
     assert driver.main() == 0
     assert __import__("json").loads(capsys.readouterr().out) == {
         "handler": "amendment-decision-conflict",
+        "run": "r1",
+    }
+
+
+def test_receiver_recovery_driver_uses_public_attempts_and_signed_reconciliation():
+    driver = (ROOT / "tests/acceptance/non_bypass_failure_driver.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert all(
+        value in driver
+        for value in (
+            "def receiver_recovery(",
+            "corrupt_mac",
+            "withhold_response",
+            "replace_with_503",
+            "receiver-restart-ready",
+            "/reconcile",
+            '"state": "settled"',
+            '"attemptCount": 3',
+            "signed_{outcome}",
+        )
+    )
+    assert "AsyncSessionLocal" not in driver
+    assert "proof-controlled-receiver:8000" not in driver
+
+
+def test_receiver_recovery_overlay_isolates_real_receiver_behind_tls_proxy():
+    base = yaml.load(
+        (ROOT / "docker-compose.non-bypass-acceptance.yml").read_text(encoding="utf-8"),
+        Loader=ComposeLoader,
+    )
+    overlay = yaml.load(
+        (ROOT / "docker-compose.non-bypass-failure.yml").read_text(encoding="utf-8"),
+        Loader=ComposeLoader,
+    )
+    services = overlay["services"]
+    proxy = services["proof-delivery-proxy"]
+
+    assert proxy["networks"]["proof-failure-receiver"]["ipv4_address"] == (
+        "${PROOF_RECEIVER_IP:-1.1.1.1}"
+    )
+    assert set(proxy["networks"]) == {
+        "proof-failure-receiver",
+        "proof-receiver-backend",
+        "proof-fault",
+    }
+    assert services["proof-controlled-receiver"]["networks"] == [
+        "proof-receiver-backend",
+        "proof-receiver-db",
+    ]
+    assert services["proof-receiver-postgres"]["networks"] == ["proof-receiver-db"]
+    assert "proof-receiver-backend" not in services["proof-admin"]["networks"]
+    assert "proof-receiver-db" not in services["proof-admin-control"]["networks"]
+    assert base["services"]["proof-controlled-receiver"]["networks"] == {
+        "proof-receiver": {"ipv4_address": "8.8.8.8"}
+    }
+
+
+def test_receiver_recovery_runner_restarts_only_delivery_boundary():
+    runner = (ROOT / "scripts/run_non_bypass_failure_matrix.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert '"receiver-recovery"' in runner
+    assert "def _facts_from_receiver_recovery(" in runner
+    assert '"restart",\n        "proof-delivery-proxy", "proof-controlled-receiver"' in runner
+    assert "proof-receiver-postgres" not in runner.split(
+        "def _facts_from_receiver_recovery(", 1
+    )[1].split("def _facts_from_driver(", 1)[0]
+
+
+def test_failure_driver_dispatches_receiver_recovery(monkeypatch, capsys):
+    driver = _failure_driver_module()
+    monkeypatch.setattr(
+        driver, "receiver_recovery", lambda run: {"handler": "receiver-recovery", "run": run}
+    )
+    monkeypatch.setattr(
+        sys, "argv", ["driver", "--scenario", "receiver-recovery", "--run", "r1"]
+    )
+
+    assert driver.main() == 0
+    assert __import__("json").loads(capsys.readouterr().out) == {
+        "handler": "receiver-recovery",
         "run": "r1",
     }
 

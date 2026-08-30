@@ -82,6 +82,7 @@ def _failure_result(
     collection: dict[str, Any],
     materialization: dict[str, Any],
     graph: dict[str, Any] | None = None,
+    delivery: dict[str, Any] | None = None,
     mutation_status: str = "none",
 ) -> dict[str, Any]:
     return {
@@ -107,7 +108,8 @@ def _failure_result(
             "readBlocker": "none",
             "mutationStatus": mutation_status,
         },
-        "delivery": {
+        "delivery": delivery
+        or {
             "state": "none",
             "outcome": "none",
             "attemptCount": 0,
@@ -1593,6 +1595,314 @@ def amendment_decision_conflict(run: str) -> dict[str, Any]:
     )
 
 
+def _set_delivery_proxy_mode(client: httpx.Client, mode: str) -> None:
+    response = client.post(
+        "https://proof-delivery-proxy:8000/_gate/delivery",
+        json={"mode": mode},
+        headers={"X-API-Token": os.environ["API_AUTH_TOKEN"]},
+    )
+    _require_status(response, 200, f"delivery proxy {mode} mode")
+
+
+def _require_blocked_delivery(
+    execution: dict[str, Any],
+    *,
+    expected_attempts: int,
+    expected_transport: str,
+    expected_status: int | None,
+) -> None:
+    attempts = execution.get("attempts")
+    if (
+        execution.get("state") != "blocked"
+        or execution.get("outcome") != "unknown"
+        or execution.get("attemptCount") != expected_attempts
+        or not isinstance(attempts, list)
+        or len(attempts) != expected_attempts
+    ):
+        raise RuntimeError(f"delivery did not end in bounded unknown state: {execution}")
+    for attempt in attempts:
+        if (
+            attempt.get("transport") != expected_transport
+            or attempt.get("httpStatus") != expected_status
+            or attempt.get("outcome") != "unknown"
+            or attempt.get("protocol") != "unknown"
+        ):
+            raise RuntimeError(f"delivery attempt classification drifted: {execution}")
+    expected_receipt = (
+        "missing" if expected_transport == "transport-timeout" else "invalid-or-missing"
+    )
+    if any(attempt.get("receipt") != expected_receipt for attempt in attempts):
+        raise RuntimeError(f"delivery receipt classification drifted: {execution}")
+
+
+def _require_reconciled_delivery(
+    execution: dict[str, Any], *, expected_attempts: int
+) -> tuple[str, str]:
+    reconciliations = execution.get("reconciliations")
+    outcome = execution.get("outcome")
+    if (
+        execution.get("state") != "completed"
+        or outcome not in {"accepted", "rejected"}
+        or execution.get("attemptCount") != expected_attempts
+        or not isinstance(reconciliations, list)
+        or len(reconciliations) != 1
+    ):
+        raise RuntimeError(f"delivery reconciliation did not settle public execution: {execution}")
+    receipt_hash = reconciliations[0].get("receiptHash")
+    if not isinstance(receipt_hash, str) or len(receipt_hash) != 64:
+        raise RuntimeError("reconciliation did not expose a signed receipt hash")
+    return outcome, receipt_hash
+
+
+def receiver_recovery(run: str) -> dict[str, Any]:
+    """Prove receiver MAC, timeout, and 5xx recovery through public APIs only."""
+    stable_source_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"proof-receiver/{run}"))
+    keyword = f"receiver-{hashlib.sha256(run.encode()).hexdigest()[:16]}"
+    hashes: dict[str, str] = {}
+    with httpx.Client(timeout=120) as client:
+        setup = public_setup(client, run)
+        reviewer = {
+            "X-API-Token": os.environ["API_AUTH_TOKEN"],
+            "Authorization": f"Bearer {os.environ['PROOF_REVIEWER_JWT']}",
+        }
+        reviewer_member_response = client.post(
+            f"{setup['primary']}/workspaces/{setup['workspaceId']}/members",
+            json={
+                "subject": "proof-reviewer",
+                "email": "proof-reviewer@proof.invalid",
+                "display_name": "proof-reviewer",
+                "role": "maintainer",
+            },
+            headers=setup["bootstrap"],
+        )
+        reviewer_member = _data(reviewer_member_response)
+        hashes["reviewer_membership"] = _public_response_hash(reviewer_member_response)
+        if reviewer_member.get("role") != "maintainer":
+            raise RuntimeError("receiver proof reviewer lacks approval capability")
+
+        submission = public_submit(
+            client,
+            setup,
+            source_id=keyword,
+            stable_odp_source_id=stable_source_id,
+            site="bilibili",
+            command="search",
+        )
+        hashes["submission"] = _public_hash(submission)
+        expected_report = _wait_for_expected_key_report(client, setup, submission["commandId"])
+        hashes["expected_key_report"] = _public_hash(expected_report)
+        _, ingress_receipt = _wait_for_ingress_receipt(client, setup, submission["commandId"])
+        hashes["signed_ingress_receipt"] = ingress_receipt
+        materialization = _wait_for_materialization(
+            client, setup, submission["commandId"], predicate=_completed_exact
+        )
+        hashes["materialization"] = _public_hash(materialization)
+        manifest = materialization.get("researchGraphManifestRef")
+        if (
+            not isinstance(manifest, dict)
+            or manifest.get("materializationStatus") != "completed"
+            or not isinstance(manifest.get("manifestHash"), str)
+        ):
+            raise RuntimeError("receiver proof lacks an eligible completed manifest")
+
+        graph_route = f"{setup['route']}/{setup['runId']}/research-graph-v2"
+        graph_read_response = client.get(setup["primary"] + graph_route, headers=setup["proposer"])
+        graph_read = _data(graph_read_response)
+        hashes["graph_before_pin"] = _public_response_hash(graph_read_response)
+        claim_id = f"receiver-recovery-{run}"
+        proposed_response = client.post(
+            setup["primary"] + graph_route + "/mutations",
+            json={
+                "idempotencyKey": f"{run}-receiver-propose",
+                "action": "propose",
+                "expectedSequence": graph_read["sequence"],
+                "expectedRevision": graph_read["researchRevisionId"],
+                "nodeId": "opencli-source",
+                "claimId": claim_id,
+                "claimContentHash": manifest["manifestHash"],
+                "manifestRefs": [manifest],
+            },
+            headers=setup["proposer"],
+        )
+        _require_status(proposed_response, 201, "receiver graph proposal")
+        proposed = _data(proposed_response)
+        hashes["graph_propose"] = _public_response_hash(proposed_response)
+        verified_response = client.post(
+            setup["primary"] + graph_route + "/mutations",
+            json={
+                "idempotencyKey": f"{run}-receiver-verify",
+                "action": "verify",
+                "expectedSequence": proposed["sequence"],
+                "expectedRevision": proposed["researchRevisionId"],
+                "nodeId": "opencli-source",
+                "claimId": claim_id,
+                "claimContentHash": manifest["manifestHash"],
+                "manifestRefs": [manifest],
+            },
+            headers=reviewer,
+        )
+        _require_status(verified_response, 201, "receiver graph verification")
+        verified = _data(verified_response)
+        hashes["graph_verify"] = _public_response_hash(verified_response)
+        pinned_response = client.post(
+            setup["primary"] + graph_route + "/mutations",
+            json={
+                "idempotencyKey": f"{run}-receiver-pin",
+                "action": "pin",
+                "expectedSequence": verified["sequence"],
+                "expectedRevision": verified["researchRevisionId"],
+                "nodeId": "opencli-source",
+                "manifestRefs": [manifest],
+            },
+            headers=reviewer,
+        )
+        _require_status(pinned_response, 201, "receiver graph pin")
+        pinned = _data(pinned_response)
+        hashes["graph_pin"] = _public_response_hash(pinned_response)
+        pinned_fold = pinned.get("pinnedFold")
+        if not isinstance(pinned_fold, dict) or pinned_fold.get("blocked"):
+            raise RuntimeError("receiver delivery requires an eligible graph pin")
+        graph_final_response = client.get(setup["primary"] + graph_route, headers=reviewer)
+        graph_final = _data(graph_final_response)
+        hashes["graph_final"] = _public_response_hash(graph_final_response)
+        if graph_final.get("pinnedFold") != pinned_fold:
+            raise RuntimeError("public graph read did not retain the eligible pin")
+
+        target_response = client.post(
+            f"{setup['primary']}{setup['route']}/{setup['runId']}/delivery-targets",
+            json={
+                "receiverIdentity": "controlled-receiver-proof",
+                "endpointIdentity": "receiver-channel-proof",
+                "credentialReference": "credential-reference-proof",
+            },
+            headers=reviewer,
+        )
+        _require_status(target_response, 201, "receiver delivery target")
+        target = _data(target_response)
+        hashes["delivery_target"] = _public_response_hash(target_response)
+
+        decisions: dict[str, dict[str, Any]] = {}
+        for name in ("mac", "timeout", "five_xx"):
+            response = client.post(
+                f"{setup['primary']}{setup['route']}/{setup['runId']}/delivery-authorizations",
+                json={
+                    "version": "v1",
+                    "operationId": f"{run}-receiver-{name}",
+                    "idempotencyKey": f"{run}-receiver-decision-{name}",
+                    "nodeId": "opencli-source",
+                    "targetId": target["targetId"],
+                    "pinnedReference": _pinned_reference(pinned_fold),
+                    "selectedClaimIds": [claim_id],
+                },
+                headers=reviewer,
+            )
+            _require_status(response, 201, f"{name} delivery authorization")
+            decisions[name] = _data(response)
+            hashes[f"{name}_authorization"] = _public_response_hash(response)
+        if len({decision["decisionId"] for decision in decisions.values()}) != 3:
+            raise RuntimeError("receiver proof requires three distinct authorizations")
+
+        executions: dict[str, dict[str, Any]] = {}
+        for name, mode, attempts, transport, status in (
+            ("mac", "corrupt_mac", 1, "http-4xx", 401),
+            ("timeout", "withhold_response", 3, "transport-timeout", None),
+            ("five_xx", "replace_with_503", 3, "http-5xx", 503),
+        ):
+            _set_delivery_proxy_mode(client, mode)
+            response = client.post(
+                f"{setup['primary']}{setup['route']}/{setup['runId']}/delivery-executions",
+                json={"decisionId": decisions[name]["decisionId"]},
+                headers=reviewer,
+            )
+            _require_status(response, 201, f"{name} delivery execution")
+            execution = _data(response)
+            _require_blocked_delivery(
+                execution,
+                expected_attempts=attempts,
+                expected_transport=transport,
+                expected_status=status,
+            )
+            executions[name] = execution
+            hashes[f"{name}_execution"] = _public_response_hash(response)
+
+        _coordination(f"{run}.receiver-restart-ready").write_text("ready", encoding="utf-8")
+        _wait_coordination(run, "receiver-restarted")
+
+        reconciled: dict[str, dict[str, Any]] = {}
+        for name in ("timeout", "five_xx"):
+            response = client.post(
+                f"{setup['primary']}{setup['route']}/{setup['runId']}/delivery-executions/"
+                f"{executions[name]['executionId']}/reconcile",
+                json={},
+                headers=reviewer,
+            )
+            _require_status(response, 200, f"{name} public reconciliation")
+            reconciliation = _data(response)
+            _require_reconciled_delivery(reconciliation, expected_attempts=3)
+            reconciled[name] = reconciliation
+            hashes[f"{name}_reconciliation"] = _public_response_hash(response)
+
+        mac_status_response = client.get(
+            f"{setup['primary']}{setup['route']}/{setup['runId']}/delivery-executions/"
+            f"{executions['mac']['executionId']}",
+            headers=reviewer,
+        )
+        mac_status = _data(mac_status_response)
+        _require_blocked_delivery(
+            mac_status,
+            expected_attempts=1,
+            expected_transport="http-4xx",
+            expected_status=401,
+        )
+        hashes["mac_attributable_denial"] = _public_response_hash(mac_status_response)
+        final_status_response = client.get(
+            f"{setup['primary']}{setup['route']}/{setup['runId']}/delivery-executions/"
+            f"{executions['timeout']['executionId']}",
+            headers=reviewer,
+        )
+        final_status = _data(final_status_response)
+        outcome, receipt_hash = _require_reconciled_delivery(
+            final_status, expected_attempts=3
+        )
+        hashes["final_delivery_status"] = _public_response_hash(final_status_response)
+
+    return _failure_result(
+        scenario="receiver-recovery",
+        run=run,
+        fault="controlled-receiver-mac-timeout-and-5xx-recovery",
+        command_id=submission["commandId"],
+        attempt_id=submission["attemptId"],
+        workflow_run_id=setup["runId"],
+        hashes=hashes,
+        collection={
+            "blockingStage": "none",
+            "recoveryAction": "recover",
+            "sideEffectUncertainty": False,
+        },
+        materialization={
+            "status": "completed",
+            "blocker": "none",
+            "recoveryAction": "recover",
+            "manifestHash": manifest["manifestHash"],
+            "reconciliationRevision": materialization["reconciliationRevision"],
+            "pageSnapshotAsOf": materialization.get("pageSnapshotAsOf"),
+        },
+        graph={
+            "pin": _public_hash(pinned_fold),
+            "sequence": graph_final["sequence"],
+            "readBlocker": "none",
+            "mutationStatus": "none",
+        },
+        delivery={
+            "state": "settled",
+            "outcome": outcome,
+            "attemptCount": 3,
+            "receiptHash": receipt_hash,
+            "reconciliation": f"signed_{outcome}",
+        },
+    )
+
+
 def duplicate_dlq(run: str) -> dict[str, Any]:
     """Prove replay, duplicate ingress, durable DLQ, and unknown retention publicly."""
     stable_source_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"proof-duplicate/{run}"))
@@ -2006,6 +2316,8 @@ def main() -> int:
         result = graph_stale_auth_cas_retract(args.run)
     elif args.scenario == "amendment-decision-conflict":
         result = amendment_decision_conflict(args.run)
+    elif args.scenario == "receiver-recovery":
+        result = receiver_recovery(args.run)
     else:
         raise RuntimeError("scenario driver is not implemented")
     print(json.dumps(result, sort_keys=True))
