@@ -149,7 +149,11 @@ def _facts_from_driver(ledger: ScenarioLedger, env: dict[str, str], base: Path, 
         time.sleep(0.2)
     if not signal.exists():
         process.kill()
-        raise FailureRunRejected("admin-crash driver did not reach its public submit boundary")
+        _stdout, stderr = process.communicate(timeout=30)
+        raise FailureRunRejected(
+            "admin-crash driver did not reach its public submit boundary: "
+            + (stderr.strip() or _stdout.strip() or "no driver output")
+        )
     _compose(ledger, env, base, overlay, "kill", "proof-admin", timeout=30)
     _compose(
         ledger, env, base, overlay, "exec", "-T", "proof-driver", "curl", "-fsS",
