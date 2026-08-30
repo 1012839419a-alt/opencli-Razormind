@@ -24,8 +24,11 @@ from backend.security.controlled_receiver import (
     resolve_endpoint,
     verify_receipt,
 )
-from backend.workflow.delivery_authorization import DeliveryAuthorizationScope
-
+from backend.workflow.delivery_authorization import (
+    DeliveryAuthorizationScope,
+    _canonical_hash,
+    _current_policy,
+)
 
 class DeliveryExecutionConflictError(RuntimeError):
     pass
@@ -92,9 +95,32 @@ async def _scoped_decision(db: AsyncSession, scope: DeliveryAuthorizationScope, 
     if decision is None:
         raise DeliveryExecutionConflictError("Scoped frozen delivery authorization was not found")
     target = await db.get(DeliveryTargetRevision, decision.target_revision_id, with_for_update=True)
-    if target is None or (target.target_id, target.revision, target.endpoint_identity, target.non_secret_config_hash, target.policy_hash) != (decision.target_id, decision.target_revision, decision.endpoint_identity, decision.non_secret_config_hash, decision.policy_hash):
-        raise DeliveryExecutionConflictError("Frozen target revision no longer matches authorization")
+    if target is None:
+        raise DeliveryExecutionConflictError("Frozen target revision is missing")
+    _validate_frozen_authority(decision, target)
     return decision
+
+
+def _validate_frozen_authority(
+    decision: DeliveryAuthorizationDecisionV1,
+    target: DeliveryTargetRevision,
+) -> None:
+    """Reject any decision, target, or current frozen-policy drift before I/O."""
+    projection = _payload(decision)
+    current_version, current_snapshot, current_hash = _current_policy()
+    if (
+        decision.policy_version != current_version
+        or decision.policy_snapshot != current_snapshot
+        or decision.policy_hash != current_hash
+        or (target.target_id, target.revision, target.endpoint_identity, target.non_secret_config_hash, target.policy_hash)
+        != (decision.target_id, decision.target_revision, decision.endpoint_identity, decision.non_secret_config_hash, decision.policy_hash)
+    ):
+        raise DeliveryExecutionConflictError("Frozen delivery authority drifted")
+    approval = decision.approval_evidence[0] if len(decision.approval_evidence) == 1 else None
+    if not isinstance(approval, dict) or approval.get("actorId") != decision.approver_actor_id:
+        raise DeliveryExecutionConflictError("Frozen delivery approval evidence drifted")
+    if projection["schemaVersion"] != decision.payload_schema_version:
+        raise DeliveryExecutionConflictError("Frozen delivery projection drifted")
 
 
 async def _claim(db: AsyncSession, scope: DeliveryAuthorizationScope, decision: DeliveryAuthorizationDecisionV1) -> DeliveryExecution:
