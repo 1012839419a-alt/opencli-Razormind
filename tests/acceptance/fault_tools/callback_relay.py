@@ -39,6 +39,11 @@ async def switch(body: Switch, x_api_token: str | None = Header(default=None)) -
     return {"status": "updated"}
 
 
+@app.get("/health")
+async def health() -> dict[str, str]:
+    return {"status": "ok"}
+
+
 @app.api_route("/{path:path}", methods=["POST"])
 async def callback(path: str, request: Request) -> Response:
     route = "/" + path

@@ -37,6 +37,11 @@ services:
       API_AUTH_TOKEN: ${API_AUTH_TOKEN:-runtime-secret-required}
       PROOF_PRIMARY_ADMIN: http://proof-admin:8000
       PROOF_CONTROL_ADMIN: http://proof-admin-control:8000
+    healthcheck:
+      test: [CMD, curl, -fsS, http://localhost:8080/health]
+      interval: 5s
+      timeout: 3s
+      retries: 20
     networks: [proof-control, proof-callback, proof-iii-worker, proof-fault]
     labels: *failure-labels
   proof-odp-query:
