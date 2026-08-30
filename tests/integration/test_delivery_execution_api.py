@@ -321,12 +321,37 @@ async def test_sqlite_raw_evidence_mutations_are_rejected_after_durable_executio
         "WHEN NEW.attempt_number NOT BETWEEN 1 AND 3 OR NEW.outcome NOT IN ('accepted','rejected','unknown') "
         "BEGIN SELECT RAISE(ABORT, 'invalid result'); END"
     ))
-    await db_session.execute(text(
-        "CREATE TRIGGER raw_receiver_status_check BEFORE UPDATE OF durable_status ON controlled_receiver_deliveries "
-        "WHEN NEW.durable_status NOT IN ('accepted','rejected') "
-        "BEGIN SELECT RAISE(ABORT, 'invalid durable status'); END"
-    ))
+    for event in ("INSERT", "UPDATE"):
+        columns = "" if event == "INSERT" else " OF durable_status"
+        await db_session.execute(text(
+            f"CREATE TRIGGER raw_receiver_status_check_{event.lower()} BEFORE {event}{columns} "
+            "ON controlled_receiver_deliveries WHEN NEW.durable_status NOT IN ('accepted','rejected') "
+            "BEGIN SELECT RAISE(ABORT, 'invalid durable status'); END"
+        ))
     await db_session.commit()
+    async def rejected(statement: str, params: dict):
+        with pytest.raises(IntegrityError):
+            await db_session.execute(text(statement), params)
+            await db_session.commit()
+        await db_session.rollback()
+    now = datetime.now(timezone.utc)
+
+    result_execution_id = (await db_session.execute(select(DeliveryExecutionResult.execution_id))).scalar_one()
+    for attempt, outcome in ((0, "unknown"), (4, "unknown"), (1, "invalid")):
+        await rejected(
+            "INSERT INTO delivery_execution_results "
+            "(id, created_at, updated_at, execution_id, attempt_number, transport_classification, "
+            "receipt_classification, protocol_classification, outcome, observed_at) "
+            "VALUES (:id, :now, :now, :execution_id, :attempt, 'test', 'missing', 'unknown', :outcome, :now)",
+            {"id": str(uuid.uuid4()), "now": now, "execution_id": result_execution_id, "attempt": attempt, "outcome": outcome},
+        )
+    await rejected(
+        "INSERT INTO controlled_receiver_deliveries "
+        "(id, created_at, updated_at, receiver_identity, operation_id, decision_hash, payload_hash, request_hash, "
+        "durable_status, receipt_id, receipt_timestamp, receipt_key_id, receipt_signature) "
+        "VALUES (:id, :now, :now, 'receiver-a', 'invalid-status', :hash, :hash, :hash, 'invalid', :receipt, :now, 'receipt-a', 'signature')",
+        {"id": str(uuid.uuid4()), "now": now, "hash": "f" * 64, "receipt": f"receipt-{uuid.uuid4().hex}"},
+    )
     for table in (
         "delivery_execution_results", "delivery_execution_reconciliations",
         "controlled_receiver_deliveries", "controlled_receiver_nonces",
