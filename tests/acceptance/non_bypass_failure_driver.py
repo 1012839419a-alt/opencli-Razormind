@@ -539,6 +539,29 @@ def public_setup(client: httpx.Client, run: str) -> dict[str, Any]:
     "collections": f"{route}/{workflow_run['runId']}/iii-collections"}
 
 
+def public_disposable_run(
+    client: httpx.Client, setup: dict[str, Any], request_id: str
+) -> dict[str, Any]:
+    workflow_run = _post_published_run(
+        client,
+        setup["primary"],
+        setup["route"],
+        {
+            "inputs": {},
+            "responseMode": "async",
+            "user": "proof-proposer",
+            "requestId": request_id,
+            "idempotencyKey": request_id,
+        },
+        setup["proposer"],
+    )
+    return {
+        **setup,
+        "runId": workflow_run["runId"],
+        "collections": f"{setup['route']}/{workflow_run['runId']}/iii-collections",
+    }
+
+
 def public_submit(
     client: httpx.Client,
     setup: dict[str, Any],
@@ -673,7 +696,7 @@ def duplicate_dlq(run: str) -> dict[str, Any]:
     keyword = f"duplicate-{hashlib.sha256(run.encode()).hexdigest()[:16]}"
     hashes: dict[str, str] = {}
     with httpx.Client(timeout=60) as client:
-        first_setup = public_setup(client, f"{run}-first")
+        first_setup = public_setup(client, run)
         first = public_submit(
             client,
             first_setup,
@@ -715,7 +738,7 @@ def duplicate_dlq(run: str) -> dict[str, Any]:
             }
         )
 
-        duplicate_setup = public_setup(client, f"{run}-duplicate")
+        duplicate_setup = public_disposable_run(client, first_setup, f"{run}-duplicate")
         duplicate = public_submit(
             client,
             duplicate_setup,
@@ -740,7 +763,7 @@ def duplicate_dlq(run: str) -> dict[str, Any]:
             }
         )
 
-        dlq_setup = public_setup(client, f"{run}-dlq")
+        dlq_setup = public_disposable_run(client, first_setup, f"{run}-dlq")
         _arm_gateway(client, "ingest-redis-payload-mutator", True)
         try:
             dlq = public_submit(
@@ -776,7 +799,7 @@ def duplicate_dlq(run: str) -> dict[str, Any]:
             }
         )
 
-        unknown_setup = public_setup(client, f"{run}-unknown")
+        unknown_setup = public_disposable_run(client, first_setup, f"{run}-unknown")
         _arm_gateway(client, "store-pg-cut", True)
         try:
             unknown = public_submit(

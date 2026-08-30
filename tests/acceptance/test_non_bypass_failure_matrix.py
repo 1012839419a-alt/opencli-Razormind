@@ -471,6 +471,7 @@ def test_duplicate_dlq_row_binds_replay_duplicate_and_retention_public_outcomes(
             "duplicate_dlq",
             "_wait_for_ingress_receipt",
             "_wait_for_materialization",
+            "public_disposable_run",
         )
     )
     assert "ingest-redis-payload-mutator" in driver
