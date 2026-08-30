@@ -76,6 +76,8 @@ from backend.config import get_settings
 
 #: Path prefixes guarded by :class:`FleetAuthMiddleware`.
 PROTECTED_PREFIXES = ("/api", "/mcp")
+# Receiver v2 supplies independent MAC authentication; Studio remains fleet-authenticated.
+CONTROLLED_RECEIVER_V2_PREFIX = "/api/v1/controlled-receiver/v2/"
 
 _LOCALHOST_HOSTS = frozenset({"localhost", "::1"})
 
@@ -151,6 +153,9 @@ class FleetAuthMiddleware:
         self.app = app
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["path"].startswith(CONTROLLED_RECEIVER_V2_PREFIX):
+            await self.app(scope, receive, send)
+            return
         if scope["type"] not in ("http", "websocket") or not scope["path"].startswith(
             PROTECTED_PREFIXES
         ):

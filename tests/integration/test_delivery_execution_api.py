@@ -39,3 +39,15 @@ async def test_durable_receiver_exact_duplicate_returns_same_signed_receipt_afte
 async def test_controlled_receiver_rejects_unauthenticated_body(client: AsyncClient):
     response = await client.post("/api/v1/controlled-receiver/v2/deliver", content=receiver.canonical_json(_request()), headers={"Content-Type": "application/json"})
     assert response.status_code == 401
+
+
+
+@pytest.mark.asyncio
+async def test_receiver_v2_mac_auth_is_independent_of_fleet_bearer(client: AsyncClient, monkeypatch):
+    monkeypatch.setattr(get_settings(), "api_auth_token", "fleet-token")
+    value = _request()
+    body = receiver.canonical_json(value)
+    endpoint = receiver.resolve_endpoint("receiver-primary", "credential-a")
+    headers = receiver.request_headers(body=body, endpoint=endpoint, operation_id=value["operationId"], decision_hash=value["decisionHash"], payload_hash=value["payloadHash"])
+    assert (await client.post("/api/v1/controlled-receiver/v2/deliver", content=body, headers=headers)).status_code == 200
+    assert (await client.get("/api/v1/system/config")).status_code == 401
