@@ -127,10 +127,10 @@ def iii_unreachable(run: str) -> dict[str, Any]:
         status: dict[str, Any] = {}
         while time.monotonic() < deadline:
             status = _get(client, primary, f"{collections}/{command_id}", proposer)
-            if status.get("blockingStage") == "bridge_unavailable":
+            if status.get("state") == "bridge_unavailable":
                 break
             time.sleep(0.5)
-    if status.get("blockingStage") != "bridge_unavailable":
+    if status.get("state") != "bridge_unavailable":
         raise RuntimeError("public collection status did not prove real III bridge unavailability")
     return {"scenario": "iii-unreachable", "run": run, "fault": "primary-to-iii-disconnected", "actuator": {"name": "proof-iii-actuator", "invocationHash": hashlib.sha256(command_id.encode()).hexdigest()}, "correlation": {"commandId": command_id, "attemptId": attempt_id, "workflowRunId": workflow_run["runId"], "hashes": {"submission": submission["payloadSha256"]}}, "collection": {"blockingStage": "bridge_unavailable", "recoveryAction": "retry", "sideEffectUncertainty": True}, "materialization": {"status": "unknown", "blocker": "none", "recoveryAction": "none", "manifestHash": None, "reconciliationRevision": None, "pageSnapshotAsOf": None}, "graph": {"pin": None, "sequence": None, "readBlocker": "none", "mutationStatus": "unchanged"}, "delivery": {"state": "none", "outcome": "none", "attemptCount": 0, "receiptHash": None, "reconciliation": "none"}, "redactionProfile": "failure-v1", "timing": {"startedAt": 0, "completedAt": 1, "deadlineSeconds": 360}, "governanceReference": {"artifactId": "pending", "keyId": "pending", "trustRootFingerprint": "pending"}, "authority": "authenticated-scoped-public-api"}
 
