@@ -48,7 +48,10 @@ class PublicFactRejected(RuntimeError):
 
 def normalize_public_facts(facts: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(facts, dict) or set(facts) != PUBLIC_FACT_KEYS:
-        raise PublicFactRejected("public fact document is not the acceptance allowlist")
+        actual = sorted(facts) if isinstance(facts, dict) else type(facts).__name__
+        raise PublicFactRejected(
+            f"public fact document is not the acceptance allowlist: {actual}"
+        )
     if facts["authority"] != "authenticated-scoped-public-api":
         raise PublicFactRejected("only authenticated scoped public API facts are admissible")
     if facts["scenario"] not in SCENARIOS:
