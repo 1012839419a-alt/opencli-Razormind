@@ -144,5 +144,30 @@ def test_failure_driver_main_prints_its_fact_document(monkeypatch, capsys, scena
 
 def test_failure_runner_writes_selected_release_before_waiting():
     source = (ROOT / "scripts/run_non_bypass_failure_matrix.py").read_text(encoding="utf-8")
+    gate_section = source[source.index('signal_name = "iii-ready"'):]
     release = 'f"{ledger.project}.{release_name}").write_text'
-    assert source.index(release) < source.index("process.communicate(timeout=120)")
+    assert gate_section.index(release) < gate_section.index("process.communicate(timeout=120)")
+
+
+
+def test_published_run_retries_only_the_documented_visibility_409(monkeypatch):
+    driver_path = ROOT / "tests/acceptance/non_bypass_failure_driver.py"
+    driver_spec = importlib.util.spec_from_file_location("failure_driver_retry", driver_path)
+    assert driver_spec and driver_spec.loader
+    driver = importlib.util.module_from_spec(driver_spec)
+    sys.modules[driver_spec.name] = driver
+    driver_spec.loader.exec_module(driver)
+    import httpx
+
+    responses = iter([
+        httpx.Response(409, text="Workflow must be published before API execution"),
+        httpx.Response(200, json={"data": {"runId": "run-1"}}),
+    ])
+
+    class Client:
+        def post(self, *_args, **_kwargs):
+            return next(responses)
+
+    monkeypatch.setattr(driver.time, "monotonic", lambda: 0)
+    monkeypatch.setattr(driver.time, "sleep", lambda _seconds: None)
+    assert driver._post_published_run(Client(), "http://api", "/run", {"idempotencyKey": "same"}, {}) == {"runId": "run-1"}

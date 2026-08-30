@@ -35,6 +35,20 @@ def _get(client: httpx.Client, base: str, path: str, headers: dict[str, str]) ->
     return _data(client.get(base + path, headers=headers))
 
 
+def _post_published_run(client: httpx.Client, base: str, path: str, body: dict[str, Any], headers: dict[str, str]) -> dict[str, Any]:
+    """Retry only the documented publish-visibility 409 without changing intent."""
+    deadline = time.monotonic() + 30
+    while True:
+        response = client.post(base + path, json=body, headers=headers)
+        if not (
+            response.status_code == 409
+            and "Workflow must be published before API execution" in response.text
+            and time.monotonic() < deadline
+        ):
+            return _data(response)
+        time.sleep(0.5)
+
+
 async def _seed(workspace_id: str, slug: str) -> None:
     async with AsyncSessionLocal() as session:
         session.add(StudioWorkspace(id=workspace_id, name="Failure proof", slug=slug))
@@ -67,7 +81,7 @@ def admin_crash(run: str, scenario: str = "admin-crash") -> dict[str, Any]:
         if not validation.get("valid"):
             raise RuntimeError("public workflow validation failed")
         _post(client, primary, route.rsplit("/runs", 1)[0] + "/versions", {"reason": "failure proof", "expectedRevision": 1, "validationRunId": validation["runId"]}, proposer)
-        workflow_run = _post(client, primary, route, {"inputs": {}, "responseMode": "async", "user": "proof-proposer", "requestId": run, "idempotencyKey": run}, proposer)
+        workflow_run = _post_published_run(client, primary, route, {"inputs": {}, "responseMode": "async", "user": "proof-proposer", "requestId": run, "idempotencyKey": run}, proposer)
         run_id = workflow_run["runId"]
         collections = f"{route}/{run_id}/iii-collections"
         if scenario == "no-report":
@@ -152,7 +166,7 @@ def iii_unreachable(run: str) -> dict[str, Any]:
         if not validation.get("valid"):
             raise RuntimeError("public workflow validation failed")
         _post(client, primary, route.rsplit("/runs", 1)[0] + "/versions", {"reason": "III unreachable", "expectedRevision": 1, "validationRunId": validation["runId"]}, proposer)
-        workflow_run = _post(client, primary, route, {"inputs": {}, "responseMode": "async", "user": "proof-proposer", "requestId": run, "idempotencyKey": run}, proposer)
+        workflow_run = _post_published_run(client, primary, route, {"inputs": {}, "responseMode": "async", "user": "proof-proposer", "requestId": run, "idempotencyKey": run}, proposer)
         collections = f"{route}/{workflow_run['runId']}/iii-collections"
         _coordination(f"{run}.iii-ready").write_text(json.dumps({"route": collections}), encoding="utf-8")
         release = _coordination(f"{run}.iii-release")
