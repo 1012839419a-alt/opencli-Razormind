@@ -4,21 +4,31 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import secrets
 from datetime import datetime, timedelta, timezone
-from typing import Any
 
 import httpx
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.models.delivery_authorization import DeliveryAuthorizationDecisionV1, DeliveryTargetRevision
+from backend.models.delivery_authorization import (
+    DeliveryAuthorizationDecisionV1,
+    DeliveryTarget,
+    DeliveryTargetRevision,
+)
 from backend.models.delivery_execution import DeliveryExecution, DeliveryExecutionResult
-from backend.schemas.delivery_execution import DeliveryExecutionListV1, DeliveryExecutionReadV1
+from backend.schemas.delivery_execution import (
+    DeliveryExecutionAttemptEvidenceV1,
+    DeliveryExecutionListV1,
+    DeliveryExecutionReadV1,
+)
 from backend.security.controlled_receiver import (
+    ControlledReceiverEndpoint,
     ControlledReceiverSecurityError,
     canonical_hash,
     canonical_json,
+    endpoint_config_hash,
     pinned_post,
     request_headers,
     resolve_endpoint,
@@ -74,6 +84,18 @@ def _read(execution: DeliveryExecution, results: list[DeliveryExecutionResult]) 
         state=execution.state,
         outcome=execution.final_outcome,
         attempt_count=len(results),
+        attempts=[
+            DeliveryExecutionAttemptEvidenceV1(
+                attempt_number=result.attempt_number,
+                transport=result.transport_classification,
+                http_status=result.http_status,
+                receipt=result.receipt_classification,
+                protocol=result.protocol_classification,
+                outcome=result.outcome,
+                observed_at=result.observed_at,
+            )
+            for result in results
+        ],
         created_at=execution.created_at,
         updated_at=execution.updated_at,
     )
@@ -83,44 +105,145 @@ async def _results(db: AsyncSession, execution_id: str) -> list[DeliveryExecutio
     return list((await db.execute(select(DeliveryExecutionResult).where(DeliveryExecutionResult.execution_id == execution_id).order_by(DeliveryExecutionResult.attempt_number))).scalars())
 
 
-async def _scoped_decision(db: AsyncSession, scope: DeliveryAuthorizationScope, decision_id: str) -> DeliveryAuthorizationDecisionV1:
-    decision = await db.scalar(select(DeliveryAuthorizationDecisionV1).where(
+async def _scoped_decision(
+    db: AsyncSession,
+    scope: DeliveryAuthorizationScope,
+    decision_id: str,
+    *,
+    lock: bool = True,
+) -> DeliveryAuthorizationDecisionV1:
+    statement = select(DeliveryAuthorizationDecisionV1).where(
         DeliveryAuthorizationDecisionV1.id == decision_id,
         DeliveryAuthorizationDecisionV1.workspace_id == scope.workspace_id,
         DeliveryAuthorizationDecisionV1.project_id == scope.project_id,
         DeliveryAuthorizationDecisionV1.workflow_id == scope.workflow_id,
         DeliveryAuthorizationDecisionV1.studio_workflow_version_id == scope.studio_workflow_version_id,
         DeliveryAuthorizationDecisionV1.run_id == scope.run_id,
-    ).with_for_update())
+    )
+    decision = await db.scalar(statement.with_for_update() if lock else statement)
     if decision is None:
         raise DeliveryExecutionConflictError("Scoped frozen delivery authorization was not found")
-    target = await db.get(DeliveryTargetRevision, decision.target_revision_id, with_for_update=True)
-    if target is None:
-        raise DeliveryExecutionConflictError("Frozen target revision is missing")
-    _validate_frozen_authority(decision, target)
+    await _validated_target(db, scope=scope, decision=decision, lock=lock)
     return decision
+
+
+def _approval(decision: DeliveryAuthorizationDecisionV1, scope: DeliveryAuthorizationScope) -> dict[str, str]:
+    authority = {
+        "scope": scope.__dict__,
+        "actorId": decision.approver_actor_id,
+        "principal": decision.approver_principal,
+        "capability": decision.approver_capability,
+        "policyVersion": decision.approval_policy_version,
+    }
+    return {
+        "policyDecisionId": _canonical_hash(authority),
+        "evidenceReference": "workspace-rbac-v1",
+        "actorType": decision.approver_actor_type,
+        "actorId": decision.approver_actor_id,
+        "principal": decision.approver_principal,
+        "capability": decision.approver_capability,
+        "policyVersion": decision.approval_policy_version,
+        "decidedAt": decision.approved_at.isoformat(),
+    }
+
+
+def _decision_binding(decision: DeliveryAuthorizationDecisionV1, scope: DeliveryAuthorizationScope) -> dict[str, Any]:
+    return {
+        "scope": scope.__dict__,
+        "operationId": decision.operation_id,
+        "idempotencyKey": decision.idempotency_key,
+        "nodeId": decision.node_id,
+        "target": {
+            "id": decision.target_id,
+            "revision": decision.target_revision,
+            "endpointIdentity": decision.endpoint_identity,
+            "configHash": decision.non_secret_config_hash,
+            "policyVersion": decision.policy_version,
+            "policyHash": decision.policy_hash,
+            "policySnapshot": decision.policy_snapshot,
+        },
+        "pin": {
+            "sequence": decision.pin_sequence,
+            "researchRevisionId": decision.research_revision_id,
+            "manifestSetHash": decision.manifest_set_hash,
+        },
+        "claims": decision.selected_claims,
+        "manifests": decision.manifest_set,
+        "payload": decision.sanitized_payload_manifest,
+        "approval": {key: value for key, value in _approval(decision, scope).items() if key != "decidedAt"},
+    }
 
 
 def _validate_frozen_authority(
     decision: DeliveryAuthorizationDecisionV1,
     target: DeliveryTargetRevision,
+    receiver: DeliveryTarget,
+    endpoint: ControlledReceiverEndpoint,
+    scope: DeliveryAuthorizationScope,
 ) -> None:
-    """Reject any decision, target, or current frozen-policy drift before I/O."""
+    """Reconstruct every persisted authority component before outbound I/O."""
     projection = _payload(decision)
+    payload_manifest = {
+        "payloadSchemaVersion": decision.payload_schema_version,
+        "payloadReference": decision.payload_reference,
+        "payloadHash": decision.payload_hash,
+        "sanctionedReferenceHashes": sorted(
+            [claim["contentHash"] for claim in decision.selected_claims]
+            + [manifest["manifestHash"] for manifest in decision.manifest_set]
+        ),
+        "redactionProfileVersion": decision.redaction_profile_version,
+    }
     current_version, current_snapshot, current_hash = _current_policy()
     if (
         decision.policy_version != current_version
         or decision.policy_snapshot != current_snapshot
         or decision.policy_hash != current_hash
-        or (target.target_id, target.revision, target.endpoint_identity, target.non_secret_config_hash, target.policy_hash)
-        != (decision.target_id, decision.target_revision, decision.endpoint_identity, decision.non_secret_config_hash, decision.policy_hash)
+        or decision.sanitized_payload_manifest != payload_manifest
+        or (
+            target.target_id, target.revision, target.endpoint_identity, target.non_secret_config_hash,
+            target.credential_reference, target.policy_version, target.policy_snapshot, target.policy_hash,
+        ) != (
+            decision.target_id, decision.target_revision, decision.endpoint_identity,
+            decision.non_secret_config_hash, endpoint.credential_reference, decision.policy_version,
+            decision.policy_snapshot, decision.policy_hash,
+        )
+        or receiver.receiver_identity != endpoint.receiver_identity
+        or endpoint_config_hash(endpoint) != decision.non_secret_config_hash
+        or _approval(decision, scope) != (decision.approval_evidence[0] if len(decision.approval_evidence) == 1 else None)
     ):
         raise DeliveryExecutionConflictError("Frozen delivery authority drifted")
-    approval = decision.approval_evidence[0] if len(decision.approval_evidence) == 1 else None
-    if not isinstance(approval, dict) or approval.get("actorId") != decision.approver_actor_id:
-        raise DeliveryExecutionConflictError("Frozen delivery approval evidence drifted")
-    if projection["schemaVersion"] != decision.payload_schema_version:
-        raise DeliveryExecutionConflictError("Frozen delivery projection drifted")
+    binding = _decision_binding(decision, scope)
+    if (
+        _canonical_hash(binding) != decision.binding_hash
+        or _canonical_hash(
+            {
+                "binding": binding,
+                "approvalEvidence": decision.approval_evidence,
+                "decisionedAt": decision.decisioned_at.isoformat(),
+            }
+        ) != decision.decision_hash
+        or projection["schemaVersion"] != "delivery-claim-manifest-v1"
+    ):
+        raise DeliveryExecutionConflictError("Frozen delivery decision integrity drifted")
+
+
+async def _validated_target(
+    db: AsyncSession,
+    *,
+    scope: DeliveryAuthorizationScope,
+    decision: DeliveryAuthorizationDecisionV1,
+    lock: bool = False,
+) -> tuple[DeliveryTargetRevision, ControlledReceiverEndpoint]:
+    target = await db.get(DeliveryTargetRevision, decision.target_revision_id, with_for_update=lock)
+    receiver = await db.get(DeliveryTarget, decision.target_id, with_for_update=lock)
+    if target is None or receiver is None:
+        raise DeliveryExecutionConflictError("Frozen delivery target revision is missing")
+    try:
+        endpoint = resolve_endpoint(target.endpoint_identity, target.credential_reference)
+    except ControlledReceiverSecurityError as exc:
+        raise DeliveryExecutionConflictError("Controlled receiver registry authority drifted") from exc
+    _validate_frozen_authority(decision, target, receiver, endpoint, scope)
+    return target, endpoint
 
 
 async def _claim(db: AsyncSession, scope: DeliveryAuthorizationScope, decision: DeliveryAuthorizationDecisionV1) -> DeliveryExecution:
@@ -177,19 +300,42 @@ async def _record(
     return result
 
 
+def _retry_policy(snapshot: dict[str, Any]) -> tuple[float, int]:
+    try:
+        timeout = snapshot["timeout"]["perAttemptSeconds"]
+        retry = snapshot["retry"]
+        delays = retry["backoff"]
+        if (
+            not isinstance(timeout, (int, float))
+            or timeout <= 0
+            or retry["maxAttempts"] != 3
+            or retry["retryOn"] != ["transport-timeout", "network-error", "http-5xx"]
+            or delays["initialDelaySeconds"] != 1
+            or delays["multiplier"] != 2
+        ):
+            raise ValueError
+    except (KeyError, TypeError, ValueError) as exc:
+        raise DeliveryExecutionConflictError("Frozen delivery retry policy is invalid") from exc
+    return float(timeout), 3
+
+
 async def execute_delivery(db: AsyncSession, *, scope: DeliveryAuthorizationScope, decision_id: str) -> DeliveryExecutionReadV1:
     decision = await _scoped_decision(db, scope, decision_id)
     payload = _payload(decision)
+    timeout, max_attempts = _retry_policy(decision.policy_snapshot)
     execution = await _claim(db, scope, decision)
     prior = await _results(db, execution.id)
     if execution.final_outcome is not None:
         return _read(execution, prior)
     if execution.lease_token:
-        # An active lease belongs to a concurrent sender. A lease stale beyond
-        # the bounded recovery window is ambiguous and is never resent.
         if execution.lease_acquired_at is None or execution.lease_acquired_at <= _now() - timedelta(seconds=60):
-            result = await _record(db, execution, attempt=len(prior) + 1, transport="crash-ambiguous", http_status=None, receipt="missing", protocol="unknown", outcome="unknown")
-            execution.state, execution.final_outcome, execution.final_result_id, execution.lease_token = "blocked", "unknown", result.id, None
+            reserved = execution.reserved_attempt_number or len(prior) + 1
+            result = await _record(
+                db, execution, attempt=reserved, transport="crash-ambiguous", http_status=None,
+                receipt="missing", protocol="unknown", outcome="unknown",
+            )
+            execution.state, execution.final_outcome, execution.final_result_id = "blocked", "unknown", result.id
+            execution.lease_token, execution.lease_acquired_at, execution.reserved_attempt_number = None, None, None
             await db.flush()
             return _read(execution, await _results(db, execution.id))
         return _read(execution, prior)
@@ -198,38 +344,51 @@ async def execute_delivery(db: AsyncSession, *, scope: DeliveryAuthorizationScop
         await db.flush()
         return _read(execution, prior)
 
-    target = await db.get(DeliveryTargetRevision, decision.target_revision_id)
-    if target is None:
-        raise DeliveryExecutionConflictError("Frozen delivery target revision is missing")
-    endpoint = resolve_endpoint(target.endpoint_identity, target.credential_reference)
-    body_value = {
-        "version": "v2",
-        "receiverIdentity": endpoint.receiver_identity,
-        "operationId": decision.operation_id,
-        "decisionHash": decision.decision_hash,
-        "payloadHash": decision.payload_hash,
-        "payload": payload,
-    }
-    body = canonical_json(body_value)
-    timeout = float(decision.policy_snapshot.get("timeout", {}).get("perAttemptSeconds", 30))
-    max_attempts = int(decision.policy_snapshot.get("retry", {}).get("maxAttempts", 3))
     for attempt in range(len(prior) + 1, max_attempts + 1):
+        await db.refresh(execution)
         if execution.cancel_requested_at:
             execution.state, execution.final_outcome = "cancelled", "unknown"
             await db.flush()
             return _read(execution, await _results(db, execution.id))
-        execution.state, execution.lease_token, execution.lease_acquired_at = "in-flight", base64.urlsafe_b64encode(f"{execution.id}:{attempt}".encode()).decode(), _now()
-        await db.commit()  # reservation is durable before any network I/O
-        headers = request_headers(body=body, endpoint=endpoint, operation_id=decision.operation_id, decision_hash=decision.decision_hash, payload_hash=decision.payload_hash)
-        transport, http_status, receipt_classification, protocol, outcome, receipt_id, receipt_hash = "network-error", None, "missing", "unknown", "unknown", None, None
+        _, endpoint = await _validated_target(db, scope=scope, decision=decision)
+        body = canonical_json(
+            {
+                "version": "v2",
+                "receiverIdentity": endpoint.receiver_identity,
+                "operationId": decision.operation_id,
+                "decisionHash": decision.decision_hash,
+                "payloadHash": decision.payload_hash,
+                "payload": payload,
+            }
+        )
+        lease_token = secrets.token_urlsafe(24)
+        execution.state = "in-flight"
+        execution.lease_token = lease_token
+        execution.lease_acquired_at = _now()
+        execution.reserved_attempt_number = attempt
+        await db.commit()  # Reservation is durable and all DB locks are released before network I/O.
+        headers = request_headers(
+            body=body, endpoint=endpoint, operation_id=decision.operation_id,
+            decision_hash=decision.decision_hash, payload_hash=decision.payload_hash,
+        )
+        transport, http_status, receipt_classification, protocol, outcome, receipt_id, receipt_hash = (
+            "network-error", None, "missing", "unknown", "unknown", None, None,
+        )
         retry = False
         try:
             response = await pinned_post(endpoint, body, headers, timeout_seconds=timeout)
             http_status = response.status_code
-            transport = "http-5xx" if response.status_code >= 500 else "http-4xx" if response.status_code >= 400 else "http-success" if 200 <= response.status_code < 300 else "http-other"
+            transport = (
+                "http-5xx" if response.status_code >= 500 else
+                "http-4xx" if response.status_code >= 400 else
+                "http-success" if 200 <= response.status_code < 300 else "http-other"
+            )
             try:
                 receipt_value = response.json().get("receipt")
-                status = verify_receipt(receipt=receipt_value, endpoint=endpoint, operation_id=decision.operation_id, decision_hash=decision.decision_hash, payload_hash=decision.payload_hash)
+                status = verify_receipt(
+                    receipt=receipt_value, endpoint=endpoint, operation_id=decision.operation_id,
+                    decision_hash=decision.decision_hash, payload_hash=decision.payload_hash,
+                )
                 receipt_classification, protocol, outcome = "verified", "v2", status
                 receipt_id, receipt_hash = receipt_value["receiptId"], canonical_hash(receipt_value)
             except (ValueError, ControlledReceiverSecurityError, AttributeError):
@@ -242,14 +401,20 @@ async def execute_delivery(db: AsyncSession, *, scope: DeliveryAuthorizationScop
         except httpx.HTTPError:
             transport, receipt_classification, retry = "network-error", "missing", True
         await db.refresh(execution)
-        result = await _record(db, execution, attempt=attempt, transport=transport, http_status=http_status, receipt=receipt_classification, protocol=protocol, outcome=outcome, receipt_id=receipt_id, receipt_hash=receipt_hash)
-        execution.lease_token, execution.lease_acquired_at = None, None
-        if execution.cancel_requested_at:
-            execution.state, execution.final_outcome, execution.final_result_id = "cancelled", outcome, result.id
-            await db.flush()
+        if execution.final_outcome is not None or execution.lease_token != lease_token:
             return _read(execution, await _results(db, execution.id))
+        result = await _record(
+            db, execution, attempt=attempt, transport=transport, http_status=http_status,
+            receipt=receipt_classification, protocol=protocol, outcome=outcome,
+            receipt_id=receipt_id, receipt_hash=receipt_hash,
+        )
+        execution.lease_token, execution.lease_acquired_at, execution.reserved_attempt_number = None, None, None
         if outcome in {"accepted", "rejected"}:
             execution.state, execution.final_outcome, execution.final_result_id = "completed", outcome, result.id
+            await db.flush()
+            return _read(execution, await _results(db, execution.id))
+        if execution.cancel_requested_at:
+            execution.state, execution.final_outcome, execution.final_result_id = "cancelled", "unknown", result.id
             await db.flush()
             return _read(execution, await _results(db, execution.id))
         if not retry or attempt == max_attempts:
@@ -272,8 +437,43 @@ async def get_delivery_execution(db: AsyncSession, *, scope: DeliveryAuthorizati
     return _read(execution, await _results(db, execution.id))
 
 
+def _decode_execution_cursor(cursor: str | None) -> str | None:
+    if cursor is None:
+        return None
+    try:
+        decoded = base64.b64decode(cursor.encode("ascii"), altchars=b"-_", validate=True).decode("ascii")
+    except (UnicodeEncodeError, ValueError) as exc:
+        raise DeliveryExecutionConflictError("Invalid delivery execution cursor") from exc
+    if (
+        not decoded
+        or len(decoded) > 36
+        or base64.urlsafe_b64encode(decoded.encode("ascii")).decode("ascii") != cursor
+    ):
+        raise DeliveryExecutionConflictError("Invalid delivery execution cursor")
+    return decoded
+
+
+async def _read_page(db: AsyncSession, rows: list[DeliveryExecution]) -> list[DeliveryExecutionReadV1]:
+    if not rows:
+        return []
+    results = list(
+        (
+            await db.execute(
+                select(DeliveryExecutionResult)
+                .where(DeliveryExecutionResult.execution_id.in_([row.id for row in rows]))
+                .order_by(DeliveryExecutionResult.execution_id, DeliveryExecutionResult.attempt_number)
+            )
+        ).scalars()
+    )
+    grouped: dict[str, list[DeliveryExecutionResult]] = {row.id: [] for row in rows}
+    for result in results:
+        grouped[result.execution_id].append(result)
+    return [_read(row, grouped[row.id]) for row in rows]
+
+
 async def list_delivery_executions(db: AsyncSession, *, scope: DeliveryAuthorizationScope, cursor: str | None = None, limit: int = 50) -> DeliveryExecutionListV1:
-    after = base64.urlsafe_b64decode(cursor.encode()).decode() if cursor else None
+    after = _decode_execution_cursor(cursor)
+    page_limit = max(1, min(limit, 200))
     stmt = select(DeliveryExecution).where(
         DeliveryExecution.workspace_id == scope.workspace_id, DeliveryExecution.project_id == scope.project_id,
         DeliveryExecution.workflow_id == scope.workflow_id, DeliveryExecution.studio_workflow_version_id == scope.studio_workflow_version_id,
@@ -281,9 +481,12 @@ async def list_delivery_executions(db: AsyncSession, *, scope: DeliveryAuthoriza
     ).order_by(DeliveryExecution.id)
     if after:
         stmt = stmt.where(DeliveryExecution.id > after)
-    rows = list((await db.execute(stmt.limit(max(1, min(limit, 200)) + 1))).scalars())
-    page = rows[: max(1, min(limit, 200))]
-    return DeliveryExecutionListV1(items=[_read(row, await _results(db, row.id)) for row in page], next_cursor=base64.urlsafe_b64encode(page[-1].id.encode()).decode() if len(rows) > len(page) and page else None)
+    rows = list((await db.execute(stmt.limit(page_limit + 1))).scalars())
+    page = rows[:page_limit]
+    return DeliveryExecutionListV1(
+        items=await _read_page(db, page),
+        next_cursor=base64.urlsafe_b64encode(page[-1].id.encode()).decode() if len(rows) > len(page) and page else None,
+    )
 
 
 async def cancel_delivery_execution(db: AsyncSession, *, scope: DeliveryAuthorizationScope, execution_id: str) -> DeliveryExecutionReadV1:
@@ -301,7 +504,7 @@ async def cancel_delivery_execution(db: AsyncSession, *, scope: DeliveryAuthoriz
 async def reconcile_delivery_execution(
     db: AsyncSession, *, scope: DeliveryAuthorizationScope, execution_id: str
 ) -> DeliveryExecutionReadV1:
-    """Query the durable receiver status without ever resending a delivery."""
+    """Query durable status only; reconciliation is never a delivery attempt."""
     execution = await db.scalar(select(DeliveryExecution).where(
         DeliveryExecution.id == execution_id,
         DeliveryExecution.workspace_id == scope.workspace_id,
@@ -309,31 +512,36 @@ async def reconcile_delivery_execution(
         DeliveryExecution.workflow_id == scope.workflow_id,
         DeliveryExecution.studio_workflow_version_id == scope.studio_workflow_version_id,
         DeliveryExecution.run_id == scope.run_id,
-    ).with_for_update())
+    ))
     if execution is None:
         raise DeliveryExecutionConflictError("Scoped delivery execution was not found")
     if execution.final_outcome != "unknown":
         return _read(execution, await _results(db, execution.id))
-    decision = await _scoped_decision(db, scope, execution.decision_id)
+    decision = await _scoped_decision(db, scope, execution.decision_id, lock=False)
     payload = _payload(decision)
-    target = await db.get(DeliveryTargetRevision, decision.target_revision_id)
-    if target is None:
-        raise DeliveryExecutionConflictError("Frozen delivery target revision is missing")
-    endpoint = resolve_endpoint(target.endpoint_identity, target.credential_reference)
+    timeout, _ = _retry_policy(decision.policy_snapshot)
+    _, endpoint = await _validated_target(db, scope=scope, decision=decision)
     body = canonical_json({
         "version": "v2", "receiverIdentity": endpoint.receiver_identity,
         "operationId": decision.operation_id, "decisionHash": decision.decision_hash,
         "payloadHash": decision.payload_hash, "payload": payload,
     })
-    headers = request_headers(body=body, endpoint=endpoint, operation_id=decision.operation_id, decision_hash=decision.decision_hash, payload_hash=decision.payload_hash)
-    prior = await _results(db, execution.id)
+    headers = request_headers(
+        body=body, endpoint=endpoint, operation_id=decision.operation_id,
+        decision_hash=decision.decision_hash, payload_hash=decision.payload_hash,
+    )
     try:
-        response = await pinned_post(endpoint, body, headers, timeout_seconds=float(decision.policy_snapshot.get("timeout", {}).get("perAttemptSeconds", 30)), status_query=True)
+        response = await pinned_post(endpoint, body, headers, timeout_seconds=timeout, status_query=True)
         receipt_value = response.json().get("receipt")
-        outcome = verify_receipt(receipt=receipt_value, endpoint=endpoint, operation_id=decision.operation_id, decision_hash=decision.decision_hash, payload_hash=decision.payload_hash)
-        result = await _record(db, execution, attempt=len(prior) + 1, transport="reconcile-http", http_status=response.status_code, receipt="verified", protocol="v2-status", outcome=outcome, receipt_id=receipt_value["receiptId"], receipt_hash=canonical_hash(receipt_value))
+        outcome = verify_receipt(
+            receipt=receipt_value, endpoint=endpoint, operation_id=decision.operation_id,
+            decision_hash=decision.decision_hash, payload_hash=decision.payload_hash,
+        )
     except (httpx.HTTPError, ControlledReceiverSecurityError, ValueError, AttributeError) as exc:
         raise DeliveryExecutionConflictError("Controlled receiver reconciliation remains unknown") from exc
-    execution.state, execution.final_outcome, execution.final_result_id = "completed", outcome, result.id
+    await db.refresh(execution)
+    if execution.final_outcome != "unknown":
+        return _read(execution, await _results(db, execution.id))
+    execution.state, execution.final_outcome = "completed", outcome
     await db.flush()
     return _read(execution, await _results(db, execution.id))

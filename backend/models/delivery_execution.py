@@ -39,6 +39,7 @@ class DeliveryExecution(TimestampMixin):
     next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     lease_token: Mapped[str | None] = mapped_column(String(64), nullable=True)
     lease_acquired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    reserved_attempt_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
     cancel_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     final_outcome: Mapped[str | None] = mapped_column(String(16), nullable=True)
     final_result_id: Mapped[str | None] = mapped_column(String(36), nullable=True)

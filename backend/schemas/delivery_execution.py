@@ -17,6 +17,16 @@ class DeliveryExecutionCreateV1(_Model):
     decision_id: str = Field(min_length=1, max_length=36)
 
 
+class DeliveryExecutionAttemptEvidenceV1(_Model):
+    attempt_number: int = Field(ge=1, le=3)
+    transport: str = Field(min_length=1, max_length=32)
+    http_status: int | None = Field(default=None, ge=100, le=599)
+    receipt: str = Field(min_length=1, max_length=32)
+    protocol: str = Field(min_length=1, max_length=32)
+    outcome: Literal["accepted", "rejected", "unknown"]
+    observed_at: datetime
+
+
 class DeliveryExecutionReadV1(_Model):
     execution_id: str
     decision_id: str
@@ -26,20 +36,21 @@ class DeliveryExecutionReadV1(_Model):
     state: str
     outcome: Literal["accepted", "rejected", "unknown"] | None = None
     attempt_count: int
+    attempts: list[DeliveryExecutionAttemptEvidenceV1] = Field(max_length=3)
     created_at: datetime
     updated_at: datetime
-
 
 class DeliveryExecutionListV1(_Model):
     items: list[DeliveryExecutionReadV1]
     next_cursor: str | None = None
 
 
-Hash64 = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+Hash64 = Annotated[str, Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")]
+Identifier128 = Annotated[str, Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$")]
 
 
 class DeliveryClaimManifestClaimV1(_Model):
-    claim_id: str = Field(min_length=1, max_length=255)
+    claim_id: Identifier128
     content_hash: Hash64
 
 
@@ -59,8 +70,8 @@ class DeliveryClaimManifestV1(_Model):
 
 class ControlledReceiverDeliveryV2(_Model):
     version: Literal["v2"] = "v2"
-    receiver_identity: str = Field(min_length=1, max_length=255)
-    operation_id: str = Field(min_length=1, max_length=255)
+    receiver_identity: Identifier128
+    operation_id: Identifier128
     decision_hash: Hash64
     payload_hash: Hash64
     payload: DeliveryClaimManifestV1
@@ -68,12 +79,12 @@ class ControlledReceiverDeliveryV2(_Model):
 
 class ControlledReceiverReceiptV2(_Model):
     version: Literal["v2"]
-    receiver_identity: str
-    operation_id: str
-    decision_hash: str
-    payload_hash: str
+    receiver_identity: Identifier128
+    operation_id: Identifier128
+    decision_hash: Hash64
+    payload_hash: Hash64
     durable_status: Literal["accepted", "rejected"]
-    receipt_id: str
-    timestamp: str
-    key_id: str
-    signature: str
+    receipt_id: Identifier128
+    timestamp: Annotated[str, Field(min_length=1, max_length=32, pattern=r"^[0-9]+$")]
+    key_id: Identifier128
+    signature: Annotated[str, Field(min_length=1, max_length=512, pattern=r"^[A-Za-z0-9+/=]+$")]

@@ -7,6 +7,7 @@ import hashlib
 import hmac
 import ipaddress
 import json
+import re
 import secrets
 import time
 import uuid
@@ -22,6 +23,10 @@ from backend.security.url_guard import PinnedAsyncHTTPTransport, SSRFValidationE
 
 MAC_VERSION = "v2"
 _REQUEST_HEADER = "X-Controlled-Receiver-"
+_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_HEX64 = re.compile(r"^[0-9a-f]{64}$")
+_MAX_HEADER_VALUE = 512
+_MAX_RESPONSE_BYTES = 16 * 1024
 
 
 class ControlledReceiverSecurityError(ValueError):
@@ -80,47 +85,86 @@ def _strict_url(value: str) -> tuple[str, str, int, str]:
     return parsed.scheme, parsed.hostname.lower(), port, parsed.path
 
 
+def _validate_identifier(value: Any, field: str) -> str:
+    if not isinstance(value, str) or _IDENTIFIER.fullmatch(value) is None:
+        raise ControlledReceiverSecurityError(f"Controlled receiver {field} is invalid")
+    return value
+
+
+def _validated_networks(value: Any) -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
+    if not isinstance(value, list) or not value:
+        raise ControlledReceiverSecurityError("Controlled receiver registry requires a fixed network scope")
+    try:
+        networks = tuple(ipaddress.ip_network(item, strict=True) for item in value)
+    except ValueError as exc:
+        raise ControlledReceiverSecurityError("Controlled receiver registry network scope is invalid") from exc
+    for network in networks:
+        minimum_prefix = 24 if network.version == 4 else 64
+        if (
+            network.prefixlen < minimum_prefix
+            or not network.network_address.is_global
+            or not network.broadcast_address.is_global
+        ):
+            raise ControlledReceiverSecurityError("Controlled receiver registry network scope is not a narrow global network")
+    return networks
+
+
 def resolve_endpoint(identity: str, credential_reference: str) -> ControlledReceiverEndpoint:
     settings = get_settings()
     registry = _json_setting(settings.controlled_receiver_registry_json, "receiver registry")
+    identity = _validate_identifier(identity, "endpoint identity")
     raw = registry.get(identity)
     if not isinstance(raw, dict):
         raise ControlledReceiverSecurityError("Controlled receiver endpoint identity is not allowlisted")
-    url = raw.get("url")
-    receiver_identity = raw.get("receiverIdentity")
-    request_key_id = raw.get("requestKeyId")
-    receipt_key_id = raw.get("receiptKeyId")
-    expected_reference = raw.get("credentialReference")
-    networks = raw.get("allowedNetworks")
-    durable_status = raw.get("durableStatus", "accepted")
-    if not all(
-        isinstance(value, str) and value
-        for value in (url, receiver_identity, request_key_id, receipt_key_id, expected_reference)
-    ) or durable_status not in {"accepted", "rejected"}:
+    required = {
+        "url", "receiverIdentity", "credentialReference", "requestKeyId",
+        "receiptKeyId", "allowedNetworks", "durableStatus",
+    }
+    if set(raw) != required:
+        raise ControlledReceiverSecurityError("Controlled receiver registry entry is incomplete")
+    url = raw["url"]
+    receiver_identity = _validate_identifier(raw["receiverIdentity"], "identity")
+    request_key_id = _validate_identifier(raw["requestKeyId"], "request key ID")
+    receipt_key_id = _validate_identifier(raw["receiptKeyId"], "receipt key ID")
+    expected_reference = _validate_identifier(raw["credentialReference"], "credential reference")
+    durable_status = raw["durableStatus"]
+    if not isinstance(url, str) or durable_status not in {"accepted", "rejected"}:
         raise ControlledReceiverSecurityError("Controlled receiver registry entry is incomplete")
     if credential_reference != expected_reference:
         raise ControlledReceiverSecurityError("Frozen credential reference does not match controlled receiver registry")
-    if not isinstance(networks, list) or not networks:
-        raise ControlledReceiverSecurityError("Controlled receiver registry requires a fixed network scope")
-    try:
-        parsed_networks = tuple(ipaddress.ip_network(value, strict=True) for value in networks)
-    except ValueError as exc:
-        raise ControlledReceiverSecurityError("Controlled receiver registry network scope is invalid") from exc
+    networks = _validated_networks(raw["allowedNetworks"])
     _strict_url(url)
     return ControlledReceiverEndpoint(
         identity=identity,
         receiver_identity=receiver_identity,
         url=url,
-        credential_reference=credential_reference,
+        credential_reference=expected_reference,
         request_key_id=request_key_id,
         receipt_key_id=receipt_key_id,
-        allowed_networks=parsed_networks,
+        allowed_networks=networks,
         durable_status=durable_status,
     )
 
 
+def endpoint_config_hash(endpoint: ControlledReceiverEndpoint) -> str:
+    """Hash every non-secret registry field frozen into a target revision."""
+    return canonical_hash(
+        {
+            "endpointIdentity": endpoint.identity,
+            "url": endpoint.url,
+            "receiverIdentity": endpoint.receiver_identity,
+            "credentialReference": endpoint.credential_reference,
+            "requestKeyId": endpoint.request_key_id,
+            "receiptKeyId": endpoint.receipt_key_id,
+            "allowedNetworks": [str(network) for network in endpoint.allowed_networks],
+            "durableStatus": endpoint.durable_status,
+        }
+    )
+
+
 def resolve_receiver_identity(receiver_identity: str) -> ControlledReceiverEndpoint:
-    """Resolve the inbound receiver identity through the same server registry."""
+    """Resolve an inbound receiver through exactly one configured registry entry."""
+    receiver_identity = _validate_identifier(receiver_identity, "identity")
     registry = _json_setting(get_settings().controlled_receiver_registry_json, "receiver registry")
     matches = [
         (identity, value)
@@ -131,8 +175,6 @@ def resolve_receiver_identity(receiver_identity: str) -> ControlledReceiverEndpo
         raise ControlledReceiverSecurityError("Controlled receiver identity is not uniquely allowlisted")
     identity, value = matches[0]
     reference = value.get("credentialReference")
-    if not isinstance(reference, str):
-        raise ControlledReceiverSecurityError("Controlled receiver registry entry is incomplete")
     return resolve_endpoint(identity, reference)
 
 
@@ -140,9 +182,12 @@ def _key(reference: str, key_id: str, setting_name: str) -> bytes:
     settings = get_settings()
     values = _json_setting(getattr(settings, setting_name), setting_name)
     value = values.get(reference if setting_name == "controlled_receiver_credentials_json" else key_id)
-    if not isinstance(value, str) or not value:
+    if not isinstance(value, str):
         raise ControlledReceiverSecurityError("Controlled receiver key is unavailable")
-    return value.encode("utf-8")
+    encoded = value.encode("utf-8")
+    if len(encoded) < 32:
+        raise ControlledReceiverSecurityError("Controlled receiver HMAC key is too short")
+    return encoded
 
 
 def _request_signing_bytes(
@@ -173,22 +218,49 @@ def request_headers(*, body: bytes, endpoint: ControlledReceiverEndpoint, operat
 
 
 def verify_request(*, body: bytes, headers: Any, receiver_identity: str, operation_id: str, decision_hash: str, payload_hash: str) -> tuple[str, str]:
+    """Verify MAC and prove the sender key is bound to this receiver identity."""
+    endpoint = resolve_receiver_identity(receiver_identity)
     key_id = headers.get(f"{_REQUEST_HEADER}Key-Id", "")
     timestamp = headers.get(f"{_REQUEST_HEADER}Timestamp", "")
     nonce = headers.get(f"{_REQUEST_HEADER}Nonce", "")
     signature = headers.get(f"{_REQUEST_HEADER}Mac", "")
-    if headers.get(f"{_REQUEST_HEADER}Mac-Version") != MAC_VERSION or not all((key_id, timestamp, nonce, signature)):
-        raise ControlledReceiverSecurityError("Missing controlled receiver MAC fields")
-    if any(headers.get(f"{_REQUEST_HEADER}{name}") != expected for name, expected in (("Operation-Id", operation_id), ("Decision-Hash", decision_hash), ("Payload-Hash", payload_hash))):
+    bound_values = (key_id, timestamp, nonce, signature, operation_id, decision_hash, payload_hash)
+    if (
+        headers.get(f"{_REQUEST_HEADER}Mac-Version") != MAC_VERSION
+        or any(not isinstance(value, str) or not value or len(value) > _MAX_HEADER_VALUE for value in bound_values)
+        or _validate_identifier(key_id, "request key ID") != endpoint.request_key_id
+        or _IDENTIFIER.fullmatch(nonce) is None
+        or _HEX64.fullmatch(decision_hash) is None
+        or _HEX64.fullmatch(payload_hash) is None
+    ):
+        raise ControlledReceiverSecurityError("Missing or invalid controlled receiver MAC fields")
+    if any(
+        headers.get(f"{_REQUEST_HEADER}{name}") != expected
+        for name, expected in (
+            ("Operation-Id", operation_id),
+            ("Decision-Hash", decision_hash),
+            ("Payload-Hash", payload_hash),
+        )
+    ):
         raise ControlledReceiverSecurityError("Controlled receiver MAC binding mismatch")
     try:
         observed = int(timestamp)
-    except ValueError as exc:
-        raise ControlledReceiverSecurityError("Invalid controlled receiver timestamp") from exc
+        base64.b64decode(signature, validate=True)
+    except (ValueError, TypeError) as exc:
+        raise ControlledReceiverSecurityError("Invalid controlled receiver MAC encoding") from exc
     if abs(int(time.time()) - observed) > get_settings().controlled_receiver_max_clock_skew_seconds:
         raise ControlledReceiverSecurityError("Controlled receiver timestamp outside allowed skew")
     key = _key(key_id, key_id, "controlled_receiver_inbound_keys_json")
-    expected = base64.b64encode(hmac.new(key, _request_signing_bytes(body=body, key_id=key_id, timestamp=timestamp, nonce=nonce, operation_id=operation_id, decision_hash=decision_hash, payload_hash=payload_hash), hashlib.sha256).digest()).decode("ascii")
+    expected = base64.b64encode(
+        hmac.new(
+            key,
+            _request_signing_bytes(
+                body=body, key_id=key_id, timestamp=timestamp, nonce=nonce,
+                operation_id=operation_id, decision_hash=decision_hash, payload_hash=payload_hash,
+            ),
+            hashlib.sha256,
+        ).digest()
+    ).decode("ascii")
     if not secrets.compare_digest(expected, signature):
         raise ControlledReceiverSecurityError("Invalid controlled receiver MAC")
     return key_id, nonce
@@ -205,21 +277,46 @@ def sign_receipt(payload: dict[str, str], key_id: str) -> str:
 
 
 def verify_receipt(*, receipt: Any, endpoint: ControlledReceiverEndpoint, operation_id: str, decision_hash: str, payload_hash: str) -> str:
-    if not isinstance(receipt, dict):
+    if not isinstance(receipt, dict) or set(receipt) != {
+        "version", "receiverIdentity", "operationId", "decisionHash", "payloadHash",
+        "durableStatus", "receiptId", "timestamp", "keyId", "signature",
+    }:
         raise ControlledReceiverSecurityError("Missing controlled receiver receipt")
-    signature = receipt.get("signature")
-    key_id = receipt.get("keyId")
-    fields = {key: receipt.get(key) for key in ("version", "receiverIdentity", "operationId", "decisionHash", "payloadHash", "durableStatus", "receiptId", "timestamp")}
-    if key_id != endpoint.receipt_key_id or not isinstance(signature, str) or any(not isinstance(value, str) or not value for value in fields.values()):
+    signature = receipt["signature"]
+    key_id = receipt["keyId"]
+    fields = {
+        key: receipt[key]
+        for key in (
+            "version", "receiverIdentity", "operationId", "decisionHash",
+            "payloadHash", "durableStatus", "receiptId", "timestamp",
+        )
+    }
+    if (
+        key_id != endpoint.receipt_key_id
+        or not isinstance(signature, str)
+        or len(signature) > _MAX_HEADER_VALUE
+        or any(not isinstance(value, str) or not value or len(value) > _MAX_HEADER_VALUE for value in fields.values())
+        or _HEX64.fullmatch(fields["decisionHash"]) is None
+        or _HEX64.fullmatch(fields["payloadHash"]) is None
+        or _IDENTIFIER.fullmatch(fields["receiptId"]) is None
+    ):
         raise ControlledReceiverSecurityError("Invalid controlled receiver receipt")
-    if fields["version"] != MAC_VERSION or fields["receiverIdentity"] != endpoint.receiver_identity or fields["operationId"] != operation_id or fields["decisionHash"] != decision_hash or fields["payloadHash"] != payload_hash:
+    if (
+        fields["version"] != MAC_VERSION
+        or fields["receiverIdentity"] != endpoint.receiver_identity
+        or fields["operationId"] != operation_id
+        or fields["decisionHash"] != decision_hash
+        or fields["payloadHash"] != payload_hash
+    ):
         raise ControlledReceiverSecurityError("Controlled receiver receipt binding mismatch")
     try:
-        if abs(int(time.time()) - int(fields["timestamp"])) > get_settings().controlled_receiver_max_clock_skew_seconds:
-            raise ControlledReceiverSecurityError("Controlled receiver receipt outside allowed skew")
-    except ValueError as exc:
-        raise ControlledReceiverSecurityError("Invalid controlled receiver receipt timestamp") from exc
-    expected = sign_receipt({key: value for key, value in fields.items()}, key_id)
+        observed = int(fields["timestamp"])
+        base64.b64decode(signature, validate=True)
+    except (ValueError, TypeError) as exc:
+        raise ControlledReceiverSecurityError("Invalid controlled receiver receipt encoding") from exc
+    if abs(int(time.time()) - observed) > get_settings().controlled_receiver_max_clock_skew_seconds:
+        raise ControlledReceiverSecurityError("Controlled receiver receipt outside allowed skew")
+    expected = sign_receipt(fields, key_id)
     if not secrets.compare_digest(expected, signature):
         raise ControlledReceiverSecurityError("Invalid controlled receiver receipt signature")
     if fields["durableStatus"] not in {"accepted", "rejected"}:
@@ -249,4 +346,24 @@ async def pinned_post(
     _, host, _, _ = _strict_url(url)
     transport = PinnedAsyncHTTPTransport(host, ips)
     async with httpx.AsyncClient(transport=transport, timeout=timeout_seconds, follow_redirects=False, trust_env=False) as client:
-        return await client.post(url, content=body, headers=headers)
+        async with client.stream("POST", url, content=body, headers=headers) as response:
+            if response.is_redirect:
+                raise ControlledReceiverSecurityError("Controlled receiver redirects are forbidden")
+            declared_length = response.headers.get("content-length")
+            if declared_length is not None:
+                try:
+                    if int(declared_length) > _MAX_RESPONSE_BYTES:
+                        raise ControlledReceiverSecurityError("Controlled receiver response is too large")
+                except ValueError as exc:
+                    raise ControlledReceiverSecurityError("Controlled receiver response length is invalid") from exc
+            content = bytearray()
+            async for chunk in response.aiter_bytes():
+                content.extend(chunk)
+                if len(content) > _MAX_RESPONSE_BYTES:
+                    raise ControlledReceiverSecurityError("Controlled receiver response is too large")
+            return httpx.Response(
+                response.status_code,
+                headers=response.headers,
+                content=bytes(content),
+                request=response.request,
+            )

@@ -24,6 +24,8 @@ from backend.security.controlled_receiver import (
 )
 
 router = APIRouter(prefix="/controlled-receiver/v2", tags=["controlled-receiver-v2"])
+MAX_CONTROLLED_RECEIVER_BODY_BYTES = 64 * 1024
+
 
 
 def _receipt(row: ControlledReceiverDelivery) -> dict[str, str]:
@@ -40,7 +42,15 @@ def _receipt(row: ControlledReceiverDelivery) -> dict[str, str]:
 
 
 async def _parse(request: Request) -> tuple[ControlledReceiverDeliveryV2, bytes]:
+    declared_length = request.headers.get("content-length")
+    try:
+        if declared_length is not None and int(declared_length) > MAX_CONTROLLED_RECEIVER_BODY_BYTES:
+            raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "Controlled receiver v2 body is too large")
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid controlled receiver content length") from exc
     raw = await request.body()
+    if len(raw) > MAX_CONTROLLED_RECEIVER_BODY_BYTES:
+        raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "Controlled receiver v2 body is too large")
     try:
         value = ControlledReceiverDeliveryV2.model_validate_json(raw)
     except ValueError as exc:
@@ -64,8 +74,7 @@ async def _authenticated(request: Request) -> tuple[ControlledReceiverDeliveryV2
             decision_hash=value.decision_hash,
             payload_hash=value.payload_hash,
         )
-        if key_id != endpoint.request_key_id:
-            raise ControlledReceiverSecurityError("Controlled receiver key is not bound to receiver identity")
+        # verify_request resolves the same registry entry and binds its key.
     except ControlledReceiverSecurityError as exc:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid controlled receiver authentication") from exc
     return value, raw, endpoint, key_id, nonce

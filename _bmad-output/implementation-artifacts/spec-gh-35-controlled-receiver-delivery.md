@@ -84,3 +84,9 @@ The execution claim is deliberately separate from immutable result evidence: res
 - `uv run --extra dev pytest --no-cov tests/unit/test_delivery_authorization.py tests/integration/test_delivery_authorization_api.py tests/unit/test_research_graph_v2.py tests/integration/test_research_graph_v2_api.py` — expected: #34/#33 authorization and pinned-fold behavior remain unchanged.
 - `uv run --extra dev pytest --no-cov tests/integration/test_evidence_batch_materialization_api.py tests/integration/test_iii_collection_vertical.py tests/integration/test_iii_collection_cancellation.py` — expected: #32 collection/reconciliation behavior remains unchanged.
 - Sentrux session start/end for `backend` and an adversarial security review — expected: no authority-boundary or structural regression.
+
+**Completed evidence (2026-08-30):**
+- `uv run alembic upgrade head` applied through `e3f4a5b6c7d8` successfully.
+- `uv run --extra dev pytest --no-cov tests/unit/test_delivery_execution.py tests/unit/test_controlled_receiver.py tests/unit/security/test_controlled_receiver_transport.py tests/integration/test_delivery_execution_api.py` — 21 passed.
+- `uv run --extra dev pytest --no-cov tests/unit/test_delivery_authorization.py tests/integration/test_delivery_authorization_api.py tests/unit/test_research_graph_v2.py tests/integration/test_research_graph_v2_api.py` — 33 passed.
+- `uv run --extra dev pytest --no-cov tests/integration/test_evidence_batch_materialization_api.py tests/integration/test_iii_collection_vertical.py tests/integration/test_iii_collection_cancellation.py` — 20 passed, 1 skipped.
