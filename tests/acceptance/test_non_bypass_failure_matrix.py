@@ -628,10 +628,15 @@ def test_catalog_uses_buildx_loaded_images_not_legacy_builder():
         {
             name: f"opencli-proof-{name}:catalog"
             for name in runner.CATALOG_NAMES
-        }
+        },
+        root_cache_bust="catalog",
     )
     assert len(commands) == 6
     assert all(command[:4] == ["docker", "buildx", "build", "--load"] for _, command in commands)
+    root_command = dict(commands)["root"]
+    assert ("--build-arg", "PROOF_CATALOG_DIGEST=catalog") in zip(
+        root_command, root_command[1:]
+    )
 
 
 def test_per_row_admission_only_configs_and_inspects_prebuilt_catalog(monkeypatch, tmp_path):

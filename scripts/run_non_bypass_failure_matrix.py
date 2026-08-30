@@ -157,7 +157,9 @@ def _catalog_images(digest: str) -> dict[str, str]:
     return {name: f"opencli-proof-{name}:{digest}" for name in CATALOG_NAMES}
 
 
-def _catalog_build_commands(images: dict[str, str]) -> tuple[tuple[str, list[str]], ...]:
+def _catalog_build_commands(
+    images: dict[str, str], *, root_cache_bust: str | None = None,
+) -> tuple[tuple[str, list[str]], ...]:
     def build(image: str, dockerfile: str, context: str, *extra: str) -> list[str]:
         return [
             "docker",
@@ -172,8 +174,11 @@ def _catalog_build_commands(images: dict[str, str]) -> tuple[tuple[str, list[str
             context,
         ]
 
+    root_extra = ["--target", "non-bypass-acceptance"]
+    if root_cache_bust is not None:
+        root_extra.extend(["--build-arg", f"PROOF_CATALOG_DIGEST={root_cache_bust}"])
     return (
-        ("root", build(images["root"], "Dockerfile", ".", "--target", "non-bypass-acceptance")),
+        ("root", build(images["root"], "Dockerfile", ".", *root_extra)),
         ("collector", build(images["collector"], "iii/workers/collector-opencli/Dockerfile", "iii")),
         ("bridge", build(images["bridge"], "iii/workers/odp-ingest-bridge/Dockerfile", "iii")),
         ("ingest", build(images["ingest"], "odp-rs/Dockerfile.ingest", "odp-rs")),
@@ -208,7 +213,7 @@ def _build_catalog(env: dict[str, str], base: Path, overlay: Path) -> dict[str, 
     # Buildx with the desktop builder and `--load` is the verified replacement:
     # it produces daemon-inspectable IDs while retaining the shared deadline.
     builder_env = {**env, "PROOF_CATALOG_DIGEST": digest}
-    for _name, command in _catalog_build_commands(images):
+    for _name, command in _catalog_build_commands(images, root_cache_bust=digest):
         _run(command, env=builder_env, timeout=_remaining(deadline))
     catalog_ledger = ScenarioLedger("catalog", f"nbf-catalog-{digest[:12]}", ROOT, ROOT)
     configured = _compose(catalog_ledger, builder_env, base, overlay, "config", "--images", timeout=_remaining(deadline)).splitlines()

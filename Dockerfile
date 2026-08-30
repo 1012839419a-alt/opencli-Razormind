@@ -49,8 +49,11 @@ COPY alembic.ini .
 COPY entrypoint.sh /entrypoint.sh
 RUN sed -i 's/\r$//' /entrypoint.sh && chmod +x /entrypoint.sh
 
-# Non-root user for security; pre-create /data so the SQLite volume is writable
-RUN useradd -m -u 1000 appuser && \
+# This makes each content-addressed proof image reconstruct and verify its
+# account layer rather than inheriting a stale local BuildKit user database.
+ARG PROOF_CATALOG_DIGEST=runtime
+RUN test -n "$PROOF_CATALOG_DIGEST" && useradd -m -u 1000 appuser && \
+    getent passwd appuser >/dev/null && \
     mkdir -p /data && \
     chown -R appuser:appuser /app /data
 USER appuser
