@@ -143,7 +143,7 @@ def _facts_from_driver(ledger: ScenarioLedger, env: dict[str, str], base: Path, 
         "--scenario", ledger.scenario, "--run", ledger.project,
     ]
     process = subprocess.Popen(command, cwd=ROOT, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    signal = ledger.artifact / "coordination" / f"{ledger.run}.submitted"
+    signal = ledger.artifact / "coordination" / f"{ledger.project}.submitted"
     deadline = time.monotonic() + 90
     while not signal.exists() and time.monotonic() < deadline:
         time.sleep(0.2)
@@ -157,7 +157,7 @@ def _facts_from_driver(ledger: ScenarioLedger, env: dict[str, str], base: Path, 
         "-H", "Content-Type: application/json", "-d", '{"upstream":"control"}',
         "http://proof-relay:8080/_gate/callback-upstream", timeout=30,
     )
-    (ledger.artifact / "coordination" / f"{ledger.run}.resume").write_text("released", encoding="utf-8")
+    (ledger.artifact / "coordination" / f"{ledger.project}.resume").write_text("released", encoding="utf-8")
     stdout, stderr = process.communicate(timeout=120)
     if process.returncode:
         raise FailureRunRejected(stderr.strip() or stdout.strip() or "in-network admin-crash driver failed")
