@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 from hashlib import sha256
-from typing import Any
+from typing import Any, Literal, cast
 from uuid import NAMESPACE_URL, uuid5
 
 from sqlalchemy import func, select
@@ -25,16 +25,27 @@ from backend.models.iii_collection import (
     IIICollectionExpectedKeyReportV1,
     IIICollectionIngressReceiptV1,
 )
-from backend.odp.query_client import OdpQueryError, build_attempt_page_request, build_exact_request, post_reconciliation_query
+from backend.odp.query_client import (
+    OdpQueryError,
+    build_attempt_page_request,
+    build_exact_request,
+    post_reconciliation_query,
+)
 from backend.schemas.iii_collection import (
     EvidenceBatchMaterializationReadV1,
     EvidenceBatchMaterializationSummaryV1,
     EvidenceBatchRecordReferenceV1,
 )
+from backend.schemas.research_graph_v2 import (
+    ResearchGraphV2ItemKey,
+    ResearchGraphV2ManifestRef,
+    ResearchGraphV2RecordRef,
+)
 from backend.workflow.evidence_batch_materialization_facts import (
     delegation,
     matches_scope,
     receipt_outcomes,
+    record_ref_set_hash,
     report_keys,
 )
 from backend.workflow.iii_collection_store import CollectionScope, IIICollectionNotFoundError
@@ -82,8 +93,83 @@ def _reference(value: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _read(manifest: EvidenceBatchMaterializationManifestV1) -> EvidenceBatchMaterializationReadV1:
+
+def _research_graph_manifest_ref(
+    manifest: EvidenceBatchMaterializationManifestV1,
+    report: IIICollectionExpectedKeyReportV1 | None,
+) -> ResearchGraphV2ManifestRef | None:
+    if (
+        getattr(manifest, "materialization_status", None)
+        not in {"completed", "completed_empty", "partial"}
+        or getattr(manifest, "version", None) != "v1"
+        or getattr(manifest, "derivation", None) != "dispatch-task-v1"
+        or getattr(manifest, "expected_key_set_hash", None) is None
+        or report is None
+        or report.report_id != getattr(manifest, "report_id", None)
+        or report.command_id != getattr(manifest, "command_id", None)
+        or report.attempt_id != getattr(manifest, "attempt_id", None)
+        or report.key_set_sha256 != getattr(manifest, "expected_key_set_hash", None)
+    ):
+        return None
+    expected_key_set_hash = manifest.expected_key_set_hash
+    if expected_key_set_hash is None:
+        return None
+    record_refs = [
+        ResearchGraphV2RecordRef(
+            source_id=str(item.get("source_id", item.get("sourceId", ""))),
+            event_id=str(item.get("event_id", item.get("eventId", ""))),
+            odp_record_id=int(item.get("odp_record_id", item.get("odpRecordId", 0))),
+        )
+        for item in manifest.record_references
+    ]
+    materialization_status = cast(
+        Literal["completed", "completed_empty", "partial"], manifest.materialization_status
+    )
+    excluded_item_keys: list[ResearchGraphV2ItemKey] = []
+    if materialization_status == "partial":
+        present = {(ref.source_id, ref.event_id) for ref in record_refs}
+        expected_item_keys = {
+            (
+                str(item.get("source_id", item.get("sourceId", ""))),
+                str(item.get("event_id", item.get("eventId", ""))),
+            )
+            for item in report.expected_keys
+        }
+        excluded_item_keys = [
+            ResearchGraphV2ItemKey(source_id=source_id, event_id=event_id)
+            for source_id, event_id in sorted(expected_item_keys - present)
+        ]
+    return ResearchGraphV2ManifestRef(
+        batch_id=manifest.batch_id,
+        derivation=cast(Literal["dispatch-task-v1"], manifest.derivation),
+        reconciliation_revision=manifest.reconciliation_revision,
+        manifest_schema_version=cast(Literal["v1"], manifest.version),
+        manifest_hash=manifest.manifest_hash,
+        expected_record_key_set_hash=expected_key_set_hash,
+        record_ref_set_hash=record_ref_set_hash(manifest.record_references),
+        materialization_status=materialization_status,
+        record_refs=record_refs,
+        excluded_item_keys=excluded_item_keys,
+    )
+
+async def _read(
+    db: AsyncSession,
+    manifest: EvidenceBatchMaterializationManifestV1,
+    report: IIICollectionExpectedKeyReportV1 | None = None,
+) -> EvidenceBatchMaterializationReadV1:
     status = manifest.materialization_status
+    if (
+        report is None
+        and status in {"completed", "completed_empty", "partial"}
+        and manifest.report_id is not None
+    ):
+        report = (
+            await db.execute(
+                select(IIICollectionExpectedKeyReportV1).where(
+                    IIICollectionExpectedKeyReportV1.report_id == manifest.report_id
+                )
+            )
+        ).scalar_one_or_none()
     return EvidenceBatchMaterializationReadV1(
         batch_id=manifest.batch_id,
         reconciliation_revision=manifest.reconciliation_revision,
@@ -99,6 +185,7 @@ def _read(manifest: EvidenceBatchMaterializationManifestV1) -> EvidenceBatchMate
         page_snapshot_as_of=manifest.page_snapshot_as_of,
         redaction_profile_version=manifest.redaction_profile_version,
         finalized_at=manifest.finalized_at,
+        research_graph_manifest_ref=_research_graph_manifest_ref(manifest, report),
     )
 
 
@@ -126,7 +213,7 @@ async def get_materialization(
             .limit(1)
         )
     ).scalar_one_or_none()
-    return _read(manifest) if manifest is not None else None
+    return await _read(db, manifest) if manifest is not None else None
 
 def _scope_filters(scope: CollectionScope) -> tuple[Any, ...]:
     manifest = EvidenceBatchMaterializationManifestV1
@@ -225,7 +312,7 @@ async def get_materialization_by_batch(
             .limit(1)
         )
     ).scalar_one_or_none()
-    return _read(manifest) if manifest is not None else None
+    return await _read(db, manifest) if manifest is not None else None
 
 
 async def materialize_evidence_batch(
@@ -279,13 +366,13 @@ async def materialize_evidence_batch(
     terminal_inputs = _terminal_inputs(report, receipts)
     latest = await _latest_manifest(db, command_id, attempt_id)
     if latest is not None and _same_terminal_inputs(latest, terminal_inputs):
-        return _read(latest)
+        return await _read(db, latest, report)
     facts = await _reconcile(command, attempt, report, receipts)
     latest = await _latest_manifest(db, command_id, attempt_id)
     if latest is not None and (
         _same_terminal_inputs(latest, terminal_inputs) or _same_revision(latest, facts)
     ):
-        return _read(latest)
+        return await _read(db, latest, report)
     revision = 1 if latest is None else latest.reconciliation_revision + 1
     manifest_payload = {"revision": revision, **facts}
     manifest = EvidenceBatchMaterializationManifestV1(
@@ -326,7 +413,7 @@ async def materialize_evidence_batch(
         if winner is not None and (
             _same_terminal_inputs(winner, terminal_inputs) or _same_revision(winner, facts)
         ):
-            return _read(winner)
+            return await _read(db, winner, report)
         if _race_retries_remaining:
             return await materialize_evidence_batch(
                 db,
@@ -335,7 +422,7 @@ async def materialize_evidence_batch(
                 _race_retries_remaining=_race_retries_remaining - 1,
             )
         raise
-    return _read(manifest)
+    return await _read(db, manifest, report)
 
 
 def _terminal_inputs(

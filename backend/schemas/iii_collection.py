@@ -8,6 +8,8 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic.alias_generators import to_camel
 
+from backend.schemas.research_graph_v2 import ResearchGraphV2ManifestRef
+
 
 class _V1Model(BaseModel):
     model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True, extra="forbid")
@@ -246,6 +248,7 @@ class EvidenceBatchMaterializationReadV1(_V1Model):
     page_snapshot_as_of: str | None = Field(default=None, max_length=64)
     redaction_profile_version: str | None = Field(default=None, max_length=64)
     finalized_at: datetime | None = None
+    research_graph_manifest_ref: ResearchGraphV2ManifestRef | None = None
 
 
 class EvidenceBatchMaterializationSummaryV1(_V1Model):

@@ -26,7 +26,11 @@ from backend.schemas.research_graph_v2 import (
     ResearchGraphV2Read,
 )
 from backend.schemas.workflow import WorkflowNodeRunEvent
-from backend.workflow.workflow_run_events import append_workflow_run_events, lock_scoped_workflow_run
+from backend.workflow.evidence_batch_materialization_facts import record_ref_set_hash
+from backend.workflow.workflow_run_events import (
+    append_workflow_run_events,
+    lock_scoped_workflow_run,
+)
 
 _EVENT_KEY = "authorizedResearchGraphV2"
 _POLICY_VERSION = "workspace-rbac-v1"
@@ -282,18 +286,6 @@ def exact_pinned_reference(
             "recovery_action": "re_review",
         }
     )
-def _record_ref_set_hash(values: list[dict]) -> str:
-    return _canonical_hash(
-        sorted(
-            (
-                str(item.get("source_id", item.get("sourceId", ""))),
-                str(item.get("event_id", item.get("eventId", ""))),
-                int(item.get("odp_record_id", item.get("odpRecordId", 0))),
-            )
-            for item in values
-        )
-    )
-
 
 def _key_set(values: list[dict]) -> set[tuple[str, str]]:
     return {
@@ -358,7 +350,7 @@ async def _validate_manifest_refs(
             raise ResearchGraphV2ConflictError("Manifest tuple mismatch")
         if manifest.materialization_status not in {"completed", "completed_empty", "partial"}:
             raise ResearchGraphV2ConflictError("Manifest is not eligible for ResearchGraph V2")
-        if _record_ref_set_hash(manifest.record_references) != ref.record_ref_set_hash:
+        if record_ref_set_hash(manifest.record_references) != ref.record_ref_set_hash:
             raise ResearchGraphV2ConflictError("Manifest record reference hash mismatch")
         present = {
             (
@@ -421,7 +413,7 @@ def _matches_manifest(
         and manifest.manifest_hash == ref.manifest_hash
         and manifest.expected_key_set_hash == ref.expected_record_key_set_hash
         and manifest.materialization_status == ref.materialization_status
-        and _record_ref_set_hash(manifest.record_references) == ref.record_ref_set_hash
+        and record_ref_set_hash(manifest.record_references) == ref.record_ref_set_hash
     )
 
 

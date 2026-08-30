@@ -10,14 +10,17 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
+from backend.main import app
+from backend.models.identity import User, Workspace, WorkspaceMembership, WorkspaceRole
 from backend.models.iii_collection import (
+    EvidenceBatchMaterializationManifestV1,
     IIICollectionAttemptV1,
     IIICollectionCommandV1,
     IIICollectionExpectedKeyReportV1,
-    EvidenceBatchMaterializationManifestV1,
     IIICollectionIngressReceiptV1,
 )
 from backend.odp.query_client import OdpQueryUnavailable, OdpRecordKey
+from backend.security.identity import RequestIdentity, get_request_identity
 from backend.workflow.evidence_batch_materialization_facts import receipt_outcomes
 from backend.workflow.evidence_batch_materializer import (
     get_materialization,
@@ -38,6 +41,7 @@ from tests.integration.iii_collection_test_support import (
     submit_report_and_receipt,
 )
 
+
 def _record(command, event_id: str = "event-1", record_id: int = 42) -> dict:
     return {
         "source_id": command.odp_source_id,
@@ -55,6 +59,13 @@ def _base(request) -> dict:
         "retention_state": "unknown",
         "redaction_profile_version": "odp-query-reference-v1",
     }
+
+
+def _research_graph_route(scope: dict) -> str:
+    return (
+        f"/api/v1/workspaces/{scope['workspace'].id}/projects/{scope['project'].id}"
+        f"/workflows/{scope['workflow'].id}/runs/{scope['run'].id}/research-graph-v2"
+    )
 
 
 def _completed_query(command, calls: list[str] | None = None):
@@ -244,6 +255,11 @@ async def test_materialization_outage_is_indeterminate_and_recovery_appends_revi
     assert first.json()["data"]["materializationStatus"] == "indeterminate"
     assert first.json()["data"]["legacyStatus"] == "blocked"
     assert first.json()["data"]["recoveryAction"] == "reconcile_evidence_batch"
+    batch_id = first.json()["data"]["batchId"]
+    studio_run = route(scope).removesuffix("/iii-collections")
+    detail = await client.get(f"{studio_run}/evidence-batches/v1/{batch_id}")
+    assert detail.status_code == 200
+    assert detail.json()["data"]["researchGraphManifestRef"] is None
 
     recovered = True
     second = await client.post(f"{route(scope)}/{command.id}/recover")
@@ -406,6 +422,294 @@ async def test_studio_evidence_routes_project_latest_redacted_scoped_status(
         assert forbidden not in detail.text
 
 
+
+@pytest.mark.asyncio
+async def test_scoped_materialization_detail_ref_proposes_completed_graph_claim(
+    client, db_session, monkeypatch
+):
+    scope, command = await submit_report_and_receipt(client, db_session, monkeypatch)
+    command_id = command.id
+    collection_route = route(scope)
+    studio_run = collection_route.removesuffix("/iii-collections")
+    graph_route = _research_graph_route(scope)
+    monkeypatch.setattr(
+        "backend.workflow.evidence_batch_materializer.post_reconciliation_query",
+        _completed_query(command),
+    )
+    materialized = await client.post(f"{collection_route}/{command.id}/materialize")
+    assert materialized.status_code == 200
+    batch_id = materialized.json()["data"]["batchId"]
+
+    detail = await client.get(f"{studio_run}/evidence-batches/v1/{batch_id}")
+    assert detail.status_code == 200
+    manifest_ref = detail.json()["data"]["researchGraphManifestRef"]
+    assert manifest_ref["recordRefs"] == [
+        {"sourceId": command.odp_source_id, "eventId": "event-1", "odpRecordId": 42}
+    ]
+
+    proposer = User(id="materialization-proposer", subject="materialization-proposer")
+    proposer_subject = proposer.subject
+    workspace = Workspace(id=scope["workspace"].id, name="Materialization", slug="materialization")
+    db_session.add_all(
+        [
+            proposer,
+            workspace,
+            WorkspaceMembership(
+                workspace_id=workspace.id,
+                user_id=proposer.id,
+                role=WorkspaceRole.OPERATOR,
+            ),
+        ]
+    )
+    await db_session.commit()
+
+    async def override_identity():
+        return RequestIdentity(subject=proposer_subject)
+
+    app.dependency_overrides[get_request_identity] = override_identity
+    try:
+        graph = await client.get(graph_route)
+        assert graph.status_code == 200
+        graph_data = graph.json()["data"]
+        tampered = await client.post(
+            f"{graph_route}/mutations",
+            json={
+                "idempotencyKey": "materialization-detail-tampered",
+                "action": "propose",
+                "expectedSequence": graph_data["sequence"],
+                "expectedRevision": graph_data["researchRevisionId"],
+                "nodeId": "opencli-source",
+                "claimId": "materialization-detail-tampered",
+                "claimContentHash": "c" * 64,
+                "manifestRefs": [{**manifest_ref, "recordRefSetHash": "0" * 64}],
+            },
+        )
+        assert tampered.status_code == 409
+        proposed = await client.post(
+            f"{graph_route}/mutations",
+            json={
+                "idempotencyKey": "materialization-detail-proposal",
+                "action": "propose",
+                "expectedSequence": graph_data["sequence"],
+                "expectedRevision": graph_data["researchRevisionId"],
+                "nodeId": "opencli-source",
+                "claimId": "materialization-detail-claim",
+                "claimContentHash": "c" * 64,
+                "manifestRefs": [manifest_ref],
+            },
+        )
+        assert proposed.status_code == 201, proposed.text
+        attempt = (
+            await db_session.execute(
+                select(IIICollectionAttemptV1).where(
+                    IIICollectionAttemptV1.command_id == command_id
+                )
+            )
+        ).scalar_one()
+        command = await db_session.get(IIICollectionCommandV1, command_id)
+        assert command is not None
+        retry = receipt_body(command, attempt, report_body(command, attempt))
+        retry.update({"receiptId": "receipt-2", "idempotencyKey": "odp-ingest:receipt-2"})
+        retry = sign_receipt_body(retry)
+        headers = {"x-iii-bridge-token": "bridge-token"}
+        assert (
+            await client.post("/api/v1/iii-collections/ingress-receipts", json=retry, headers=headers)
+        ).status_code == 200
+        updated = await client.post(f"{collection_route}/{command_id}/materialize")
+        assert updated.status_code == 200
+        assert updated.json()["data"]["reconciliationRevision"] == 2
+
+        current = await client.get(graph_route)
+        assert current.status_code == 200
+        current_data = current.json()["data"]
+        stale = await client.post(
+            f"{graph_route}/mutations",
+            json={
+                "idempotencyKey": "materialization-detail-stale",
+                "action": "propose",
+                "expectedSequence": current_data["sequence"],
+                "expectedRevision": current_data["researchRevisionId"],
+                "nodeId": "opencli-source",
+                "claimId": "materialization-detail-stale",
+                "claimContentHash": "d" * 64,
+                "manifestRefs": [manifest_ref],
+            },
+        )
+        assert stale.status_code == 409
+        assert "stale" in stale.text
+    finally:
+        app.dependency_overrides.pop(get_request_identity, None)
+
+
+@pytest.mark.asyncio
+async def test_scoped_materialization_detail_ref_projects_completed_empty(
+    client, db_session, monkeypatch
+):
+    scope, command = await submit_report_and_receipt(
+        client, db_session, monkeypatch, event_ids=[]
+    )
+
+    async def must_not_query(_request):
+        raise AssertionError("completed-empty detail must not re-query ODP")
+
+    monkeypatch.setattr(
+        "backend.workflow.evidence_batch_materializer.post_reconciliation_query", must_not_query
+    )
+    materialized = await client.post(f"{route(scope)}/{command.id}/materialize")
+    assert materialized.status_code == 200
+    batch_id = materialized.json()["data"]["batchId"]
+    studio_run = route(scope).removesuffix("/iii-collections")
+
+    detail = await client.get(f"{studio_run}/evidence-batches/v1/{batch_id}")
+    assert detail.status_code == 200
+    manifest_ref = detail.json()["data"]["researchGraphManifestRef"]
+    assert manifest_ref["batchId"] == batch_id
+    assert manifest_ref["derivation"] == "dispatch-task-v1"
+    assert manifest_ref["reconciliationRevision"] == 1
+    assert manifest_ref["manifestSchemaVersion"] == "v1"
+    assert len(manifest_ref["manifestHash"]) == 64
+    assert len(manifest_ref["expectedRecordKeySetHash"]) == 64
+    assert manifest_ref["recordRefSetHash"] == "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    assert manifest_ref["materializationStatus"] == "completed_empty"
+    assert manifest_ref["recordRefs"] == []
+    assert manifest_ref["excludedItemKeys"] == []
+    graph_route = _research_graph_route(scope)
+    actor = User(id="empty-context-actor", subject="empty-context-actor")
+    actor_subject = actor.subject
+    workspace = Workspace(id=scope["workspace"].id, name="Empty Context", slug="empty-context")
+    db_session.add_all(
+        [
+            actor,
+            workspace,
+            WorkspaceMembership(
+                workspace_id=workspace.id,
+                user_id=actor.id,
+                role=WorkspaceRole.OPERATOR,
+            ),
+        ]
+    )
+    await db_session.commit()
+
+    async def override_identity():
+        return RequestIdentity(subject=actor_subject)
+
+    app.dependency_overrides[get_request_identity] = override_identity
+    try:
+        graph = await client.get(graph_route)
+        assert graph.status_code == 200
+        graph_data = graph.json()["data"]
+        context = await client.post(
+            f"{graph_route}/mutations",
+            json={
+                "idempotencyKey": "completed-empty-context",
+                "action": "context",
+                "expectedSequence": graph_data["sequence"],
+                "expectedRevision": graph_data["researchRevisionId"],
+                "nodeId": "opencli-source",
+                "manifestRefs": [manifest_ref],
+            },
+        )
+        assert context.status_code == 201, context.text
+    finally:
+        app.dependency_overrides.pop(get_request_identity, None)
+
+
+
+@pytest.mark.asyncio
+async def test_scoped_materialization_detail_ref_projects_exact_partial_exclusions(
+    client, db_session, monkeypatch
+):
+    scope, command = await submit_report_and_receipt(
+        client,
+        db_session,
+        monkeypatch,
+        event_ids=["event-1", "event-2"],
+        outcome="rejected",
+    )
+    record = _record(command, event_id="event-2", record_id=43)
+
+    async def query(request):
+        if request["mode"] == "exact":
+            assert request["keys"] == [
+                {"source_id": command.odp_source_id, "event_id": "event-2"}
+            ]
+            return {
+                **_base(request),
+                "mode": "exact",
+                "records": [record],
+                "results": [
+                    {
+                        "key": {"source_id": command.odp_source_id, "event_id": "event-2"},
+                        "classification": "present",
+                        "retention_state": "unknown",
+                        "record": record,
+                    }
+                ],
+            }
+        return {
+            **_base(request),
+            "mode": "attempt_page",
+            "records": [record],
+            "results": [],
+            "as_of": "2026-08-30T00:00:00Z",
+        }
+
+    monkeypatch.setattr("backend.workflow.evidence_batch_materializer.post_reconciliation_query", query)
+    materialized = await client.post(f"{route(scope)}/{command.id}/materialize")
+    assert materialized.status_code == 200
+    batch_id = materialized.json()["data"]["batchId"]
+    studio_run = route(scope).removesuffix("/iii-collections")
+
+    detail = await client.get(f"{studio_run}/evidence-batches/v1/{batch_id}")
+    assert detail.status_code == 200
+    manifest_ref = detail.json()["data"]["researchGraphManifestRef"]
+    assert manifest_ref["materializationStatus"] == "partial"
+    assert manifest_ref["recordRefs"] == [
+        {"sourceId": command.odp_source_id, "eventId": "event-2", "odpRecordId": 43}
+    ]
+    assert manifest_ref["excludedItemKeys"] == [
+        {"sourceId": command.odp_source_id, "eventId": "event-1"}
+    ]
+
+    proposer = User(id="partial-proposer", subject="partial-proposer")
+    workspace = Workspace(id=scope["workspace"].id, name="Partial", slug="partial")
+    db_session.add_all(
+        [
+            proposer,
+            workspace,
+            WorkspaceMembership(
+                workspace_id=workspace.id,
+                user_id=proposer.id,
+                role=WorkspaceRole.OPERATOR,
+            ),
+        ]
+    )
+    await db_session.commit()
+
+    async def override_identity():
+        return RequestIdentity(subject=proposer.subject)
+
+    app.dependency_overrides[get_request_identity] = override_identity
+    try:
+        graph = await client.get(_research_graph_route(scope))
+        assert graph.status_code == 200
+        graph_data = graph.json()["data"]
+        proposed = await client.post(
+            f"{_research_graph_route(scope)}/mutations",
+            json={
+                "idempotencyKey": "partial-detail-proposal",
+                "action": "propose",
+                "expectedSequence": graph_data["sequence"],
+                "expectedRevision": graph_data["researchRevisionId"],
+                "nodeId": "opencli-source",
+                "claimId": "partial-detail-claim",
+                "claimContentHash": "c" * 64,
+                "manifestRefs": [manifest_ref],
+            },
+        )
+        assert proposed.status_code == 201, proposed.text
+    finally:
+        app.dependency_overrides.pop(get_request_identity, None)
 @pytest.mark.asyncio
 async def test_integrity_race_returns_matching_persisted_winner(
     client, db_session, monkeypatch

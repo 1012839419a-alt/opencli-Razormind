@@ -22,6 +22,7 @@ class ResearchGraphV2RecordRef(ResearchGraphV2ItemKey):
     odp_record_id: int = Field(ge=1)
 
 
+
 class ResearchGraphV2ManifestRef(_V2Model):
     batch_id: str = Field(min_length=1, max_length=36)
     derivation: Literal["dispatch-task-v1"]
