@@ -40,6 +40,18 @@ LOCKED_READ = (
     b"SELECT delivery_executions.id, delivery_executions.decision_id FROM delivery_executions "
     b"WHERE delivery_executions.id = $1::UUID FOR UPDATE"
 )
+RESERVE_WITHOUT_SEND_STARTED = (
+    b"UPDATE delivery_executions SET state=$1::VARCHAR, lease_token=$2::VARCHAR, "
+    b"lease_acquired_at=$3::TIMESTAMP WITH TIME ZONE, reserved_attempt_number=$4::INTEGER "
+    b"WHERE delivery_executions.id = $5::UUID"
+)
+
+
+def test_reservation_update_does_not_require_unchanged_send_started_column():
+    assert relay._reservation_update(RESERVE) is True
+    assert relay._reservation_update(RESERVE_WITHOUT_SEND_STARTED) is True
+
+
 
 def test_relay_arm_requires_the_authenticated_token(monkeypatch):
     monkeypatch.setenv("API_AUTH_TOKEN", "relay-token")

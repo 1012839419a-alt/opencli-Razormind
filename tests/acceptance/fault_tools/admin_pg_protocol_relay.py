@@ -38,11 +38,10 @@ def _execution_claim(sql: bytes) -> bool:
 
 
 def _reservation_update(sql: bytes) -> bool:
-    """Recognize the first lease-bearing execution update after its claim.
+    """Recognize the durable reservation UPDATE after its execution claim.
 
-    PostgreSQL extended-query Parse frames intentionally contain no values;
-    the preceding claim and this complete set of lease columns identify the
-    source-level ``state = "reserved"`` transition before its COMMIT.
+    The source assigns ``send_started_at = None`` at reservation, but an
+    already-NULL database column need not appear in the emitted UPDATE.
     """
     normalized = _normalized_sql(sql)
     return (
@@ -50,7 +49,6 @@ def _reservation_update(sql: bytes) -> bool:
         and b"state" in normalized
         and b"lease_token" in normalized
         and b"lease_acquired_at" in normalized
-        and b"send_started_at" in normalized
         and b"reserved_attempt_number" in normalized
     )
 
