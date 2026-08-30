@@ -80,7 +80,7 @@ Fixture is source-only: subprocess, III, bridge, ODP, callback, receiver live. T
 - Focused III, materialization, and delivery regressions passed: `52 passed, 1 skipped`.
 - Sentrux passed with no structural degradation (`1495 -> 1495`).
 - Final independent review at shared HEAD `f207e5eb`: `PASS`, with zero P0/P1/material P2 findings.
-- Integration re-verification at `3c0d847b` after merge `d4f5b03e` passed: `15 passed` in 146.53s. The unskipped live runner verified the new canonical collection/materialization-to-delivery binding, detached signature, and zero labeled-resource leaks.
+- Integration re-verification at `513faed4` after merge `d4f5b03e` passed: `19 passed` in 151.13s. The unskipped live runner verified the canonical collection/materialization-to-delivery binding, full signed-receipt preimage and hash, ephemeral HMAC verification before signing, detached Ed25519 signature, and zero labeled-resource leaks.
 
 ## Suggested Review Order
 
