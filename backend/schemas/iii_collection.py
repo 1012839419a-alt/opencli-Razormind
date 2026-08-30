@@ -82,12 +82,18 @@ class IIICollectionLifecycleReadV1(_V1Model):
     attempt_id: str
     sequence: int
     event_type: str
+    event_hash: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")
     duplicate: bool
 
 
 class VerticalEvidenceReferenceV1(_V1Model):
-    kind: Literal["admin_requested", "outbound", "lifecycle", "expected_key_report", "ingress_receipt"]
-    reference: str
+    """Immutable, redacted lifecycle/report/receipt evidence for one attempt."""
+
+    kind: Literal["lifecycle", "expected_key_report", "ingress_receipt"]
+    hash: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")
+    event_type: Literal[
+        "bridge_accepted", "collector_started", "collector_returned"
+    ] | None = None
 
 
 class VerticalStatusV1(_V1Model):

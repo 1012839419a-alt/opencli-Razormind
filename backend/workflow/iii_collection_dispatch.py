@@ -57,6 +57,33 @@ def collector_trigger_payload(command: IIICollectionCommandV1, attempt: IIIColle
     }
 
 
+def _trigger_options(iii_url: str | None) -> list[str]:
+    """Translate the only supported III 0.19 transport URL into CLI arguments."""
+
+    if not iii_url:
+        return []
+    try:
+        parsed = urlparse(iii_url)
+        port = parsed.port or 49134
+    except ValueError as exc:
+        raise IIITriggerUnsentError("III URL has an invalid port") from exc
+    if (
+        parsed.scheme != "ws"
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path not in ("", "/")
+        or parsed.params
+        or parsed.query
+        or parsed.fragment
+        or not 1 <= port <= 65535
+    ):
+        raise IIITriggerUnsentError(
+            "III URL must be a root ws endpoint without userinfo, query, or fragment"
+        )
+    return ["--address", parsed.hostname, "--port", str(port)]
+
+
 async def invoke_iii_collection(payload: dict, *, function_id: str) -> None:
     """Use III 0.19's public direct trigger; its return is never a collection result."""
 
@@ -64,15 +91,7 @@ async def invoke_iii_collection(payload: dict, *, function_id: str) -> None:
     if not settings.iii_lifecycle_url:
         raise IIITriggerUnsentError("III lifecycle callback is not configured")
     environment = dict(os.environ)
-    trigger_options: list[str] = []
-    if settings.iii_url:
-        parsed = urlparse(settings.iii_url)
-        if parsed.scheme not in {"ws", "wss"} or not parsed.hostname:
-            raise IIITriggerUnsentError("III URL must be a WebSocket endpoint")
-        trigger_options = [
-            "--address", parsed.hostname,
-            "--port", str(parsed.port or 49134),
-        ]
+    trigger_options = _trigger_options(settings.iii_url)
     environment["ADMIN_III_LIFECYCLE_URL"] = settings.iii_lifecycle_url
     if settings.iii_lifecycle_token:
         environment["ADMIN_III_LIFECYCLE_TOKEN"] = settings.iii_lifecycle_token
