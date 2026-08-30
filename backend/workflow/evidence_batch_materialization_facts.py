@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
+from hashlib import sha256
 from uuid import UUID
 
 from backend.models.iii_collection import (
@@ -11,10 +13,29 @@ from backend.models.iii_collection import (
     IIICollectionExpectedKeyReportV1,
     IIICollectionIngressReceiptV1,
 )
-from backend.odp.query_client import OdpRecordKey, OdpReconciliationDelegation
+from backend.odp.query_client import OdpReconciliationDelegation, OdpRecordKey
 from backend.workflow.iii_collection_store import CollectionScope
 
 _DELEGATION_TTL = timedelta(minutes=5)
+
+
+def record_ref_set_hash(values: list[dict]) -> str:
+    """Hash the canonical, order-independent manifest record-reference set."""
+    return sha256(
+        json.dumps(
+            sorted(
+                (
+                    str(item.get("source_id", item.get("sourceId", ""))),
+                    str(item.get("event_id", item.get("eventId", ""))),
+                    int(item.get("odp_record_id", item.get("odpRecordId", 0))),
+                )
+                for item in values
+            ),
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode()
+    ).hexdigest()
 
 
 def matches_scope(command: IIICollectionCommandV1, scope: CollectionScope) -> bool:
