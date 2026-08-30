@@ -8,32 +8,13 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
 
+import backend.schemas.record as record_schema
+
 
 class _V2Model(BaseModel):
     model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True, extra="forbid")
 
 
-class ResearchGraphV2ItemKey(_V2Model):
-    source_id: str = Field(min_length=1, max_length=36)
-    event_id: str = Field(min_length=1, max_length=512)
-
-
-class ResearchGraphV2RecordRef(ResearchGraphV2ItemKey):
-    odp_record_id: int = Field(ge=1)
-
-
-
-class ResearchGraphV2ManifestRef(_V2Model):
-    batch_id: str = Field(min_length=1, max_length=36)
-    derivation: Literal["dispatch-task-v1"]
-    reconciliation_revision: int = Field(ge=1)
-    manifest_schema_version: Literal["v1"]
-    manifest_hash: str = Field(min_length=64, max_length=64)
-    expected_record_key_set_hash: str = Field(min_length=64, max_length=64)
-    record_ref_set_hash: str = Field(min_length=64, max_length=64)
-    materialization_status: Literal["completed", "completed_empty", "partial"]
-    record_refs: list[ResearchGraphV2RecordRef] = Field(default_factory=list, max_length=1000)
-    excluded_item_keys: list[ResearchGraphV2ItemKey] = Field(default_factory=list, max_length=1000)
 
 
 class ResearchGraphV2ActorEvidence(_V2Model):
@@ -62,7 +43,7 @@ class AuthorizedResearchGraphEventV2(_V2Model):
     node_id: str = Field(min_length=1, max_length=255)
     claim_id: str | None = Field(default=None, min_length=1, max_length=255)
     claim_content_hash: str | None = Field(default=None, min_length=64, max_length=64)
-    manifest_refs: list[ResearchGraphV2ManifestRef] = Field(default_factory=list, max_length=200)
+    manifest_refs: list[record_schema.ResearchGraphV2ManifestRef] = Field(default_factory=list, max_length=200)
     actor: ResearchGraphV2ActorEvidence
     supersedes_event_id: str | None = Field(default=None, min_length=1, max_length=255)
     pinned_sequence: int | None = Field(default=None, ge=1)
@@ -77,7 +58,7 @@ class ResearchGraphV2MutationRequest(_V2Model):
     claim_id: str | None = Field(default=None, min_length=1, max_length=255)
     claim_content_hash: str | None = Field(default=None, min_length=64, max_length=64)
     supersedes_event_id: str | None = Field(default=None, min_length=1, max_length=255)
-    manifest_refs: list[ResearchGraphV2ManifestRef] = Field(default_factory=list, max_length=200)
+    manifest_refs: list[record_schema.ResearchGraphV2ManifestRef] = Field(default_factory=list, max_length=200)
 
 
 class ResearchGraphV2ClaimRead(_V2Model):
@@ -85,7 +66,7 @@ class ResearchGraphV2ClaimRead(_V2Model):
     content_hash: str
     state: Literal["proposed", "verified", "rejected", "retracted", "superseded"]
     proposer_actor_id: str
-    manifest_refs: list[ResearchGraphV2ManifestRef]
+    manifest_refs: list[record_schema.ResearchGraphV2ManifestRef]
 
 
 class ResearchGraphV2PinnedFoldRead(_V2Model):

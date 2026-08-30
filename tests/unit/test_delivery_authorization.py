@@ -4,18 +4,20 @@ from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.dialects import postgresql
+from sqlalchemy.exc import IntegrityError
 
-from backend.schemas.delivery_authorization import DeliveryAuthorizationCreateV1, DeliveryTargetConfigureV1
+from backend.models.delivery_authorization import DeliveryTarget
+from backend.schemas.delivery_authorization import (
+    DeliveryAuthorizationCreateV1,
+    DeliveryTargetConfigureV1,
+)
 from backend.schemas.research_graph_v2 import (
     ResearchGraphV2ActorEvidence,
     ResearchGraphV2ClaimRead,
     ResearchGraphV2PinnedFoldRead,
-    ResearchGraphV2ManifestRef,
     ResearchGraphV2Read,
 )
-from backend.models.delivery_authorization import DeliveryTarget
 from backend.workflow import delivery_authorization
 from backend.workflow.delivery_authorization import (
     DeliveryAuthorizationConflictError,
@@ -271,19 +273,19 @@ async def test_authorization_decision_commits_before_shared_run_lock_allows_stal
                     state="verified",
                     proposer_actor_id="other-user",
                     manifest_refs=[
-                        ResearchGraphV2ManifestRef(
-                            batch_id="batch-1",
-                            derivation="dispatch-task-v1",
-                            reconciliation_revision=1,
-                            manifest_schema_version="v1",
-                            manifest_hash="m" * 64,
-                            expected_record_key_set_hash="k" * 64,
-                            record_ref_set_hash="r" * 64,
-                            materialization_status="completed",
-                            record_refs=[
+                        {
+                            "batchId": "batch-1",
+                            "derivation": "dispatch-task-v1",
+                            "reconciliationRevision": 1,
+                            "manifestSchemaVersion": "v1",
+                            "manifestHash": "m" * 64,
+                            "expectedRecordKeySetHash": "k" * 64,
+                            "recordRefSetHash": "r" * 64,
+                            "materializationStatus": "completed",
+                            "recordRefs": [
                                 {"sourceId": "source-1", "eventId": "event-1", "odpRecordId": 1}
                             ],
-                        )
+                        }
                     ],
                 )
             ],
@@ -383,16 +385,16 @@ async def test_authorization_rejects_all_excluded_partial_without_record_evidenc
                     state="verified",
                     proposer_actor_id="other-user",
                     manifest_refs=[
-                        ResearchGraphV2ManifestRef(
-                            batch_id="batch-1",
-                            derivation="dispatch-task-v1",
-                            reconciliation_revision=1,
-                            manifest_schema_version="v1",
-                            manifest_hash="m" * 64,
-                            expected_record_key_set_hash="k" * 64,
-                            record_ref_set_hash="r" * 64,
-                            materialization_status="partial",
-                        )
+                        {
+                            "batchId": "batch-1",
+                            "derivation": "dispatch-task-v1",
+                            "reconciliationRevision": 1,
+                            "manifestSchemaVersion": "v1",
+                            "manifestHash": "m" * 64,
+                            "expectedRecordKeySetHash": "k" * 64,
+                            "recordRefSetHash": "r" * 64,
+                            "materializationStatus": "partial",
+                        }
                     ],
                 )
             ],
@@ -424,17 +426,27 @@ async def test_authorization_rejects_all_excluded_partial_without_record_evidenc
 
 def test_evidence_bearing_partial_manifest_is_eligible() -> None:
     manifest = delivery_authorization._manifest_read(
-        ResearchGraphV2ManifestRef(
-            batch_id="batch-1",
-            derivation="dispatch-task-v1",
-            reconciliation_revision=1,
-            manifest_schema_version="v1",
-            manifest_hash="m" * 64,
-            expected_record_key_set_hash="k" * 64,
-            record_ref_set_hash="r" * 64,
-            materialization_status="partial",
-            record_refs=[{"sourceId": "source-1", "eventId": "event-1", "odpRecordId": 1}],
-        )
+        ResearchGraphV2ClaimRead(
+            claim_id="claim-1",
+            content_hash="c" * 64,
+            state="verified",
+            proposer_actor_id="other-user",
+            manifest_refs=[
+                {
+                    "batchId": "batch-1",
+                    "derivation": "dispatch-task-v1",
+                    "reconciliationRevision": 1,
+                    "manifestSchemaVersion": "v1",
+                    "manifestHash": "m" * 64,
+                    "expectedRecordKeySetHash": "k" * 64,
+                    "recordRefSetHash": "r" * 64,
+                    "materializationStatus": "partial",
+                    "recordRefs": [
+                        {"sourceId": "source-1", "eventId": "event-1", "odpRecordId": 1}
+                    ],
+                }
+            ],
+        ).manifest_refs[0]
     )
     assert manifest.materialization_status == "partial"
 
@@ -470,19 +482,19 @@ async def test_authorization_pages_exact_pinned_graph_until_selected_claim_is_fo
                     state="verified",
                     proposer_actor_id="approver",
                     manifest_refs=[
-                        ResearchGraphV2ManifestRef(
-                            batch_id="batch-1",
-                            derivation="dispatch-task-v1",
-                            reconciliation_revision=1,
-                            manifest_schema_version="v1",
-                            manifest_hash="m" * 64,
-                            expected_record_key_set_hash="k" * 64,
-                            record_ref_set_hash="r" * 64,
-                            materialization_status="completed",
-                            record_refs=[
+                        {
+                            "batchId": "batch-1",
+                            "derivation": "dispatch-task-v1",
+                            "reconciliationRevision": 1,
+                            "manifestSchemaVersion": "v1",
+                            "manifestHash": "m" * 64,
+                            "expectedRecordKeySetHash": "k" * 64,
+                            "recordRefSetHash": "r" * 64,
+                            "materializationStatus": "completed",
+                            "recordRefs": [
                                 {"sourceId": "source-1", "eventId": "event-1", "odpRecordId": 1}
                             ],
-                        )
+                        }
                     ],
                 )
             ],

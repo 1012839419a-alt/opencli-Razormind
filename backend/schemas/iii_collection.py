@@ -8,7 +8,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic.alias_generators import to_camel
 
-from backend.schemas.research_graph_v2 import ResearchGraphV2ManifestRef
+from backend.schemas.record import ResearchGraphV2ManifestRef
 
 
 class _V1Model(BaseModel):

@@ -1,7 +1,6 @@
 from backend.schemas.research_graph_v2 import (
     AuthorizedResearchGraphEventV2,
     ResearchGraphV2ActorEvidence,
-    ResearchGraphV2ManifestRef,
     ResearchGraphV2PinnedReference,
 )
 from backend.schemas.workflow import WorkflowNodeRunEvent
@@ -29,16 +28,16 @@ def _event(*, sequence: int, action: str, event_id: str, manifest_hash: str = "a
         claim_id="claim-1",
         claim_content_hash="c" * 64,
         manifest_refs=[
-            ResearchGraphV2ManifestRef(
-                batch_id="batch-1",
-                derivation="dispatch-task-v1",
-                reconciliation_revision=1,
-                manifest_schema_version="v1",
-                manifest_hash=manifest_hash,
-                expected_record_key_set_hash="k" * 64,
-                record_ref_set_hash="r" * 64,
-                materialization_status="completed",
-            )
+            {
+                "batchId": "batch-1",
+                "derivation": "dispatch-task-v1",
+                "reconciliationRevision": 1,
+                "manifestSchemaVersion": "v1",
+                "manifestHash": manifest_hash,
+                "expectedRecordKeySetHash": "k" * 64,
+                "recordRefSetHash": "r" * 64,
+                "materializationStatus": "completed",
+            }
         ],
         actor=ResearchGraphV2ActorEvidence(
             actor_type="user",
