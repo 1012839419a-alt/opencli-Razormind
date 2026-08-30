@@ -113,17 +113,28 @@ def test_callback_relay_routes_only_the_three_real_callback_paths(monkeypatch):
     relay_spec.loader.exec_module(relay)
     calls: list[str] = []
 
-    def proxied(url: str, **_kwargs):
+    def proxied(url: str, **kwargs):
         calls.append(url)
         import httpx
+        assert kwargs["headers"] == {
+            "authorization": "Bearer collector-fleet-token",
+            "x-iii-bridge-token": "collector-bridge-token",
+        }
         return httpx.Response(202, content=b'{"data":{}}', headers={"content-type": "application/json"})
 
     monkeypatch.setattr(relay.httpx, "post", proxied)
     client = TestClient(relay.app)
-    assert client.post(
+    response = client.post(
         "/api/v1/iii-collections/lifecycle",
         content=b"{}",
-    ).status_code == 202
+        headers={
+            "authorization": "Bearer collector-fleet-token",
+            "x-iii-bridge-token": "collector-bridge-token",
+        },
+    )
+    assert response.status_code == 202
+    assert "collector-fleet-token" not in response.text
+    assert "collector-bridge-token" not in response.text
     assert calls == ["http://proof-admin:8000/api/v1/iii-collections/lifecycle"]
     assert client.post("/not-an-allowlisted-callback", content=b"{}").status_code == 404
 

@@ -89,7 +89,10 @@ async def callback(path: str, request: Request) -> Response:
             except TimeoutError as exc:
                 raise HTTPException(504, "report gate timed out") from exc
     body = await request.body()
-    headers = {"X-III-Bridge-Token": request.headers.get("x-iii-bridge-token", "")}
+    headers = {
+        "authorization": request.headers.get("authorization", ""),
+        "x-iii-bridge-token": request.headers.get("x-iii-bridge-token", ""),
+    }
     try:
         response = httpx.post(UPSTREAMS[active] + route, content=body, headers=headers, timeout=30)
         if route == "/api/v1/iii-collections/expected-key-reports":
