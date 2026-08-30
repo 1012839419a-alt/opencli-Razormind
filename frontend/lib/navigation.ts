@@ -96,4 +96,5 @@ export const ROUTE_LABELS: Record<string, string> = {
   '/nodes': '执行资源',
   '/workers': 'Worker',
   '/control/actions': '控制与审计',
+  '/settings': '账户设置',
 }
