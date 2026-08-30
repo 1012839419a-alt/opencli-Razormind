@@ -29,17 +29,19 @@ def _sqlite_guards() -> None:
                 f"BEFORE {action} ON {table} BEGIN "
                 f"SELECT RAISE(ABORT, '{table} is append-only'); END"
             )
-    op.execute(
-        "CREATE TRIGGER trg_delivery_execution_final_links "
-        "BEFORE UPDATE OF final_result_id, final_reconciliation_id ON delivery_executions "
-        "BEGIN "
-        "SELECT CASE WHEN NEW.final_result_id IS NOT NULL AND NOT EXISTS "
-        "(SELECT 1 FROM delivery_execution_results WHERE id = NEW.final_result_id AND execution_id = NEW.id) "
-        "THEN RAISE(ABORT, 'final result must belong to execution') END; "
-        "SELECT CASE WHEN NEW.final_reconciliation_id IS NOT NULL AND NOT EXISTS "
-        "(SELECT 1 FROM delivery_execution_reconciliations WHERE id = NEW.final_reconciliation_id AND execution_id = NEW.id) "
-        "THEN RAISE(ABORT, 'final reconciliation must belong to execution') END; END"
-    )
+    for event in ("INSERT", "UPDATE"):
+        columns = "" if event == "INSERT" else " OF final_result_id, final_reconciliation_id"
+        op.execute(
+            f"CREATE TRIGGER trg_delivery_execution_final_links_{event.lower()} "
+            f"BEFORE {event}{columns} ON delivery_executions "
+            "BEGIN "
+            "SELECT CASE WHEN NEW.final_result_id IS NOT NULL AND NOT EXISTS "
+            "(SELECT 1 FROM delivery_execution_results WHERE id = NEW.final_result_id AND execution_id = NEW.id) "
+            "THEN RAISE(ABORT, 'final result must belong to execution') END; "
+            "SELECT CASE WHEN NEW.final_reconciliation_id IS NOT NULL AND NOT EXISTS "
+            "(SELECT 1 FROM delivery_execution_reconciliations WHERE id = NEW.final_reconciliation_id AND execution_id = NEW.id) "
+            "THEN RAISE(ABORT, 'final reconciliation must belong to execution') END; END"
+        )
 
 
 def _postgres_guards() -> None:
@@ -86,7 +88,9 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     if op.get_bind().dialect.name == "sqlite":
-        op.execute("DROP TRIGGER trg_delivery_execution_final_links")
+        op.execute("DROP TRIGGER IF EXISTS trg_delivery_execution_final_links")
+        op.execute("DROP TRIGGER IF EXISTS trg_delivery_execution_final_links_update")
+        op.execute("DROP TRIGGER IF EXISTS trg_delivery_execution_final_links_insert")
         for table in _EVIDENCE_TABLES:
             for action in ("UPDATE", "DELETE"):
                 op.execute(f"DROP TRIGGER trg_{table.lower()}_append_only_{action.lower()}")
