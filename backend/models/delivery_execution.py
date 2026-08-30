@@ -39,6 +39,7 @@ class DeliveryExecution(TimestampMixin):
     next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     lease_token: Mapped[str | None] = mapped_column(String(64), nullable=True)
     lease_acquired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    send_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     reserved_attempt_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
     cancel_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     final_outcome: Mapped[str | None] = mapped_column(String(16), nullable=True)
@@ -127,5 +128,7 @@ class ControlledReceiverNonce(TimestampMixin):
 @event.listens_for(DeliveryExecutionReconciliation, "before_delete")
 @event.listens_for(ControlledReceiverDelivery, "before_update")
 @event.listens_for(ControlledReceiverDelivery, "before_delete")
+@event.listens_for(ControlledReceiverNonce, "before_update")
+@event.listens_for(ControlledReceiverNonce, "before_delete")
 def _reject_immutable_mutation(*_: object) -> None:
     raise ValueError("Delivery result and controlled receiver evidence are append-only")

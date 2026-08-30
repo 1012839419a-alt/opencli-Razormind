@@ -59,7 +59,7 @@ def _executor_fixture(monkeypatch, statuses: list[int], *, header_failure: bool 
         id="execution-1", decision_id=decision.id, operation_id=decision.operation_id,
         decision_hash=decision.decision_hash, payload_hash=decision.payload_hash,
         state="pending", final_outcome=None, final_result_id=None, final_reconciliation_id=None,
-        lease_token=None, lease_acquired_at=None, reserved_attempt_number=None,
+        lease_token=None, lease_acquired_at=None, send_started_at=None, reserved_attempt_number=None,
         cancel_requested_at=None, created_at=now, updated_at=now,
     )
     endpoint = SimpleNamespace(receiver_identity="receiver-a")
@@ -73,6 +73,8 @@ def _executor_fixture(monkeypatch, statuses: list[int], *, header_failure: bool 
         async def refresh(self, _value):
             return None
 
+        async def scalar(self, _statement):
+            return execution
         async def flush(self):
             return None
 

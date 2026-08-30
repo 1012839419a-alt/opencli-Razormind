@@ -9,6 +9,7 @@ from backend.models.delivery_execution import (
     DeliveryExecutionResult,
     _reject_immutable_mutation,
 )
+from backend.schemas.delivery_authorization import DeliveryAuthorizationCreateV1
 from backend.schemas.delivery_execution import ControlledReceiverDeliveryV2
 
 
@@ -49,3 +50,22 @@ def test_receiver_payload_is_exact_bounded_claim_manifest():
         candidate = {**payload, **mutation}
         with pytest.raises(ValidationError):
             ControlledReceiverDeliveryV2.model_validate(candidate)
+
+
+def test_receiver_and_authorization_share_255_character_header_safe_operation_contract():
+    operation_id = "delivery/" + "x" * 246
+    payload = {
+        "version": "v2", "receiverIdentity": "receiver-a", "operationId": operation_id,
+        "decisionHash": "d" * 64, "payloadHash": "e" * 64,
+        "payload": {
+            "schemaVersion": "delivery-claim-manifest-v1",
+            "claims": [{"claimId": "claim/" + "x" * 249, "contentHash": "a" * 64}],
+            "manifestHashes": ["b" * 64],
+        },
+    }
+    assert ControlledReceiverDeliveryV2.model_validate(payload).operation_id == operation_id
+    assert DeliveryAuthorizationCreateV1.model_validate({
+        "operationId": operation_id, "idempotencyKey": "key", "nodeId": "node", "targetId": "t",
+        "pinnedReference": {"sequence": 1, "researchRevisionId": "r", "manifestSetHash": "b" * 64},
+        "selectedClaimIds": ["claim/" + "x" * 249],
+    }).operation_id == operation_id
