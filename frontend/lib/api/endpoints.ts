@@ -53,6 +53,28 @@ export * from "./workspace-endpoints";
 export * from "./browser-endpoints";
 export * from "./workbench-endpoints";
 
+export const loginWithPassword = (username: string, password: string) =>
+  apiClient
+    .post<
+      ApiResponse<{
+        access_token: string;
+        token_type: "bearer";
+        using_default_password: boolean;
+      }>
+    >("/auth/login", { username, password })
+    .then((r) => r.data.data);
+
+export const changeLocalPassword = (
+  currentPassword: string,
+  newPassword: string,
+) =>
+  apiClient
+    .post<ApiResponse<{ message: string }>>("/auth/password", {
+      current_password: currentPassword,
+      new_password: newPassword,
+    })
+    .then((r) => r.data.data);
+
 // ── Dashboard ──────────────────────────────────────────────────────────────────
 export const getDashboardStats = (params?: {
   range?: string;
@@ -260,6 +282,14 @@ export const listRecords = (params?: {
   search?: string;
   page?: number;
   limit?: number;
+  sort_by?:
+    | "created_at"
+    | "updated_at"
+    | "status"
+    | "source_id"
+    | "workflow_id"
+    | "workflow_run_id";
+  sort_order?: "asc" | "desc";
 }) =>
   apiClient
     .get<ApiResponse<CollectedRecord[]>>("/records", { params })

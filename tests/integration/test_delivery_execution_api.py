@@ -7,7 +7,8 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 from httpx import AsyncClient
-from sqlalchemy import select
+from sqlalchemy import select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from backend.config import get_settings
@@ -15,7 +16,9 @@ from backend.main import app
 from backend.models.delivery_authorization import DeliveryAuthorizationDecisionV1, DeliveryTarget, DeliveryTargetRevision
 from backend.models.delivery_execution import (
     ControlledReceiverDelivery,
+    ControlledReceiverNonce,
     DeliveryExecution,
+    DeliveryExecutionReconciliation,
     DeliveryExecutionResult,
 )
 from backend.models.identity import User, Workspace, WorkspaceMembership, WorkspaceRole
@@ -374,6 +377,139 @@ async def test_studio_execution_routes_preserve_durable_attempt_and_reconciliati
     finally:
         app.dependency_overrides.pop(get_request_identity, None)
 
+
+@pytest.mark.asyncio
+async def test_sqlite_raw_evidence_mutations_are_rejected_after_durable_execution(client: AsyncClient, db_session, monkeypatch):
+    scope, decision_id = await _stored_frozen_decision(db_session)
+
+    async def send_to_receiver(endpoint, body, headers, *, timeout_seconds, status_query=False):
+        path = "/api/v1/controlled-receiver/v2/status" if status_query else "/api/v1/controlled-receiver/v2/deliver"
+        return await client.post(path, content=body, headers=headers)
+
+    monkeypatch.setattr(delivery_execution, "pinned_post", send_to_receiver)
+    delivered = await delivery_execution.execute_delivery(db_session, scope=scope, decision_id=decision_id)
+    execution = await db_session.get(DeliveryExecution, delivered.execution_id)
+    execution.state, execution.final_outcome = "blocked", "unknown"
+    await db_session.commit()
+    await delivery_execution.reconcile_delivery_execution(db_session, scope=scope, execution_id=execution.id)
+    await db_session.commit()
+    for table in (
+        "delivery_execution_results", "delivery_execution_reconciliations",
+        "controlled_receiver_deliveries", "controlled_receiver_nonces",
+    ):
+        await db_session.execute(text(
+            f"CREATE TRIGGER raw_guard_{table}_update BEFORE UPDATE ON {table} "
+            f"BEGIN SELECT RAISE(ABORT, '{table} is append-only'); END"
+        ))
+        await db_session.execute(text(
+            f"CREATE TRIGGER raw_guard_{table}_delete BEFORE DELETE ON {table} "
+            f"BEGIN SELECT RAISE(ABORT, '{table} is append-only'); END"
+        ))
+    await db_session.execute(text(
+        "CREATE TRIGGER raw_result_checks BEFORE INSERT ON delivery_execution_results "
+        "WHEN NEW.attempt_number NOT BETWEEN 1 AND 3 OR NEW.outcome NOT IN ('accepted','rejected','unknown') "
+        "BEGIN SELECT RAISE(ABORT, 'invalid result'); END"
+    ))
+    for event in ("INSERT", "UPDATE"):
+        columns = "" if event == "INSERT" else " OF durable_status"
+        await db_session.execute(text(
+            f"CREATE TRIGGER raw_receiver_status_check_{event.lower()} BEFORE {event}{columns} "
+            "ON controlled_receiver_deliveries WHEN NEW.durable_status NOT IN ('accepted','rejected') "
+            "BEGIN SELECT RAISE(ABORT, 'invalid durable status'); END"
+        ))
+    await db_session.commit()
+    async def rejected(statement: str, params: dict):
+        with pytest.raises(IntegrityError):
+            await db_session.execute(text(statement), params)
+            await db_session.commit()
+        await db_session.rollback()
+    now = datetime.now(timezone.utc)
+
+    result_execution_id = (await db_session.execute(select(DeliveryExecutionResult.execution_id))).scalar_one()
+    for attempt, outcome in ((0, "unknown"), (4, "unknown"), (1, "invalid")):
+        await rejected(
+            "INSERT INTO delivery_execution_results "
+            "(id, created_at, updated_at, execution_id, attempt_number, transport_classification, "
+            "receipt_classification, protocol_classification, outcome, observed_at) "
+            "VALUES (:id, :now, :now, :execution_id, :attempt, 'test', 'missing', 'unknown', :outcome, :now)",
+            {"id": str(uuid.uuid4()), "now": now, "execution_id": result_execution_id, "attempt": attempt, "outcome": outcome},
+        )
+    await rejected(
+        "INSERT INTO controlled_receiver_deliveries "
+        "(id, created_at, updated_at, receiver_identity, operation_id, decision_hash, payload_hash, request_hash, "
+        "durable_status, receipt_id, receipt_timestamp, receipt_key_id, receipt_signature) "
+        "VALUES (:id, :now, :now, 'receiver-a', 'invalid-status', :hash, :hash, :hash, 'invalid', :receipt, :now, 'receipt-a', 'signature')",
+        {"id": str(uuid.uuid4()), "now": now, "hash": "f" * 64, "receipt": f"receipt-{uuid.uuid4().hex}"},
+    )
+    for table in (
+        "delivery_execution_results", "delivery_execution_reconciliations",
+        "controlled_receiver_deliveries", "controlled_receiver_nonces",
+    ):
+        with pytest.raises(IntegrityError):
+            await db_session.execute(text(f"UPDATE {table} SET updated_at = updated_at"))
+            await db_session.commit()
+        await db_session.rollback()
+        with pytest.raises(IntegrityError):
+            await db_session.execute(text(f"DELETE FROM {table}"))
+            await db_session.commit()
+        await db_session.rollback()
+
+
+@pytest.mark.asyncio
+async def test_sqlite_final_links_reject_cross_execution_and_missing_evidence(db_session):
+    scope, decision_id = await _stored_frozen_decision(db_session)
+    now = datetime.now(timezone.utc)
+    execution_a = DeliveryExecution(
+        id=str(uuid.uuid4()), decision_id=decision_id, target_revision_id=(await db_session.get(
+            DeliveryAuthorizationDecisionV1, decision_id
+        )).target_revision_id, workspace_id=scope.workspace_id, project_id=scope.project_id,
+        workflow_id=scope.workflow_id, studio_workflow_version_id=scope.studio_workflow_version_id,
+        run_id=scope.run_id, operation_id="a", decision_hash="a" * 64, payload_hash="b" * 64,
+        execution_binding_hash="c" * 64, state="pending",
+    )
+    execution_b = DeliveryExecution(
+        id=str(uuid.uuid4()), decision_id="other-decision", target_revision_id=execution_a.target_revision_id,
+        workspace_id=scope.workspace_id, project_id=scope.project_id, workflow_id=scope.workflow_id,
+        studio_workflow_version_id=scope.studio_workflow_version_id, run_id=scope.run_id,
+        operation_id="b", decision_hash="d" * 64, payload_hash="e" * 64,
+        execution_binding_hash="f" * 64, state="pending",
+    )
+    result_b = DeliveryExecutionResult(
+        id=str(uuid.uuid4()), execution_id=execution_b.id, attempt_number=1,
+        transport_classification="test", receipt_classification="missing", protocol_classification="unknown",
+        outcome="unknown", observed_at=now,
+    )
+    reconciliation_b = DeliveryExecutionReconciliation(
+        id=str(uuid.uuid4()), execution_id=execution_b.id, receipt_hash="1" * 64,
+        outcome="accepted", observed_at=now,
+    )
+    execution_a_id, result_b_id, reconciliation_b_id = execution_a.id, result_b.id, reconciliation_b.id
+    db_session.add_all((execution_a, execution_b, result_b, reconciliation_b))
+    await db_session.commit()
+    for column, valid_id, table in (
+        ("final_result_id", result_b_id, "delivery_execution_results"),
+        ("final_reconciliation_id", reconciliation_b_id, "delivery_execution_reconciliations"),
+    ):
+        await db_session.execute(text(
+            f"CREATE TRIGGER link_guard_{column} BEFORE UPDATE OF {column} ON delivery_executions "
+            f"WHEN NEW.{column} IS NOT NULL AND NOT EXISTS "
+            f"(SELECT 1 FROM {table} WHERE id = NEW.{column} AND execution_id = NEW.id) "
+            "BEGIN SELECT RAISE(ABORT, 'final link mismatch'); END"
+        ))
+    await db_session.commit()
+    for column, foreign in (
+        ("final_result_id", result_b_id), ("final_reconciliation_id", reconciliation_b_id),
+        ("final_result_id", str(uuid.uuid4())), ("final_reconciliation_id", str(uuid.uuid4())),
+    ):
+        with pytest.raises(IntegrityError):
+            await db_session.execute(text(
+                f"UPDATE delivery_executions SET {column} = :value WHERE id = :execution_id"
+            ), {"value": foreign, "execution_id": execution_a_id})
+            await db_session.commit()
+        await db_session.rollback()
+    await db_session.refresh(execution_a)
+    assert execution_a.final_result_id is None
+    assert execution_a.final_reconciliation_id is None
 
 
 @pytest.mark.asyncio

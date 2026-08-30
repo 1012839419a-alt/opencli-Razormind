@@ -1,15 +1,17 @@
 """Collect a cited Doubao research answer through the installed OpenCLI adapter."""
 
+import json
 import os
 import re
 from typing import Any
 
+import httpx
+
 from backend.channels.base import AbstractChannel, Capabilities, ChannelResult
 from backend.channels.registry import register_channel
 
-_URL_RE = re.compile(r"https?://[^\s<>\[\](){}'\"]+", re.IGNORECASE)
+_URL_RE = re.compile(r"https?://[^\s<>\]\[\](){}\"']+", re.IGNORECASE)
 _TRAILING_URL_PUNCTUATION = ".,;:!?\uff0c\u3002\uff1b\uff1a\uff01\uff1f"
-#: OpenCLI adapter reports a captcha wall this way (verified on opencli 1.8.6).
 _CAPTCHA_MARKERS = (
     "verification challenge",
     "captcha",
@@ -48,7 +50,7 @@ def _answer(rows: list[dict[str, Any]]) -> str:
 
 
 def _conversation_url(stdout: str) -> str:
-    """Extract https://www.doubao.com/chat/<id> from `doubao status -f json` output."""
+    """Extract the active Doubao chat URL from status output."""
     try:
         rows = _parse_opencli_rows(stdout)
     except Exception:
@@ -61,13 +63,116 @@ def _conversation_url(stdout: str) -> str:
 
 
 def _is_captcha_block(stderr: str, stdout: str) -> bool:
-    """True when the adapter reports a captcha/verification wall."""
     text = f"{stderr} {stdout}".lower()
     return any(marker in text for marker in _CAPTCHA_MARKERS)
 
 
+def _structured_response(text: str) -> dict[str, Any]:
+    """Decode the JSON response requested by the Doubao research prompt.
+
+    Doubao may wrap the JSON in a markdown fence or add a short preamble. Keep
+    the raw answer as the fallback so a formatting deviation never discards
+    the research result.
+    """
+    raw = text.strip()
+    candidates = [raw]
+    fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw, re.DOTALL | re.IGNORECASE)
+    if fenced:
+        candidates.insert(0, fenced.group(1))
+    start, end = raw.find("{"), raw.rfind("}")
+    if start >= 0 and end > start:
+        candidates.append(raw[start : end + 1])
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if isinstance(parsed, dict):
+            answer = parsed.get("answer") or parsed.get("content") or raw
+            share_data = (
+                parsed.get("session_share_data")
+                or parsed.get("conversation_share_data")
+                or parsed.get("share_data")
+                or parsed.get("share_urls")
+                or []
+            )
+            response_data = (
+                parsed.get("data")
+                or parsed.get("details")
+                or parsed.get("answer_data")
+                or parsed.get("result")
+                or parsed.get("key_points")
+                or []
+            )
+            links = (
+                parsed.get("links")
+                or parsed.get("references")
+                or parsed.get("sources")
+                or parsed.get("urls")
+                or []
+            )
+            suggested = (
+                parsed.get("suggested_keywords")
+                or parsed.get("suggested_keys")
+                or parsed.get("recommend_keywords")
+                or parsed.get("recommended_keywords")
+                or []
+            )
+            if not isinstance(share_data, (list, dict, str)):
+                share_data = []
+            if not isinstance(response_data, (list, dict, str)):
+                response_data = []
+            if not isinstance(links, (list, dict, str)):
+                links = []
+            if not isinstance(suggested, list):
+                suggested = [suggested] if suggested else []
+            return {
+                "answer": str(answer).strip(),
+                "data": response_data,
+                "links": links,
+                "response_data": parsed,
+                "session_share_data": share_data,
+                "suggested_keywords": [
+                    str(item).strip() for item in suggested if str(item).strip()
+                ],
+                "raw_answer": raw,
+            }
+    return {
+        "answer": raw,
+        "data": [],
+        "links": [],
+        "response_data": {},
+        "session_share_data": [],
+        "suggested_keywords": [],
+        "raw_answer": raw,
+    }
+
+
 async def _run_doubao_command(command: list[str]) -> tuple[int, str, str]:
     """Late import avoids the channel registry's legacy OpenCLI import cycle."""
+    bridge_url = str(os.getenv("DOUBAO_CLI_BRIDGE_URL") or "").strip()
+    if bridge_url:
+        try:
+            async with httpx.AsyncClient(timeout=130, follow_redirects=False) as client:
+                headers: dict[str, str] = {}
+                bridge_token = str(os.getenv("DOUBAO_CLI_BRIDGE_TOKEN") or "").strip()
+                if bridge_token:
+                    headers["X-Lark-CLI-Bridge-Token"] = bridge_token
+                response = await client.post(
+                    bridge_url,
+                    json={"command": command[2] if len(command) > 2 else "", "args": command[3:]},
+                    headers=headers,
+                )
+                response.raise_for_status()
+                payload = response.json()
+            return (
+                int(payload.get("returncode", 1)),
+                str(payload.get("stdout", "")),
+                str(payload.get("stderr", "")),
+            )
+        except (httpx.HTTPError, ValueError, TypeError, KeyError) as exc:
+            return 1, "", f"Doubao CLI bridge failed: {exc}"
+
     from backend.channels.opencli_channel import _run_opencli
 
     return await _run_opencli(command, os.environ.copy())
@@ -131,15 +236,14 @@ class DoubaoResearchChannel(AbstractChannel):
             )
 
         if returncode:
-            # Classify captcha walls so the runner can apply a human-in-the-loop
-            # or cooldown-retry policy instead of treating it as a permanent failure.
             error_type = "captcha_challenge" if _is_captcha_block(stderr, stdout) else None
             return ChannelResult.fail(
                 f"opencli doubao ask exited with code {returncode}: {stderr[:500]}",
                 error_type=error_type,
             )
         try:
-            answer = _answer(_parse_opencli_rows(stdout))
+            response_rows = _parse_opencli_rows(stdout)
+            answer = _answer(response_rows)
         except Exception as exc:
             return ChannelResult.fail(
                 f"Failed to parse Doubao answer: {exc}", error_type=type(exc).__name__
@@ -147,10 +251,20 @@ class DoubaoResearchChannel(AbstractChannel):
         if not answer:
             return ChannelResult.fail("Doubao returned no assistant text")
 
-        # Best-effort conversation URL: `doubao status -f json` exposes the
-        # active chat id (https://www.doubao.com/chat/<id>).  This is a
-        # read-only query against the same browser session; a failure here
-        # must not fail the collect — the answer is already in hand.
+        structured = _structured_response(answer)
+        content = structured["answer"]
+        citations_text = " ".join(
+            [
+                structured["raw_answer"],
+                json.dumps(structured["session_share_data"], ensure_ascii=False),
+            ]
+        )
+        citations = _citations(citations_text) if extract_citations else []
+        links = structured["links"] or citations
+        response_data = structured["response_data"] or {
+            "answer": content,
+            "links": citations,
+        }
         conversation_url = ""
         if config.get("capture_conversation_url", True):
             status_command = [
@@ -163,21 +277,26 @@ class DoubaoResearchChannel(AbstractChannel):
                 str(config.get("site_session", "ephemeral")),
             ]
             try:
-                rc, so, se = await _run_doubao_command(status_command)
-                if rc == 0:
-                    conversation_url = _conversation_url(so)
+                returncode, status_stdout, _ = await _run_doubao_command(status_command)
+                if returncode == 0:
+                    conversation_url = _conversation_url(status_stdout)
             except Exception:
                 conversation_url = ""
-
-        citations = _citations(answer) if extract_citations else []
         return ChannelResult.ok(
             [
                 {
                     "title": question,
-                    "content": answer,
+                    "content": content,
                     "author": "doubao",
                     "question": question,
                     "conversation_url": conversation_url,
+                    "answer": content,
+                    "data": structured["data"],
+                    "links": links,
+                    "response_data": response_data,
+                    "raw_answer": structured["raw_answer"],
+                    "session_share_data": structured["session_share_data"],
+                    "suggested_keywords": structured["suggested_keywords"],
                     "citations": citations,
                     "citation_count": len(citations),
                     "citation_capture": (

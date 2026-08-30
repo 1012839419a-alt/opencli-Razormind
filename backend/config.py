@@ -5,6 +5,8 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from backend.security.local_auth import DEFAULT_LOCAL_ADMIN_PASSWORD_HASH
+
 
 class WorkbenchRepositoryConfiguration(BaseModel):
     """A controller-owned repository mapping loaded only from backend settings."""
@@ -136,6 +138,10 @@ class Settings(BaseSettings):
     oidc_audience: str = ""
     oidc_jwks_url: str = ""
     bootstrap_admin_token: str = ""
+    # Local-first account used by the NAS/server deployment. The password hash
+    # is persisted in .env after the user changes the default password.
+    local_admin_username: str = "admin"
+    local_admin_password_hash: str = DEFAULT_LOCAL_ADMIN_PASSWORD_HASH
 
     # CLI channel binary allowlist (ADR-0005, audit P0-4). The cli channel is
     # an arbitrary-binary-execution surface, so it only runs binaries the
