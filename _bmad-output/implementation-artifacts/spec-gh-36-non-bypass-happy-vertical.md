@@ -3,7 +3,7 @@ title: 'GitHub #36: Isolated Non-Bypass Happy Vertical Proof'
 type: 'chore'
 created: '2026-08-30'
 status: 'done'
-baseline_commit: 'fb78d355'
+baseline_commit: 'fb78d35507f91fca568fc8e0511a3c5064b1f7bb'
 context: ['.claude/CLAUDE.md', 'docs/wayfinder/iii-vertical/non-bypass-iii-vertical-spec.md']
 ---
 
