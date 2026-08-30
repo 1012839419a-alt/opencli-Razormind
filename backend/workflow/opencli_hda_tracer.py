@@ -26,23 +26,21 @@ from backend.pipeline.normalizer import normalize_item
 from backend.pipeline.storer import store_records
 from backend.schemas.workflow import (
     CompiledWorkflowNode,
+    WorkflowCompileError,
     WorkflowFleetCapabilityMatchRequest,
     WorkflowFleetCapabilityMatchResponse,
+    WorkflowNodeRunEvent,
+    WorkflowNodeRunEventType,
     WorkflowOpenCLIHDATraceDispatch,
     WorkflowOpenCLIHDATraceResponse,
     WorkflowProject,
-    WorkflowRunSourceOutputsRequest,
-    WorkflowRunStartRequest,
-)
-from backend.schemas.workflow_compile import WorkflowCompileError
-from backend.schemas.workflow_runtime import (
-    WorkflowNodeRunEvent,
-    WorkflowNodeRunEventType,
     WorkflowRunBatchReference,
     WorkflowRunBlockReason,
     WorkflowRunCheckpoint,
     WorkflowRunNodeState,
     WorkflowRunProjection,
+    WorkflowRunSourceOutputsRequest,
+    WorkflowRunStartRequest,
     WorkflowRunStatus,
 )
 from backend.workflow.async_orchestrator import image_generation_execution_key
@@ -165,10 +163,6 @@ from backend.workflow.turbopush_runtime import TURBOPUSH_BINDING_ID
 from backend.workflow.webhook_delivery import (
     WorkflowWebhookDeliveryError,
     execute_workflow_webhook_delivery,
-)
-from backend.workflow.workflow_plugins import (
-    WorkflowPluginEventContext,
-    WorkflowPluginRegistry,
 )
 from backend.workflow.workflow_run_events import append_workflow_run_events
 
@@ -304,7 +298,6 @@ async def start_workflow_run(
     workflow_version_id: str | None = None,
     studio_workflow_version_id: str | None = None,
     graphon_client: DifyGraphonClient | None = None,
-    plugins: WorkflowPluginRegistry | None = None,
 ) -> WorkflowRunProjection:
     """Create a replayable workflow run projection from a compiled WorkflowProject."""
 
@@ -356,7 +349,6 @@ async def start_workflow_run(
                 session=session,
                 workflow_version_id=workflow_version_id,
                 studio_workflow_version_id=studio_workflow_version_id,
-                plugins=plugins,
             )
             return projection
         scope_project = scope_result.project
@@ -410,7 +402,6 @@ async def start_workflow_run(
             session=session,
             workflow_version_id=workflow_version_id,
             studio_workflow_version_id=studio_workflow_version_id,
-            plugins=plugins,
         )
         return projection
 
@@ -422,7 +413,6 @@ async def start_workflow_run(
             body.input.sourceId or body.input.source if body.trigger.kind == "webhook" else None
         ),
         initial_sequence=len(prior_events),
-        plugins=plugins,
     )
     runtime_nodes, trigger_selection_error = _select_runtime_nodes_for_trigger(
         compile_result.plan.runtime.nodes,
@@ -457,7 +447,6 @@ async def start_workflow_run(
             session=session,
             workflow_version_id=workflow_version_id,
             studio_workflow_version_id=studio_workflow_version_id,
-            plugins=plugins,
         )
         return projection
 
@@ -482,7 +471,6 @@ async def start_workflow_run(
             session=session,
             workflow_version_id=workflow_version_id,
             studio_workflow_version_id=studio_workflow_version_id,
-            plugins=plugins,
         )
     should_trace_opencli = any(
         _binding_id(node) == OPENCLI_BINDING_ID for node in runtime_nodes
@@ -1284,19 +1272,6 @@ async def start_workflow_run(
                 )
                 await _persist_emitter_events(run_id, emitter, session=session)
                 continue
-            if plugins is not None:
-                emitter.events.extend(
-                    plugins.contribute_events(
-                        WorkflowPluginEventContext(
-                            workflow_id=body.project.id,
-                            run_id=run_id,
-                            trace_id=trace_id,
-                            node_id=node.id,
-                            sequence=emitter._initial_sequence + len(emitter.events),
-                            output_items=output_items,
-                        )
-                    )
-                )
             outputs_by_node[node.id] = output_items
             emitter.emit(
                 node,
@@ -1652,7 +1627,6 @@ async def start_workflow_run(
         session=session,
         workflow_version_id=workflow_version_id,
         studio_workflow_version_id=studio_workflow_version_id,
-        plugins=plugins,
     )
     if session is not None:
         stored = await _load_workflow_run(run_id, session=session, cache=False)
@@ -1677,7 +1651,6 @@ async def start_workflow_run(
                 session=session,
                 workflow_version_id=workflow_version_id,
                 studio_workflow_version_id=studio_workflow_version_id,
-                plugins=plugins,
             )
     await _materialize_waiting_image_jobs(
         body,
@@ -1880,7 +1853,6 @@ async def _store_workflow_run(
     session: AsyncSession | None,
     workflow_version_id: str | None = None,
     studio_workflow_version_id: str | None = None,
-    plugins: WorkflowPluginRegistry | None = None,
 ) -> None:
     events_to_mirror = list(events)
     stored_events = list(events)
@@ -1904,7 +1876,6 @@ async def _store_workflow_run(
             session,
             run_id=run_id,
             events=events,
-            plugins=plugins,
         )
         stored_events = append_result.events
         events_to_mirror = append_result.appended_events
@@ -1941,7 +1912,6 @@ async def _persist_emitter_events(
         session,
         run_id=run_id,
         events=emitter.events,
-        plugins=emitter.plugins,
     )
     emitter.events[:] = result.events
     if result.appended_events:
@@ -2072,14 +2042,12 @@ class _WorkflowRunEventEmitter:
         trace_id: str,
         source_id: str | None = None,
         initial_sequence: int = 0,
-        plugins: WorkflowPluginRegistry | None = None,
     ) -> None:
         self._workflow_id = workflow_id
         self._run_id = run_id
         self._trace_id = trace_id
         self._source_id = source_id
         self._initial_sequence = initial_sequence
-        self.plugins = plugins
         self.events: list[WorkflowNodeRunEvent] = []
 
     def emit(
@@ -2194,13 +2162,13 @@ def _build_projection(
         )
         if event.nodeId not in ordered_ids:
             ordered_ids.append(event.nodeId)
-        state.latest_event_id = event.id
-        state.event_count += 1
+        state.latestEventId = event.id
+        state.eventCount += 1
         state.status = _status_after_event(event.eventType)
-        if event.sourceGroup and event.sourceGroup not in state.source_groups:
-            state.source_groups.append(event.sourceGroup)
+        if event.sourceGroup and event.sourceGroup not in state.sourceGroups:
+            state.sourceGroups.append(event.sourceGroup)
         if event.blockReason:
-            state.block_reasons.append(event.blockReason)
+            state.blockReasons.append(event.blockReason)
         if event.batch:
             if all(batch.batchId != event.batch.batchId for batch in state.batches):
                 state.batches.append(event.batch)
@@ -3018,11 +2986,6 @@ def _fixture_source_items(node: CompiledWorkflowNode) -> list[dict[str, Any]]:
                     "sourceGroup": source_group,
                     "artifact": "fixtureItems",
                     "index": index,
-                    **(
-                        {"sourceId": source_id}
-                        if (source_id := _read_string(node.params.get("sourceId")))
-                        else {}
-                    ),
                 }
             ],
         }
@@ -3047,14 +3010,6 @@ def _request_source_items(
                     "sourceGroup": source_group,
                     "artifact": "sourceOutputs",
                     "index": index,
-                    **(
-                        {"sourceId": source_id}
-                        if (
-                            source_id := _read_string(item.get("sourceId"))
-                            or _read_string(node.params.get("sourceId"))
-                        )
-                        else {}
-                    ),
                 }
             ],
         }
@@ -4710,7 +4665,6 @@ def _binding_id(node: CompiledWorkflowNode) -> str | None:
     if not isinstance(binding, dict):
         return None
     return _read_string(binding.get("binding_id"))
-
 
 
 def _to_dispatch(
