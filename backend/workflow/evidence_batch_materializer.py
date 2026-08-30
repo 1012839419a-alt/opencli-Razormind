@@ -26,8 +26,10 @@ from backend.models.iii_collection import (
     IIICollectionIngressReceiptV1,
 )
 from backend.odp.query_client import (
+    OdpRecordKey,
     OdpQueryError,
     build_attempt_page_request,
+    build_dlq_request,
     build_exact_request,
     post_reconciliation_query,
 )
@@ -321,8 +323,9 @@ async def materialize_evidence_batch(
     scope: CollectionScope,
     command_id: str,
     _race_retries_remaining: int = 1,
+    _force_reconcile: bool = False,
 ) -> EvidenceBatchMaterializationReadV1:
-    """Append a revision, or replay immutable terminal facts without querying ODP."""
+    """Materialize once; terminal revisions replay without recomputing ODP facts."""
     # Match V2 mutation and delivery authorization lock order before reading
     # mutable materialization inputs or appending a manifest revision.
     run = await lock_scoped_workflow_run(
@@ -372,12 +375,13 @@ async def materialize_evidence_batch(
     )
     terminal_inputs = _terminal_inputs(report, receipts)
     latest = await _latest_manifest(db, command_id, attempt_id)
-    if latest is not None and _same_terminal_inputs(latest, terminal_inputs):
+    if not _force_reconcile and latest is not None and latest.materialization_status in _TERMINAL:
         return await _read(db, latest, report)
     facts = await _reconcile(command, attempt, report, receipts)
     latest = await _latest_manifest(db, command_id, attempt_id)
     if latest is not None and (
-        _same_terminal_inputs(latest, terminal_inputs) or _same_revision(latest, facts)
+        _same_revision(latest, facts)
+        or (not _force_reconcile and _same_terminal_inputs(latest, terminal_inputs))
     ):
         return await _read(db, latest, report)
     revision = 1 if latest is None else latest.reconciliation_revision + 1
@@ -418,7 +422,8 @@ async def materialize_evidence_batch(
         await db.rollback()
         winner = await _latest_manifest(db, command_id, attempt_id)
         if winner is not None and (
-            _same_terminal_inputs(winner, terminal_inputs) or _same_revision(winner, facts)
+            _same_revision(winner, facts)
+            or (not _force_reconcile and _same_terminal_inputs(winner, terminal_inputs))
         ):
             return await _read(db, winner, report)
         if _race_retries_remaining:
@@ -427,9 +432,19 @@ async def materialize_evidence_batch(
                 scope=scope,
                 command_id=command_id,
                 _race_retries_remaining=_race_retries_remaining - 1,
+                _force_reconcile=_force_reconcile,
             )
         raise
     return await _read(db, manifest, report)
+
+
+async def recover_evidence_batch(
+    db: AsyncSession, *, scope: CollectionScope, command_id: str
+) -> EvidenceBatchMaterializationReadV1:
+    """Explicitly refresh bounded ODP facts without rewriting prior revisions."""
+    return await materialize_evidence_batch(
+        db, scope=scope, command_id=command_id, _force_reconcile=True
+    )
 
 
 def _terminal_inputs(
@@ -504,9 +519,11 @@ async def _reconcile(
     exact_keys = [key for key in keys if key not in rejected]
     try:
         delegation_request = delegation(command, attempt, common["batch_id"])
+        exact_missing: list[OdpRecordKey] = []
         for offset in range(0, len(exact_keys), _MAX_QUERY_KEYS):
+            requested_keys = exact_keys[offset : offset + _MAX_QUERY_KEYS]
             exact = await post_reconciliation_query(
-                build_exact_request(delegation_request, exact_keys[offset : offset + _MAX_QUERY_KEYS])
+                build_exact_request(delegation_request, requested_keys)
             )
             if (
                 common["query_fingerprint"] is not None
@@ -521,16 +538,42 @@ async def _reconcile(
                 (result["key"]["source_id"], result["key"]["event_id"]): result
                 for result in exact["results"]
             }
-            for key in exact_keys[offset : offset + _MAX_QUERY_KEYS]:
+            for key in requested_keys:
                 result = result_by_key.get((str(key.source_id), key.event_id))
                 if result is None or result["classification"] != "present" or "record" not in result:
-                    counts["unknown"] += 1
+                    exact_missing.append(key)
                     continue
                 if len(common["record_references"]) >= _MAX_RECORD_REFERENCES:
                     counts["unknown"] += 1
                     continue
                 counts["record_present"] += 1
                 common["record_references"].append(_reference(result["record"]))
+
+        for offset in range(0, len(exact_missing), _MAX_QUERY_KEYS):
+            requested_keys = exact_missing[offset : offset + _MAX_QUERY_KEYS]
+            dlq = await post_reconciliation_query(
+                build_dlq_request(delegation_request, requested_keys)
+            )
+            if common["query_fingerprint"] != dlq["query_fingerprint"]:
+                counts["unknown"] = len(exact_keys)
+                return _outcome(common, "indeterminate", "query_fingerprint_conflict")
+            common["redaction_profile_version"] = dlq["redaction_profile_version"]
+            common["retention_state"] = dlq["retention_state"]
+            result_by_key = {
+                (result["key"]["source_id"], result["key"]["event_id"]): result
+                for result in dlq["results"]
+            }
+            for key in requested_keys:
+                result = result_by_key.get((str(key.source_id), key.event_id))
+                if (
+                    result is not None
+                    and result["classification"] == "dlq"
+                    and result["retention_state"] == "retained"
+                ):
+                    counts["dlq"] += 1
+                else:
+                    counts["unknown"] += 1
+
         page = await post_reconciliation_query(
             build_attempt_page_request(delegation_request, page_size=_MAX_QUERY_KEYS)
         )
@@ -547,8 +590,8 @@ async def _reconcile(
         return _outcome(common, "indeterminate", "odp_reconciliation_unavailable_or_invalid")
     if counts["unknown"]:
         return _outcome(common, "indeterminate", "exact_reconciliation_unknown")
-    if counts["rejected"]:
-        return _outcome(common, "partial", "explicit_retained_rejection")
+    if counts["rejected"] or counts["dlq"]:
+        return _outcome(common, "partial", "explicit_retained_rejection_or_dlq")
     if counts["record_present"] != len(keys):
         counts["unknown"] = len(keys) - counts["record_present"]
         return _outcome(common, "indeterminate", "incomplete_exact_reconciliation")
@@ -592,7 +635,6 @@ def _same_revision(manifest: EvidenceBatchMaterializationManifestV1, facts: dict
             "expected_key_set_hash",
             "receipt_hashes",
             "query_fingerprint",
-            "page_snapshot_as_of",
             "redaction_profile_version",
             "item_count",
             "counts",

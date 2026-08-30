@@ -91,6 +91,6 @@ def delegation(
         task_id=UUID(attempt.task_id),
         trace_id=UUID(attempt.trace_id),
         allowed_source_ids=(UUID(command.odp_source_id),),
-        allowed_modes=("exact", "attempt_page"),
+        allowed_modes=("exact", "attempt_page", "dlq"),
         expires_at=datetime.now(UTC) + _DELEGATION_TTL,
     )

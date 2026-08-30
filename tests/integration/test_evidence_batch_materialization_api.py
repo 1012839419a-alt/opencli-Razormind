@@ -410,7 +410,7 @@ async def test_studio_evidence_routes_project_latest_redacted_scoped_status(
     )
 
     assert listed.status_code == detail.status_code == status_response.status_code == 200
-    assert wrong_scope.status_code == 404
+    assert wrong_scope.status_code == 403
     list_data = listed.json()["data"]
     assert list_data["runId"] == scope["run"].id
     assert list_data["evidenceBatches"][0]["materializationStatus"] == "completed"
@@ -449,7 +449,8 @@ async def test_scoped_materialization_detail_ref_proposes_completed_graph_claim(
 
     proposer = User(id="materialization-proposer", subject="materialization-proposer")
     proposer_subject = proposer.subject
-    workspace = Workspace(id=scope["workspace"].id, name="Materialization", slug="materialization")
+    workspace = await db_session.get(Workspace, scope["workspace"].id)
+    assert workspace is not None
     db_session.add_all(
         [
             proposer,
@@ -515,7 +516,7 @@ async def test_scoped_materialization_detail_ref_proposes_completed_graph_claim(
         assert (
             await client.post("/api/v1/iii-collections/ingress-receipts", json=retry, headers=headers)
         ).status_code == 200
-        updated = await client.post(f"{collection_route}/{command_id}/materialize")
+        updated = await client.post(f"{collection_route}/{command_id}/recover")
         assert updated.status_code == 200
         assert updated.json()["data"]["reconciliationRevision"] == 2
 
@@ -576,7 +577,8 @@ async def test_scoped_materialization_detail_ref_projects_completed_empty(
     graph_route = _research_graph_route(scope)
     actor = User(id="empty-context-actor", subject="empty-context-actor")
     actor_subject = actor.subject
-    workspace = Workspace(id=scope["workspace"].id, name="Empty Context", slug="empty-context")
+    workspace = await db_session.get(Workspace, scope["workspace"].id)
+    assert workspace is not None
     db_session.add_all(
         [
             actor,
@@ -672,7 +674,8 @@ async def test_scoped_materialization_detail_ref_projects_exact_partial_exclusio
     ]
 
     proposer = User(id="partial-proposer", subject="partial-proposer")
-    workspace = Workspace(id=scope["workspace"].id, name="Partial", slug="partial")
+    workspace = await db_session.get(Workspace, scope["workspace"].id)
+    assert workspace is not None
     db_session.add_all(
         [
             proposer,
@@ -870,3 +873,326 @@ async def test_studio_materialization_list_pages_sql_latest_summaries(client, db
     assert third.json()["data"]["nextCursor"] is None
     assert "recordReferences" not in first_data["evidenceBatches"][0]
     assert detail.json()["data"]["recordReferences"][0]["eventId"] == "event-11"
+
+
+@pytest.mark.asyncio
+async def test_materialization_classifies_durable_dlq_as_exact_partial_without_payload(
+    client, db_session, monkeypatch
+):
+    scope, command = await submit_report_and_receipt(
+        client, db_session, monkeypatch, event_ids=["present", "durable-dlq"]
+    )
+    calls: list[str] = []
+    record = {**_record(command, event_id="present"), "payload": {"cookie": "secret"}}
+
+    async def query(request):
+        calls.append(request["mode"])
+        if request["mode"] == "exact":
+            return {
+                **_base(request),
+                "mode": "exact",
+                "records": [record],
+                "results": [
+                    {
+                        "key": {"source_id": command.odp_source_id, "event_id": "present"},
+                        "classification": "present",
+                        "retention_state": "unknown",
+                        "record": record,
+                    },
+                    {
+                        "key": {"source_id": command.odp_source_id, "event_id": "durable-dlq"},
+                        "classification": "unknown",
+                        "retention_state": "unknown",
+                    },
+                ],
+            }
+        if request["mode"] == "dlq":
+            assert request["keys"] == [
+                {"source_id": command.odp_source_id, "event_id": "durable-dlq"}
+            ]
+            return {
+                **_base(request),
+                "mode": "dlq",
+                "retention_state": "retained",
+                "records": [],
+                "results": [
+                    {
+                        "key": {
+                            "source_id": command.odp_source_id,
+                            "event_id": "durable-dlq",
+                        },
+                        "classification": "dlq",
+                        "retention_state": "retained",
+                        "payload": {"cookie": "secret"},
+                    }
+                ],
+            }
+        return {
+            **_base(request),
+            "mode": "attempt_page",
+            "records": [],
+            "results": [],
+            "as_of": "2026-08-30T00:00:00Z",
+        }
+
+    monkeypatch.setattr("backend.workflow.evidence_batch_materializer.post_reconciliation_query", query)
+    response = await client.post(f"{route(scope)}/{command.id}/materialize")
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert calls == ["exact", "dlq", "attempt_page"]
+    assert data["materializationStatus"] == "partial"
+    assert data["counts"]["dlq"] == 1
+    assert data["counts"]["unknown"] == 0
+    assert data["recordReferences"] == [
+        {
+            "sourceId": command.odp_source_id,
+            "eventId": "present",
+            "odpRecordId": 42,
+            "committedAt": "2026-08-30T00:00:00Z",
+        }
+    ]
+    assert "secret" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_missing_dlq_remains_indeterminate_and_recover_requeries_terminal_facts(
+    client, db_session, monkeypatch
+):
+    scope, command = await submit_report_and_receipt(client, db_session, monkeypatch)
+    late_record = False
+    calls: list[str] = []
+
+    async def query(request):
+        calls.append(request["mode"])
+        key = {"source_id": command.odp_source_id, "event_id": "event-1"}
+        if request["mode"] == "exact":
+            if late_record:
+                record = _record(command)
+                return {
+                    **_base(request),
+                    "mode": "exact",
+                    "records": [record],
+                    "results": [
+                        {
+                            "key": key,
+                            "classification": "present",
+                            "retention_state": "unknown",
+                            "record": record,
+                        }
+                    ],
+                }
+            return {
+                **_base(request),
+                "mode": "exact",
+                "records": [],
+                "results": [{"key": key, "classification": "unknown", "retention_state": "unknown"}],
+            }
+        if request["mode"] == "dlq":
+            return {
+                **_base(request),
+                "mode": "dlq",
+                "records": [],
+                "results": [{"key": key, "classification": "unknown", "retention_state": "unknown"}],
+            }
+        return {
+            **_base(request),
+            "mode": "attempt_page",
+            "records": [],
+            "results": [],
+            "as_of": "2026-08-30T00:00:00Z",
+        }
+
+    monkeypatch.setattr("backend.workflow.evidence_batch_materializer.post_reconciliation_query", query)
+    first = await client.post(f"{route(scope)}/{command.id}/materialize")
+    assert first.status_code == 200
+    assert first.json()["data"]["materializationStatus"] == "indeterminate"
+    assert calls == ["exact", "dlq", "attempt_page"]
+    first_manifest = (
+        await db_session.execute(
+            select(EvidenceBatchMaterializationManifestV1).where(
+                EvidenceBatchMaterializationManifestV1.command_id == command.id,
+                EvidenceBatchMaterializationManifestV1.reconciliation_revision == 1,
+            )
+        )
+    ).scalar_one()
+    first_hash = first_manifest.manifest_hash
+
+    late_record = True
+    calls.clear()
+    recovered = await client.post(f"{route(scope)}/{command.id}/recover")
+    assert recovered.status_code == 200
+    assert calls == ["exact", "attempt_page"]
+    assert recovered.json()["data"]["materializationStatus"] == "completed"
+    assert recovered.json()["data"]["reconciliationRevision"] == 2
+
+    manifests = (
+        await db_session.execute(
+            select(EvidenceBatchMaterializationManifestV1)
+            .where(EvidenceBatchMaterializationManifestV1.command_id == command.id)
+            .order_by(EvidenceBatchMaterializationManifestV1.reconciliation_revision)
+        )
+    ).scalars().all()
+    assert [manifest.reconciliation_revision for manifest in manifests] == [1, 2]
+    assert manifests[0].manifest_hash == first_hash
+
+    calls.clear()
+    unchanged = await client.post(f"{route(scope)}/{command.id}/recover")
+    assert unchanged.status_code == 200
+    assert calls == ["exact", "attempt_page"]
+    assert unchanged.json()["data"]["reconciliationRevision"] == 2
+
+
+@pytest.mark.asyncio
+async def test_recover_amends_a_pinned_terminal_manifest_after_duplicate_ingress(
+    client, db_session, monkeypatch
+):
+    scope, command = await submit_report_and_receipt(client, db_session, monkeypatch)
+    collection_route = route(scope)
+    studio_run_route = collection_route.removesuffix("/iii-collections")
+    graph_route = _research_graph_route(scope)
+    calls: list[str] = []
+    monkeypatch.setattr(
+        "backend.workflow.evidence_batch_materializer.post_reconciliation_query",
+        _completed_query(command, calls),
+    )
+    first = await client.post(f"{collection_route}/{command.id}/materialize")
+    assert first.status_code == 200
+    assert first.json()["data"]["materializationStatus"] == "completed"
+    first_manifest = (
+        await db_session.execute(
+            select(EvidenceBatchMaterializationManifestV1).where(
+                EvidenceBatchMaterializationManifestV1.command_id == command.id,
+                EvidenceBatchMaterializationManifestV1.reconciliation_revision == 1,
+            )
+        )
+    ).scalar_one()
+    first_hash = first_manifest.manifest_hash
+    batch_id = first.json()["data"]["batchId"]
+    manifest = (
+        await client.get(f"{studio_run_route}/evidence-batches/v1/{batch_id}")
+    ).json()["data"]["researchGraphManifestRef"]
+
+    proposer = User(id="recover-proposer", subject="recover-proposer")
+    reviewer = User(id="recover-reviewer", subject="recover-reviewer")
+    db_session.add_all(
+        [
+            proposer,
+            reviewer,
+            WorkspaceMembership(
+                workspace_id=scope["workspace"].id,
+                user_id=proposer.id,
+                role=WorkspaceRole.OPERATOR,
+            ),
+            WorkspaceMembership(
+                workspace_id=scope["workspace"].id,
+                user_id=reviewer.id,
+                role=WorkspaceRole.OPERATOR,
+            ),
+        ]
+    )
+    await db_session.commit()
+    current_identity = RequestIdentity(subject=proposer.subject)
+
+    async def override_identity():
+        return current_identity
+
+    app.dependency_overrides[get_request_identity] = override_identity
+    try:
+        graph = (await client.get(graph_route)).json()["data"]
+        proposed = await client.post(
+            f"{graph_route}/mutations",
+            json={
+                "idempotencyKey": "recover-propose",
+                "action": "propose",
+                "expectedSequence": graph["sequence"],
+                "expectedRevision": graph["researchRevisionId"],
+                "nodeId": "opencli-source",
+                "claimId": "recover-claim",
+                "claimContentHash": "c" * 64,
+                "manifestRefs": [manifest],
+            },
+        )
+        assert proposed.status_code == 201
+        current_identity = RequestIdentity(subject=reviewer.subject)
+        verified = await client.post(
+            f"{graph_route}/mutations",
+            json={
+                "idempotencyKey": "recover-verify",
+                "action": "verify",
+                "expectedSequence": proposed.json()["data"]["sequence"],
+                "expectedRevision": proposed.json()["data"]["researchRevisionId"],
+                "nodeId": "opencli-source",
+                "claimId": "recover-claim",
+            },
+        )
+        assert verified.status_code == 201
+        pinned = await client.post(
+            f"{graph_route}/mutations",
+            json={
+                "idempotencyKey": "recover-pin",
+                "action": "pin",
+                "expectedSequence": verified.json()["data"]["sequence"],
+                "expectedRevision": verified.json()["data"]["researchRevisionId"],
+                "nodeId": "opencli-source",
+            },
+        )
+        assert pinned.status_code == 201
+        assert pinned.json()["data"]["pinnedFold"]["blocked"] is False
+
+        attempt = (
+            await db_session.execute(
+                select(IIICollectionAttemptV1).where(
+                    IIICollectionAttemptV1.command_id == command.id
+                )
+            )
+        ).scalar_one()
+        duplicate = receipt_body(command, attempt, report_body(command, attempt))
+        duplicate.update(
+            {
+                "receiptId": "recover-duplicate",
+                "idempotencyKey": "odp-ingest:recover-duplicate",
+            }
+        )
+        duplicate["outcomes"][0]["outcome"] = "duplicate"
+        duplicate = sign_receipt_body(duplicate)
+        callback = await client.post(
+            "/api/v1/iii-collections/ingress-receipts",
+            json=duplicate,
+            headers={"x-iii-bridge-token": "bridge-token"},
+        )
+        assert callback.status_code == 200
+
+        current_identity = RequestIdentity(subject=proposer.subject)
+        calls.clear()
+        recovered = await client.post(f"{collection_route}/{command.id}/recover")
+        assert recovered.status_code == 200
+        assert calls == ["exact", "attempt_page"]
+        assert recovered.json()["data"]["materializationStatus"] == "completed"
+        assert recovered.json()["data"]["reconciliationRevision"] == 2
+
+        old = (
+            await db_session.execute(
+                select(EvidenceBatchMaterializationManifestV1).where(
+                    EvidenceBatchMaterializationManifestV1.command_id == command.id,
+                    EvidenceBatchMaterializationManifestV1.reconciliation_revision == 1,
+                )
+            )
+        ).scalar_one()
+        assert old.manifest_hash == first_hash
+        latest = (
+            await db_session.execute(
+                select(EvidenceBatchMaterializationManifestV1).where(
+                    EvidenceBatchMaterializationManifestV1.command_id == command.id,
+                    EvidenceBatchMaterializationManifestV1.reconciliation_revision == 2,
+                )
+            )
+        ).scalar_one()
+        assert latest.manifest_hash != first_hash
+        stale = await client.get(graph_route)
+        assert stale.status_code == 200
+        assert stale.json()["data"]["pinnedFold"]["blocked"] is True
+        assert stale.json()["data"]["blocker"] == "manifest_superseded"
+        assert stale.json()["data"]["recoveryAction"] == "re_review"
+    finally:
+        app.dependency_overrides.pop(get_request_identity, None)
