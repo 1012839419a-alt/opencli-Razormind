@@ -99,8 +99,7 @@ def test_connection_flow_holds_only_post_commit_locked_execution_read():
     assert flow.should_hold(_parse(b"claim", CLAIM)) is False
     assert flow.stage == "await_reservation"
     assert flow.should_hold(_parse(b"reserve", RESERVE)) is False
-    assert flow.should_hold(_bind(b"reserve", b"pending")) is False
-    assert flow.stage == "await_reservation"
+    assert flow.stage == "await_commit"
     assert flow.should_hold(_bind(b"reserve", b"reserved")) is False
     assert flow.stage == "await_commit"
     assert flow.should_hold(

@@ -37,21 +37,22 @@ def _execution_claim(sql: bytes) -> bool:
     )
 
 
-def _reservation_update(
-    sql: bytes, body: bytes, message_type: bytes
-) -> bool:
+def _reservation_update(sql: bytes) -> bool:
+    """Recognize the first lease-bearing execution update after its claim.
+
+    PostgreSQL extended-query Parse frames intentionally contain no values;
+    the preceding claim and this complete set of lease columns identify the
+    source-level ``state = "reserved"`` transition before its COMMIT.
+    """
     normalized = _normalized_sql(sql)
-    if not (
+    return (
         normalized.startswith(b"update delivery_executions set")
         and b"state" in normalized
         and b"lease_token" in normalized
         and b"lease_acquired_at" in normalized
+        and b"send_started_at" in normalized
         and b"reserved_attempt_number" in normalized
-    ):
-        return False
-    if message_type == b"B":
-        return b"reserved" in body
-    return b"state = 'reserved'" in normalized
+    )
 
 
 def _locked_execution_read(sql: bytes) -> bool:
@@ -204,9 +205,7 @@ class ConnectionFlow:
         if self.stage == "await_claim" and _execution_claim(sql):
             self.stage = "await_reservation"
             return False
-        if self.stage == "await_reservation" and _reservation_update(
-            sql, frame.body, frame.message_type
-        ):
+        if self.stage == "await_reservation" and _reservation_update(sql):
             self.stage = "await_commit"
             return False
         if self.stage == "await_commit" and _commit(sql):
