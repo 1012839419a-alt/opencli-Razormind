@@ -182,6 +182,18 @@ async def test_executor_marks_stale_reserved_lease_unknown_without_resending(mon
 
 
 
+
+@pytest.mark.asyncio
+async def test_executor_recovers_stale_pre_send_reservation_without_ambiguous_result(monkeypatch):
+    db, decision, execution, results, _sleeps = _executor_fixture(monkeypatch, [200])
+    execution.state = "reserved"
+    execution.lease_token = "old-lease"
+    execution.lease_acquired_at = datetime(2000, 1, 1, tzinfo=timezone.utc)
+    execution.reserved_attempt_number = 1
+    result = await delivery_execution.execute_delivery(db, scope=SimpleNamespace(), decision_id=decision.id)
+    assert result.outcome == "accepted"
+    assert [item.attempt_number for item in results] == [1]
+
 @pytest.mark.asyncio
 async def test_executor_does_not_send_while_a_competing_live_lease_exists(monkeypatch):
     db, decision, execution, results, _sleeps = _executor_fixture(monkeypatch, [])
