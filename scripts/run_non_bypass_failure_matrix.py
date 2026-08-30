@@ -151,9 +151,12 @@ def _facts_from_driver(ledger: ScenarioLedger, env: dict[str, str], base: Path, 
                 "-H", f"X-API-Token: {env['API_AUTH_TOKEN']}",
                 "http://proof-relay:8080/_gate/report-diagnostics", timeout=30,
             )
+            collector_log = _compose(
+                ledger, env, base, overlay, "logs", "--tail", "80", "proof-collector", timeout=30,
+            )
             raise FailureRunRejected(
                 (stderr.strip() or stdout.strip() or "signed-zero driver failed")
-                + f"; relay report diagnostic: {diagnostic}"
+                + f"; relay report diagnostic: {diagnostic}; collector diagnostic: {collector_log}"
             )
         return normalize_public_facts(json.loads(stdout))
     signal_name = "iii-ready" if ledger.scenario == "iii-unreachable" else "submitted"
