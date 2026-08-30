@@ -6,13 +6,20 @@ from datetime import datetime, timezone
 
 import pytest
 from httpx import AsyncClient
-from sqlalchemy import select
+from sqlalchemy import select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from backend.config import get_settings
 from backend.main import app
 from backend.models.delivery_authorization import DeliveryAuthorizationDecisionV1, DeliveryTarget, DeliveryTargetRevision
-from backend.models.delivery_execution import ControlledReceiverDelivery, DeliveryExecution
+from backend.models.delivery_execution import (
+    ControlledReceiverDelivery,
+    ControlledReceiverNonce,
+    DeliveryExecution,
+    DeliveryExecutionReconciliation,
+    DeliveryExecutionResult,
+)
 from backend.models.identity import User, Workspace, WorkspaceMembership, WorkspaceRole
 from backend.security import controlled_receiver as receiver
 from backend.security.identity import RequestIdentity, get_request_identity
@@ -279,3 +286,45 @@ async def test_studio_execution_routes_preserve_durable_attempt_and_reconciliati
         assert len(reconciled.json()["data"]["reconciliations"]) == 1
     finally:
         app.dependency_overrides.pop(get_request_identity, None)
+
+
+@pytest.mark.asyncio
+async def test_sqlite_raw_evidence_mutations_are_rejected_after_durable_execution(client: AsyncClient, db_session, monkeypatch):
+    scope, decision_id = await _stored_frozen_decision(db_session)
+
+    async def send_to_receiver(endpoint, body, headers, *, timeout_seconds, status_query=False):
+        path = "/api/v1/controlled-receiver/v2/status" if status_query else "/api/v1/controlled-receiver/v2/deliver"
+        return await client.post(path, content=body, headers=headers)
+
+    monkeypatch.setattr(delivery_execution, "pinned_post", send_to_receiver)
+    delivered = await delivery_execution.execute_delivery(db_session, scope=scope, decision_id=decision_id)
+    execution = await db_session.get(DeliveryExecution, delivered.execution_id)
+    execution.state, execution.final_outcome = "blocked", "unknown"
+    await db_session.commit()
+    await delivery_execution.reconcile_delivery_execution(db_session, scope=scope, execution_id=execution.id)
+    await db_session.commit()
+    for table in (
+        "delivery_execution_results", "delivery_execution_reconciliations",
+        "controlled_receiver_deliveries", "controlled_receiver_nonces",
+    ):
+        await db_session.execute(text(
+            f"CREATE TRIGGER raw_guard_{table}_update BEFORE UPDATE ON {table} "
+            f"BEGIN SELECT RAISE(ABORT, '{table} is append-only'); END"
+        ))
+        await db_session.execute(text(
+            f"CREATE TRIGGER raw_guard_{table}_delete BEFORE DELETE ON {table} "
+            f"BEGIN SELECT RAISE(ABORT, '{table} is append-only'); END"
+        ))
+    await db_session.commit()
+    for table in (
+        "delivery_execution_results", "delivery_execution_reconciliations",
+        "controlled_receiver_deliveries", "controlled_receiver_nonces",
+    ):
+        with pytest.raises(IntegrityError):
+            await db_session.execute(text(f"UPDATE {table} SET updated_at = updated_at"))
+            await db_session.commit()
+        await db_session.rollback()
+        with pytest.raises(IntegrityError):
+            await db_session.execute(text(f"DELETE FROM {table}"))
+            await db_session.commit()
+        await db_session.rollback()
