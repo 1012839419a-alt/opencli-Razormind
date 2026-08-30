@@ -128,17 +128,18 @@ def test_callback_relay_routes_only_the_three_real_callback_paths(monkeypatch):
     assert client.post("/not-an-allowlisted-callback", content=b"{}").status_code == 404
 
 
-def test_failure_driver_main_prints_its_fact_document(monkeypatch, capsys):
+@pytest.mark.parametrize("scenario", ["admin-crash", "no-report"])
+def test_failure_driver_main_prints_its_fact_document(monkeypatch, capsys, scenario):
     driver_path = ROOT / "tests/acceptance/non_bypass_failure_driver.py"
-    driver_spec = importlib.util.spec_from_file_location("failure_driver_main", driver_path)
+    driver_spec = importlib.util.spec_from_file_location(f"failure_driver_main_{scenario}", driver_path)
     assert driver_spec and driver_spec.loader
     driver = importlib.util.module_from_spec(driver_spec)
     sys.modules[driver_spec.name] = driver
     driver_spec.loader.exec_module(driver)
     monkeypatch.setattr(driver, "admin_crash", lambda run, scenario: {"run": run, "scenario": scenario})
-    monkeypatch.setattr(sys, "argv", ["driver", "--scenario", "no-report", "--run", "r1"])
+    monkeypatch.setattr(sys, "argv", ["driver", "--scenario", scenario, "--run", "r1"])
     assert driver.main() == 0
-    assert __import__("json").loads(capsys.readouterr().out) == {"run": "r1", "scenario": "no-report"}
+    assert __import__("json").loads(capsys.readouterr().out) == {"run": "r1", "scenario": scenario}
 
 
 def test_failure_runner_writes_selected_release_before_waiting():
