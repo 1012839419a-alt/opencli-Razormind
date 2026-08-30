@@ -463,6 +463,22 @@ def _runner_module():
     spec.loader.exec_module(module)
     return module
 
+def _failure_driver_module():
+    path = ROOT / "tests/acceptance/non_bypass_failure_driver.py"
+    spec = importlib.util.spec_from_file_location("non_bypass_failure_driver", path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_storage_loss_source_binding_id_fits_public_api_bound():
+    driver = _failure_driver_module()
+    source_id = driver._storage_loss_source_id("run-" + "x" * 128, 3, "store-redis-committed-xadd")
+    assert len(source_id) <= 33
+    assert len(f"{source_id}-v1") <= 36
+
 
 def test_catalog_build_occurs_once_before_multiple_fresh_rows(monkeypatch, tmp_path):
     runner = _runner_module()

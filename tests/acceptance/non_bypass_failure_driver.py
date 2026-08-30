@@ -583,6 +583,12 @@ def _public_hash(value: dict[str, Any]) -> str:
     ":")).encode()).hexdigest()
 
 
+def _storage_loss_source_id(run: str, index: int, source: str) -> str:
+    """Keep public source-binding identifiers within the API's 36-byte bound."""
+    run_digest = hashlib.sha256(run.encode()).hexdigest()[:16]
+    return f"loss-{index}-{source[:8]}-{run_digest}"
+
+
 def ingest_redis_store_loss(run: str) -> dict[str, Any]:
     """Exercise four real loss seams while preserving only public API facts."""
     cases = (
@@ -595,7 +601,7 @@ def ingest_redis_store_loss(run: str) -> dict[str, Any]:
     with httpx.Client(timeout=60) as client:
         setup = public_setup(client, run)
         for index, (gateway, source, site, command) in enumerate(cases):
-            source_id = f"{run}-{index}-{source}"
+            source_id = _storage_loss_source_id(run, index, source)
             if gateway == "store-redis-committed-xadd":
                 marker = Path("/proof-artifacts/gateway-coordination/store-commit-ready")
                 marker.unlink(missing_ok=True)
