@@ -367,6 +367,63 @@ async def test_sqlite_raw_evidence_mutations_are_rejected_after_durable_executio
 
 
 @pytest.mark.asyncio
+async def test_sqlite_final_links_reject_cross_execution_and_missing_evidence(db_session):
+    scope, decision_id = await _stored_frozen_decision(db_session)
+    now = datetime.now(timezone.utc)
+    execution_a = DeliveryExecution(
+        id=str(uuid.uuid4()), decision_id=decision_id, target_revision_id=(await db_session.get(
+            DeliveryAuthorizationDecisionV1, decision_id
+        )).target_revision_id, workspace_id=scope.workspace_id, project_id=scope.project_id,
+        workflow_id=scope.workflow_id, studio_workflow_version_id=scope.studio_workflow_version_id,
+        run_id=scope.run_id, operation_id="a", decision_hash="a" * 64, payload_hash="b" * 64,
+        execution_binding_hash="c" * 64, state="pending",
+    )
+    execution_b = DeliveryExecution(
+        id=str(uuid.uuid4()), decision_id="other-decision", target_revision_id=execution_a.target_revision_id,
+        workspace_id=scope.workspace_id, project_id=scope.project_id, workflow_id=scope.workflow_id,
+        studio_workflow_version_id=scope.studio_workflow_version_id, run_id=scope.run_id,
+        operation_id="b", decision_hash="d" * 64, payload_hash="e" * 64,
+        execution_binding_hash="f" * 64, state="pending",
+    )
+    result_b = DeliveryExecutionResult(
+        id=str(uuid.uuid4()), execution_id=execution_b.id, attempt_number=1,
+        transport_classification="test", receipt_classification="missing", protocol_classification="unknown",
+        outcome="unknown", observed_at=now,
+    )
+    reconciliation_b = DeliveryExecutionReconciliation(
+        id=str(uuid.uuid4()), execution_id=execution_b.id, receipt_hash="1" * 64,
+        outcome="accepted", observed_at=now,
+    )
+    execution_a_id, result_b_id, reconciliation_b_id = execution_a.id, result_b.id, reconciliation_b.id
+    db_session.add_all((execution_a, execution_b, result_b, reconciliation_b))
+    await db_session.commit()
+    for column, valid_id, table in (
+        ("final_result_id", result_b_id, "delivery_execution_results"),
+        ("final_reconciliation_id", reconciliation_b_id, "delivery_execution_reconciliations"),
+    ):
+        await db_session.execute(text(
+            f"CREATE TRIGGER link_guard_{column} BEFORE UPDATE OF {column} ON delivery_executions "
+            f"WHEN NEW.{column} IS NOT NULL AND NOT EXISTS "
+            f"(SELECT 1 FROM {table} WHERE id = NEW.{column} AND execution_id = NEW.id) "
+            "BEGIN SELECT RAISE(ABORT, 'final link mismatch'); END"
+        ))
+    await db_session.commit()
+    for column, foreign in (
+        ("final_result_id", result_b_id), ("final_reconciliation_id", reconciliation_b_id),
+        ("final_result_id", str(uuid.uuid4())), ("final_reconciliation_id", str(uuid.uuid4())),
+    ):
+        with pytest.raises(IntegrityError):
+            await db_session.execute(text(
+                f"UPDATE delivery_executions SET {column} = :value WHERE id = :execution_id"
+            ), {"value": foreign, "execution_id": execution_a_id})
+            await db_session.commit()
+        await db_session.rollback()
+    await db_session.refresh(execution_a)
+    assert execution_a.final_result_id is None
+    assert execution_a.final_reconciliation_id is None
+
+
+@pytest.mark.asyncio
 async def test_two_sessions_cancel_before_send_start_prevents_post_and_result(db_session, db_engine, monkeypatch):
     scope, decision_id = await _stored_frozen_decision(db_session)
     sessions = async_sessionmaker(db_engine, expire_on_commit=False)
