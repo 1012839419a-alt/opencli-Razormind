@@ -135,7 +135,7 @@ def _admit(ledger: ScenarioLedger, env: dict[str, str], base: Path, overlay: Pat
 
 
 def _facts_from_driver(ledger: ScenarioLedger, env: dict[str, str], base: Path, overlay: Path) -> dict[str, Any]:
-    if ledger.scenario not in {"admin-crash", "iii-unreachable", "no-report"}:
+    if ledger.scenario not in {"admin-crash", "iii-unreachable", "no-report", "signed-zero"}:
         raise FailureRunRejected(f"in-network driver is not implemented for {ledger.scenario}")
     command = [
         "docker", "compose", "-p", ledger.project, "-f", str(base), "-f", str(overlay),
@@ -143,6 +143,11 @@ def _facts_from_driver(ledger: ScenarioLedger, env: dict[str, str], base: Path, 
         "--scenario", ledger.scenario, "--run", ledger.project,
     ]
     process = subprocess.Popen(command, cwd=ROOT, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if ledger.scenario == "signed-zero":
+        stdout, stderr = process.communicate(timeout=120)
+        if process.returncode:
+            raise FailureRunRejected(stderr.strip() or stdout.strip() or "signed-zero driver failed")
+        return normalize_public_facts(json.loads(stdout))
     signal_name = "iii-ready" if ledger.scenario == "iii-unreachable" else "submitted"
     signal = ledger.artifact / "coordination" / f"{ledger.project}.{signal_name}"
     deadline = time.monotonic() + 90

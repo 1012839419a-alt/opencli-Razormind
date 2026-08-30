@@ -21,6 +21,9 @@ services:
     labels: *failure-labels
   proof-collector:
     labels: *failure-labels
+    environment:
+      PROOF_SCENARIO: ${PROOF_SCENARIO:-unbound}
+    command: [/bin/sh, -ec, 'if [ "$PROOF_SCENARIO" = signed-zero ]; then printf "%s\n" "#!/bin/sh" "exec /proof/opencli-failure-proof zero" > /tmp/opencli-proof && chmod 0555 /tmp/opencli-proof; else install -m 0555 /proof/opencli-proof /tmp/opencli-proof; fi; exec python worker/src/main.py']
     volumes:
       - ./tests/acceptance/fixtures/opencli-failure-proof:/proof/opencli-failure-proof:ro
   proof-bridge:

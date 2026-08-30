@@ -110,7 +110,7 @@ def admin_crash(run: str, scenario: str = "admin-crash") -> dict[str, Any]:
                     break
                 time.sleep(0.5)
         materialization: dict[str, Any] | None = None
-        if scenario == "no-report":
+        if scenario in {"no-report", "signed-zero"}:
             materialization = _post(client, primary, f"{collections}/{command_id}/materialize", {}, proposer)
             batch_id = materialization["batchId"]
             materialization = _get(client, primary, f"{route}/{run_id}/evidence-batches/v1/{batch_id}/status", proposer)
@@ -123,6 +123,10 @@ def admin_crash(run: str, scenario: str = "admin-crash") -> dict[str, Any]:
         if materialization is None or materialization.get("materializationStatus") != "indeterminate":
             raise RuntimeError("scoped materialization did not expose indeterminate missing report")
         return {"scenario": "no-report", "run": run, "fault": "expected-key-report-dropped", "actuator": {"name": "proof-iii-actuator", "invocationHash": hashlib.sha256(command_id.encode()).hexdigest()}, "correlation": {"commandId": command_id, "attemptId": attempt_id, "workflowRunId": run_id, "hashes": hashes}, "collection": {"blockingStage": "callback_missing", "recoveryAction": "recover", "sideEffectUncertainty": True}, "materialization": {"status": "indeterminate", "blocker": "missing_report", "recoveryAction": "recover", "manifestHash": None, "reconciliationRevision": materialization["reconciliationRevision"], "pageSnapshotAsOf": materialization.get("pageSnapshotAsOf")}, "graph": {"pin": None, "sequence": None, "readBlocker": "none", "mutationStatus": "none"}, "delivery": {"state": "none", "outcome": "none", "attemptCount": 0, "receiptHash": None, "reconciliation": "none"}, "redactionProfile": "failure-v1", "timing": {"startedAt": 0, "completedAt": 1, "deadlineSeconds": 360}, "governanceReference": {"artifactId": "pending", "keyId": "pending", "trustRootFingerprint": "pending"}, "authority": "authenticated-scoped-public-api"}
+    if scenario == "signed-zero":
+        if materialization is None or materialization.get("materializationStatus") != "completed_empty":
+            raise RuntimeError("signed zero did not complete as empty through scoped materialization")
+        return {"scenario": "signed-zero", "run": run, "fault": "pinned-zero-fixture", "actuator": {"name": "proof-iii-actuator", "invocationHash": hashlib.sha256(command_id.encode()).hexdigest()}, "correlation": {"commandId": command_id, "attemptId": attempt_id, "workflowRunId": run_id, "hashes": hashes}, "collection": {"blockingStage": "none", "recoveryAction": "none", "sideEffectUncertainty": False}, "materialization": {"status": "completed_empty", "blocker": "none", "recoveryAction": "none", "manifestHash": None, "reconciliationRevision": materialization["reconciliationRevision"], "pageSnapshotAsOf": materialization.get("pageSnapshotAsOf")}, "graph": {"pin": None, "sequence": None, "readBlocker": "none", "mutationStatus": "none"}, "delivery": {"state": "none", "outcome": "none", "attemptCount": 0, "receiptHash": None, "reconciliation": "none"}, "redactionProfile": "failure-v1", "timing": {"startedAt": 0, "completedAt": 1, "deadlineSeconds": 360}, "governanceReference": {"artifactId": "pending", "keyId": "pending", "trustRootFingerprint": "pending"}, "authority": "authenticated-scoped-public-api"}
     return {"scenario": "admin-crash", "run": run, "fault": "primary-admin-crash", "actuator": {"name": "proof-iii-actuator", "invocationHash": hashlib.sha256(command_id.encode()).hexdigest()}, "correlation": {"commandId": command_id, "attemptId": attempt_id, "workflowRunId": run_id, "hashes": hashes}, "collection": {"blockingStage": "none", "recoveryAction": "resume", "sideEffectUncertainty": True}, "materialization": {"status": "unknown", "blocker": "none", "recoveryAction": "none", "manifestHash": None, "reconciliationRevision": None, "pageSnapshotAsOf": None}, "graph": {"pin": None, "sequence": None, "readBlocker": "none", "mutationStatus": "none"}, "delivery": {"state": "none", "outcome": "none", "attemptCount": 0, "receiptHash": None, "reconciliation": "none"}, "redactionProfile": "failure-v1", "timing": {"startedAt": 0, "completedAt": 1, "deadlineSeconds": 360}, "governanceReference": {"artifactId": "pending", "keyId": "pending", "trustRootFingerprint": "pending"}, "authority": "authenticated-scoped-public-api"}
 def iii_unreachable(run: str) -> dict[str, Any]:
     fleet = {"X-API-Token": os.environ["API_AUTH_TOKEN"]}
@@ -168,7 +172,7 @@ def main() -> int:
     parser.add_argument("--scenario", required=True)
     parser.add_argument("--run", required=True)
     args = parser.parse_args()
-    if args.scenario in {"admin-crash", "no-report"}:
+    if args.scenario in {"admin-crash", "no-report", "signed-zero"}:
         result = admin_crash(args.run, args.scenario)
     elif args.scenario == "iii-unreachable":
         result = iii_unreachable(args.run)
