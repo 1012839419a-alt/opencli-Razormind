@@ -7,12 +7,15 @@ from datetime import datetime, timezone
 import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from backend.config import get_settings
+from backend.main import app
 from backend.models.delivery_authorization import DeliveryAuthorizationDecisionV1, DeliveryTarget, DeliveryTargetRevision
 from backend.models.delivery_execution import ControlledReceiverDelivery, DeliveryExecution
-from backend.models.identity import Workspace
+from backend.models.identity import User, Workspace, WorkspaceMembership, WorkspaceRole
 from backend.security import controlled_receiver as receiver
+from backend.security.identity import RequestIdentity, get_request_identity
 from backend.workflow.delivery_authorization import DeliveryAuthorizationScope
 from backend.workflow import delivery_execution
 from tests.integration.iii_collection_test_support import create_scoped_run
@@ -32,6 +35,74 @@ def receiver_registry(monkeypatch):
 def _request():
     payload = {"schemaVersion": "delivery-claim-manifest-v1", "claims": [{"claimId": "claim-1", "contentHash": "a" * 64}], "manifestHashes": ["b" * 64]}
     return {"version": "v2", "receiverIdentity": "receiver-a", "operationId": "op-1", "decisionHash": "d" * 64, "payloadHash": receiver.canonical_hash(payload), "payload": payload}
+
+
+def _route(scope: DeliveryAuthorizationScope) -> str:
+    return (
+        f"/api/v1/workspaces/{scope.workspace_id}/projects/{scope.project_id}"
+        f"/workflows/{scope.workflow_id}/runs/{scope.run_id}/delivery-executions"
+    )
+
+
+async def _stored_frozen_decision(db_session) -> tuple[DeliveryAuthorizationScope, str]:
+    scoped = await create_scoped_run(db_session)
+    workspace_id = scoped["workspace"].id
+    await db_session.merge(Workspace(id=workspace_id, name="Receiver delivery", slug="receiver-delivery"))
+    scope = DeliveryAuthorizationScope(
+        workspace_id=workspace_id,
+        project_id=scoped["project"].id,
+        workflow_id=scoped["workflow"].id,
+        studio_workflow_version_id=scoped["version"].id,
+        run_id=scoped["run"].id,
+    )
+    endpoint = receiver.resolve_endpoint("receiver-primary", "credential-a")
+    policy_version, policy_snapshot, policy_hash = delivery_execution._current_policy()
+    target_id, revision_id, decision_id = (str(uuid.uuid4()) for _ in range(3))
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    claims = [{"claimId": "claim-1", "contentHash": "a" * 64}]
+    manifests = [{"manifestHash": "b" * 64}]
+    payload = {"schemaVersion": "delivery-claim-manifest-v1", "claims": claims, "manifestHashes": ["b" * 64]}
+    target = DeliveryTarget(id=target_id, workspace_id=workspace_id, receiver_identity=endpoint.receiver_identity)
+    revision = DeliveryTargetRevision(
+        id=revision_id, target_id=target_id, revision=1, workspace_id=scope.workspace_id,
+        project_id=scope.project_id, workflow_id=scope.workflow_id,
+        studio_workflow_version_id=scope.studio_workflow_version_id, run_id=scope.run_id,
+        endpoint_identity=endpoint.identity, non_secret_config_hash=receiver.endpoint_config_hash(endpoint),
+        credential_reference=endpoint.credential_reference, policy_version=policy_version,
+        policy_snapshot=policy_snapshot, policy_hash=policy_hash,
+    )
+    decision = DeliveryAuthorizationDecisionV1(
+        id=decision_id, version="v1", workspace_id=scope.workspace_id, project_id=scope.project_id,
+        workflow_id=scope.workflow_id, studio_workflow_version_id=scope.studio_workflow_version_id,
+        run_id=scope.run_id, node_id="delivery-node", operation_id="delivery-op",
+        idempotency_key="delivery-idempotency", target_id=target_id, target_revision_id=revision_id,
+        target_revision=1, endpoint_identity=endpoint.identity,
+        non_secret_config_hash=receiver.endpoint_config_hash(endpoint), policy_version=policy_version,
+        policy_snapshot=policy_snapshot, policy_hash=policy_hash, pin_sequence=1,
+        research_revision_id="research-1", manifest_set_hash="b" * 64, selected_claims=claims,
+        manifest_set=manifests,
+        sanitized_payload_manifest={
+            "payloadSchemaVersion": "delivery-claim-manifest-v1",
+            "payloadReference": "frozen-claim-manifest",
+            "payloadHash": receiver.canonical_hash(payload),
+            "sanctionedReferenceHashes": ["a" * 64, "b" * 64],
+            "redactionProfileVersion": "delivery-authorization-redaction-v1",
+        },
+        payload_schema_version="delivery-claim-manifest-v1", payload_reference="frozen-claim-manifest",
+        payload_hash=receiver.canonical_hash(payload), redaction_profile_version="delivery-authorization-redaction-v1",
+        approver_actor_id="approver-1", approver_actor_type="user", approver_principal="approver-1",
+        approver_capability="actions.approve", approval_policy_version="workspace-rbac-v1",
+        approved_at=now, approval_evidence=[], binding_hash="", decision_hash="", decisioned_at=now,
+    )
+    decision.approval_evidence = [delivery_execution._approval(decision, scope)]
+    binding = delivery_execution._decision_binding(decision, scope)
+    decision.binding_hash = receiver.canonical_hash(binding)
+    decision.decision_hash = receiver.canonical_hash(
+        {"binding": binding, "approvalEvidence": decision.approval_evidence, "decisionedAt": now.isoformat()}
+    )
+    db_session.add_all((target, revision, decision))
+    await db_session.commit()
+    return scope, decision_id
 
 
 @pytest.mark.asyncio
@@ -108,67 +179,7 @@ async def test_receiver_v2_mac_exemption_does_not_accept_invalid_mac_or_oversize
 
 @pytest.mark.asyncio
 async def test_executor_sends_to_durable_receiver_and_replays_one_verified_receipt(client: AsyncClient, db_session, monkeypatch):
-    scoped = await create_scoped_run(db_session)
-    workspace_id = scoped["workspace"].id
-    await db_session.merge(Workspace(id=workspace_id, name="Receiver delivery", slug="receiver-delivery"))
-    scope = DeliveryAuthorizationScope(
-        workspace_id=workspace_id,
-        project_id=scoped["project"].id,
-        workflow_id=scoped["workflow"].id,
-        studio_workflow_version_id=scoped["version"].id,
-        run_id=scoped["run"].id,
-    )
-    endpoint = receiver.resolve_endpoint("receiver-primary", "credential-a")
-    policy_version, policy_snapshot, policy_hash = delivery_execution._current_policy()
-    target_id, revision_id, decision_id = (str(uuid.uuid4()) for _ in range(3))
-    now = datetime.now(timezone.utc)
-    claims = [{"claimId": "claim-1", "contentHash": "a" * 64}]
-    manifests = [{"manifestHash": "b" * 64}]
-    payload = {
-        "schemaVersion": "delivery-claim-manifest-v1",
-        "claims": claims,
-        "manifestHashes": ["b" * 64],
-    }
-    target = DeliveryTarget(id=target_id, workspace_id=workspace_id, receiver_identity=endpoint.receiver_identity)
-    revision = DeliveryTargetRevision(
-        id=revision_id, target_id=target_id, revision=1, workspace_id=scope.workspace_id,
-        project_id=scope.project_id, workflow_id=scope.workflow_id,
-        studio_workflow_version_id=scope.studio_workflow_version_id, run_id=scope.run_id,
-        endpoint_identity=endpoint.identity, non_secret_config_hash=receiver.endpoint_config_hash(endpoint),
-        credential_reference=endpoint.credential_reference, policy_version=policy_version,
-        policy_snapshot=policy_snapshot, policy_hash=policy_hash,
-    )
-    decision = DeliveryAuthorizationDecisionV1(
-        id=decision_id, version="v1", workspace_id=scope.workspace_id, project_id=scope.project_id,
-        workflow_id=scope.workflow_id, studio_workflow_version_id=scope.studio_workflow_version_id,
-        run_id=scope.run_id, node_id="delivery-node", operation_id="delivery-op",
-        idempotency_key="delivery-idempotency", target_id=target_id, target_revision_id=revision_id,
-        target_revision=1, endpoint_identity=endpoint.identity,
-        non_secret_config_hash=receiver.endpoint_config_hash(endpoint), policy_version=policy_version,
-        policy_snapshot=policy_snapshot, policy_hash=policy_hash, pin_sequence=1,
-        research_revision_id="research-1", manifest_set_hash="b" * 64, selected_claims=claims,
-        manifest_set=manifests,
-        sanitized_payload_manifest={
-            "payloadSchemaVersion": "delivery-claim-manifest-v1",
-            "payloadReference": "frozen-claim-manifest",
-            "payloadHash": receiver.canonical_hash(payload),
-            "sanctionedReferenceHashes": ["a" * 64, "b" * 64],
-            "redactionProfileVersion": "delivery-authorization-redaction-v1",
-        },
-        payload_schema_version="delivery-claim-manifest-v1", payload_reference="frozen-claim-manifest",
-        payload_hash=receiver.canonical_hash(payload), redaction_profile_version="delivery-authorization-redaction-v1",
-        approver_actor_id="approver-1", approver_actor_type="user", approver_principal="approver-1",
-        approver_capability="actions.approve", approval_policy_version="workspace-rbac-v1",
-        approved_at=now, approval_evidence=[], binding_hash="", decision_hash="", decisioned_at=now,
-    )
-    decision.approval_evidence = [delivery_execution._approval(decision, scope)]
-    binding = delivery_execution._decision_binding(decision, scope)
-    decision.binding_hash = receiver.canonical_hash(binding)
-    decision.decision_hash = receiver.canonical_hash(
-        {"binding": binding, "approvalEvidence": decision.approval_evidence, "decisionedAt": now.isoformat()}
-    )
-    db_session.add_all((target, revision, decision))
-    await db_session.commit()
+    scope, decision_id = await _stored_frozen_decision(db_session)
 
     async def send_to_durable_receiver(endpoint, body, headers, *, timeout_seconds, status_query=False):
         path = "/api/v1/controlled-receiver/v2/status" if status_query else "/api/v1/controlled-receiver/v2/deliver"
@@ -196,3 +207,75 @@ async def test_executor_sends_to_durable_receiver_and_replays_one_verified_recei
     assert [(item.outcome, item.receipt_hash) for item in stable.reconciliations] == [
         (item.outcome, item.receipt_hash) for item in reconciled.reconciliations
     ]
+
+
+@pytest.mark.asyncio
+async def test_execution_and_read_survive_recreated_database_sessions(client: AsyncClient, db_session, monkeypatch):
+    scope, decision_id = await _stored_frozen_decision(db_session)
+
+    async def send_to_durable_receiver(endpoint, body, headers, *, timeout_seconds, status_query=False):
+        path = "/api/v1/controlled-receiver/v2/status" if status_query else "/api/v1/controlled-receiver/v2/deliver"
+        return await client.post(path, content=body, headers=headers)
+
+    monkeypatch.setattr(delivery_execution, "pinned_post", send_to_durable_receiver)
+    sessions = async_sessionmaker(db_session.bind, expire_on_commit=False)
+    async with sessions() as executing_session:
+        executed = await delivery_execution.execute_delivery(executing_session, scope=scope, decision_id=decision_id)
+        await executing_session.commit()
+    async with sessions() as recreated_session:
+        recovered = await delivery_execution.get_delivery_execution(
+            recreated_session, scope=scope, execution_id=executed.execution_id
+        )
+    assert recovered.outcome == "accepted"
+    assert recovered.attempt_count == 1
+
+
+@pytest.mark.asyncio
+async def test_studio_execution_routes_preserve_durable_attempt_and_reconciliation_evidence(client: AsyncClient, db_session, monkeypatch):
+    scope, decision_id = await _stored_frozen_decision(db_session)
+    manager = User(id="delivery-execution-manager", subject="delivery-execution-manager")
+    db_session.add_all((
+        manager,
+        WorkspaceMembership(
+            workspace_id=scope.workspace_id, user_id=manager.id, role=WorkspaceRole.MAINTAINER
+        ),
+    ))
+    await db_session.commit()
+
+    async def override_identity():
+        return RequestIdentity(subject=manager.subject)
+
+    async def send_to_durable_receiver(endpoint, body, headers, *, timeout_seconds, status_query=False):
+        path = "/api/v1/controlled-receiver/v2/status" if status_query else "/api/v1/controlled-receiver/v2/deliver"
+        return await client.post(path, content=body, headers=headers)
+
+    app.dependency_overrides[get_request_identity] = override_identity
+    monkeypatch.setattr(delivery_execution, "pinned_post", send_to_durable_receiver)
+    try:
+        route = _route(scope)
+        created = await client.post(route, json={"decisionId": decision_id})
+        assert created.status_code == 201
+        execution = created.json()["data"]
+        assert execution["outcome"] == "accepted"
+        assert execution["attemptCount"] == 1
+
+        read = await client.get(f"{route}/{execution['executionId']}")
+        listed = await client.get(route)
+        assert read.status_code == listed.status_code == 200
+        assert read.json()["data"]["executionId"] == execution["executionId"]
+        assert [item["executionId"] for item in listed.json()["data"]["items"]] == [execution["executionId"]]
+
+        cancelled = await client.post(f"{route}/{execution['executionId']}/cancel")
+        assert cancelled.status_code == 200
+        assert cancelled.json()["data"]["outcome"] == "accepted"
+
+        row = await db_session.get(DeliveryExecution, execution["executionId"])
+        row.state, row.final_outcome = "blocked", "unknown"
+        await db_session.commit()
+        reconciled = await client.post(f"{route}/{execution['executionId']}/reconcile")
+        assert reconciled.status_code == 200
+        assert reconciled.json()["data"]["outcome"] == "accepted"
+        assert reconciled.json()["data"]["attemptCount"] == 1
+        assert len(reconciled.json()["data"]["reconciliations"]) == 1
+    finally:
+        app.dependency_overrides.pop(get_request_identity, None)
