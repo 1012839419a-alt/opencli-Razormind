@@ -10,6 +10,7 @@ export default defineConfig({
     command: 'node .next/standalone/server.js',
     env: {
       HOSTNAME: '127.0.0.1',
+      NODE_ENV: 'production',
       PORT: '3000',
     },
     url: 'http://127.0.0.1:3000',
