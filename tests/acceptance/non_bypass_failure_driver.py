@@ -789,6 +789,7 @@ def duplicate_dlq(run: str) -> dict[str, Any]:
                 and value.get("counts", {}).get("dlq") == 1
                 and value.get("counts", {}).get("unknown") == 0
             ),
+            timeout=240,
         )
         hashes.update(
             {
