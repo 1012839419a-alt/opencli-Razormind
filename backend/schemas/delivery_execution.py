@@ -24,8 +24,11 @@ class DeliveryExecutionAttemptEvidenceV1(_Model):
     receipt: str = Field(min_length=1, max_length=32)
     protocol: str = Field(min_length=1, max_length=32)
     outcome: Literal["accepted", "rejected", "unknown"]
+    receipt_id: str | None = Field(default=None, min_length=1, max_length=128)
+    receipt_hash: str | None = Field(
+        default=None, min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$"
+    )
     observed_at: datetime
-
 
 
 class DeliveryExecutionReconciliationEvidenceV1(_Model):

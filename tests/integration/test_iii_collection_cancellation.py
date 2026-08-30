@@ -63,10 +63,13 @@ async def test_late_facts_after_cancellation_preserve_cancellation_precedence(
     assert status["state"] == "cancel_requested"
     assert status["blockingStage"] == "cancellation"
     assert status["recoveryAction"] == "await_lifecycle"
-    assert {reference["kind"] for reference in status["evidenceReferences"]} >= {
-        "expected_key_report",
-        "ingress_receipt",
+    evidence = {
+        reference["kind"]: reference
+        for reference in status["evidenceReferences"]
+        if reference["kind"] in {"expected_key_report", "ingress_receipt"}
     }
+    assert evidence["expected_key_report"]["hash"] == report["reportHash"]
+    assert evidence["ingress_receipt"]["hash"] == receipt["receiptHash"]
 
     outbound.state = "cancelled"
     await db_session.commit()

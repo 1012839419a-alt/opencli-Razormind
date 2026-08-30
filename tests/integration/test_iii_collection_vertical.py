@@ -202,11 +202,14 @@ async def test_lifecycle_replay_conflict_unavailable_status_and_redaction(client
         "/api/v1/iii-collections/lifecycle", json=lifecycle, headers=lifecycle_headers
     )
     assert first.status_code == 200
+    first_event_hash = first.json()["data"]["eventHash"]
+    assert len(first_event_hash) == 64
     assert first.json()["data"]["duplicate"] is False
     replay = await client.post(
         "/api/v1/iii-collections/lifecycle", json=lifecycle, headers=lifecycle_headers
     )
     assert replay.status_code == 200
+    assert replay.json()["data"]["eventHash"] == first_event_hash
     assert replay.json()["data"]["duplicate"] is True
     changed = {**lifecycle, "summary": {"items_fetched": 1}}
     conflict = await client.post(
@@ -247,6 +250,16 @@ async def test_lifecycle_replay_conflict_unavailable_status_and_redaction(client
     assert "bilibili" not in rendered
     assert "keyword" not in rendered
     assert "admin_command_json" not in rendered
+    lifecycle_refs = {
+        reference["eventType"]: reference["hash"]
+        for reference in vertical["evidenceReferences"]
+        if reference["kind"] == "lifecycle"
+    }
+    assert set(lifecycle_refs) == {
+        "bridge_accepted", "collector_started", "collector_returned",
+    }
+    assert lifecycle_refs["bridge_accepted"] == first_event_hash
+    assert all(len(value) == 64 for value in lifecycle_refs.values())
     persisted = (
         await db_session.execute(
             select(IIICollectionLifecycleObservationV1).where(
