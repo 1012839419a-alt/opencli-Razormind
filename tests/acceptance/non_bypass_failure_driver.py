@@ -91,10 +91,48 @@ def admin_crash(run: str) -> dict[str, Any]:
                 time.sleep(0.5)
         status = _get(client, control, f"{collections}/{command_id}", proposer)
     hashes = {"submission": submission["payloadSha256"]}
+
     for item in status.get("evidenceReferences", []):
         if item.get("hash"):
             hashes[item.get("kind", "public")] = item["hash"]
     return {"scenario": "admin-crash", "run": run, "fault": "primary-admin-crash", "actuator": {"name": "proof-iii-actuator", "invocationHash": hashlib.sha256(command_id.encode()).hexdigest()}, "correlation": {"commandId": command_id, "attemptId": attempt_id, "workflowRunId": run_id, "hashes": hashes}, "collection": {"blockingStage": "none", "recoveryAction": "resume", "sideEffectUncertainty": True}, "materialization": {"status": "unknown", "blocker": "none", "recoveryAction": "none", "manifestHash": None, "reconciliationRevision": None, "pageSnapshotAsOf": None}, "graph": {"pin": None, "sequence": None, "readBlocker": "none", "mutationStatus": "none"}, "delivery": {"state": "none", "outcome": "none", "attemptCount": 0, "receiptHash": None, "reconciliation": "none"}, "redactionProfile": "failure-v1", "timing": {"startedAt": 0, "completedAt": 1, "deadlineSeconds": 360}, "governanceReference": {"artifactId": "pending", "keyId": "pending", "trustRootFingerprint": "pending"}, "authority": "authenticated-scoped-public-api"}
+def iii_unreachable(run: str) -> dict[str, Any]:
+    fleet = {"X-API-Token": os.environ["API_AUTH_TOKEN"]}
+    bootstrap = {**fleet, "Authorization": f"Bearer {os.environ['BOOTSTRAP_ADMIN_TOKEN']}"}
+    proposer = {**fleet, "Authorization": f"Bearer {os.environ['PROOF_PROPOSER_JWT']}"}
+    primary = "http://proof-admin:8000/api/v1"
+    with httpx.Client(timeout=60) as client:
+        workspace = _post(client, primary, "/platform/workspaces", {"name": "III unreachable", "slug": run, "first_admin_subject": "bootstrap-admin", "first_admin_email": "bootstrap@proof.invalid", "first_admin_display_name": "Proof bootstrap"}, bootstrap)
+        workspace_id = workspace["id"]
+        _post(client, primary, f"/workspaces/{workspace_id}/members", {"subject": "proof-proposer", "email": "proof-proposer@proof.invalid", "display_name": "proof-proposer", "role": "operator"}, bootstrap)
+        asyncio.run(_seed(workspace_id, run))
+        boot = _post(client, primary, f"/workspaces/{workspace_id}/projects/bootstrap", {"project": {"name": "III unreachable", "slug": run}, "workflow": {"name": "III unreachable", "graph": _graph()}}, bootstrap)
+        route = f"/workspaces/{workspace_id}/projects/{boot['project']['id']}/workflows/{boot['primary_workflow']['id']}/runs"
+        validation = _post(client, primary, route.rsplit("/runs", 1)[0] + "/draft/validation-runs", {}, proposer)
+        if not validation.get("valid"):
+            raise RuntimeError("public workflow validation failed")
+        _post(client, primary, route.rsplit("/runs", 1)[0] + "/versions", {"reason": "III unreachable", "expectedRevision": 1, "validationRunId": validation["runId"]}, proposer)
+        workflow_run = _post(client, primary, route, {"inputs": {}, "responseMode": "async", "user": "proof-proposer", "requestId": run, "idempotencyKey": run}, proposer)
+        collections = f"{route}/{workflow_run['runId']}/iii-collections"
+        _coordination(f"{run}.iii-ready").write_text(json.dumps({"route": collections}), encoding="utf-8")
+        release = _coordination(f"{run}.iii-release")
+        deadline = time.monotonic() + 60
+        while not release.exists() and time.monotonic() < deadline:
+            time.sleep(0.2)
+        if not release.exists():
+            raise RuntimeError("orchestrator did not arm the real III path gate")
+        submission = _post(client, primary, collections, {"version": "v1", "idempotencyKey": run, "nodeId": "opencli-source", "collection": {"site": "bilibili", "command": "search", "args": {"keyword": "vertical-proof"}, "sourceBindingId": "proof-binding", "sourceBindingRevisionId": "proof-binding-v1", "sourceBindingRevisionNumber": 1}}, proposer)
+        command_id, attempt_id = submission["commandId"], submission["attemptId"]
+        deadline = time.monotonic() + 30
+        status: dict[str, Any] = {}
+        while time.monotonic() < deadline:
+            status = _get(client, primary, f"{collections}/{command_id}", proposer)
+            if status.get("blockingStage") == "bridge_unavailable":
+                break
+            time.sleep(0.5)
+    if status.get("blockingStage") != "bridge_unavailable":
+        raise RuntimeError("public collection status did not prove real III bridge unavailability")
+    return {"scenario": "iii-unreachable", "run": run, "fault": "primary-to-iii-disconnected", "actuator": {"name": "proof-iii-actuator", "invocationHash": hashlib.sha256(command_id.encode()).hexdigest()}, "correlation": {"commandId": command_id, "attemptId": attempt_id, "workflowRunId": workflow_run["runId"], "hashes": {"submission": submission["payloadSha256"]}}, "collection": {"blockingStage": "bridge_unavailable", "recoveryAction": "retry", "sideEffectUncertainty": True}, "materialization": {"status": "unknown", "blocker": "none", "recoveryAction": "none", "manifestHash": None, "reconciliationRevision": None, "pageSnapshotAsOf": None}, "graph": {"pin": None, "sequence": None, "readBlocker": "none", "mutationStatus": "unchanged"}, "delivery": {"state": "none", "outcome": "none", "attemptCount": 0, "receiptHash": None, "reconciliation": "none"}, "redactionProfile": "failure-v1", "timing": {"startedAt": 0, "completedAt": 1, "deadlineSeconds": 360}, "governanceReference": {"artifactId": "pending", "keyId": "pending", "trustRootFingerprint": "pending"}, "authority": "authenticated-scoped-public-api"}
 
 
 def main() -> int:
@@ -102,9 +140,13 @@ def main() -> int:
     parser.add_argument("--scenario", required=True)
     parser.add_argument("--run", required=True)
     args = parser.parse_args()
-    if args.scenario != "admin-crash":
+    if args.scenario == "admin-crash":
+        result = admin_crash(args.run)
+    elif args.scenario == "iii-unreachable":
+        result = iii_unreachable(args.run)
+    else:
         raise RuntimeError("scenario driver is not implemented")
-    print(json.dumps(admin_crash(args.run), sort_keys=True))
+    print(json.dumps(result, sort_keys=True))
     return 0
 
 
