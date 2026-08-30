@@ -101,6 +101,7 @@ services:
   # Admin's public registry address resolves to the proxy only.  The actual
   # receiver and its database have no shared Admin route.
   proof-delivery-proxy:
+    profiles: [receiver]
     image: "opencli-proof-root:${PROOF_CATALOG_DIGEST:-unbound}"
     build:
       context: .
@@ -126,10 +127,12 @@ services:
       retries: 20
     labels: *failure-labels
   proof-controlled-receiver:
+    profiles: [receiver]
     image: "opencli-proof-root:${PROOF_CATALOG_DIGEST:-unbound}"
     networks: !override [proof-receiver-backend, proof-receiver-db]
     labels: *failure-labels
   proof-receiver-postgres:
+    profiles: [receiver]
     networks: !override [proof-receiver-db]
     labels: *failure-labels
 

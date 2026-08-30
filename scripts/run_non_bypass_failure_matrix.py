@@ -59,6 +59,13 @@ class ScenarioLedger:
     artifact: Path
 
 
+RECEIVER_PROFILE_SCENARIOS = frozenset({"receiver-recovery", "cancel-in-flight"})
+
+
+def _scenario_compose_profiles(scenario: str) -> str:
+    return "receiver" if scenario in RECEIVER_PROFILE_SCENARIOS else ""
+
+
 def _run(
     command: list[str],
     *,
@@ -223,6 +230,7 @@ def _build_catalog(env: dict[str, str], base: Path, overlay: Path) -> dict[str, 
     catalog_env = {
         **builder_env,
         **_receiver_address_values(catalog_ledger.project, builder_env),
+        "COMPOSE_PROFILES": "receiver",
     }
     configured = _compose(
         catalog_ledger,
@@ -733,6 +741,7 @@ def run_matrix(
             "PROOF_ARTIFACT_DIR": str(ledger.artifact),
             "PROOF_FIXTURE_DIGEST": _fixture_digest(),
             "COMPOSE_PARALLEL_LIMIT": "1",
+            "COMPOSE_PROFILES": _scenario_compose_profiles(scenario),
             "PROOF_CATALOG_DIGEST": catalog["digest"],
         }
         started = time.monotonic()

@@ -776,6 +776,30 @@ def test_receiver_recovery_overlay_isolates_real_receiver_behind_tls_proxy():
     assert base["services"]["proof-controlled-receiver"]["networks"] == {
         "proof-receiver": {"ipv4_address": "8.8.8.8"}
     }
+def test_receiver_profile_routes_only_receiver_dependent_scenarios():
+    runner = _runner_module()
+    overlay = yaml.load(
+        (ROOT / "docker-compose.non-bypass-failure.yml").read_text(encoding="utf-8"),
+        Loader=ComposeLoader,
+    )
+
+    assert {
+        service: overlay["services"][service]["profiles"]
+        for service in (
+            "proof-delivery-proxy",
+            "proof-controlled-receiver",
+            "proof-receiver-postgres",
+        )
+    } == {
+        "proof-delivery-proxy": ["receiver"],
+        "proof-controlled-receiver": ["receiver"],
+        "proof-receiver-postgres": ["receiver"],
+    }
+    assert runner._scenario_compose_profiles("receiver-recovery") == "receiver"
+    assert runner._scenario_compose_profiles("cancel-in-flight") == "receiver"
+    assert runner._scenario_compose_profiles("cancel-before-dispatch") == ""
+
+
 
 
 def test_receiver_address_tuple_is_deterministic_global_and_overrideable():
@@ -820,10 +844,11 @@ def test_receiver_address_tuple_is_deterministic_global_and_overrideable():
 
 
 
-def test_receiver_tuple_drives_registry_certificate_and_compose_values(
+def test_cancel_before_uses_no_receiver_profile_but_configures_authorization_tuple(
     monkeypatch, tmp_path
 ):
     runner = _runner_module()
+    assert runner._scenario_compose_profiles("cancel-before-dispatch") == ""
     ledger = runner.ScenarioLedger(
         "cancel-before-dispatch", "nbf-cancel-a1b2", tmp_path, tmp_path
     )
@@ -898,6 +923,7 @@ def test_catalog_digest_is_address_independent_but_catalog_config_has_a_tuple(
     assert {name: catalog_env[name] for name in receiver_values} == receiver_values
     assert catalog_env["PROOF_CATALOG_DIGEST"] == "a" * 64
 
+    assert catalog_env["COMPOSE_PROFILES"] == "receiver"
 
 def test_receiver_recovery_runner_restarts_only_delivery_boundary():
     runner = (ROOT / "scripts/run_non_bypass_failure_matrix.py").read_text(
