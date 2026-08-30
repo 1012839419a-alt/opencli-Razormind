@@ -179,6 +179,27 @@ async def test_executor_marks_stale_reserved_lease_unknown_without_resending(mon
     assert results[0].transport_classification == "crash-ambiguous"
 
 
+
+@pytest.mark.asyncio
+async def test_executor_does_not_send_while_a_competing_live_lease_exists(monkeypatch):
+    db, decision, execution, results, _sleeps = _executor_fixture(monkeypatch, [])
+    execution.lease_token = "competing-lease"
+    execution.lease_acquired_at = datetime.now(timezone.utc)
+    result = await delivery_execution.execute_delivery(db, scope=SimpleNamespace(), decision_id=decision.id)
+    assert result.outcome is None
+    assert execution.state == "pending"
+    assert results == []
+
+
+@pytest.mark.asyncio
+async def test_executor_honors_cancellation_before_reserving_a_send(monkeypatch):
+    db, decision, execution, results, _sleeps = _executor_fixture(monkeypatch, [])
+    execution.cancel_requested_at = datetime.now(timezone.utc)
+    result = await delivery_execution.execute_delivery(db, scope=SimpleNamespace(), decision_id=decision.id)
+    assert result.outcome == "unknown"
+    assert execution.state == "cancelled"
+    assert results == []
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("status", [200, 404])
 async def test_executor_treats_unverified_2xx_and_4xx_as_terminal_unknown(monkeypatch, status):
