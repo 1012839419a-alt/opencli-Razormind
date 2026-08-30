@@ -137,3 +137,4 @@ networks:
     ipam:
       config:
         - subnet: ${PROOF_RECEIVER_SUBNET:-1.1.1.0/24}
+          gateway: ${PROOF_RECEIVER_GATEWAY:-1.1.1.254}
