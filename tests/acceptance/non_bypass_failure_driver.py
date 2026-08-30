@@ -113,7 +113,7 @@ def admin_crash(run: str, scenario: str = "admin-crash") -> dict[str, Any]:
         if scenario == "no-report":
             materialization = _post(client, primary, f"{collections}/{command_id}/materialize", {}, proposer)
             batch_id = materialization["batchId"]
-            materialization = _get(client, primary, f"{route}/evidence-batches/v1/{batch_id}/status", proposer)
+            materialization = _get(client, primary, f"{route}/{run_id}/evidence-batches/v1/{batch_id}/status", proposer)
     hashes = {"submission": submission["payloadSha256"]}
 
     for item in status.get("evidenceReferences", []):
