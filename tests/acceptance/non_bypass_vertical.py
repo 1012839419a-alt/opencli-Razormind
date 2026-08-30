@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import os
 import time
@@ -25,6 +26,44 @@ def data(response: httpx.Response) -> dict[str, Any]:
     if not isinstance(value, dict) or not isinstance(value.get("data"), dict):
         raise RuntimeError(f"Admin response has no data object: {response.text[:300]}")
     return value["data"]
+
+
+def source_binding_hash(
+    *,
+    run: str,
+    workflow_id: str,
+    workflow_run_id: str,
+    command_id: str,
+    attempt_id: str,
+    attempt_number: int,
+    task_id: str,
+    payload_hash: str,
+    batch_id: str,
+    manifest_hash: str,
+    lifecycle_hashes: dict[str, str],
+    report_hash: str,
+    ingress_receipt_hash: str,
+) -> str:
+    """Mirror the proof contract's canonical collection/materialization binding."""
+
+    value = {
+        "run": run,
+        "workflowId": workflow_id,
+        "workflowRunId": workflow_run_id,
+        "commandId": command_id,
+        "attemptId": attempt_id,
+        "attemptNumber": attempt_number,
+        "taskId": task_id,
+        "payloadHash": payload_hash,
+        "batchId": batch_id,
+        "manifestHash": manifest_hash,
+        "lifecycleHashes": lifecycle_hashes,
+        "reportHash": report_hash,
+        "ingressReceiptHash": ingress_receipt_hash,
+    }
+    return hashlib.sha256(
+        json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
 
 
 def post(
@@ -190,6 +229,7 @@ def main() -> int:
         )
         project = bootstrap_result["project"]
         workflow = bootstrap_result["primary_workflow"]
+        workflow_id = workflow["id"]
         route = (
             f"/workspaces/{workspace_id}/projects/{project['id']}/workflows/{workflow['id']}/runs"
         )
@@ -299,6 +339,46 @@ def main() -> int:
             reviewer,
         )
         pinned_fold = pinned["pinnedFold"]
+        vertical_status = get(client, f"{collection_route}/{command_id}", proposer)
+        if vertical_status["commandId"] != command_id or vertical_status["attemptId"] != attempt_id:
+            raise RuntimeError("scoped status command/attempt correlation failed")
+        lifecycle = {
+            item["eventType"]: item["hash"]
+            for item in vertical_status["evidenceReferences"]
+            if item["kind"] == "lifecycle"
+        }
+        expected_lifecycle = {"bridge_accepted", "collector_started", "collector_returned"}
+        if set(lifecycle) != expected_lifecycle:
+            raise RuntimeError(f"lifecycle facts are incomplete: {vertical_status}")
+        report_hash = next(
+            item["hash"]
+            for item in vertical_status["evidenceReferences"]
+            if item["kind"] == "expected_key_report"
+        )
+        ingress_receipt_hash = next(
+            item["hash"]
+            for item in vertical_status["evidenceReferences"]
+            if item["kind"] == "ingress_receipt"
+        )
+        operation_binding = source_binding_hash(
+            run=args.run,
+            workflow_id=workflow_id,
+            workflow_run_id=run_id,
+            command_id=command_id,
+            attempt_id=attempt_id,
+            attempt_number=submission["attemptNumber"],
+            task_id=submission["taskId"],
+            payload_hash=submission["payloadSha256"],
+            batch_id=manifest_ref["batchId"],
+            manifest_hash=manifest_ref["manifestHash"],
+            lifecycle_hashes={
+                "bridgeAccepted": lifecycle["bridge_accepted"],
+                "collectorStarted": lifecycle["collector_started"],
+                "collectorReturned": lifecycle["collector_returned"],
+            },
+            report_hash=report_hash,
+            ingress_receipt_hash=ingress_receipt_hash,
+        )
         target = post(
             client,
             f"{route}/{run_id}/delivery-targets",
@@ -309,7 +389,7 @@ def main() -> int:
             },
             reviewer,
         )
-        operation_id = f"delivery-{args.run}"
+        operation_id = f"delivery-{args.run}-{operation_binding}"
         decision = post(
             client,
             f"{route}/{run_id}/delivery-authorizations",
@@ -344,27 +424,6 @@ def main() -> int:
             or not final_attempt.get("receiptHash")
         ):
             raise RuntimeError(f"delivery receipt was not durably verified: {execution}")
-        vertical_status = get(client, f"{collection_route}/{command_id}", proposer)
-        if vertical_status["commandId"] != command_id or vertical_status["attemptId"] != attempt_id:
-            raise RuntimeError("scoped status command/attempt correlation failed")
-        lifecycle = {
-            item["eventType"]: item["hash"]
-            for item in vertical_status["evidenceReferences"]
-            if item["kind"] == "lifecycle"
-        }
-        expected_lifecycle = {"bridge_accepted", "collector_started", "collector_returned"}
-        if set(lifecycle) != expected_lifecycle:
-            raise RuntimeError(f"lifecycle facts are incomplete: {vertical_status}")
-        report_hash = next(
-            item["hash"]
-            for item in vertical_status["evidenceReferences"]
-            if item["kind"] == "expected_key_report"
-        )
-        ingress_receipt_hash = next(
-            item["hash"]
-            for item in vertical_status["evidenceReferences"]
-            if item["kind"] == "ingress_receipt"
-        )
         print(
             json.dumps(
                 {
@@ -386,6 +445,7 @@ def main() -> int:
                     },
                     "command": {
                         "id": command_id,
+                        "workflowId": workflow_id,
                         "workflowRunId": run_id,
                         "payloadHash": submission["payloadSha256"],
                     },
@@ -393,6 +453,7 @@ def main() -> int:
                         "id": attempt_id,
                         "commandId": command_id,
                         "attemptNumber": submission["attemptNumber"],
+                        "taskId": submission["taskId"],
                     },
                     "lifecycleHashes": {
                         "bridgeAccepted": lifecycle["bridge_accepted"],
@@ -411,6 +472,21 @@ def main() -> int:
                         "recordRefSetHash": manifest_ref["recordRefSetHash"],
                         "materializationStatus": manifest_ref["materializationStatus"],
                         "materializationAuthority": "scoped-admin-api",
+                        "sourceCorrelation": {
+                            "workflowRunId": run_id,
+                            "commandId": command_id,
+                            "attemptId": attempt_id,
+                            "payloadHash": submission["payloadSha256"],
+                            "batchId": manifest_ref["batchId"],
+                            "manifestHash": manifest_ref["manifestHash"],
+                            "reportHash": report_hash,
+                            "ingressReceiptHash": ingress_receipt_hash,
+                            "lifecycleHashes": {
+                                "bridgeAccepted": lifecycle["bridge_accepted"],
+                                "collectorStarted": lifecycle["collector_started"],
+                                "collectorReturned": lifecycle["collector_returned"],
+                            },
+                        },
                     },
                     "pin": {
                         "sequence": pinned_fold["sequence"],
