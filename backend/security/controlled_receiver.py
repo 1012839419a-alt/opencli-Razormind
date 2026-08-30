@@ -8,6 +8,7 @@ import hmac
 import ipaddress
 import json
 import re
+import os
 import secrets
 import time
 import uuid
@@ -349,7 +350,9 @@ async def pinned_post(
     if any(not any(ipaddress.ip_address(value) in network for network in endpoint.allowed_networks) for value in ips):
         raise ControlledReceiverSecurityError("Controlled receiver DNS answer is outside its fixed network scope")
     _, host, _, _ = _strict_url(url)
-    transport = PinnedAsyncHTTPTransport(host, ips)
+    transport = PinnedAsyncHTTPTransport(
+        host, ips, verify=os.environ.get("SSL_CERT_FILE") or True
+    )
     async with httpx.AsyncClient(transport=transport, timeout=timeout_seconds, follow_redirects=False, trust_env=False) as client:
         async with client.stream("POST", url, content=body, headers=headers) as response:
             if response.is_redirect:

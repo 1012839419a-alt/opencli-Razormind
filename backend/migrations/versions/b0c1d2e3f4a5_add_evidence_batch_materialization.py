@@ -60,7 +60,7 @@ def upgrade() -> None:
     op.create_index("ix_evidence_batch_materialization_manifests_batch_id", "evidence_batch_materialization_manifests", ["batch_id"])
     op.create_index("ix_evidence_batch_materialization_manifests_command_id", "evidence_batch_materialization_manifests", ["command_id"])
     op.create_index("ix_evidence_batch_materialization_manifests_attempt_id", "evidence_batch_materialization_manifests", ["attempt_id"])
-    op.create_index("ix_evidence_batch_materialization_manifests_materialization_status", "evidence_batch_materialization_manifests", ["materialization_status"])
+    op.create_index("ix_evidence_batch_materialization_status", "evidence_batch_materialization_manifests", ["materialization_status"])
     op.create_index("ix_evidence_batch_materialization_scope", "evidence_batch_materialization_manifests", ["workspace_id", "project_id", "workflow_id", "run_id", "batch_id"])
     op.create_table(
         "evidence_batch_materialization_events",

@@ -13,3 +13,11 @@ tests/
 .git/
 .gitignore
 *.md
+
+# The acceptance-only Docker target copies these deterministic harness inputs.
+!tests/
+!tests/acceptance/
+!tests/acceptance/non_bypass_vertical.py
+!tests/acceptance/fixtures/
+!tests/acceptance/fixtures/opencli-proof
+!tests/acceptance/fixtures/opencli-proof.sha256

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import logging
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -47,6 +48,8 @@ from backend.workflow.delivery_authorization import (
     _current_policy,
 )
 
+
+logger = logging.getLogger(__name__)
 class DeliveryExecutionConflictError(RuntimeError):
     pass
 
@@ -475,6 +478,10 @@ async def execute_delivery(db: AsyncSession, *, scope: DeliveryAuthorizationScop
         except ControlledReceiverSecurityError:
             transport, receipt_classification, protocol = "protocol-error", "missing", "invalid"
         except httpx.HTTPError:
+            logger.warning(
+                "Controlled receiver delivery transport failed",
+                exc_info=True,
+            )
             transport, receipt_classification, retry = "network-error", "missing", True
         await db.refresh(execution)
         if execution.final_outcome is not None or execution.lease_token != lease_token:
