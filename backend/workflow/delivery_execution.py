@@ -300,16 +300,16 @@ async def _claim(db: AsyncSession, scope: DeliveryAuthorizationScope, decision: 
         execution_binding_hash=binding,
         state="pending",
     )
-    db.add(execution)
     try:
-        await db.flush()
-        return execution
+        async with db.begin_nested():
+            db.add(execution)
+            await db.flush()
     except IntegrityError:
-        await db.rollback()
         existing = await db.scalar(select(DeliveryExecution).where(DeliveryExecution.decision_id == decision.id))
         if existing is None or existing.execution_binding_hash != binding:
             raise DeliveryExecutionConflictError("Concurrent execution claim conflicts")
         return existing
+    return execution
 
 
 async def _record(
