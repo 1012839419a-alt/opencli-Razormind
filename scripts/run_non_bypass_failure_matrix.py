@@ -71,6 +71,43 @@ def _compose(ledger: ScenarioLedger, env: dict[str, str], base: Path, overlay: P
     return _run(["docker", "compose", "-p", ledger.project, "-f", str(base), "-f", str(overlay), *args], env=env, input=input, timeout=timeout)
 
 
+
+def _configure_failure_receiver(ledger: ScenarioLedger, values: dict[str, str]) -> None:
+    """Bind the failure-only public-class receiver without touching #36's base."""
+    ip = os.environ.get("PROOF_RECEIVER_IP", "1.1.1.1")
+    subnet = os.environ.get("PROOF_RECEIVER_SUBNET", "1.1.1.0/24")
+    credentials = json.loads(values["CONTROLLED_RECEIVER_CREDENTIALS_JSON"])
+    inbound = json.loads(values["CONTROLLED_RECEIVER_INBOUND_KEYS_JSON"])
+    receipts = json.loads(values["CONTROLLED_RECEIVER_RECEIPT_KEYS_JSON"])
+    credential_reference, request_key = next(iter(credentials.items()))
+    request_key_id = next(iter(inbound))
+    receipt_key_id = next(iter(receipts))
+    values["CONTROLLED_RECEIVER_REGISTRY_JSON"] = json.dumps({
+        "receiver-channel-proof": {
+            "url": f"https://{ip}:8000/api/v1/controlled-receiver/v2/deliver",
+            "receiverIdentity": "controlled-receiver-proof",
+            "credentialReference": credential_reference,
+            "requestKeyId": request_key_id,
+            "receiptKeyId": receipt_key_id,
+            "allowedNetworks": [subnet],
+            "durableStatus": "accepted",
+        }
+    }, sort_keys=True, separators=(",", ":"))
+    (ledger.scratch / "controlled_receiver_registry_json").write_text(values["CONTROLLED_RECEIVER_REGISTRY_JSON"], encoding="utf-8")
+    os.chmod(ledger.scratch / "controlled_receiver_registry_json", 0o600)
+    (ledger.scratch / "receiver.ext").write_text(
+        "basicConstraints=critical,CA:FALSE\n"
+        "keyUsage=critical,digitalSignature,keyEncipherment\n"
+        "extendedKeyUsage=serverAuth\n"
+        f"subjectAltName=DNS:proof-controlled-receiver,IP:{ip}\n",
+        encoding="utf-8",
+    )
+    _run([
+        "openssl", "x509", "-req", "-days", "1", "-in", str(ledger.scratch / "receiver.csr"),
+        "-CA", str(ledger.scratch / "ca.pem"), "-CAkey", str(ledger.scratch / "ca-key.pem"),
+        "-CAcreateserial", "-extfile", str(ledger.scratch / "receiver.ext"),
+        "-out", str(ledger.scratch / "receiver-cert.pem"),
+    ], env={**os.environ})
 def _admit(ledger: ScenarioLedger, env: dict[str, str], base: Path, overlay: Path) -> dict[str, Any]:
     """Build one scenario-private catalog, then admit it before `up --no-build`."""
     digest = _fixture_digest()
@@ -169,6 +206,7 @@ def run_matrix(artifact_dir: Path, *, compose_file: Path, overlay_file: Path) ->
         ledger.artifact.mkdir(mode=0o700, parents=True, exist_ok=True)
         base_ledger = HappyRunLedger(run_id, ledger.project, ledger.scratch, ledger.artifact)
         values = _make_secrets(base_ledger)
+        _configure_failure_receiver(ledger, values)
         _make_identities(base_ledger, values)
         env = {
             **os.environ,

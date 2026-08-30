@@ -6,6 +6,7 @@ x-failure-labels: &failure-labels
 
 services:
   proof-admin:
+    networks: !override [proof-control, proof-query, proof-callback, proof-failure-receiver, proof-iii-admin]
     labels: *failure-labels
   proof-driver:
     labels: *failure-labels
@@ -51,6 +52,9 @@ services:
   proof-oidc:
     labels: *failure-labels
   proof-controlled-receiver:
+    networks: !override
+      proof-failure-receiver:
+        ipv4_address: ${PROOF_RECEIVER_IP:-1.1.1.1}
     labels: *failure-labels
   proof-receiver-postgres:
     labels: *failure-labels
@@ -81,7 +85,7 @@ services:
       BOOTSTRAP_ADMIN_TOKEN: ${BOOTSTRAP_ADMIN_TOKEN:-runtime-secret-required}
     volumes:
       - ${PROOF_SECRETS_DIR:-./.artifacts/non-bypass-secrets}:/run/proof:ro
-    networks: [proof-control, proof-query, proof-callback, proof-receiver, proof-iii-admin]
+    networks: !override [proof-control, proof-query, proof-callback, proof-failure-receiver, proof-iii-admin]
     depends_on:
       proof-admin: {condition: service_healthy}
     labels: *failure-labels
@@ -128,3 +132,8 @@ services:
 networks:
   proof-fault:
     internal: true
+  proof-failure-receiver:
+    internal: true
+    ipam:
+      config:
+        - subnet: ${PROOF_RECEIVER_SUBNET:-1.1.1.0/24}
