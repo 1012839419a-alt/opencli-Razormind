@@ -36,16 +36,16 @@ from backend.schemas.iii_collection import (
     EvidenceBatchMaterializationSummaryV1,
     EvidenceBatchRecordReferenceV1,
 )
-from backend.schemas.research_graph_v2 import (
+from backend.schemas.record import (
     ResearchGraphV2ItemKey,
     ResearchGraphV2ManifestRef,
     ResearchGraphV2RecordRef,
+    record_ref_set_hash,
 )
 from backend.workflow.evidence_batch_materialization_facts import (
     delegation,
     matches_scope,
     receipt_outcomes,
-    record_ref_set_hash,
     report_keys,
 )
 from backend.workflow.iii_collection_store import CollectionScope, IIICollectionNotFoundError
@@ -334,7 +334,14 @@ async def materialize_evidence_batch(
     if run is None:
         raise IIICollectionNotFoundError("Scoped workflow run not found")
     command = await db.get(IIICollectionCommandV1, command_id)
-    if command is None or not matches_scope(command, scope):
+    if command is None or not matches_scope(
+        command,
+        workspace_id=scope.workspace_id,
+        project_id=scope.project_id,
+        workflow_id=scope.workflow_id,
+        studio_workflow_version_id=scope.studio_workflow_version_id,
+        run_id=scope.run_id,
+    ):
         raise IIICollectionNotFoundError("Collection command not found")
     attempt = (
         await db.execute(

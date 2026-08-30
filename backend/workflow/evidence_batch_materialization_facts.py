@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import json
 from datetime import UTC, datetime, timedelta
-from hashlib import sha256
 from uuid import UUID
 
 from backend.models.iii_collection import (
@@ -14,37 +12,25 @@ from backend.models.iii_collection import (
     IIICollectionIngressReceiptV1,
 )
 from backend.odp.query_client import OdpReconciliationDelegation, OdpRecordKey
-from backend.workflow.iii_collection_store import CollectionScope
 
 _DELEGATION_TTL = timedelta(minutes=5)
 
 
-def record_ref_set_hash(values: list[dict]) -> str:
-    """Hash the canonical, order-independent manifest record-reference set."""
-    return sha256(
-        json.dumps(
-            sorted(
-                (
-                    str(item.get("source_id", item.get("sourceId", ""))),
-                    str(item.get("event_id", item.get("eventId", ""))),
-                    int(item.get("odp_record_id", item.get("odpRecordId", 0))),
-                )
-                for item in values
-            ),
-            sort_keys=True,
-            separators=(",", ":"),
-            ensure_ascii=False,
-        ).encode()
-    ).hexdigest()
-
-
-def matches_scope(command: IIICollectionCommandV1, scope: CollectionScope) -> bool:
+def matches_scope(
+    command: IIICollectionCommandV1,
+    *,
+    workspace_id: str,
+    project_id: str,
+    workflow_id: str,
+    studio_workflow_version_id: str,
+    run_id: str,
+) -> bool:
     return (
-        command.workspace_id == scope.workspace_id
-        and command.project_id == scope.project_id
-        and command.workflow_id == scope.workflow_id
-        and command.studio_workflow_version_id == scope.studio_workflow_version_id
-        and command.run_id == scope.run_id
+        command.workspace_id == workspace_id
+        and command.project_id == project_id
+        and command.workflow_id == workflow_id
+        and command.studio_workflow_version_id == studio_workflow_version_id
+        and command.run_id == run_id
     )
 
 

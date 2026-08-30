@@ -15,18 +15,17 @@ from backend.models.iii_collection import (
     IIICollectionExpectedKeyReportV1,
 )
 from backend.models.workflow_run import WorkflowRun, WorkflowRunEvent
+from backend.schemas.record import ResearchGraphV2ManifestRef, record_ref_set_hash
 from backend.schemas.research_graph_v2 import (
     AuthorizedResearchGraphEventV2,
     ResearchGraphV2ActorEvidence,
     ResearchGraphV2ClaimRead,
-    ResearchGraphV2ManifestRef,
     ResearchGraphV2MutationRequest,
     ResearchGraphV2PinnedFoldRead,
     ResearchGraphV2PinnedReference,
     ResearchGraphV2Read,
 )
 from backend.schemas.workflow import WorkflowNodeRunEvent
-from backend.workflow.evidence_batch_materialization_facts import record_ref_set_hash
 from backend.workflow.workflow_run_events import (
     append_workflow_run_events,
     lock_scoped_workflow_run,

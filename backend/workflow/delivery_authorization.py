@@ -18,11 +18,6 @@ from backend.models.delivery_authorization import (
     DeliveryTargetRevision,
 )
 from backend.models.studio import StudioWorkspace
-from backend.security.controlled_receiver import (
-    ControlledReceiverSecurityError,
-    endpoint_config_hash,
-    resolve_endpoint,
-)
 from backend.schemas.delivery_authorization import (
     DeliveryAuthorizationCreateV1,
     DeliveryAuthorizationListV1,
@@ -33,7 +28,12 @@ from backend.schemas.delivery_authorization import (
     DeliveryTargetListV1,
     DeliveryTargetReadV1,
 )
-from backend.schemas.research_graph_v2 import ResearchGraphV2ActorEvidence, ResearchGraphV2ManifestRef
+from backend.schemas.record import DeliveryAuthorizingActor, ResearchGraphV2ManifestRef
+from backend.security.controlled_receiver import (
+    ControlledReceiverSecurityError,
+    endpoint_config_hash,
+    resolve_endpoint,
+)
 from backend.workflow.research_graph_v2 import (
     ResearchGraphV2ConflictError,
     ResearchGraphV2Scope,
@@ -414,7 +414,7 @@ def _frozen_bindings(
     policy_hash: str,
     claims: list[DeliveryClaimReadV1],
     manifests: list[DeliveryManifestReadV1],
-    actor: ResearchGraphV2ActorEvidence,
+    actor: DeliveryAuthorizingActor,
 ) -> tuple[dict, str, dict]:
     projection = {
         "schemaVersion": _PAYLOAD_SCHEMA_VERSION,
@@ -479,7 +479,7 @@ async def authorize_delivery(
     db: AsyncSession,
     *,
     scope: DeliveryAuthorizationScope,
-    actor: ResearchGraphV2ActorEvidence,
+    actor: DeliveryAuthorizingActor,
     request: DeliveryAuthorizationCreateV1,
 ) -> DeliveryAuthorizationReadV1:
     """Fail closed, freeze a V2 pin, and persist one idempotent authorization only."""

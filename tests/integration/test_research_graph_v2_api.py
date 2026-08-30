@@ -1,30 +1,27 @@
 import hashlib
 import json
+from datetime import UTC, datetime
 
 import pytest
 
-from datetime import UTC, datetime
+from backend.main import app
+from backend.models.identity import User, Workspace, WorkspaceMembership, WorkspaceRole
 from backend.models.iii_collection import (
     EvidenceBatchMaterializationManifestV1,
     IIICollectionExpectedKeyReportV1,
 )
-from backend.main import app
-from backend.models.identity import User, Workspace, WorkspaceMembership, WorkspaceRole
-from backend.security.identity import RequestIdentity, get_request_identity
-from tests.integration.iii_collection_test_support import create_scoped_run
-
-
 from backend.schemas.research_graph_v2 import (
     ResearchGraphV2ActorEvidence,
-    ResearchGraphV2ItemKey,
-    ResearchGraphV2ManifestRef,
     ResearchGraphV2MutationRequest,
 )
+from backend.security.identity import RequestIdentity, get_request_identity
 from backend.workflow.research_graph_v2 import (
     ResearchGraphV2ConflictError,
     ResearchGraphV2Scope,
     append_research_graph_v2_mutation,
 )
+from tests.integration.iii_collection_test_support import create_scoped_run
+
 
 def _record_ref_set_hash() -> str:
     return hashlib.sha256(
@@ -427,16 +424,16 @@ async def test_zero_and_partial_manifest_policy_fail_closed(db_session):
         policy_version="workspace-rbac-v1",
         authorized_at=datetime(2026, 8, 30, tzinfo=UTC),
     )
-    empty = ResearchGraphV2ManifestRef(
-        batch_id="empty-batch",
-        derivation="dispatch-task-v1",
-        reconciliation_revision=1,
-        manifest_schema_version="v1",
-        manifest_hash="e" * 64,
-        expected_record_key_set_hash="z" * 64,
-        record_ref_set_hash=hashlib.sha256(b"[]").hexdigest(),
-        materialization_status="completed_empty",
-    )
+    empty = {
+        "batchId": "empty-batch",
+        "derivation": "dispatch-task-v1",
+        "reconciliationRevision": 1,
+        "manifestSchemaVersion": "v1",
+        "manifestHash": "e" * 64,
+        "expectedRecordKeySetHash": "z" * 64,
+        "recordRefSetHash": hashlib.sha256(b"[]").hexdigest(),
+        "materializationStatus": "completed_empty",
+    }
     context = await append_research_graph_v2_mutation(
         db_session,
         scope=scope,
@@ -451,23 +448,23 @@ async def test_zero_and_partial_manifest_policy_fail_closed(db_session):
         ),
     )
     assert context.claims == []
-    subset = ResearchGraphV2ManifestRef(
-        batch_id="complete-batch",
-        derivation="dispatch-task-v1",
-        reconciliation_revision=1,
-        manifest_schema_version="v1",
-        manifest_hash="v" * 64,
-        expected_record_key_set_hash="w" * 64,
-        record_ref_set_hash=hashlib.sha256(
+    subset = {
+        "batchId": "complete-batch",
+        "derivation": "dispatch-task-v1",
+        "reconciliationRevision": 1,
+        "manifestSchemaVersion": "v1",
+        "manifestHash": "v" * 64,
+        "expectedRecordKeySetHash": "w" * 64,
+        "recordRefSetHash": hashlib.sha256(
             json.dumps(
                 [["source-1", "event-1", 1], ["source-1", "event-2", 2]],
                 separators=(",", ":"),
                 sort_keys=True,
             ).encode()
         ).hexdigest(),
-        materialization_status="completed",
-        record_refs=[{"sourceId": "source-1", "eventId": "event-1", "odpRecordId": 1}],
-    )
+        "materializationStatus": "completed",
+        "recordRefs": [{"sourceId": "source-1", "eventId": "event-1", "odpRecordId": 1}],
+    }
     with pytest.raises(ResearchGraphV2ConflictError, match="exactly match"):
         await append_research_graph_v2_mutation(
             db_session,
@@ -484,17 +481,17 @@ async def test_zero_and_partial_manifest_policy_fail_closed(db_session):
                 manifest_refs=[subset],
             ),
         )
-    partial = ResearchGraphV2ManifestRef(
-        batch_id="partial-batch",
-        derivation="dispatch-task-v1",
-        reconciliation_revision=1,
-        manifest_schema_version="v1",
-        manifest_hash="q" * 64,
-        expected_record_key_set_hash="k" * 64,
-        record_ref_set_hash=_record_ref_set_hash(),
-        materialization_status="partial",
-        record_refs=[{"sourceId": "source-1", "eventId": "event-1", "odpRecordId": 1}],
-    )
+    partial = {
+        "batchId": "partial-batch",
+        "derivation": "dispatch-task-v1",
+        "reconciliationRevision": 1,
+        "manifestSchemaVersion": "v1",
+        "manifestHash": "q" * 64,
+        "expectedRecordKeySetHash": "k" * 64,
+        "recordRefSetHash": _record_ref_set_hash(),
+        "materializationStatus": "partial",
+        "recordRefs": [{"sourceId": "source-1", "eventId": "event-1", "odpRecordId": 1}],
+    }
     with pytest.raises(ResearchGraphV2ConflictError, match="exclusions"):
         await append_research_graph_v2_mutation(
             db_session,
@@ -511,7 +508,7 @@ async def test_zero_and_partial_manifest_policy_fail_closed(db_session):
                 manifest_refs=[partial],
             ),
         )
-    partial.excluded_item_keys = [ResearchGraphV2ItemKey(sourceId="source-1", eventId="event-2")]
+    partial["excludedItemKeys"] = [{"sourceId": "source-1", "eventId": "event-2"}]
     accepted = await append_research_graph_v2_mutation(
         db_session,
         scope=scope,
