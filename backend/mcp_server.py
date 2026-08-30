@@ -88,7 +88,7 @@ def _transport_security() -> TransportSecuritySettings:
 
 mcp = MCPServer(
     "opencli-admin",
-    version="0.4.0",
+    version="0.4.1",
     instructions=(
         "For a new workflow, first inspect workflow node capabilities, then create a review-only "
         "draft from the operator's intent or preview explicit node patches, then compile it. "

@@ -1,6 +1,6 @@
 param(
-    [string]$Version = $(if ($env:OPENCLI_ADMIN_VERSION) { $env:OPENCLI_ADMIN_VERSION } else { "0.4.0" }),
-    [string]$Repository = $(if ($env:OPENCLI_ADMIN_REPOSITORY) { $env:OPENCLI_ADMIN_REPOSITORY } else { "2233admin/opencli-admin" }),
+    [string]$Version = $(if ($env:OPENCLI_ADMIN_VERSION) { $env:OPENCLI_ADMIN_VERSION } else { "0.4.1" }),
+    [string]$Repository = $(if ($env:OPENCLI_ADMIN_REPOSITORY) { $env:OPENCLI_ADMIN_REPOSITORY } else { "2233admin/opencli-Razormind" }),
     [string]$InstallDir = $(if ($env:OPENCLI_ADMIN_DIR) { $env:OPENCLI_ADMIN_DIR } else { Join-Path (Get-Location) "opencli-admin" })
 )
 

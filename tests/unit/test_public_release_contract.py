@@ -14,8 +14,8 @@ def test_public_release_has_a_runnable_frontend_and_safe_compose_defaults() -> N
 
     assert "\n  frontend:\n" in compose
     assert "\n  agent-1:\n" in compose
-    assert "opencli-admin-frontend:${IMAGE_TAG:-0.4.0}" in compose
-    assert "opencli-admin-chrome:${IMAGE_TAG:-0.4.0}" in compose
+    assert "opencli-admin-frontend:${IMAGE_TAG:-0.4.1}" in compose
+    assert "opencli-admin-chrome:${IMAGE_TAG:-0.4.1}" in compose
     assert '"127.0.0.1:${NOVNC_PORT:-6080}:6080"' in compose
     assert "CHROME_IMAGE:" in compose
     assert "./backend:/app/backend" not in compose
@@ -39,6 +39,10 @@ def test_public_release_has_one_ci_frontend_job_and_installers() -> None:
     assert "BOOTSTRAP_ADMIN_TOKEN" in source(".env.docker.example")
     assert "BOOTSTRAP_ADMIN_TOKEN" in unix_installer
     assert "BOOTSTRAP_ADMIN_TOKEN" in windows_installer
+    assert 'OPENCLI_ADMIN_VERSION:-0.4.1' in unix_installer
+    assert 'OPENCLI_ADMIN_REPOSITORY:-2233admin/opencli-Razormind' in unix_installer
+    assert '"0.4.1"' in windows_installer
+    assert '"2233admin/opencli-Razormind"' in windows_installer
     assert 'os.environ.get("NOVNC_BASE_PORT", 6080)' in source(
         "backend/api/v1/browsers.py"
     )
