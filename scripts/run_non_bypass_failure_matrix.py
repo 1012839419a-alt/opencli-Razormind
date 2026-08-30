@@ -135,7 +135,7 @@ def _admit(ledger: ScenarioLedger, env: dict[str, str], base: Path, overlay: Pat
 
 
 def _facts_from_driver(ledger: ScenarioLedger, env: dict[str, str], base: Path, overlay: Path) -> dict[str, Any]:
-    if ledger.scenario not in {"admin-crash", "iii-unreachable"}:
+    if ledger.scenario not in {"admin-crash", "iii-unreachable", "no-report"}:
         raise FailureRunRejected(f"in-network driver is not implemented for {ledger.scenario}")
     command = [
         "docker", "compose", "-p", ledger.project, "-f", str(base), "-f", str(overlay),
@@ -143,7 +143,7 @@ def _facts_from_driver(ledger: ScenarioLedger, env: dict[str, str], base: Path, 
         "--scenario", ledger.scenario, "--run", ledger.project,
     ]
     process = subprocess.Popen(command, cwd=ROOT, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    signal_name = "submitted" if ledger.scenario == "admin-crash" else "iii-ready"
+    signal_name = "iii-ready" if ledger.scenario == "iii-unreachable" else "submitted"
     signal = ledger.artifact / "coordination" / f"{ledger.project}.{signal_name}"
     deadline = time.monotonic() + 90
     while not signal.exists() and time.monotonic() < deadline:
@@ -164,6 +164,14 @@ def _facts_from_driver(ledger: ScenarioLedger, env: dict[str, str], base: Path, 
             "http://proof-relay:8080/_gate/callback-upstream", timeout=30,
         )
         release_name = "resume"
+    elif ledger.scenario == "no-report":
+        _compose(
+            ledger, env, base, overlay, "exec", "-T", "proof-driver", "curl", "-fsS",
+            "-X", "POST", "-H", f"X-API-Token: {env['API_AUTH_TOKEN']}",
+            "-H", "Content-Type: application/json", "-d", '{"mode":"drop"}',
+            "http://proof-relay:8080/_gate/report", timeout=30,
+        )
+        release_name = "resume"
     else:
         _run(
             ["docker", "network", "disconnect", f"{ledger.project}_proof-iii-admin", f"{ledger.project}-proof-admin-1"],
@@ -171,7 +179,6 @@ def _facts_from_driver(ledger: ScenarioLedger, env: dict[str, str], base: Path, 
             timeout=30,
         )
         release_name = "iii-release"
-    (ledger.artifact / "coordination" / f"{ledger.project}.{release_name}").write_text("released", encoding="utf-8")
     stdout, stderr = process.communicate(timeout=120)
     if process.returncode:
         raise FailureRunRejected(stderr.strip() or stdout.strip() or "in-network admin-crash driver failed")

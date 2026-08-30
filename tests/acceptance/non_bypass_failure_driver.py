@@ -50,7 +50,7 @@ def _coordination(name: str) -> Path:
     return root / name
 
 
-def admin_crash(run: str) -> dict[str, Any]:
+def admin_crash(run: str, scenario: str = "admin-crash") -> dict[str, Any]:
     fleet = {"X-API-Token": os.environ["API_AUTH_TOKEN"]}
     bootstrap = {**fleet, "Authorization": f"Bearer {os.environ['BOOTSTRAP_ADMIN_TOKEN']}"}
     proposer = {**fleet, "Authorization": f"Bearer {os.environ['PROOF_PROPOSER_JWT']}"}
@@ -70,31 +70,59 @@ def admin_crash(run: str) -> dict[str, Any]:
         workflow_run = _post(client, primary, route, {"inputs": {}, "responseMode": "async", "user": "proof-proposer", "requestId": run, "idempotencyKey": run}, proposer)
         run_id = workflow_run["runId"]
         collections = f"{route}/{run_id}/iii-collections"
+        if scenario == "no-report":
+            signal = _coordination(f"{run}.submitted")
+            signal.write_text(json.dumps({"route": collections}), encoding="utf-8")
+            release = _coordination(f"{run}.resume")
+            deadline = time.monotonic() + 90
+            while not release.exists() and time.monotonic() < deadline:
+                time.sleep(0.2)
+            if not release.exists():
+                raise RuntimeError("orchestrator did not arm report-drop gate")
         submission = _post(client, primary, collections, {"version": "v1", "idempotencyKey": run, "nodeId": "opencli-source", "collection": {"site": "bilibili", "command": "search", "args": {"keyword": "vertical-proof"}, "sourceBindingId": "proof-binding", "sourceBindingRevisionId": "proof-binding-v1", "sourceBindingRevisionNumber": 1}}, proposer)
         command_id, attempt_id = submission["commandId"], submission["attemptId"]
-        signal = _coordination(f"{run}.submitted")
-        signal.write_text(json.dumps({"commandId": command_id, "attemptId": attempt_id, "route": collections}), encoding="utf-8")
-        release = _coordination(f"{run}.resume")
-        deadline = time.monotonic() + 90
-        while not release.exists() and time.monotonic() < deadline:
-            time.sleep(0.2)
-        if not release.exists():
-            raise RuntimeError("orchestrator did not complete the admin crash gate")
-        deadline = time.monotonic() + 30
-        while True:
-            try:
-                resumed = _post(client, control, f"{collections}/{command_id}/resume", {"idempotencyKey": run}, proposer)
-                break
-            except httpx.ConnectError:
-                if time.monotonic() >= deadline:
-                    raise
+        if scenario == "admin-crash":
+            signal = _coordination(f"{run}.submitted")
+            signal.write_text(json.dumps({"commandId": command_id, "attemptId": attempt_id, "route": collections}), encoding="utf-8")
+            release = _coordination(f"{run}.resume")
+            deadline = time.monotonic() + 90
+            while not release.exists() and time.monotonic() < deadline:
+                time.sleep(0.2)
+            if not release.exists():
+                raise RuntimeError("orchestrator did not complete the admin crash gate")
+        if scenario == "admin-crash":
+            deadline = time.monotonic() + 30
+            while True:
+                try:
+                    _post(client, control, f"{collections}/{command_id}/resume", {"idempotencyKey": run}, proposer)
+                    break
+                except httpx.ConnectError:
+                    if time.monotonic() >= deadline:
+                        raise
+                    time.sleep(0.5)
+            status = _get(client, control, f"{collections}/{command_id}", proposer)
+        else:
+            deadline = time.monotonic() + 45
+            status = {}
+            while time.monotonic() < deadline:
+                status = _get(client, primary, f"{collections}/{command_id}", proposer)
+                if status.get("state") in {"missing_report", "completed", "report_missing"}:
+                    break
                 time.sleep(0.5)
-        status = _get(client, control, f"{collections}/{command_id}", proposer)
+        materialization: dict[str, Any] | None = None
+        if scenario == "no-report":
+            materialization = _post(client, primary, f"{collections}/{command_id}/materialize", {}, proposer)
+            batch_id = materialization["batchId"]
+            materialization = _get(client, primary, f"{route}/evidence-batches/v1/{batch_id}/status", proposer)
     hashes = {"submission": submission["payloadSha256"]}
 
     for item in status.get("evidenceReferences", []):
         if item.get("hash"):
             hashes[item.get("kind", "public")] = item["hash"]
+    if scenario == "no-report":
+        if materialization is None or materialization.get("materializationStatus") != "indeterminate":
+            raise RuntimeError("scoped materialization did not expose indeterminate missing report")
+        return {"scenario": "no-report", "run": run, "fault": "expected-key-report-dropped", "actuator": {"name": "proof-iii-actuator", "invocationHash": hashlib.sha256(command_id.encode()).hexdigest()}, "correlation": {"commandId": command_id, "attemptId": attempt_id, "workflowRunId": run_id, "hashes": hashes}, "collection": {"blockingStage": status.get("state", "missing_report"), "recoveryAction": "recover", "sideEffectUncertainty": True}, "materialization": {"status": materialization["materializationStatus"], "blocker": materialization.get("blocker") or "missing_report", "recoveryAction": materialization["recoveryAction"], "manifestHash": None, "reconciliationRevision": materialization["reconciliationRevision"], "pageSnapshotAsOf": materialization.get("pageSnapshotAsOf")}, "graph": {"pin": None, "sequence": None, "readBlocker": "none", "mutationStatus": "none"}, "delivery": {"state": "none", "outcome": "none", "attemptCount": 0, "receiptHash": None, "reconciliation": "none"}, "redactionProfile": "failure-v1", "timing": {"startedAt": 0, "completedAt": 1, "deadlineSeconds": 360}, "governanceReference": {"artifactId": "pending", "keyId": "pending", "trustRootFingerprint": "pending"}, "authority": "authenticated-scoped-public-api"}
     return {"scenario": "admin-crash", "run": run, "fault": "primary-admin-crash", "actuator": {"name": "proof-iii-actuator", "invocationHash": hashlib.sha256(command_id.encode()).hexdigest()}, "correlation": {"commandId": command_id, "attemptId": attempt_id, "workflowRunId": run_id, "hashes": hashes}, "collection": {"blockingStage": "none", "recoveryAction": "resume", "sideEffectUncertainty": True}, "materialization": {"status": "unknown", "blocker": "none", "recoveryAction": "none", "manifestHash": None, "reconciliationRevision": None, "pageSnapshotAsOf": None}, "graph": {"pin": None, "sequence": None, "readBlocker": "none", "mutationStatus": "none"}, "delivery": {"state": "none", "outcome": "none", "attemptCount": 0, "receiptHash": None, "reconciliation": "none"}, "redactionProfile": "failure-v1", "timing": {"startedAt": 0, "completedAt": 1, "deadlineSeconds": 360}, "governanceReference": {"artifactId": "pending", "keyId": "pending", "trustRootFingerprint": "pending"}, "authority": "authenticated-scoped-public-api"}
 def iii_unreachable(run: str) -> dict[str, Any]:
     fleet = {"X-API-Token": os.environ["API_AUTH_TOKEN"]}
@@ -140,15 +168,12 @@ def main() -> int:
     parser.add_argument("--scenario", required=True)
     parser.add_argument("--run", required=True)
     args = parser.parse_args()
-    if args.scenario == "admin-crash":
-        result = admin_crash(args.run)
+    if args.scenario in {"admin-crash", "no-report"}:
+        result = admin_crash(args.run, args.scenario)
     elif args.scenario == "iii-unreachable":
         result = iii_unreachable(args.run)
     else:
         raise RuntimeError("scenario driver is not implemented")
-    print(json.dumps(result, sort_keys=True))
-    return 0
-
 
 if __name__ == "__main__":
     raise SystemExit(main())
