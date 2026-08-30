@@ -19,6 +19,18 @@ sys.modules[spec.name] = harness
 spec.loader.exec_module(harness)
 
 
+class ComposeLoader(yaml.SafeLoader):
+    pass
+
+
+def _compose_tag(loader, node):
+    return loader.construct_mapping(node) if isinstance(node, yaml.MappingNode) else loader.construct_sequence(node)
+
+
+ComposeLoader.add_constructor("!override", _compose_tag)
+ComposeLoader.add_constructor("!reset", _compose_tag)
+
+
 def _hash(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
 
@@ -86,7 +98,7 @@ def test_fixture_is_pinned_and_has_only_one_zero_and_hundred_operations():
 
 
 def test_overlay_has_no_host_ports_and_internal_fault_network():
-    compose = yaml.safe_load((ROOT / "docker-compose.non-bypass-failure.yml").read_text())
+    compose = yaml.load((ROOT / "docker-compose.non-bypass-failure.yml").read_text(), Loader=ComposeLoader)
     assert compose["networks"]["proof-fault"]["internal"] is True
     assert all("ports" not in service for service in compose["services"].values())
     assert {"proof-fault-gateway", "proof-iii-actuator", "proof-governance", "proof-admin-control"} <= set(compose["services"])
@@ -114,3 +126,22 @@ def test_callback_relay_routes_only_the_three_real_callback_paths(monkeypatch):
     ).status_code == 202
     assert calls == ["http://proof-admin:8000/api/v1/iii-collections/lifecycle"]
     assert client.post("/not-an-allowlisted-callback", content=b"{}").status_code == 404
+
+
+def test_failure_driver_main_prints_its_fact_document(monkeypatch, capsys):
+    driver_path = ROOT / "tests/acceptance/non_bypass_failure_driver.py"
+    driver_spec = importlib.util.spec_from_file_location("failure_driver_main", driver_path)
+    assert driver_spec and driver_spec.loader
+    driver = importlib.util.module_from_spec(driver_spec)
+    sys.modules[driver_spec.name] = driver
+    driver_spec.loader.exec_module(driver)
+    monkeypatch.setattr(driver, "admin_crash", lambda run, scenario: {"run": run, "scenario": scenario})
+    monkeypatch.setattr(sys, "argv", ["driver", "--scenario", "no-report", "--run", "r1"])
+    assert driver.main() == 0
+    assert __import__("json").loads(capsys.readouterr().out) == {"run": "r1", "scenario": "no-report"}
+
+
+def test_failure_runner_writes_selected_release_before_waiting():
+    source = (ROOT / "scripts/run_non_bypass_failure_matrix.py").read_text(encoding="utf-8")
+    release = 'f"{ledger.project}.{release_name}").write_text'
+    assert source.index(release) < source.index("process.communicate(timeout=120)")

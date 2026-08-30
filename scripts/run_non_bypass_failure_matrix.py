@@ -179,6 +179,9 @@ def _facts_from_driver(ledger: ScenarioLedger, env: dict[str, str], base: Path, 
             timeout=30,
         )
         release_name = "iii-release"
+    (ledger.artifact / "coordination" / f"{ledger.project}.{release_name}").write_text(
+        "released", encoding="utf-8"
+    )
     stdout, stderr = process.communicate(timeout=120)
     if process.returncode:
         raise FailureRunRejected(stderr.strip() or stdout.strip() or "in-network admin-crash driver failed")
