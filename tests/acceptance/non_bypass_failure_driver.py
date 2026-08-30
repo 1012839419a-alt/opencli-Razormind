@@ -15,6 +15,7 @@ import httpx
 
 from backend.database import AsyncSessionLocal
 from backend.models.studio import StudioWorkspace
+from tests.acceptance.non_bypass_vertical import graph as _base_graph
 
 
 def _data(response: httpx.Response) -> dict[str, Any]:
@@ -39,14 +40,8 @@ async def _seed(workspace_id: str, slug: str) -> None:
         session.add(StudioWorkspace(id=workspace_id, name="Failure proof", slug=slug))
         await session.commit()
 
-
 def _graph() -> dict[str, Any]:
-    return {
-        "id": "failure-source", "name": "Failure source", "profile": "intelligence", "version": 1,
-        "nodes": [{"id": "opencli-source", "kind": "source", "capability": "fetch", "adapter": "proof-opencli", "params": {"limit": 1}, "sourceAnchor": {"kind": "url", "label": "Bilibili", "href": "https://www.bilibili.com/"}}],
-        "edges": [], "adapters": [{"id": "proof-opencli", "type": "source", "provider": "bilibili", "mode": "live", "config": {"command": "search"}}],
-        "agentPermissions": {"canFetchNetwork": True, "canSendNotifications": False, "canWriteInbox": True, "allowedDomains": ["bilibili.com"]},
-    }
+    return _base_graph()
 
 
 def _coordination(name: str) -> Path:
