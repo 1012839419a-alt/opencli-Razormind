@@ -351,6 +351,11 @@ def _retry_policy(snapshot: dict[str, Any]) -> tuple[float, int]:
         raise DeliveryExecutionConflictError("Frozen delivery retry policy is invalid") from exc
     return float(timeout), 3
 
+async def _before_send_start(*, execution_id: str, attempt: int) -> None:
+    """A narrow observability seam between durable reservation and send start."""
+    return None
+
+
 
 async def execute_delivery(db: AsyncSession, *, scope: DeliveryAuthorizationScope, decision_id: str) -> DeliveryExecutionReadV1:
     decision = await _scoped_decision(db, scope, decision_id)
@@ -423,11 +428,13 @@ async def execute_delivery(db: AsyncSession, *, scope: DeliveryAuthorizationScop
             execution.state, execution.final_outcome, execution.final_result_id = "blocked", "unknown", result.id
             await db.flush()
             return _read(execution, await _results(db, execution.id))
+        await _before_send_start(execution_id=execution.id, attempt=attempt)
         execution = await db.scalar(
             select(DeliveryExecution).where(DeliveryExecution.id == execution.id).with_for_update()
         )
         if execution is None:
             raise DeliveryExecutionConflictError("Delivery execution disappeared before send")
+        await db.refresh(execution)
         if execution.final_outcome is not None or execution.lease_token != lease_token:
             return _read(execution, await _results(db, execution.id))
         if execution.cancel_requested_at:
