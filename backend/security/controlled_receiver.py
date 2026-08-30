@@ -201,6 +201,11 @@ def sign_request(*, body: bytes, credential_reference: str, key_id: str, timesta
     return base64.b64encode(hmac.new(key, _request_signing_bytes(body=body, key_id=key_id, timestamp=timestamp, nonce=nonce, operation_id=operation_id, decision_hash=decision_hash, payload_hash=payload_hash), hashlib.sha256).digest()).decode("ascii")
 
 
+def _header_operation_id(operation_id: str) -> str:
+    """Safely carry arbitrary frozen #34 operation IDs without changing their canonical value."""
+    return base64.urlsafe_b64encode(operation_id.encode("utf-8")).decode("ascii").rstrip("=")
+
+
 def request_headers(*, body: bytes, endpoint: ControlledReceiverEndpoint, operation_id: str, decision_hash: str, payload_hash: str) -> dict[str, str]:
     timestamp = str(int(time.time()))
     nonce = uuid.uuid4().hex
@@ -209,7 +214,7 @@ def request_headers(*, body: bytes, endpoint: ControlledReceiverEndpoint, operat
         f"{_REQUEST_HEADER}Key-Id": endpoint.request_key_id,
         f"{_REQUEST_HEADER}Timestamp": timestamp,
         f"{_REQUEST_HEADER}Nonce": nonce,
-        f"{_REQUEST_HEADER}Operation-Id": operation_id,
+        f"{_REQUEST_HEADER}Operation-Id": _header_operation_id(operation_id),
         f"{_REQUEST_HEADER}Decision-Hash": decision_hash,
         f"{_REQUEST_HEADER}Payload-Hash": payload_hash,
         f"{_REQUEST_HEADER}Mac": sign_request(body=body, credential_reference=endpoint.credential_reference, key_id=endpoint.request_key_id, timestamp=timestamp, nonce=nonce, operation_id=operation_id, decision_hash=decision_hash, payload_hash=payload_hash),
@@ -237,7 +242,7 @@ def verify_request(*, body: bytes, headers: Any, receiver_identity: str, operati
     if any(
         headers.get(f"{_REQUEST_HEADER}{name}") != expected
         for name, expected in (
-            ("Operation-Id", operation_id),
+            ("Operation-Id", _header_operation_id(operation_id)),
             ("Decision-Hash", decision_hash),
             ("Payload-Hash", payload_hash),
         )

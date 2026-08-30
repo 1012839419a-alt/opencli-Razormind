@@ -55,9 +55,7 @@ class DeliveryExecutionListV1(_Model):
 
 Hash64 = Annotated[str, Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")]
 Identifier128 = Annotated[str, Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$")]
-HeaderSafeOperationId = Annotated[
-    str, Field(min_length=1, max_length=255, pattern=r"^[A-Za-z0-9][A-Za-z0-9._~/-]*$")
-]
+OperationId = Annotated[str, Field(min_length=1, max_length=255)]
 BodyClaimId = Annotated[str, Field(min_length=1, max_length=255)]
 
 
@@ -83,7 +81,7 @@ class DeliveryClaimManifestV1(_Model):
 class ControlledReceiverDeliveryV2(_Model):
     version: Literal["v2"] = "v2"
     receiver_identity: Identifier128
-    operation_id: HeaderSafeOperationId
+    operation_id: OperationId
     decision_hash: Hash64
     payload_hash: Hash64
     payload: DeliveryClaimManifestV1
@@ -92,7 +90,7 @@ class ControlledReceiverDeliveryV2(_Model):
 class ControlledReceiverReceiptV2(_Model):
     version: Literal["v2"]
     receiver_identity: Identifier128
-    operation_id: HeaderSafeOperationId
+    operation_id: OperationId
     decision_hash: Hash64
     payload_hash: Hash64
     durable_status: Literal["accepted", "rejected"]
