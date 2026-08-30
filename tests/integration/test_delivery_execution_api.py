@@ -10,7 +10,7 @@ from sqlalchemy import select
 
 from backend.config import get_settings
 from backend.models.delivery_authorization import DeliveryAuthorizationDecisionV1, DeliveryTarget, DeliveryTargetRevision
-from backend.models.delivery_execution import ControlledReceiverDelivery
+from backend.models.delivery_execution import ControlledReceiverDelivery, DeliveryExecution
 from backend.models.identity import Workspace
 from backend.security import controlled_receiver as receiver
 from backend.workflow.delivery_authorization import DeliveryAuthorizationScope
@@ -77,6 +77,21 @@ async def test_durable_receiver_conflicts_on_changed_request_binding(client: Asy
     changed_body = receiver.canonical_json(changed)
     changed_headers = receiver.request_headers(body=changed_body, endpoint=endpoint, operation_id=changed["operationId"], decision_hash=changed["decisionHash"], payload_hash=changed["payloadHash"])
     assert (await client.post("/api/v1/controlled-receiver/v2/deliver", content=changed_body, headers=changed_headers)).status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_receiver_status_requires_exact_durable_request_binding(client: AsyncClient):
+    value = _request()
+    endpoint = receiver.resolve_endpoint("receiver-primary", "credential-a")
+    body = receiver.canonical_json(value)
+    headers = receiver.request_headers(body=body, endpoint=endpoint, operation_id=value["operationId"], decision_hash=value["decisionHash"], payload_hash=value["payloadHash"])
+    assert (await client.post("/api/v1/controlled-receiver/v2/deliver", content=body, headers=headers)).status_code == 200
+    changed = _request()
+    changed["payload"]["claims"][0]["contentHash"] = "c" * 64
+    changed["payloadHash"] = receiver.canonical_hash(changed["payload"])
+    changed_body = receiver.canonical_json(changed)
+    changed_headers = receiver.request_headers(body=changed_body, endpoint=endpoint, operation_id=changed["operationId"], decision_hash=changed["decisionHash"], payload_hash=changed["payloadHash"])
+    assert (await client.post("/api/v1/controlled-receiver/v2/status", content=changed_body, headers=changed_headers)).status_code == 409
 
 
 @pytest.mark.asyncio
@@ -166,3 +181,18 @@ async def test_executor_sends_to_durable_receiver_and_replays_one_verified_recei
     assert first.outcome == replay.outcome == "accepted"
     assert first.attempt_count == replay.attempt_count == 1
     assert (await db_session.execute(select(ControlledReceiverDelivery))).scalars().all()[0].operation_id == "delivery-op"
+    execution = await db_session.scalar(select(DeliveryExecution).where(DeliveryExecution.decision_id == decision_id))
+    execution.state, execution.final_outcome = "blocked", "unknown"
+    await db_session.commit()
+    reconciled = await delivery_execution.reconcile_delivery_execution(
+        db_session, scope=scope, execution_id=execution.id
+    )
+    assert reconciled.outcome == "accepted"
+    assert reconciled.attempt_count == 1
+    assert len(reconciled.reconciliations) == 1
+    await db_session.commit()
+    stable = await delivery_execution.get_delivery_execution(db_session, scope=scope, execution_id=execution.id)
+    assert stable.attempt_count == 1
+    assert [(item.outcome, item.receipt_hash) for item in stable.reconciliations] == [
+        (item.outcome, item.receipt_hash) for item in reconciled.reconciliations
+    ]

@@ -153,12 +153,13 @@ class FleetAuthMiddleware:
         self.app = app
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["path"].startswith(CONTROLLED_RECEIVER_V2_PREFIX):
+        if scope["type"] not in ("http", "websocket"):
             await self.app(scope, receive, send)
             return
-        if scope["type"] not in ("http", "websocket") or not scope["path"].startswith(
-            PROTECTED_PREFIXES
-        ):
+        if scope["type"] == "http" and scope.get("path", "").startswith(CONTROLLED_RECEIVER_V2_PREFIX):
+            await self.app(scope, receive, send)
+            return
+        if not scope.get("path", "").startswith(PROTECTED_PREFIXES):
             await self.app(scope, receive, send)
             return
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, event
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, UniqueConstraint, event
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.models.base import TimestampMixin
@@ -43,6 +43,7 @@ class DeliveryExecution(TimestampMixin):
     cancel_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     final_outcome: Mapped[str | None] = mapped_column(String(16), nullable=True)
     final_result_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    final_reconciliation_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
 
 
 class DeliveryExecutionResult(TimestampMixin):
@@ -65,6 +66,23 @@ class DeliveryExecutionResult(TimestampMixin):
     outcome: Mapped[str] = mapped_column(String(16), nullable=False)
     receipt_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     receipt_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+
+class DeliveryExecutionReconciliation(TimestampMixin):
+    """Append-only verified receiver-status evidence; never a send attempt."""
+
+    __tablename__ = "delivery_execution_reconciliations"
+    __table_args__ = (
+        Index("ix_delivery_execution_reconciliation_execution", "execution_id", "observed_at"),
+    )
+
+    execution_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("delivery_executions.id", ondelete="RESTRICT"), nullable=False
+    )
+    receipt_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    outcome: Mapped[str] = mapped_column(String(16), nullable=False)
     observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
@@ -105,6 +123,8 @@ class ControlledReceiverNonce(TimestampMixin):
 
 @event.listens_for(DeliveryExecutionResult, "before_update")
 @event.listens_for(DeliveryExecutionResult, "before_delete")
+@event.listens_for(DeliveryExecutionReconciliation, "before_update")
+@event.listens_for(DeliveryExecutionReconciliation, "before_delete")
 @event.listens_for(ControlledReceiverDelivery, "before_update")
 @event.listens_for(ControlledReceiverDelivery, "before_delete")
 def _reject_immutable_mutation(*_: object) -> None:

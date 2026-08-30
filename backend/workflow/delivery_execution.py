@@ -6,6 +6,7 @@ import asyncio
 import base64
 import secrets
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 import httpx
 from sqlalchemy import select
@@ -17,11 +18,16 @@ from backend.models.delivery_authorization import (
     DeliveryTarget,
     DeliveryTargetRevision,
 )
-from backend.models.delivery_execution import DeliveryExecution, DeliveryExecutionResult
+from backend.models.delivery_execution import (
+    DeliveryExecution,
+    DeliveryExecutionReconciliation,
+    DeliveryExecutionResult,
+)
 from backend.schemas.delivery_execution import (
     DeliveryExecutionAttemptEvidenceV1,
     DeliveryExecutionListV1,
     DeliveryExecutionReadV1,
+    DeliveryExecutionReconciliationEvidenceV1,
 )
 from backend.security.controlled_receiver import (
     ControlledReceiverEndpoint,
@@ -74,7 +80,11 @@ def _binding(decision: DeliveryAuthorizationDecisionV1) -> str:
     })
 
 
-def _read(execution: DeliveryExecution, results: list[DeliveryExecutionResult]) -> DeliveryExecutionReadV1:
+def _read(
+    execution: DeliveryExecution,
+    results: list[DeliveryExecutionResult],
+    reconciliations: list[DeliveryExecutionReconciliation] | None = None,
+) -> DeliveryExecutionReadV1:
     return DeliveryExecutionReadV1(
         execution_id=execution.id,
         decision_id=execution.decision_id,
@@ -96,6 +106,14 @@ def _read(execution: DeliveryExecution, results: list[DeliveryExecutionResult]) 
             )
             for result in results
         ],
+        reconciliations=[
+            DeliveryExecutionReconciliationEvidenceV1(
+                outcome=observation.outcome,
+                receipt_hash=observation.receipt_hash,
+                observed_at=observation.observed_at,
+            )
+            for observation in reconciliations or []
+        ],
         created_at=execution.created_at,
         updated_at=execution.updated_at,
     )
@@ -104,6 +122,20 @@ def _read(execution: DeliveryExecution, results: list[DeliveryExecutionResult]) 
 async def _results(db: AsyncSession, execution_id: str) -> list[DeliveryExecutionResult]:
     return list((await db.execute(select(DeliveryExecutionResult).where(DeliveryExecutionResult.execution_id == execution_id).order_by(DeliveryExecutionResult.attempt_number))).scalars())
 
+
+
+async def _reconciliations(
+    db: AsyncSession, execution_id: str
+) -> list[DeliveryExecutionReconciliation]:
+    return list(
+        (
+            await db.execute(
+                select(DeliveryExecutionReconciliation)
+                .where(DeliveryExecutionReconciliation.execution_id == execution_id)
+                .order_by(DeliveryExecutionReconciliation.observed_at)
+            )
+        ).scalars()
+    )
 
 async def _scoped_decision(
     db: AsyncSession,
@@ -367,10 +399,23 @@ async def execute_delivery(db: AsyncSession, *, scope: DeliveryAuthorizationScop
         execution.lease_acquired_at = _now()
         execution.reserved_attempt_number = attempt
         await db.commit()  # Reservation is durable and all DB locks are released before network I/O.
-        headers = request_headers(
-            body=body, endpoint=endpoint, operation_id=decision.operation_id,
-            decision_hash=decision.decision_hash, payload_hash=decision.payload_hash,
-        )
+        try:
+            headers = request_headers(
+                body=body, endpoint=endpoint, operation_id=decision.operation_id,
+                decision_hash=decision.decision_hash, payload_hash=decision.payload_hash,
+            )
+        except ControlledReceiverSecurityError:
+            await db.refresh(execution)
+            if execution.final_outcome is not None or execution.lease_token != lease_token:
+                return _read(execution, await _results(db, execution.id))
+            result = await _record(
+                db, execution, attempt=attempt, transport="protocol-error", http_status=None,
+                receipt="missing", protocol="invalid", outcome="unknown",
+            )
+            execution.lease_token, execution.lease_acquired_at, execution.reserved_attempt_number = None, None, None
+            execution.state, execution.final_outcome, execution.final_result_id = "blocked", "unknown", result.id
+            await db.flush()
+            return _read(execution, await _results(db, execution.id))
         transport, http_status, receipt_classification, protocol, outcome, receipt_id, receipt_hash = (
             "network-error", None, "missing", "unknown", "unknown", None, None,
         )
@@ -434,7 +479,11 @@ async def get_delivery_execution(db: AsyncSession, *, scope: DeliveryAuthorizati
     ))
     if execution is None:
         raise DeliveryExecutionConflictError("Scoped delivery execution was not found")
-    return _read(execution, await _results(db, execution.id))
+    return _read(
+        execution,
+        await _results(db, execution.id),
+        await _reconciliations(db, execution.id),
+    )
 
 
 def _decode_execution_cursor(cursor: str | None) -> str | None:
@@ -465,10 +514,22 @@ async def _read_page(db: AsyncSession, rows: list[DeliveryExecution]) -> list[De
             )
         ).scalars()
     )
+    reconciliations = list(
+        (
+            await db.execute(
+                select(DeliveryExecutionReconciliation)
+                .where(DeliveryExecutionReconciliation.execution_id.in_([row.id for row in rows]))
+                .order_by(DeliveryExecutionReconciliation.execution_id, DeliveryExecutionReconciliation.observed_at)
+            )
+        ).scalars()
+    )
     grouped: dict[str, list[DeliveryExecutionResult]] = {row.id: [] for row in rows}
+    reconciliation_groups: dict[str, list[DeliveryExecutionReconciliation]] = {row.id: [] for row in rows}
     for result in results:
         grouped[result.execution_id].append(result)
-    return [_read(row, grouped[row.id]) for row in rows]
+    for observation in reconciliations:
+        reconciliation_groups[observation.execution_id].append(observation)
+    return [_read(row, grouped[row.id], reconciliation_groups[row.id]) for row in rows]
 
 
 async def list_delivery_executions(db: AsyncSession, *, scope: DeliveryAuthorizationScope, cursor: str | None = None, limit: int = 50) -> DeliveryExecutionListV1:
@@ -504,7 +565,7 @@ async def cancel_delivery_execution(db: AsyncSession, *, scope: DeliveryAuthoriz
 async def reconcile_delivery_execution(
     db: AsyncSession, *, scope: DeliveryAuthorizationScope, execution_id: str
 ) -> DeliveryExecutionReadV1:
-    """Query durable status only; reconciliation is never a delivery attempt."""
+    """Query durable status without resending or changing delivery attempt count."""
     execution = await db.scalar(select(DeliveryExecution).where(
         DeliveryExecution.id == execution_id,
         DeliveryExecution.workspace_id == scope.workspace_id,
@@ -516,7 +577,7 @@ async def reconcile_delivery_execution(
     if execution is None:
         raise DeliveryExecutionConflictError("Scoped delivery execution was not found")
     if execution.final_outcome != "unknown":
-        return _read(execution, await _results(db, execution.id))
+        return _read(execution, await _results(db, execution.id), await _reconciliations(db, execution.id))
     decision = await _scoped_decision(db, scope, execution.decision_id, lock=False)
     payload = _payload(decision)
     timeout, _ = _retry_policy(decision.policy_snapshot)
@@ -526,11 +587,11 @@ async def reconcile_delivery_execution(
         "operationId": decision.operation_id, "decisionHash": decision.decision_hash,
         "payloadHash": decision.payload_hash, "payload": payload,
     })
-    headers = request_headers(
-        body=body, endpoint=endpoint, operation_id=decision.operation_id,
-        decision_hash=decision.decision_hash, payload_hash=decision.payload_hash,
-    )
     try:
+        headers = request_headers(
+            body=body, endpoint=endpoint, operation_id=decision.operation_id,
+            decision_hash=decision.decision_hash, payload_hash=decision.payload_hash,
+        )
         response = await pinned_post(endpoint, body, headers, timeout_seconds=timeout, status_query=True)
         receipt_value = response.json().get("receipt")
         outcome = verify_receipt(
@@ -541,7 +602,20 @@ async def reconcile_delivery_execution(
         raise DeliveryExecutionConflictError("Controlled receiver reconciliation remains unknown") from exc
     await db.refresh(execution)
     if execution.final_outcome != "unknown":
-        return _read(execution, await _results(db, execution.id))
-    execution.state, execution.final_outcome = "completed", outcome
+        return _read(execution, await _results(db, execution.id), await _reconciliations(db, execution.id))
+    observation = DeliveryExecutionReconciliation(
+        execution_id=execution.id,
+        receipt_hash=canonical_hash(receipt_value),
+        outcome=outcome,
+        observed_at=_now(),
+    )
+    db.add(observation)
     await db.flush()
-    return _read(execution, await _results(db, execution.id))
+    execution.state, execution.final_outcome = "completed", outcome
+    execution.final_reconciliation_id = observation.id
+    await db.flush()
+    return _read(
+        execution,
+        await _results(db, execution.id),
+        await _reconciliations(db, execution.id),
+    )
