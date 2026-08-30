@@ -12,7 +12,6 @@ import { SidebarInset, SidebarProvider } from '@/components/ui/sidebar'
 export function AppShell({ children }: { children: React.ReactNode }) {
   const [commandOpen, setCommandOpen] = useState(false)
   const [agentOpen, setAgentOpen] = useState(false)
-
   return (
     <SidebarProvider>
       <AppSidebar />

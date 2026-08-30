@@ -6,7 +6,7 @@ import { ArrowUp, Bell, Bot, CalendarClock, ChevronDown, CircleDot, Cloud, Code2
 import { toast } from 'sonner'
 
 import AgentAvatar from '@/components/smoothui/agent-avatar'
-import { useAutomations, useCreateAutomation, useMyWorkspaces, useOperationsAgentActivity, useOperationsAgentDraft, useOperationsAgents, useOperationsAgentVersions, usePatchAutomation, usePublishOperationsAgentVersion, useStartOperationsAgentRun, useUpdateOperationsAgentDraft } from '@/lib/api/hooks'
+import { useAutomations, useCreateAutomation, useGovernedWorkspaces, useOperationsAgentActivity, useOperationsAgentDraft, useOperationsAgents, useOperationsAgentVersions, usePatchAutomation, usePublishOperationsAgentVersion, useStartOperationsAgentRun, useUpdateOperationsAgentDraft } from '@/lib/api/hooks'
 import type { Automation, OperationsAgent, OperationsAgentMode } from '@/lib/api/types'
 import { cn } from '@/lib/utils'
 import { BACKEND_HINT, EmptyState, ErrorState, LoadingState } from '@/components/shell/data-states'
@@ -175,7 +175,7 @@ function ContractEditor({ workspaceId, agent }: { workspaceId: string; agent: Op
 }
 
 export default function OperationsAgentsPage() {
-  const workspaces = useMyWorkspaces()
+  const workspaces = useGovernedWorkspaces()
   const [workspaceId, setWorkspaceId] = useState<string | null>(null)
   const [view, setView] = useState<'automations' | 'agents'>('automations')
   const automations = useAutomations(workspaceId)

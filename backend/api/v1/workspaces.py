@@ -3,7 +3,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.database import get_db
-from backend.models.identity import User, Workspace, WorkspaceMembership, WorkspaceRole
+from backend.models.identity import Team, User, Workspace, WorkspaceMembership, WorkspaceRole
 from backend.models.workflow import Project
 from backend.schemas.common import ApiResponse
 from backend.schemas.workflow_asset import ProjectRead
@@ -54,6 +54,51 @@ async def _get_or_create_user(
         raise HTTPException(status.HTTP_409_CONFLICT, "Disabled user cannot join a Workspace")
     return user
 
+async def _ensure_local_admin_workspace(
+    db: AsyncSession,
+    identity: RequestIdentity,
+) -> None:
+    if identity.auth_method != "local":
+        return
+
+    user = await db.scalar(select(User).where(User.subject == identity.subject))
+    if user is None:
+        user = User(
+            subject=identity.subject,
+            display_name=identity.name or "本地管理员",
+        )
+        db.add(user)
+        await db.flush()
+
+    workspace = await db.scalar(select(Workspace).where(Workspace.slug == "opencli-default"))
+    if workspace is None:
+        workspace = Workspace(name="OpenCLI 工作区", slug="opencli-default")
+        db.add(workspace)
+        await db.flush()
+
+    membership = await db.scalar(
+        select(WorkspaceMembership)
+        .where(WorkspaceMembership.workspace_id == workspace.id)
+        .where(WorkspaceMembership.user_id == user.id)
+    )
+    if membership is None:
+        db.add(
+            WorkspaceMembership(
+                workspace_id=workspace.id,
+                user_id=user.id,
+                role=WorkspaceRole.ADMIN,
+            )
+        )
+
+    team = await db.scalar(
+        select(Team)
+        .where(Team.workspace_id == workspace.id)
+        .where(Team.slug == "default")
+    )
+    if team is None:
+        db.add(Team(workspace_id=workspace.id, name="默认团队", slug="default"))
+        await db.flush()
+
 
 @router.get(
     "/governance/workspaces",
@@ -63,6 +108,7 @@ async def list_accessible_workspaces(
     identity: RequestIdentity = Depends(get_request_identity),
     db: AsyncSession = Depends(get_db),
 ) -> ApiResponse:
+    await _ensure_local_admin_workspace(db, identity)
     rows = (
         (
             await db.execute(

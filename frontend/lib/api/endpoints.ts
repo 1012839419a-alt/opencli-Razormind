@@ -92,6 +92,25 @@ export const resetWorkspaceSettings = () =>
 export const getCurrentIdentity = () =>
   apiClient.get<ApiResponse<AuthIdentity>>('/auth/me').then((r) => r.data.data)
 
+export const loginWithPassword = (username: string, password: string) =>
+  apiClient
+    .post<
+      ApiResponse<{
+        access_token: string
+        token_type: 'bearer'
+        using_default_password: boolean
+      }>
+    >('/auth/login', { username, password })
+    .then((r) => r.data.data)
+
+export const changeLocalPassword = (currentPassword: string, newPassword: string) =>
+  apiClient
+    .post<ApiResponse<{ message: string }>>('/auth/password', {
+      current_password: currentPassword,
+      new_password: newPassword,
+    })
+    .then((r) => r.data.data)
+
 export const listMyWorkspaces = () =>
   apiClient.get<ApiResponse<WorkspaceSummary[]>>('/workspaces').then((r) => r.data.data)
 
@@ -717,8 +736,11 @@ export const getHealth = () =>
 
 export const getSystemConfig = () =>
   apiClient.get<ApiResponse<SystemConfig>>('/system/config').then((r) => r.data.data)
+type SystemConfigPatch = Partial<Omit<SystemConfig, 'agent_pool_endpoints'>> & {
+  agent_pool_endpoints?: string
+}
 
-export const updateSystemConfig = (data: Partial<SystemConfig>) =>
+export const updateSystemConfig = (data: SystemConfigPatch) =>
   apiClient.patch<ApiResponse<SystemConfig>>('/system/config', data).then((r) => r.data.data)
 
 export const getWsAgentStatus = () =>

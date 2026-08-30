@@ -67,6 +67,7 @@ import sys
 from collections.abc import Sequence
 from urllib.parse import parse_qs
 
+from jose import JWTError, jwt
 from starlette.datastructures import Headers
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
@@ -76,6 +77,10 @@ from backend.config import get_settings
 
 #: Path prefixes guarded by :class:`FleetAuthMiddleware`.
 PROTECTED_PREFIXES = ("/api", "/mcp")
+
+# Local login is intentionally the only unauthenticated API route. Once the
+# user has a local bearer session, the identity dependency authenticates it.
+PUBLIC_PATHS = frozenset({"/api/v1/auth/login"})
 
 _LOCALHOST_HOSTS = frozenset({"localhost", "::1"})
 
@@ -120,6 +125,17 @@ def enforce_bind_guard(host: str, token: str) -> None:
         "local development."
     )
 
+def _is_local_session(credential: str) -> bool:
+    try:
+        claims = jwt.decode(
+            credential,
+            get_settings().secret_key,
+            algorithms=["HS256"],
+        )
+    except JWTError:
+        return False
+    return claims.get("auth_method") == "local" and claims.get("sub") == "local-admin"
+
 
 def _token_matches(candidate: str, token: str) -> bool:
     """Constant-time comparison of a caller-supplied credential against *token*."""
@@ -147,30 +163,34 @@ class FleetAuthMiddleware:
     /health exemption rationale.
     """
 
+
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] not in ("http", "websocket") or not scope["path"].startswith(
-            PROTECTED_PREFIXES
+        if (
+            scope["type"] not in ("http", "websocket")
+            or not scope["path"].startswith(PROTECTED_PREFIXES)
+            or scope["path"] in PUBLIC_PATHS
         ):
             await self.app(scope, receive, send)
             return
 
-        # Read per request: get_settings() is lru_cached (cheap), but
-        # api/v1/system.py may cache_clear() it at runtime after a config
-        # patch, so don't freeze the token at middleware construction time.
+        # Read per request so a runtime configuration update is respected.
         token = get_settings().api_auth_token
         if not token:
-            # Dev posture: no token configured -> API open. Only reachable on
-            # a localhost bind thanks to enforce_bind_guard at startup.
+            # No fleet token configured: local deployments rely on the identity
+            # dependency and the bind guard limits this posture to localhost.
             await self.app(scope, receive, send)
             return
 
         if scope["type"] == "websocket":
             headers = Headers(scope=scope)
-            credential = _bearer_credential(headers) or _query_token(scope.get("query_string", b""))
-            if credential and _token_matches(credential, token):
+            bearer = _bearer_credential(headers)
+            credential = bearer or _query_token(scope.get("query_string", b""))
+            if _is_local_session(bearer) or (
+                credential and _token_matches(credential, token)
+            ):
                 await self.app(scope, receive, send)
                 return
             await WebSocketClose(code=4401, reason="Invalid or missing API token")(
@@ -179,8 +199,9 @@ class FleetAuthMiddleware:
             return
 
         headers = Headers(scope=scope)
-        credential = headers.get("x-api-token", "") or _bearer_credential(headers)
-        if credential and _token_matches(credential, token):
+        bearer = _bearer_credential(headers)
+        credential = headers.get("x-api-token", "") or bearer
+        if _is_local_session(bearer) or (credential and _token_matches(credential, token)):
             await self.app(scope, receive, send)
             return
 

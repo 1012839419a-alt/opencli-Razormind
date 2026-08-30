@@ -20,6 +20,7 @@ class IdentitySettings:
     audience: str
     jwks_url: str = ""
     bootstrap_admin_token: str = ""
+    secret_key: str = "change-me-in-production"
 
     @classmethod
     def from_env(cls) -> IdentitySettings:
@@ -135,6 +136,18 @@ def identity_dependency(
                 status.HTTP_401_UNAUTHORIZED,
                 "Bearer token required",
                 headers={"WWW-Authenticate": "Bearer"},
+            )
+        try:
+            local_claims = jwt.decode(token, resolved.secret_key, algorithms=["HS256"])
+        except JWTError:
+            local_claims = None
+        if local_claims and local_claims.get("auth_method") == "local":
+            return RequestIdentity(
+                subject="local-admin",
+                name=local_claims.get("name") or "本地管理员",
+                username=local_claims.get("username"),
+                is_platform_admin=True,
+                auth_method="local",
             )
         if resolved.bootstrap_admin_token and hmac.compare_digest(
             token, resolved.bootstrap_admin_token
