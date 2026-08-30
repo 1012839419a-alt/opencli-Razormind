@@ -114,7 +114,7 @@ services:
       - ${PROOF_SECRETS_DIR:-./.artifacts/non-bypass-secrets}:/run/proof:ro
     networks:
       proof-failure-receiver:
-        ipv4_address: ${PROOF_RECEIVER_IP:-1.1.1.1}
+        ipv4_address: ${PROOF_RECEIVER_IP:?required}
       proof-receiver-backend: {}
       proof-fault: {}
     depends_on:
@@ -311,8 +311,8 @@ networks:
     internal: true
     ipam:
       config:
-        - subnet: ${PROOF_RECEIVER_SUBNET:-1.1.1.0/24}
-          gateway: ${PROOF_RECEIVER_GATEWAY:-1.1.1.254}
+        - subnet: ${PROOF_RECEIVER_SUBNET:?required}
+          gateway: ${PROOF_RECEIVER_GATEWAY:?required}
   proof-receiver-backend:
     internal: true
   proof-receiver-db:

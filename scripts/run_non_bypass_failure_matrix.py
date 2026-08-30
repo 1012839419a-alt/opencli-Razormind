@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import ipaddress
 import json
 import os
 import shutil
@@ -16,6 +17,7 @@ import subprocess
 import tempfile
 import time
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -215,8 +217,22 @@ def _build_catalog(env: dict[str, str], base: Path, overlay: Path) -> dict[str, 
     builder_env = {**env, "PROOF_CATALOG_DIGEST": digest}
     for _name, command in _catalog_build_commands(images, root_cache_bust=digest):
         _run(command, env=builder_env, timeout=_remaining(deadline))
-    catalog_ledger = ScenarioLedger("catalog", f"nbf-catalog-{digest[:12]}", ROOT, ROOT)
-    configured = _compose(catalog_ledger, builder_env, base, overlay, "config", "--images", timeout=_remaining(deadline)).splitlines()
+    catalog_ledger = ScenarioLedger(
+        "catalog", f"nbf-catalog-{digest[:12]}", ROOT, ROOT
+    )
+    catalog_env = {
+        **builder_env,
+        **_receiver_address_values(catalog_ledger.project, builder_env),
+    }
+    configured = _compose(
+        catalog_ledger,
+        catalog_env,
+        base,
+        overlay,
+        "config",
+        "--images",
+        timeout=_remaining(deadline),
+    ).splitlines()
     if PINNED_III not in configured:
         raise FailureRunRejectedError("pinned III catalog image is absent")
     if not set(images.values()) <= set(configured):
@@ -241,10 +257,54 @@ def _compose(
     )
 
 
+def _receiver_address_values(
+    project: str, environment: Mapping[str, str] | None = None
+) -> dict[str, str]:
+    """Derive the isolated public receiver /24 for one fresh Compose project."""
+    digest = hashlib.sha256(project.encode("utf-8")).digest()
+    defaults = {
+        "PROOF_RECEIVER_SUBNET": f"11.{digest[0]}.{digest[1]}.0/24",
+        "PROOF_RECEIVER_IP": f"11.{digest[0]}.{digest[1]}.1",
+        "PROOF_RECEIVER_GATEWAY": f"11.{digest[0]}.{digest[1]}.254",
+    }
+    overrides = os.environ if environment is None else environment
+    values = {
+        name: overrides.get(name, default)
+        for name, default in defaults.items()
+    }
+    _validate_receiver_address_values(values)
+    return values
+
+
+def _validate_receiver_address_values(values: Mapping[str, str]) -> None:
+    try:
+        subnet = ipaddress.ip_network(values["PROOF_RECEIVER_SUBNET"], strict=True)
+        receiver_ip = ipaddress.ip_address(values["PROOF_RECEIVER_IP"])
+        gateway = ipaddress.ip_address(values["PROOF_RECEIVER_GATEWAY"])
+    except (KeyError, ValueError) as exc:
+        raise FailureRunRejectedError("receiver address tuple is invalid") from exc
+    if (
+        not isinstance(subnet, ipaddress.IPv4Network)
+        or not isinstance(receiver_ip, ipaddress.IPv4Address)
+        or not isinstance(gateway, ipaddress.IPv4Address)
+        or subnet.prefixlen != 24
+        or not receiver_ip.is_global
+        or receiver_ip not in subnet
+        or receiver_ip in {subnet.network_address, subnet.broadcast_address}
+        or gateway not in subnet
+        or gateway in {subnet.network_address, subnet.broadcast_address}
+        or gateway == receiver_ip
+    ):
+        raise FailureRunRejectedError(
+            "receiver address tuple must use distinct global /24 host and gateway"
+        )
+
+
 def _configure_failure_receiver(ledger: ScenarioLedger, values: dict[str, str]) -> None:
-    """Bind the failure-only public-class receiver without touching #36's base."""
-    ip = os.environ.get("PROOF_RECEIVER_IP", "1.1.1.1")
-    subnet = os.environ.get("PROOF_RECEIVER_SUBNET", "1.1.1.0/24")
+    """Bind the scenario's isolated public-class receiver before Compose config."""
+    _validate_receiver_address_values(values)
+    ip = values["PROOF_RECEIVER_IP"]
+    subnet = values["PROOF_RECEIVER_SUBNET"]
     credentials = json.loads(values["CONTROLLED_RECEIVER_CREDENTIALS_JSON"])
     inbound = json.loads(values["CONTROLLED_RECEIVER_INBOUND_KEYS_JSON"])
     receipts = json.loads(values["CONTROLLED_RECEIVER_RECEIPT_KEYS_JSON"])
@@ -662,6 +722,7 @@ def run_matrix(
             run_id, ledger.project, ledger.scratch, ledger.artifact
         )
         values = _make_secrets(base_ledger)
+        values.update(_receiver_address_values(ledger.project))
         _configure_failure_receiver(ledger, values)
         _make_identities(base_ledger, values)
         env = {

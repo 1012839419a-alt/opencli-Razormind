@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import ipaddress
+import json
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -752,8 +754,13 @@ def test_receiver_recovery_overlay_isolates_real_receiver_behind_tls_proxy():
     proxy = services["proof-delivery-proxy"]
 
     assert proxy["networks"]["proof-failure-receiver"]["ipv4_address"] == (
-        "${PROOF_RECEIVER_IP:-1.1.1.1}"
+        "${PROOF_RECEIVER_IP:?required}"
     )
+    receiver_network = overlay["networks"]["proof-failure-receiver"]["ipam"]["config"][0]
+    assert receiver_network == {
+        "subnet": "${PROOF_RECEIVER_SUBNET:?required}",
+        "gateway": "${PROOF_RECEIVER_GATEWAY:?required}",
+    }
     assert set(proxy["networks"]) == {
         "proof-failure-receiver",
         "proof-receiver-backend",
@@ -769,6 +776,127 @@ def test_receiver_recovery_overlay_isolates_real_receiver_behind_tls_proxy():
     assert base["services"]["proof-controlled-receiver"]["networks"] == {
         "proof-receiver": {"ipv4_address": "8.8.8.8"}
     }
+
+
+def test_receiver_address_tuple_is_deterministic_global_and_overrideable():
+    runner = _runner_module()
+
+    first = runner._receiver_address_values("nbf-cancel-before-dispatch-a1b2c3")
+    again = runner._receiver_address_values("nbf-cancel-before-dispatch-a1b2c3")
+    other = runner._receiver_address_values("nbf-cancel-before-dispatch-d4e5f6")
+
+    assert first == again
+    assert first != other
+    assert ipaddress.ip_address(first["PROOF_RECEIVER_IP"]).is_global
+    assert ipaddress.ip_address(first["PROOF_RECEIVER_IP"]) in ipaddress.ip_network(
+        first["PROOF_RECEIVER_SUBNET"]
+    )
+    assert first["PROOF_RECEIVER_IP"] != first["PROOF_RECEIVER_GATEWAY"]
+    override = {
+        "PROOF_RECEIVER_IP": "12.34.56.1",
+        "PROOF_RECEIVER_SUBNET": "12.34.56.0/24",
+        "PROOF_RECEIVER_GATEWAY": "12.34.56.254",
+    }
+    assert runner._receiver_address_values("any-project", override) == override
+    for invalid in (
+        {
+            "PROOF_RECEIVER_IP": "10.0.0.1",
+            "PROOF_RECEIVER_SUBNET": "10.0.0.0/24",
+            "PROOF_RECEIVER_GATEWAY": "10.0.0.254",
+        },
+        {
+            "PROOF_RECEIVER_IP": "11.1.2.1",
+            "PROOF_RECEIVER_SUBNET": "11.1.1.0/24",
+            "PROOF_RECEIVER_GATEWAY": "11.1.1.254",
+        },
+        {
+            "PROOF_RECEIVER_IP": "11.1.1.1",
+            "PROOF_RECEIVER_SUBNET": "11.1.1.0/24",
+            "PROOF_RECEIVER_GATEWAY": "11.1.1.1",
+        },
+    ):
+        with pytest.raises(runner.FailureRunRejectedError):
+            runner._receiver_address_values("invalid-project", invalid)
+
+
+
+def test_receiver_tuple_drives_registry_certificate_and_compose_values(
+    monkeypatch, tmp_path
+):
+    runner = _runner_module()
+    ledger = runner.ScenarioLedger(
+        "cancel-before-dispatch", "nbf-cancel-a1b2", tmp_path, tmp_path
+    )
+    values = {
+        **runner._receiver_address_values(ledger.project),
+        "CONTROLLED_RECEIVER_CREDENTIALS_JSON": json.dumps({"credential": "secret"}),
+        "CONTROLLED_RECEIVER_INBOUND_KEYS_JSON": json.dumps({"request-key": "public"}),
+        "CONTROLLED_RECEIVER_RECEIPT_KEYS_JSON": json.dumps({"receipt-key": "public"}),
+    }
+    monkeypatch.setattr(runner, "_run", lambda *_args, **_kwargs: "")
+
+    runner._configure_failure_receiver(ledger, values)
+
+    registry = json.loads(values["CONTROLLED_RECEIVER_REGISTRY_JSON"])[
+        "receiver-channel-proof"
+    ]
+    assert registry["url"].startswith(f"https://{values['PROOF_RECEIVER_IP']}:")
+    assert registry["allowedNetworks"] == [values["PROOF_RECEIVER_SUBNET"]]
+    assert f"IP:{values['PROOF_RECEIVER_IP']}" in (
+        tmp_path / "receiver.ext"
+    ).read_text()
+    overlay = yaml.load(
+        (ROOT / "docker-compose.non-bypass-failure.yml").read_text(encoding="utf-8"),
+        Loader=ComposeLoader,
+    )
+    receiver_network = overlay["networks"]["proof-failure-receiver"]["ipam"]["config"][0]
+    compose_tuple = {
+        "PROOF_RECEIVER_IP": overlay["services"]["proof-delivery-proxy"]["networks"][
+            "proof-failure-receiver"
+        ]["ipv4_address"],
+        "PROOF_RECEIVER_SUBNET": receiver_network["subnet"],
+        "PROOF_RECEIVER_GATEWAY": receiver_network["gateway"],
+    }
+    assert compose_tuple == {
+        name: f"${{{name}:?required}}" for name in values if name.startswith("PROOF_RECEIVER_")
+    }
+
+
+
+def test_catalog_digest_is_address_independent_but_catalog_config_has_a_tuple(
+    monkeypatch,
+):
+    runner = _runner_module()
+    configured_envs: list[dict[str, str]] = []
+    monkeypatch.setattr(runner, "_catalog_digest", lambda *_args: "a" * 64)
+    monkeypatch.setattr(runner, "_catalog_build_commands", lambda *_args, **_kwargs: ())
+    monkeypatch.setattr(
+        runner,
+        "_compose",
+        lambda _ledger, env, *_args, **_kwargs: configured_envs.append(env)
+        or "\n".join(["pinned", *runner._catalog_images("a" * 64).values()]),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_inspect_images",
+        lambda *_args, **_kwargs: {"pinned": "sha256:pinned"},
+    )
+    monkeypatch.setattr(runner, "_fixture_digest", lambda: "fixture")
+    monkeypatch.setattr(runner, "PINNED_III", "pinned")
+
+    catalog = runner._build_catalog(
+        {},
+        ROOT / "docker-compose.non-bypass-acceptance.yml",
+        ROOT / "docker-compose.non-bypass-failure.yml",
+    )
+
+    assert catalog["digest"] == "a" * 64
+    catalog_env = configured_envs[0]
+    receiver_values = runner._receiver_address_values(
+        "nbf-catalog-" + "a" * 12, {}
+    )
+    assert {name: catalog_env[name] for name in receiver_values} == receiver_values
+    assert catalog_env["PROOF_CATALOG_DIGEST"] == "a" * 64
 
 
 def test_receiver_recovery_runner_restarts_only_delivery_boundary():
