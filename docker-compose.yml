@@ -1,6 +1,6 @@
 # Shared backend config (DRY)
 x-backend-common: &backend-common
-  image: ${DOCKER_REGISTRY:-ghcr.io/}${DOCKER_IMAGE_NAMESPACE:-2233admin}/opencli-admin-api:${IMAGE_TAG:-0.4.0}
+  image: ${DOCKER_REGISTRY:-ghcr.io/}${DOCKER_IMAGE_NAMESPACE:-2233admin}/opencli-admin-api:${IMAGE_TAG:-0.4.1}
   env_file:
     - path: .env
       required: false
@@ -177,7 +177,7 @@ services:
       PUBLIC_URL: ${PUBLIC_URL:-}
       # Passed to the agent pool manager so it can name containers/networks correctly
       COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-opencli-admin}
-      CHROME_IMAGE: ${DOCKER_REGISTRY:-ghcr.io/}${DOCKER_IMAGE_NAMESPACE:-2233admin}/opencli-admin-chrome:${IMAGE_TAG:-0.4.0}
+      CHROME_IMAGE: ${DOCKER_REGISTRY:-ghcr.io/}${DOCKER_IMAGE_NAMESPACE:-2233admin}/opencli-admin-chrome:${IMAGE_TAG:-0.4.1}
       NOVNC_BASE_PORT: ${NOVNC_BASE_PORT:-6080}
       # NAS + III: cron 由 III schedule-bootstrap 驱动，API 不再跑内置 scheduler
       COLLECTION_ORCHESTRATOR: ${COLLECTION_ORCHESTRATOR:-admin}
@@ -209,13 +209,9 @@ services:
       timeout: 5s
       retries: 5
       start_period: 20s
-    depends_on:
-      agent-1:
-        condition: service_healthy
-
   # ── Next.js operator console ─────────────────────────────────────────────
   frontend:
-    image: ${DOCKER_REGISTRY:-ghcr.io/}${DOCKER_IMAGE_NAMESPACE:-2233admin}/opencli-admin-frontend:${IMAGE_TAG:-0.4.0}
+    image: ${DOCKER_REGISTRY:-ghcr.io/}${DOCKER_IMAGE_NAMESPACE:-2233admin}/opencli-admin-frontend:${IMAGE_TAG:-0.4.1}
     environment:
       BACKEND_URL: http://api:8000
     ports:
@@ -318,7 +314,7 @@ services:
   # ── Built-in interactive browser ─────────────────────────────────────────
   # noVNC is loopback-only by default; use an SSH tunnel for remote servers.
   agent-1:
-    image: ${DOCKER_REGISTRY:-ghcr.io/}${DOCKER_IMAGE_NAMESPACE:-2233admin}/opencli-admin-chrome:${IMAGE_TAG:-0.4.0}
+    image: ${DOCKER_REGISTRY:-ghcr.io/}${DOCKER_IMAGE_NAMESPACE:-2233admin}/opencli-admin-chrome:${IMAGE_TAG:-0.4.1}
     environment:
       CHROME_HOSTNAME: agent-1
       BROWSER_RUNTIME_BUNDLE_ROOT: /opt/browser-runtime-bundles
@@ -350,13 +346,13 @@ services:
   #     -v /host/opencli/codex-isolated-runner:/opt/opencli/codex-isolated-runner:ro \
   #     -v /host/workspaces:/workspaces \
   #     -p 19823:19823 \
-  #     ghcr.io/2233admin/opencli-admin-agent:0.4.0
+  #     ghcr.io/2233admin/opencli-admin-agent:0.4.1
   #
   # Or start the bundled agent profile (local network):
   #   docker compose --profile agent up agent
   agent:
     profiles: ["agent"]
-    image: ${DOCKER_REGISTRY:-ghcr.io/}${DOCKER_IMAGE_NAMESPACE:-2233admin}/opencli-admin-agent:${IMAGE_TAG:-0.4.0}${CHROME_SUFFIX:-}
+    image: ${DOCKER_REGISTRY:-ghcr.io/}${DOCKER_IMAGE_NAMESPACE:-2233admin}/opencli-admin-agent:${IMAGE_TAG:-0.4.1}${CHROME_SUFFIX:-}
     environment:
       CENTRAL_API_URL: ${CENTRAL_API_URL:-}
       AGENT_ADVERTISE_URL: ${AGENT_ADVERTISE_URL:-}

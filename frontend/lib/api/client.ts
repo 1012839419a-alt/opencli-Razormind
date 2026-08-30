@@ -1,7 +1,15 @@
 import axios, { type InternalAxiosRequestConfig } from 'axios'
 
+import { getIdentityGeneration } from '@/lib/auth/session'
+
 import { getApiAuthHeaders } from './auth-headers'
 import { notifyAuthRequired } from './auth-events'
+import { FLEET_AUTH_ERROR_CODE, hasFleetTransportCredential } from './recovery'
+
+type IdentityAwareRequestConfig = InternalAxiosRequestConfig & {
+  opencliFleetTransportCredentialAttached?: boolean
+  opencliIdentityGeneration?: number
+}
 
 export const apiClient = axios.create({
   baseURL: '/api/v1',
@@ -16,13 +24,19 @@ export const rootClient = axios.create({
 // configured, Authorization carries OIDC/bootstrap identity and X-API-Token
 // carries the deployment's fleet credential (ADR-0005).
 const attachAuthHeaders = (config: InternalAxiosRequestConfig) => {
+  const identityGeneration = getIdentityGeneration()
   const headers = getApiAuthHeaders()
+  ;(config as IdentityAwareRequestConfig).opencliIdentityGeneration = identityGeneration
   if (headers.Authorization && !config.headers.Authorization) {
     config.headers.Authorization = headers.Authorization
   }
   if (headers['X-API-Token'] && !config.headers['X-API-Token']) {
     config.headers['X-API-Token'] = headers['X-API-Token']
   }
+  const fleetTransportCredential =
+    config.headers.get?.('X-API-Token') ?? config.headers['X-API-Token']
+  ;(config as IdentityAwareRequestConfig).opencliFleetTransportCredentialAttached =
+    hasFleetTransportCredential(fleetTransportCredential)
   return config
 }
 
@@ -39,13 +53,34 @@ rootClient.interceptors.request.use(attachAuthHeaders)
 // instead, additive to every existing caller that only reads `.message`.
 const normalizeApiError = (err: unknown) => {
   if (axios.isAxiosError(err)) {
-    if (err.response?.status === 401) notifyAuthRequired()
+    const requestGeneration = (err.config as IdentityAwareRequestConfig | undefined)
+      ?.opencliIdentityGeneration
+    const fleetTransportCredentialAttached =
+      (err.config as IdentityAwareRequestConfig | undefined)
+        ?.opencliFleetTransportCredentialAttached === true
+    const responseCode = err.response?.data?.code
+    const retainIdentityForFleetFailure =
+      responseCode === FLEET_AUTH_ERROR_CODE && fleetTransportCredentialAttached
+    if (
+      err.response?.status === 401 &&
+      !retainIdentityForFleetFailure &&
+      typeof requestGeneration === 'number'
+    ) {
+      notifyAuthRequired(requestGeneration)
+    }
     const detail = err.response?.data?.detail
     const detailIsList = Array.isArray(detail)
     const message =
       err.response?.data?.error || (detailIsList ? undefined : detail) || err.message || 'Unknown error'
-    const normalized = new Error(message) as Error & { detail?: unknown; status?: number }
+    const normalized = new Error(message) as Error & {
+      code?: string
+      detail?: unknown
+      fleetTransportCredentialAttached?: boolean
+      status?: number
+    }
     if (detailIsList) normalized.detail = detail
+    if (typeof responseCode === 'string') normalized.code = responseCode
+    normalized.fleetTransportCredentialAttached = fleetTransportCredentialAttached
     normalized.status = err.response?.status
     return Promise.reject(normalized)
   }

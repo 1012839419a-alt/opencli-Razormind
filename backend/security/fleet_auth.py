@@ -12,10 +12,10 @@ existing test suite therefore runs unchanged with no token configured.
 Exemptions (deliberate — issue 04: "exempt if and only if they leak nothing"):
 
 - ``GET /health`` — liveness only. docker-compose's healthcheck curls it with
-  no credentials, so it must stay open; its body is slimmed to
-  ``{"status": "ok"}`` (see backend/main.py) so it leaks nothing. The
-  config-bearing detail (task_executor, ...) lives at the authenticated
-  ``GET /api/v1/system/config`` instead.
+  no credentials, so it must stay open; its body exposes only ``status`` and
+  an opaque per-process ``instance_id`` used to verify API restarts (see
+  backend/main.py). Config-bearing detail (task_executor, ...) lives at the
+  authenticated ``GET /api/v1/system/config`` instead.
 - ``/docs``, ``/redoc``, ``/openapi.json`` — outside the ``/api`` prefix.
   They disclose the API *schema* but no data; issue 04's scope is "every
   /api route". Tighten separately if schema disclosure becomes a concern.
@@ -77,6 +77,11 @@ from backend.config import get_settings
 
 #: Path prefixes guarded by :class:`FleetAuthMiddleware`.
 PROTECTED_PREFIXES = ("/api", "/mcp")
+# Stable machine-readable marker for the transport boundary. Keep the
+# human-readable ``error`` below for existing clients that only understand
+# that field; the code lets identity-aware clients avoid deleting a valid
+# session when the fleet credential is missing or stale.
+FLEET_AUTH_ERROR_CODE = "fleet_auth_invalid"
 # Receiver v2 supplies independent MAC authentication; Studio remains fleet-authenticated.
 CONTROLLED_RECEIVER_V2_PREFIX = "/api/v1/controlled-receiver/v2/"
 
@@ -127,6 +132,7 @@ def enforce_bind_guard(host: str, token: str) -> None:
         "local development."
     )
 
+
 def _is_local_session(credential: str) -> bool:
     try:
         claims = jwt.decode(
@@ -165,7 +171,6 @@ class FleetAuthMiddleware:
     /health exemption rationale.
     """
 
-
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
 
@@ -173,7 +178,9 @@ class FleetAuthMiddleware:
         if scope["type"] not in ("http", "websocket"):
             await self.app(scope, receive, send)
             return
-        if scope["type"] == "http" and scope.get("path", "").startswith(CONTROLLED_RECEIVER_V2_PREFIX):
+        if scope["type"] == "http" and scope.get("path", "").startswith(
+            CONTROLLED_RECEIVER_V2_PREFIX
+        ):
             await self.app(scope, receive, send)
             return
         path = scope.get("path", "")
@@ -193,9 +200,7 @@ class FleetAuthMiddleware:
             headers = Headers(scope=scope)
             bearer = _bearer_credential(headers)
             credential = bearer or _query_token(scope.get("query_string", b""))
-            if _is_local_session(bearer) or (
-                credential and _token_matches(credential, token)
-            ):
+            if _is_local_session(bearer) or (credential and _token_matches(credential, token)):
                 await self.app(scope, receive, send)
                 return
             await WebSocketClose(code=4401, reason="Invalid or missing API token")(
@@ -212,7 +217,11 @@ class FleetAuthMiddleware:
 
         response = JSONResponse(
             status_code=401,
-            content={"success": False, "error": "Invalid or missing API token"},
+            content={
+                "success": False,
+                "error": "Invalid or missing API token",
+                "code": FLEET_AUTH_ERROR_CODE,
+            },
             headers={"WWW-Authenticate": "Bearer"},
         )
         await response(scope, receive, send)

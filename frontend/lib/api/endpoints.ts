@@ -1,4 +1,6 @@
 import { apiClient, rootClient } from "./client";
+import { API_HEALTH_REQUEST_TIMEOUT_MS } from "./recovery";
+import type { ApiHealthSnapshot } from "./restart-orchestration";
 import type {
   AIAgent,
   AdvisoryReport,
@@ -617,10 +619,15 @@ export const deleteAgent = (id: string) =>
   apiClient.delete<ApiResponse<null>>(`/agents/${id}`).then((r) => r.data);
 
 // ── System ─────────────────────────────────────────────────────────────────────
-// Liveness only — /health is auth-exempt and deliberately leaks nothing
-// (issue 04). For deployment detail (task_executor, ...) use getSystemConfig.
-export const getHealth = () =>
-  rootClient.get<{ status: string }>("/health").then((r) => r.data);
+// Liveness plus an opaque per-process identifier used to verify API restarts.
+// For deployment detail (task_executor, ...) use getSystemConfig.
+export const getHealth = (
+  timeout = API_HEALTH_REQUEST_TIMEOUT_MS,
+  signal?: AbortSignal,
+) =>
+  rootClient
+    .get<ApiHealthSnapshot>("/health", { timeout, signal })
+    .then((r) => r.data);
 
 export const getSystemConfig = () =>
   apiClient

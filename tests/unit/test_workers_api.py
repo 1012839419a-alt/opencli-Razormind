@@ -45,6 +45,7 @@ def test_container_status_running():
     mock_container = MagicMock()
     mock_container.status = "running"
     mock_client = MagicMock()
+    mock_client.containers.list.return_value = []
     mock_client.containers.get.return_value = mock_container
 
     with patch("docker.from_env", return_value=mock_client):
@@ -73,6 +74,47 @@ def test_container_status_import_error():
     assert status == "unknown"
 
 
+def test_container_status_looks_up_compose_service_label(monkeypatch):
+    """Compose-generated names are resolved through service/project labels."""
+    from backend.api.v1.workers import _container_status
+
+    container = MagicMock(status="running", attrs={"State": {"Health": {"Status": "healthy"}}})
+    mock_client = MagicMock()
+    mock_client.containers.get.side_effect = Exception("generated name")
+    mock_client.containers.list.return_value = [container]
+    monkeypatch.setenv("COMPOSE_PROJECT_NAME", "opencli-admin")
+
+    with patch("docker.from_env", return_value=mock_client):
+        status = _container_status("agent-1")
+
+    assert status == "running"
+    mock_client.containers.get.assert_not_called()
+    mock_client.containers.list.assert_called_once_with(
+        all=True,
+        filters={
+            "label": [
+                "com.docker.compose.service=agent-1",
+                "com.docker.compose.project=opencli-admin",
+            ]
+        },
+    )
+
+
+def test_container_status_unhealthy_fails_closed():
+    """A running container with an unhealthy healthcheck is not available."""
+    from backend.api.v1.workers import _container_status
+
+    container = MagicMock(status="running", attrs={"State": {"Health": {"Status": "unhealthy"}}})
+    mock_client = MagicMock()
+    mock_client.containers.list.return_value = []
+    mock_client.containers.get.return_value = container
+
+    with patch("docker.from_env", return_value=mock_client):
+        status = _container_status("agent-1")
+
+    assert status == "unhealthy"
+
+
 # ── chrome_pool_status endpoint ────────────────────────────────────────────────
 
 
@@ -92,6 +134,96 @@ async def test_chrome_pool_status(client):
     assert "endpoints" in data
     assert "total" in data
     assert "available" in data
+
+
+@pytest.mark.asyncio
+async def test_chrome_pool_status_uses_effective_availability_for_aggregate(client):
+    """Known unhealthy slots are excluded from endpoint and aggregate counts."""
+    from backend.browser_pool import init_pool
+
+    init_pool(["http://agent-1:9222", "http://agent-2:9222"], use_redis=False)
+
+    with patch(
+        "backend.api.v1.workers._container_status",
+        side_effect=["unhealthy", "running"],
+    ):
+        response = await client.get("/api/v1/workers/chrome-pool")
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert [endpoint["available"] for endpoint in data["endpoints"]] == [False, True]
+    assert data["available"] == 1
+
+
+@pytest.mark.asyncio
+async def test_chrome_pool_status_runtime_not_ready_is_unavailable(client):
+    """Slots without a ready runtime must not be reported as available."""
+    from backend.browser_pool import get_pool, init_pool
+
+    init_pool(["http://agent-1:9222"], use_redis=False)
+    get_pool().set_runtime_status("http://agent-1:9222", "DEGRADED")
+
+    with patch("backend.api.v1.workers._container_status", return_value="unknown"):
+        response = await client.get("/api/v1/workers/chrome-pool")
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["endpoints"][0]["available"] is False
+    assert data["available"] == 0
+
+
+@pytest.mark.asyncio
+async def test_chrome_pool_status_missing_compose_agent_fails_closed(client, monkeypatch):
+    """A missing API-owned agent container is unavailable, not an unknown-ready slot."""
+    from backend.browser_pool import init_pool
+
+    monkeypatch.setenv("COMPOSE_PROJECT_NAME", "opencli-admin")
+    init_pool(["http://agent-1:9222"], use_redis=False)
+
+    with patch("backend.api.v1.workers._container_status", return_value="unknown"):
+        response = await client.get("/api/v1/workers/chrome-pool")
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["endpoints"][0]["available"] is False
+    assert data["available"] == 0
+
+
+@pytest.mark.asyncio
+async def test_chrome_pool_status_unknown_remote_fails_closed_without_positive_evidence(
+    client, monkeypatch
+):
+    """Unverified non-Compose remote endpoints fail closed when Docker is unknown."""
+    from backend.browser_pool import init_pool
+
+    monkeypatch.delenv("COMPOSE_PROJECT_NAME", raising=False)
+    init_pool(["http://remote-agent:9222"], use_redis=False)
+
+    with patch("backend.api.v1.workers._container_status", return_value="unknown"):
+        response = await client.get("/api/v1/workers/chrome-pool")
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["endpoints"][0]["available"] is False
+    assert data["available"] == 0
+
+
+@pytest.mark.asyncio
+async def test_chrome_pool_status_verified_remote_keeps_pool_semantics(client, monkeypatch):
+    """A READY non-Compose remote endpoint remains available when Docker is unknown."""
+    from backend.browser_pool import get_pool, init_pool
+
+    monkeypatch.delenv("COMPOSE_PROJECT_NAME", raising=False)
+    init_pool(["http://remote-agent:9222"], use_redis=False)
+    get_pool().set_runtime_status("http://remote-agent:9222", "READY")
+
+    with patch("backend.api.v1.workers._container_status", return_value="unknown"):
+        response = await client.get("/api/v1/workers/chrome-pool")
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["endpoints"][0]["available"] is True
+    assert data["available"] == 1
 
 
 @pytest.mark.asyncio

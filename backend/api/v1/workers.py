@@ -1,4 +1,5 @@
 import asyncio
+import os
 import re
 from typing import Literal
 from urllib.parse import urlparse
@@ -85,15 +86,55 @@ def _novnc_port(cdp_url: str, base_port: int) -> int:
     return base_port + (n - 1)
 
 
+def _find_container(client, hostname: str):
+    """Find a container by its Compose service label, then by name."""
+    # Compose appends an instance suffix to container names (for example,
+    # ``opencli-admin-agent-1-1``), so the service label is the stable
+    # identity.  Narrow the search when the project name is known to avoid
+    # matching an identically named service from another Compose project.
+    labels = [f"com.docker.compose.service={hostname}"]
+    if project := os.environ.get("COMPOSE_PROJECT_NAME"):
+        labels.append(f"com.docker.compose.project={project}")
+    try:
+        matches = client.containers.list(all=True, filters={"label": labels})
+    except Exception:
+        matches = []
+    if matches:
+        return matches[0]
+    try:
+        # Keep direct names as a compatibility fallback for non-Compose and
+        # remote containers, after the project-scoped Compose lookup above.
+        return client.containers.get(hostname)
+    except Exception:
+        return None
+
+
 def _container_status(hostname: str) -> str:
-    """Return Docker container status string, or 'unknown' if unavailable."""
+    """Return Docker running/health status, or 'unknown' if unavailable."""
     try:
         import docker  # type: ignore[import]
 
         client = docker.from_env()
-        return client.containers.get(hostname).status
+        container = _find_container(client, hostname)
+        if container is None:
+            return "unknown"
+        status = container.status
+        state = container.attrs.get("State", {}) if isinstance(container.attrs, dict) else {}
+        health = state.get("Health") if isinstance(state, dict) else None
+        health_status = health.get("Status") if isinstance(health, dict) else None
+        if status == "running" and isinstance(health_status, str) and health_status != "healthy":
+            return health_status
+        return status
     except Exception:
         return "unknown"
+
+
+def _is_compose_owned_hostname(hostname: str) -> bool:
+    """Whether a hostname denotes the API's Compose-managed browser slot."""
+    return (
+        bool(os.environ.get("COMPOSE_PROJECT_NAME"))
+        and re.fullmatch(r"agent(?:-\d+)?", hostname) is not None
+    )
 
 
 @router.get("/chrome-pool", response_model=ApiResponse[dict])
@@ -118,15 +159,31 @@ async def chrome_pool_status(db: AsyncSession = Depends(get_db)) -> ApiResponse:
         for item in (await db.execute(select(BrowserRuntimeDeployment))).scalars().all()
     }
     endpoints = []
+    effective_availability = []
     for endpoint in pool.endpoints:
         instance = instances.get(endpoint)
         deployment = deployments.get(instance.id) if instance else None
+        hostname = urlparse(endpoint).hostname or ""
+        container_status = _container_status(hostname)
+        pool_available = pool.available_for(endpoint)
+        runtime_status = pool.runtime_status(endpoint)
+        agent_protocol = (
+            pool.get_agent_protocol(endpoint) if isinstance(pool, LocalBrowserPool) else None
+        )
+        unknown_remote_verified = not _is_compose_owned_hostname(hostname) and (
+            runtime_status == "READY" or agent_protocol in {"http", "ws"}
+        )
+        container_available = container_status == "running" or (
+            container_status == "unknown" and unknown_remote_verified
+        )
+        endpoint_available = pool_available and pool.is_ready(endpoint) and container_available
+        effective_availability.append(endpoint_available)
         endpoints.append(
             {
                 "url": endpoint,
-                "available": pool.available_for(endpoint),
+                "available": endpoint_available,
                 "novnc_port": _novnc_port(endpoint, base_port),
-                "container_status": _container_status(urlparse(endpoint).hostname or ""),
+                "container_status": container_status,
                 "mode": pool.get_mode(endpoint),
                 "agent_url": (
                     pool.get_agent_url(endpoint) if isinstance(pool, LocalBrowserPool) else None
@@ -138,7 +195,7 @@ async def chrome_pool_status(db: AsyncSession = Depends(get_db)) -> ApiResponse:
                 ),
                 "profile_kind": pool.get_profile_kind(endpoint),
                 "profile_name": pool.get_profile_name(endpoint),
-                "runtime_status": pool.runtime_status(endpoint),
+                "runtime_status": runtime_status,
                 "runtime_bundle_id": instance.runtime_bundle_id if instance else None,
                 "runtime_bundle_name": (
                     bundles[instance.runtime_bundle_id].name
@@ -158,8 +215,10 @@ async def chrome_pool_status(db: AsyncSession = Depends(get_db)) -> ApiResponse:
                 "runtime_diagnostics": deployment.diagnostics if deployment else [],
             }
         )
+    pool_available = pool.available
+    aggregate_available = sum(effective_availability) if pool_available >= 0 else pool_available
     return ApiResponse.ok(
-        {"endpoints": endpoints, "total": pool.total, "available": pool.available}
+        {"endpoints": endpoints, "total": pool.total, "available": aggregate_available}
     )
 
 

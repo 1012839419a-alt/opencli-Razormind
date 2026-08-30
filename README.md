@@ -26,28 +26,69 @@ opencli-Razormind 是一个开源、自托管的研究与情报管线。它把�
 
 图中的网站变化监控项目已发布不可变 `v1`，并完成了基于该发布版本的真实运行与 Trace 记录。
 
-当前公开版本 **v0.4.0** 已打通：
+当前公开版本 **v0.4.1** 已打通：
 
 **登录采集账号 → 创建研究项目 → 编排工作流 → 执行与追踪 → 查看记录和证据 → 定时运行 / 对外交付**
 
-## 一条命令启动
+## 安装版本边界
 
 前置要求：Docker 与 Docker Compose。
 
-Linux / macOS：
+当前公开版本 **v0.4.1 是不可变的旧版发布**。它早于本分支新增的随机本地管理员密码、持久化恢复基线、重启后认证校验和浏览器降级启动契约。不要把 `v0.4.1` 的安装器或镜像当作这些新行为已经公开发布的证据；需要旧版时请从 [v0.4.1 Release](https://github.com/2233admin/opencli-Razormind/releases/tag/v0.4.1) 获取并遵循该版本自己的说明。
+
+这些新行为目前只存在于当前源码分支，**尚无可引用的 next-release 标签或一键安装 URL**。开发者可从源码构建当前分支：
 
 ~~~bash
-curl -fsSL https://raw.githubusercontent.com/2233admin/opencli-Razormind/v0.4.0/scripts/install.sh | sh
+git clone https://github.com/2233admin/opencli-Razormind.git
+cd opencli-Razormind
+cp .env.docker.example .env
+# 为 .env 中的必填令牌和密钥设置非默认值后：
+# 仅首次执行以下初始化步骤；请保存 .local-admin-password 中的随机密码。
+local_admin_password_file=.local-admin-password
+abort_local_admin_password() {
+  echo "$1" >&2
+  unset local_admin_password
+  exit 1
+}
+validate_local_admin_password() {
+  if ! printf '%s' "$local_admin_password" | grep -Eq '^[0-9A-Fa-f]{48}$'; then
+    abort_local_admin_password "The local administrator password must be exactly 48 hexadecimal characters."
+  fi
+}
+if ! IMAGE_TAG=source docker compose -f docker-compose.yml -f docker-compose.build.yml build api frontend agent-1; then
+  abort_local_admin_password "Could not build the source images."
+fi
+if [ -s "$local_admin_password_file" ]; then
+  if ! local_admin_password="$(cat "$local_admin_password_file")"; then
+    abort_local_admin_password "Could not read $local_admin_password_file."
+  fi
+else
+  umask 077
+  if ! local_admin_password="$(openssl rand -hex 24)"; then
+    abort_local_admin_password "Could not generate a local administrator password."
+  fi
+fi
+validate_local_admin_password
+if [ ! -s "$local_admin_password_file" ]; then
+  if ! printf '%s\n' "$local_admin_password" > "$local_admin_password_file"; then
+    abort_local_admin_password "Could not save $local_admin_password_file."
+  fi
+fi
+if ! chmod 600 "$local_admin_password_file"; then
+  abort_local_admin_password "Could not protect $local_admin_password_file."
+fi
+# initialize_password_hash 只写入一次 /data/local-admin-password.hash 及其
+# /data/local-admin-password.hash.initialized marker；不要重复执行此初始化命令。
+if ! printf '%s' "$local_admin_password" | IMAGE_TAG=source docker compose -f docker-compose.yml -f docker-compose.build.yml run --rm -T --no-deps api python -c \
+    'import sys; from backend.security.local_auth import hash_password, initialize_password_hash; initialize_password_hash(hash_password(sys.stdin.read().strip()), "/data/local-admin-password.hash")'; then
+  abort_local_admin_password "Could not initialize the local administrator password."
+fi
+unset local_admin_password
+# 随后（以及今后的启动）：
+IMAGE_TAG=source docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --no-build --wait
 ~~~
 
-Windows PowerShell：
-
-~~~powershell
-Invoke-WebRequest https://raw.githubusercontent.com/2233admin/opencli-Razormind/v0.4.0/scripts/install.ps1 -OutFile install.ps1
-.\install.ps1
-~~~
-
-安装器会生成安全密钥、拉取公开的多架构 GHCR 镜像、启动服务并等待健康检查通过。
+下一版本获得维护者授权、创建标签并通过 candidate-image smoke 后，Release 页面才会给出与该标签绑定的 Linux/macOS 与 Windows 一键安装命令。不要自行把 `v0.4.1` URL 替换成一个尚未发布的版本号。
 
 | 入口 | 地址 | 用途 |
 | --- | --- | --- |
@@ -55,13 +96,32 @@ Invoke-WebRequest https://raw.githubusercontent.com/2233admin/opencli-Razormind/
 | API 文档 | http://localhost:8031/docs | REST API 与集成调试 |
 | 内置浏览器 | http://localhost:6080 | 扫码或登录需要账号的平台 |
 
-安装完成后可以直接使用本地管理员账号登录：
+完成上述源码初始化后可使用本地管理员账号登录：
 
 - 用户名：`admin`
-- 密码：`admin`
+- 密码：首次初始化生成并保存在 `.local-admin-password` 中的随机密码（请立即保存；不是 `admin`；`v0.4.1` 不具备此契约）
 - 登录后可在「账户设置」修改密码
 
 `API_AUTH_TOKEN` 仅由 Fleet、Agent、API 和 MCP 传输使用，自动保存在安装目录的 `.env`，不需要填入管理界面。不要公开 API 令牌、noVNC 或浏览器调试端口；远程部署建议使用 HTTPS、反向代理或 SSH 隧道。
+
+## Restart recovery and support
+
+> **Release boundary:** the recovery behavior and verification gate described in this section are changes on the current source branch. They are not present in the immutable `v0.4.1` source archive or `v0.4.1` public images. They require the next authorized release before public-install users can rely on them; no next-release tag or installer URL exists yet.
+
+The default `api`, `frontend`, and `agent-1` services use `restart: unless-stopped` and durable named volumes. On native Linux, the installer can verify only the narrow boot prerequisite described below; it never claims to have tested a host restart and never enables or changes a host service. An unverified result does not fail installation: follow the exact commands printed by the installer after the next host restart. Do not run `docker compose up`, `start`, or `restart` during that check; automatic recovery is the property being verified.
+
+| Host | Install support | Host-restart recovery |
+| --- | --- | --- |
+| Native Linux with Docker Engine + systemd | Supported | The boot prerequisite is reported as verified only with the default Docker context, no `DOCKER_HOST`, and an enabled Docker systemd unit. This is not a claim that the installer tested a host reboot; the Linux CI gate separately restarts the daemon and verifies all three services plus database, authentication, and browser-profile persistence. |
+| macOS with Docker Desktop | Supported | Unverified until Docker Desktop login startup is enabled and the printed post-restart checks pass. |
+| Windows with Docker Desktop | Supported | Unverified even when the service is automatic, because full Desktop engine startup still requires the printed post-restart checks. |
+| WSL | Development use only | Production host-restart recovery is not claimed because there is no WSL reboot gate. |
+
+If `agent-1` is unhealthy, the API and frontend still start so the control plane and diagnostics remain reachable. Browser-dependent collection stays unavailable until the browser reports ready; the UI must not interpret control-plane health as browser readiness.
+
+Persistent data lives in the Compose named volumes `db_data` and `agent_profile_1`. The next-release installer stores a non-secret pre-restart baseline in the install directory and prints a safely quoted verification command. After a restart, that check compares the database revision and volume sentinels, requires the current local-auth marker to have a strict supported value, requires the current durable password hash to load and validate structurally through `local_auth.load_password_hash`, and performs an authenticated identity request with the currently persisted container credentials without printing tokens or hashes. A legitimate password change is therefore allowed and is not compared with the installation-time hash. The check also restores the persisted `COMPOSE_PROJECT_NAME`, so it cannot silently inspect another Compose project. Do not use `docker compose down -v` during recovery because `-v` deletes those volumes. A plain container restart also does not reload host `.env` values; deployment-environment changes require an intentional container recreate followed by health and identity verification.
+
+API restart behavior for work already in flight is unchanged: legacy collection tasks in `pending`, `running`, or `ai_processing` and Operations Agent runs in `queued` or `running` are marked failed with an interruption reason. Managed acquisition executions are requeued. The local scheduler does not replay schedules missed while the process was down; after startup it establishes a new watermark, and multiple fires observed within one later tick are coalesced into one dispatch.
 
 ## 正常的研究流程
 
@@ -200,18 +260,60 @@ uv run pytest
 ~~~bash
 cp .env.docker.example .env
 # 设置 API_AUTH_TOKEN、BOOTSTRAP_ADMIN_TOKEN、SECRET_KEY、CREDENTIAL_ENCRYPTION_KEY
-docker compose -f docker-compose.yml -f docker-compose.build.yml up --build -d
+# 仅首次执行以下初始化步骤；请保存 .local-admin-password 中的随机密码。
+local_admin_password_file=.local-admin-password
+abort_local_admin_password() {
+  echo "$1" >&2
+  unset local_admin_password
+  exit 1
+}
+validate_local_admin_password() {
+  if ! printf '%s' "$local_admin_password" | grep -Eq '^[0-9A-Fa-f]{48}$'; then
+    abort_local_admin_password "The local administrator password must be exactly 48 hexadecimal characters."
+  fi
+}
+if ! IMAGE_TAG=source docker compose -f docker-compose.yml -f docker-compose.build.yml build api frontend agent-1; then
+  abort_local_admin_password "Could not build the source images."
+fi
+if [ -s "$local_admin_password_file" ]; then
+  if ! local_admin_password="$(cat "$local_admin_password_file")"; then
+    abort_local_admin_password "Could not read $local_admin_password_file."
+  fi
+else
+  umask 077
+  if ! local_admin_password="$(openssl rand -hex 24)"; then
+    abort_local_admin_password "Could not generate a local administrator password."
+  fi
+fi
+validate_local_admin_password
+if [ ! -s "$local_admin_password_file" ]; then
+  if ! printf '%s\n' "$local_admin_password" > "$local_admin_password_file"; then
+    abort_local_admin_password "Could not save $local_admin_password_file."
+  fi
+fi
+if ! chmod 600 "$local_admin_password_file"; then
+  abort_local_admin_password "Could not protect $local_admin_password_file."
+fi
+# initialize_password_hash 只写入一次 /data/local-admin-password.hash 及其
+# /data/local-admin-password.hash.initialized marker；不要重复执行此初始化命令。
+if ! printf '%s' "$local_admin_password" | IMAGE_TAG=source docker compose -f docker-compose.yml -f docker-compose.build.yml run --rm -T --no-deps api python -c \
+    'import sys; from backend.security.local_auth import hash_password, initialize_password_hash; initialize_password_hash(hash_password(sys.stdin.read().strip()), "/data/local-admin-password.hash")'; then
+  abort_local_admin_password "Could not initialize the local administrator password."
+fi
+unset local_admin_password
+# 随后（以及今后的启动）：
+IMAGE_TAG=source docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --no-build --wait
 ~~~
 
 ## 发布镜像
 
-v0.4.0 同时发布 `linux/amd64` 和 `linux/arm64`：
+v0.4.1 同时发布 `linux/amd64` 和 `linux/arm64`：
 
-- `ghcr.io/2233admin/opencli-admin-api:0.4.0`
-- `ghcr.io/2233admin/opencli-admin-frontend:0.4.0`
-- `ghcr.io/2233admin/opencli-admin-chrome:0.4.0`
-- `ghcr.io/2233admin/opencli-admin-agent:0.4.0`
-- `ghcr.io/2233admin/opencli-admin-agent:0.4.0-chrome`
+- `ghcr.io/2233admin/opencli-admin-api:0.4.1`
+- `ghcr.io/2233admin/opencli-admin-frontend:0.4.1`
+- `ghcr.io/2233admin/opencli-admin-chrome:0.4.1`
+- `ghcr.io/2233admin/opencli-admin-agent:0.4.1`
+- `ghcr.io/2233admin/opencli-admin-agent:0.4.1-chrome`
 
 查看 [最新 Release](https://github.com/2233admin/opencli-Razormind/releases/latest)。
 

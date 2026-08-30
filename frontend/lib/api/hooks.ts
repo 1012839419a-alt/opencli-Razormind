@@ -8,6 +8,7 @@ import {
 } from "@tanstack/react-query";
 
 import * as api from "./endpoints";
+import { getApiInstanceId } from "./restart-orchestration";
 import type {
   AIAgent,
   ApprovalDecision,
@@ -1355,10 +1356,26 @@ export function useUpdateSystemConfig() {
 
 // Restarts the whole backend API container (backend/api/v1/browsers.py
 // restart_api) — affects every connected user/agent, not just this session.
-// No query invalidation on success: the process is about to go down.
+// Do not invalidate immediately: the process is about to go down. The caller
+// waits for bounded liveness recovery and then refreshes active data.
 export function useRestartApi() {
   return useMutation({
-    mutationFn: () => api.restartApi(),
+    mutationFn: async () => {
+      let baselineInstanceId: string | undefined
+      try {
+        baselineInstanceId = getApiInstanceId(await api.getHealth())
+      } catch {
+        // The protected restart request remains authoritative. Older or
+        // temporarily unavailable APIs fall back to observing an outage.
+      }
+
+      const response = await api.restartApi()
+      const requestedInstanceId = getApiInstanceId(response.data)
+      return {
+        response,
+        baselineInstanceId: requestedInstanceId ?? baselineInstanceId,
+      }
+    },
   });
 }
 

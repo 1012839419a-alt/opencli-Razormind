@@ -12,6 +12,7 @@ import pytest
 
 from backend.config import get_settings
 from backend.main import app
+from backend.security.fleet_auth import FLEET_AUTH_ERROR_CODE
 from backend.security.identity import (
     IdentitySettings,
     get_request_identity,
@@ -51,7 +52,11 @@ async def test_missing_header_is_401(client, auth_enabled):
     response = await client.get("/api/v1/system/config")
     assert response.status_code == 401
     body = response.json()
-    assert body == {"success": False, "error": "Invalid or missing API token"}
+    assert body == {
+        "success": False,
+        "error": "Invalid or missing API token",
+        "code": FLEET_AUTH_ERROR_CODE,
+    }
     assert response.headers["www-authenticate"] == "Bearer"
 
 
@@ -61,6 +66,7 @@ async def test_wrong_token_is_401(client, auth_enabled):
         "/api/v1/system/config", headers={"Authorization": "Bearer wrong-token"}
     )
     assert response.status_code == 401
+    assert response.json()["code"] == FLEET_AUTH_ERROR_CODE
 
 
 @pytest.mark.asyncio
@@ -134,13 +140,17 @@ async def test_fleet_token_header_leaves_authorization_for_oidc(client, auth_ena
 
 
 @pytest.mark.asyncio
-async def test_health_exempt_and_leaks_nothing(client, auth_enabled):
+async def test_health_exempt_and_leaks_only_opaque_process_identity(client, auth_enabled):
     """/health stays open for unauthenticated liveness probes (docker
     healthcheck) and therefore must expose liveness only — no version, no
-    config flags (issue 04: exempt iff it leaks nothing)."""
+    config flags (issue 04: exempt iff it leaks no deployment detail)."""
     response = await client.get("/health")
     assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
+    body = response.json()
+    assert set(body) == {"status", "instance_id"}
+    assert body["status"] == "ok"
+    assert isinstance(body["instance_id"], str)
+    assert body["instance_id"]
 
 
 @pytest.mark.asyncio
@@ -178,7 +188,6 @@ async def test_local_admin_login_rejects_wrong_password(client, auth_disabled):
         json={"username": "admin", "password": wrong_password},
     )
     assert response.status_code == 401
-
 
 
 @pytest.mark.asyncio

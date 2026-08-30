@@ -1,15 +1,17 @@
 import asyncio
 import base64
 import logging
+import secrets
 import socket
 from datetime import UTC
 
-from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.api.v1.browser_containers import docker_client, update_env_file
+from backend.config import get_settings
 from backend.database import get_db
 from backend.schemas.browser import (
     BrowserBindingCreate,
@@ -47,6 +49,28 @@ def _runtime_http_error(exc: browser_service.BrowserRuntimeError) -> HTTPExcepti
         else 400
     )
     return HTTPException(status_code=status_code, detail={"code": exc.code, "message": str(exc)})
+
+
+def _is_platform_admin(identity: RequestIdentity) -> bool:
+    if identity.is_platform_admin:
+        return True
+    roles = identity.claims.get("roles") if identity.claims else None
+    return isinstance(roles, (list, tuple)) and any(
+        isinstance(role, str) and role == "platform-admin" for role in roles
+    )
+
+
+async def _get_restart_request_identity(request: Request) -> RequestIdentity:
+    """Resolve an operator identity without treating fleet transport auth as one."""
+    fleet_token = get_settings().api_auth_token
+    scheme, _, bearer = request.headers.get("authorization", "").partition(" ")
+    bearer = bearer if scheme.lower() == "bearer" else ""
+    if fleet_token and (
+        not bearer or secrets.compare_digest(bearer.encode(), fleet_token.encode())
+    ):
+        raise HTTPException(status_code=403, detail="Platform administrator access required")
+
+    return await get_request_identity(request)
 
 
 def _decode_endpoint(endpoint_b64: str) -> str:
@@ -669,8 +693,14 @@ async def agent_ws_endpoint(ws: WebSocket) -> None:
 
 
 @router.post("/restart-api", response_model=ApiResponse[dict])
-async def restart_api() -> ApiResponse:
-    """Restart the API container (e.g. after manually editing .env)."""
+async def restart_api(
+    request: Request,
+    identity: RequestIdentity = Depends(_get_restart_request_identity),
+) -> ApiResponse:
+    """Restart the current API container without recreating it or reloading host env files."""
+    if not _is_platform_admin(identity):
+        raise HTTPException(status_code=403, detail="Platform administrator access required")
+
     container_id = socket.gethostname()
     client = docker_client()
     try:
@@ -681,4 +711,10 @@ async def restart_api() -> ApiResponse:
     logger.info("API restart requested — restarting container %s in 1s", container_id)
     # Delay restart so the HTTP response can be sent first
     asyncio.get_event_loop().call_later(1.0, container.restart)
-    return ApiResponse.ok({"restarting": True, "container": container_id})
+    return ApiResponse.ok(
+        {
+            "restarting": True,
+            "container": container_id,
+            "instance_id": request.app.state.api_instance_id,
+        }
+    )
