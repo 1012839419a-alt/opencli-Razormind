@@ -221,7 +221,12 @@ def test_every_matrix_row_normalizes_only_authenticated_public_facts(scenario: s
 def test_internal_control_state_and_terminal_page_inference_are_rejected():
     facts = public_facts("query-page-race")
     facts["gateState"] = "released"
-    with pytest.raises(harness.PublicFactRejectedError):
+    rejection = (
+        harness.PublicFactRejectedError
+        if hasattr(harness, "PublicFactRejectedError")
+        else harness.PublicFactRejected
+    )
+    with pytest.raises(rejection):
         harness.normalize_public_facts(facts)
 
 
