@@ -1,0 +1,234 @@
+name: non-bypass-acceptance
+
+x-proof-env: &proof-env
+  API_AUTH_TOKEN: ${API_AUTH_TOKEN:-runtime-secret-required}
+  III_LIFECYCLE_TOKEN: ${III_LIFECYCLE_TOKEN:-runtime-secret-required}
+  III_INGRESS_RECEIPT_SECRET: ${III_INGRESS_RECEIPT_SECRET:-runtime-secret-required}
+  ODP_QUERY_ADMIN_CREDENTIAL: ${ODP_QUERY_ADMIN_CREDENTIAL:-runtime-secret-required}
+  ODP_QUERY_CURSOR_SECRET: ${ODP_QUERY_CURSOR_SECRET:-runtime-secret-required}
+  DATABASE_URL: postgresql+asyncpg://proof:proof@proof-admin-postgres:5432/proof_admin
+  REDIS_URL: redis://proof-redis:6379/0
+  ODP_QUERY_URL: http://proof-odp-query:8042
+  III_URL: ws://proof-iii:49134
+  III_LIFECYCLE_URL: http://proof-relay:8080/api/v1/iii-collections/lifecycle
+  III_CLI_PATH: /opt/iii/iii
+  OIDC_ISSUER: http://proof-oidc
+  OIDC_AUDIENCE: proof-admin
+  OIDC_JWKS_URL: http://proof-oidc/jwks.json
+  SSL_CERT_FILE: /run/proof/ca.pem
+  BOOTSTRAP_ADMIN_TOKEN: ${BOOTSTRAP_ADMIN_TOKEN:-runtime-secret-required}
+  PROOF_PROPOSER_JWT: ${PROOF_PROPOSER_JWT:-runtime-token-required}
+  PROOF_REVIEWER_JWT: ${PROOF_REVIEWER_JWT:-runtime-token-required}
+  CONTROLLED_RECEIVER_REGISTRY_JSON: ${CONTROLLED_RECEIVER_REGISTRY_JSON:-{}}
+  CONTROLLED_RECEIVER_CREDENTIALS_JSON: ${CONTROLLED_RECEIVER_CREDENTIALS_JSON:-{}}
+  CONTROLLED_RECEIVER_INBOUND_KEYS_JSON: ${CONTROLLED_RECEIVER_INBOUND_KEYS_JSON:-{}}
+  CONTROLLED_RECEIVER_RECEIPT_KEYS_JSON: ${CONTROLLED_RECEIVER_RECEIPT_KEYS_JSON:-{}}
+  PROOF_FIXTURE_DIGEST: ${PROOF_FIXTURE_DIGEST:-runtime-digest-required}
+
+services:
+  proof-admin:
+    build:
+      context: .
+      target: non-bypass-acceptance
+    environment: *proof-env
+    volumes:
+      - ${PROOF_SECRETS_DIR:-./.artifacts/non-bypass-secrets}:/run/proof:ro
+    networks: [proof-control, proof-query, proof-callback, proof-receiver, proof-iii]
+    depends_on:
+      proof-admin-postgres: {condition: service_healthy}
+      proof-redis: {condition: service_healthy}
+      proof-odp-query: {condition: service_healthy}
+      proof-oidc: {condition: service_started}
+    healthcheck:
+      test: [CMD, curl, -fsS, http://localhost:8000/health]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  proof-driver:
+    build:
+      context: .
+      target: non-bypass-acceptance
+    entrypoint: [/bin/sh, -c]
+    command: [sleep infinity]
+    environment: *proof-env
+    volumes:
+      - ${PROOF_SECRETS_DIR:-./.artifacts/non-bypass-secrets}:/run/proof:ro
+    networks: [proof-control]
+    depends_on:
+      proof-admin: {condition: service_healthy}
+
+  proof-admin-postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: proof_admin
+      POSTGRES_USER: proof
+      POSTGRES_PASSWORD: proof
+    networks: [proof-control]
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U proof -d proof_admin]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  proof-redis:
+    image: redis:7-alpine
+    networks: [proof-control, proof-odp]
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  proof-iii:
+    image: iiidev/iii:0.19.4@sha256:14ed48b463d8a2e0d3583512acf106b3514f406c5e9965a5854710ff936e1e86
+    volumes:
+      - ./iii/config.yaml:/app/config.yaml:ro
+    environment:
+      III_EXECUTION_CONTEXT: docker
+      RUST_LOG: info
+    networks: [proof-iii]
+
+  proof-collector:
+    build:
+      context: ./iii
+      dockerfile: workers/collector-opencli/Dockerfile
+    environment:
+      III_URL: ws://proof-iii:49134
+      ODP_INGEST_URL: http://proof-odp-ingest:8040
+      ADMIN_III_LIFECYCLE_URL: http://proof-relay:8080/api/v1/iii-collections/lifecycle
+      ADMIN_III_LIFECYCLE_TOKEN: ${III_LIFECYCLE_TOKEN:-runtime-secret-required}
+      API_AUTH_TOKEN: ${API_AUTH_TOKEN:-runtime-secret-required}
+      OPENCLI_BIN: /proof/opencli-proof
+      OPENCLI_MODE: bridge
+    volumes:
+      - ./tests/acceptance/fixtures/opencli-proof:/proof/opencli-proof:ro
+    networks: [proof-iii]
+    depends_on: [proof-iii, proof-relay, proof-odp-ingest]
+
+  proof-bridge:
+    build:
+      context: ./iii
+      dockerfile: workers/odp-ingest-bridge/Dockerfile
+    environment:
+      III_URL: ws://proof-iii:49134
+      ODP_INGEST_URL: http://proof-odp-ingest:8040
+      ADMIN_III_LIFECYCLE_URL: http://proof-relay:8080/api/v1/iii-collections/lifecycle
+      ADMIN_III_LIFECYCLE_TOKEN: ${III_LIFECYCLE_TOKEN:-runtime-secret-required}
+      API_AUTH_TOKEN: ${API_AUTH_TOKEN:-runtime-secret-required}
+    networks: [proof-iii, proof-odp]
+    depends_on: [proof-iii, proof-relay, proof-odp-ingest]
+
+  proof-relay:
+    image: nginx:1.27-alpine
+    volumes:
+      - ./tests/acceptance/fixtures/non-bypass-relay.conf:/etc/nginx/conf.d/default.conf:ro
+    networks: [proof-control, proof-callback, proof-iii]
+    depends_on: [proof-admin]
+
+  proof-odp-ingest:
+    build:
+      context: ./odp-rs
+      dockerfile: Dockerfile.ingest
+    environment:
+      ODP_INGEST_HOST: 0.0.0.0
+      ODP_INGEST_PORT: 8040
+      ODP_REDIS_URL: redis://proof-redis:6379/2
+      ODP_INGRESS_RECEIPT_SECRET: ${III_INGRESS_RECEIPT_SECRET:-runtime-secret-required}
+    networks: [proof-odp]
+    depends_on:
+      proof-redis: {condition: service_healthy}
+
+  proof-odp-store:
+    build:
+      context: ./odp-rs
+      dockerfile: Dockerfile.store
+    environment:
+      ODP_REDIS_URL: redis://proof-redis:6379/2
+      ODP_DATABASE_URL: postgresql://proof:proof@proof-odp-postgres:5432/proof_odp
+    networks: [proof-odp]
+    depends_on: [proof-odp-ingest, proof-odp-postgres]
+
+  proof-odp-query:
+    build:
+      context: ./odp-rs
+      dockerfile: Dockerfile.query
+    environment:
+      ODP_QUERY_HOST: 0.0.0.0
+      ODP_QUERY_PORT: 8042
+      ODP_QUERY_DATABASE_URL: postgresql://proof:proof@proof-odp-postgres:5432/proof_odp
+      ODP_QUERY_ADMIN_CREDENTIAL: ${ODP_QUERY_ADMIN_CREDENTIAL:-runtime-secret-required}
+      ODP_QUERY_CURSOR_SECRET: ${ODP_QUERY_CURSOR_SECRET:-runtime-secret-required}
+    networks: [proof-odp, proof-query]
+    depends_on: [proof-odp-store]
+    healthcheck:
+      test: [CMD, curl, -fsS, http://localhost:8042/health]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  proof-odp-postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: proof_odp
+      POSTGRES_USER: proof
+      POSTGRES_PASSWORD: proof
+    networks: [proof-odp]
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U proof -d proof_odp]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  proof-oidc:
+    image: nginx:1.27-alpine
+    volumes:
+      - ${PROOF_SECRETS_DIR:-./.artifacts/non-bypass-secrets}/jwks.json:/usr/share/nginx/html/jwks.json:ro
+    networks: [proof-control]
+
+  proof-controlled-receiver:
+    build:
+      context: .
+      target: non-bypass-acceptance
+    command: [uvicorn, backend.main:app, --host, 0.0.0.0, --port, "8000", --ssl-keyfile, /run/proof/receiver-key.pem, --ssl-certfile, /run/proof/receiver-cert.pem]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://proof:proof@proof-receiver-postgres:5432/proof_receiver
+      API_AUTH_TOKEN: ${API_AUTH_TOKEN:-runtime-secret-required}
+      CONTROLLED_RECEIVER_REGISTRY_JSON: ${CONTROLLED_RECEIVER_REGISTRY_JSON:-{}}
+      CONTROLLED_RECEIVER_CREDENTIALS_JSON: ${CONTROLLED_RECEIVER_CREDENTIALS_JSON:-{}}
+      CONTROLLED_RECEIVER_INBOUND_KEYS_JSON: ${CONTROLLED_RECEIVER_INBOUND_KEYS_JSON:-{}}
+      CONTROLLED_RECEIVER_RECEIPT_KEYS_JSON: ${CONTROLLED_RECEIVER_RECEIPT_KEYS_JSON:-{}}
+      SSL_CERT_FILE: /run/proof/ca.pem
+    volumes:
+      - ${PROOF_SECRETS_DIR:-./.artifacts/non-bypass-secrets}:/run/proof:ro
+    networks:
+      proof-receiver:
+        ipv4_address: 8.8.8.8
+    depends_on:
+      proof-receiver-postgres: {condition: service_healthy}
+
+  proof-receiver-postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: proof_receiver
+      POSTGRES_USER: proof
+      POSTGRES_PASSWORD: proof
+    networks: [proof-receiver]
+    depends_on: []
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U proof -d proof_receiver]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+networks:
+  proof-control: {internal: true}
+  proof-iii: {internal: true}
+  proof-odp: {internal: true}
+  proof-query: {internal: true}
+  proof-callback: {internal: true}
+  proof-receiver:
+    internal: true
+    ipam:
+      config:
+        - subnet: 8.8.8.0/24

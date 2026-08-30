@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 from datetime import UTC, datetime, timedelta
+from urllib.parse import urlparse
 
 from sqlalchemy import or_, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -63,20 +64,36 @@ async def invoke_iii_collection(payload: dict, *, function_id: str) -> None:
     if not settings.iii_lifecycle_url:
         raise IIITriggerUnsentError("III lifecycle callback is not configured")
     environment = dict(os.environ)
+    trigger_options: list[str] = []
     if settings.iii_url:
-        environment["III_URL"] = settings.iii_url
+        parsed = urlparse(settings.iii_url)
+        if parsed.scheme not in {"ws", "wss"} or not parsed.hostname:
+            raise IIITriggerUnsentError("III URL must be a WebSocket endpoint")
+        trigger_options = [
+            "--address", parsed.hostname,
+            "--port", str(parsed.port or 49134),
+        ]
     environment["ADMIN_III_LIFECYCLE_URL"] = settings.iii_lifecycle_url
     if settings.iii_lifecycle_token:
         environment["ADMIN_III_LIFECYCLE_TOKEN"] = settings.iii_lifecycle_token
-    argument = "admin_command_json=" + json.dumps(
-        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    invocation_payload = json.dumps(
+        {
+            "admin_command_json": json.dumps(
+                payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            )
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
     )
     try:
         process = await asyncio.create_subprocess_exec(
             settings.iii_cli_path,
             "trigger",
+            *trigger_options,
             function_id,
-            argument,
+            "--json",
+            invocation_payload,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
             env=environment,
