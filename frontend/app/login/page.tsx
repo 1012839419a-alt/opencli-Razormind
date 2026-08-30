@@ -172,7 +172,7 @@ function LoginForm() {
       const usingDefaultPassword = await signInWithPassword(username, password)
       toast.success(
         usingDefaultPassword
-          ? '登录成功。你可以在账户设置中修改默认密码。'
+          ? '登录成功。请在账户设置中修改安装器生成的初始密码。'
           : '登录成功',
       )
       router.replace(returnTo)
@@ -307,7 +307,7 @@ function LoginForm() {
             <CardHeader>
               <CardTitle>登录控制台</CardTitle>
               <CardDescription>
-                本地部署直接登录。首次使用可使用默认账号 admin / admin。
+                本地部署直接登录。首次使用请输入安装完成时显示的随机初始密码。
               </CardDescription>
             </CardHeader>
             <CardContent>

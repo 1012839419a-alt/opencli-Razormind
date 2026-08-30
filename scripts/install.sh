@@ -61,6 +61,7 @@ replace_env() {
 }
 
 api_token="$(random_hex 32)"
+local_admin_password="$(random_hex 24)"
 credential_encryption_key="$(random_fernet)"
 if [ -z "$credential_encryption_key" ]; then
   echo "Failed to generate CREDENTIAL_ENCRYPTION_KEY" >&2
@@ -73,6 +74,8 @@ chmod 600 "$INSTALL_DIR/.env"
 
 cd "$INSTALL_DIR"
 docker compose pull api frontend agent-1
+printf '%s' "$local_admin_password" | docker compose run --rm -T --no-deps api python -c \
+  'import sys; from backend.security.local_auth import hash_password, initialize_password_hash; initialize_password_hash(hash_password(sys.stdin.read().strip()), "/data/local-admin-password.hash")'
 docker compose up -d
 
 attempt=0
@@ -89,5 +92,5 @@ done
 
 printf '\nOpenCLI Admin %s is ready.\n' "$VERSION"
 printf 'URL: http://localhost:%s\n' "${FRONTEND_PORT:-3010}"
-printf 'Local login: admin / admin (change it later in Account Settings)\n'
+printf 'Local login: admin / %s\n' "$local_admin_password"
 printf 'API_AUTH_TOKEN is generated for Fleet/Agent/API transport and stored in %s/.env\n' "$INSTALL_DIR"

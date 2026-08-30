@@ -30,8 +30,8 @@ def list_runtime_types() -> list[str]:
 
 def available_runtimes() -> list[str]:
     """Runtime types whose adapter reports itself actually usable on this
-    node (binary on PATH, sidecar reachable, etc.) via the adapter's cheap
-    sync ``is_available()`` classmethod. This is what the ws register
+    node (binary on PATH, sidecar reachable, compatibility probe, etc.) via
+    the adapter's sync ``is_available()`` classmethod. This is what the ws register
     handshake advertises to the center — never the full registry, since a
     node may not have every runtime's binary installed (Docker image
     layering, design notes §6)."""

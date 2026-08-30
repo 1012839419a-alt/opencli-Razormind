@@ -33,6 +33,7 @@ class RuntimeReadiness:
     """
 
     runtime: str
+    capability_id: str
     status: Literal["ready", "blocked"]
     binary_present: bool
     version: str | None = None
@@ -180,6 +181,7 @@ class RuntimeAdapter(ABC):
         ready = await self.health()
         return RuntimeReadiness(
             runtime=self.runtime_type,
+            capability_id=f"runtime.{self.runtime_type}",
             status="ready" if ready else "blocked",
             binary_present=ready,
             reason_code=None if ready else "unavailable",

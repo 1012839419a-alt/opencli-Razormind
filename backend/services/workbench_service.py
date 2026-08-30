@@ -18,6 +18,7 @@ from sqlalchemy.orm import selectinload
 
 from backend.config import get_settings
 from backend.database import AsyncSessionLocal
+from backend.models.edge_node import EdgeNode
 from backend.models.operations_agent import (
     AgentPermissionProfile,
     AgentProfileMode,
@@ -42,10 +43,11 @@ from backend.schemas.workbench import (
     WorkbenchTurnOutput,
     WorkbenchTurnRead,
 )
-from backend.ws_agent_manager import send_agent_task
+from backend.ws_agent_manager import is_connected, send_agent_task
 
 MAX_EVENT_PAYLOAD_BYTES = 16_384
 MAX_TEXT_BYTES = 8_192
+CODING_RUNTIME_TYPES = frozenset({"codex", "pi"})
 MAX_DIFF_BYTES = 524_288
 MAX_TESTS = 100
 MAX_TERMINAL_RESULT_BYTES = MAX_DIFF_BYTES + (MAX_TESTS * 12_000)
@@ -168,7 +170,11 @@ async def list_runtimes(session: AsyncSession, workspace_id: str) -> list[Workbe
             binding = agent_runtime_binding_from_model_configuration(version.model_configuration)
         except ValidationError:
             continue
-        if binding is None or not _binding_has_workbench_affinity(binding):
+        if (
+            binding is None
+            or binding.runtime not in CODING_RUNTIME_TYPES
+            or not _binding_has_workbench_affinity(binding)
+        ):
             continue
         profile = await session.scalar(
             select(AgentPermissionProfile)
@@ -177,12 +183,16 @@ async def list_runtimes(session: AsyncSession, workspace_id: str) -> list[Workbe
         )
         if profile is None or profile.mode != AgentProfileMode.SUGGEST_CHANGES:
             continue
+        readiness, reason_code, reason = await _runtime_fleet_readiness(session, binding)
         runtimes.append(
             WorkbenchRuntimeRead(
                 id=agent.id,
                 name=agent.name,
                 published_version=version.version,
                 runtime_type=binding.runtime,
+                readiness=readiness,
+                reason_code=reason_code,
+                reason=reason,
             )
         )
     return runtimes
@@ -230,6 +240,7 @@ async def create_turn(
     if profile.mode != AgentProfileMode.SUGGEST_CHANGES:
         raise WorkbenchError("Coding runtime must use the suggest_changes permission profile")
     _require_repository_runtime_affinity(repository, runtime)
+    await _require_runtime_fleet_ready(session, runtime)
 
     sequence_query = select(func.max(WorkbenchTurn.sequence)).where(
         WorkbenchTurn.thread_id == thread.id
@@ -500,6 +511,7 @@ async def dispatch_workbench_turn(turn_id: str) -> None:
             await reconcile_repositories(session, turn.workspace_id)
             repository = await get_repository(session, turn.workspace_id, thread.repository_id)
             _require_repository_runtime_affinity(repository, binding)
+            await _require_runtime_fleet_ready(session, binding)
             instructions = _workbench_instructions(version.instructions)
             runtime_config = {
                 "cwd": turn.worktree_path,
@@ -771,6 +783,11 @@ def _binding_has_workbench_affinity(binding: Any) -> bool:
 
 
 def _require_repository_runtime_affinity(repository: WorkbenchRepository, binding: Any) -> None:
+    runtime_type = getattr(binding, "runtime", "")
+    if runtime_type not in CODING_RUNTIME_TYPES:
+        raise WorkbenchError(
+            f"Runtime {runtime_type!r} is not a supported Workbench coding adapter"
+        )
     if not _binding_has_workbench_affinity(binding):
         raise WorkbenchError(
             "Coding runtime lacks an explicit execution-node/shared-filesystem affinity"
@@ -783,6 +800,32 @@ def _require_repository_runtime_affinity(repository: WorkbenchRepository, bindin
         raise WorkbenchError(
             "Repository mapping and selected runtime do not share a configured filesystem"
         )
+
+
+async def _runtime_fleet_readiness(
+    session: AsyncSession,
+    binding: Any,
+) -> tuple[str, str | None, str | None]:
+    agent_url = getattr(binding, "agent_url", "")
+    runtime = getattr(binding, "runtime", "")
+    node = await session.scalar(select(EdgeNode).where(EdgeNode.url == agent_url))
+    if node is None:
+        return "blocked", "node_not_registered", "Execution node is not registered"
+    if node.status != "online":
+        return "blocked", "node_offline", "Execution node is offline"
+    if node.protocol != "ws":
+        return "blocked", "reverse_ws_required", "Execution node has no reverse WS channel"
+    if runtime not in (node.runtimes or []):
+        return "blocked", "runtime_unavailable", f"Runtime {runtime!r} is not published by the node"
+    if not is_connected(agent_url):
+        return "blocked", "node_disconnected", "Execution node reverse WS is disconnected"
+    return "ready", None, None
+
+
+async def _require_runtime_fleet_ready(session: AsyncSession, binding: Any) -> None:
+    readiness, reason_code, reason = await _runtime_fleet_readiness(session, binding)
+    if readiness != "ready":
+        raise WorkbenchError(f"Coding runtime is not ready ({reason_code}): {reason}")
 
 
 async def _checked_target_sha(repository: WorkbenchRepository) -> str:

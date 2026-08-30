@@ -5,8 +5,8 @@ Revises: f4a5b6c7d8e9
 Create Date: 2026-08-30
 """
 
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 
 revision = "g5b6c7d8e9f0"
 down_revision = "f4a5b6c7d8e9"
@@ -36,10 +36,12 @@ def _sqlite_guards() -> None:
             f"BEFORE {event}{columns} ON delivery_executions "
             "BEGIN "
             "SELECT CASE WHEN NEW.final_result_id IS NOT NULL AND NOT EXISTS "
-            "(SELECT 1 FROM delivery_execution_results WHERE id = NEW.final_result_id AND execution_id = NEW.id) "
+            "(SELECT 1 FROM delivery_execution_results WHERE id = "
+            "NEW.final_result_id AND execution_id = NEW.id) "
             "THEN RAISE(ABORT, 'final result must belong to execution') END; "
             "SELECT CASE WHEN NEW.final_reconciliation_id IS NOT NULL AND NOT EXISTS "
-            "(SELECT 1 FROM delivery_execution_reconciliations WHERE id = NEW.final_reconciliation_id AND execution_id = NEW.id) "
+            "(SELECT 1 FROM delivery_execution_reconciliations WHERE id = "
+            "NEW.final_reconciliation_id AND execution_id = NEW.id) "
             "THEN RAISE(ABORT, 'final reconciliation must belong to execution') END; END"
         )
 
@@ -55,31 +57,52 @@ def _postgres_guards() -> None:
             "FOR EACH ROW EXECUTE FUNCTION delivery_evidence_append_only()"
         )
     op.execute(
-        "CREATE FUNCTION delivery_execution_final_links_guard() RETURNS trigger LANGUAGE plpgsql AS $$ "
+        "CREATE FUNCTION delivery_execution_final_links_guard() "
+        "RETURNS trigger LANGUAGE plpgsql AS $$ "
         "BEGIN "
         "IF NEW.final_result_id IS NOT NULL AND NOT EXISTS "
-        "(SELECT 1 FROM delivery_execution_results WHERE id = NEW.final_result_id AND execution_id = NEW.id) THEN "
+        "(SELECT 1 FROM delivery_execution_results WHERE id = "
+        "NEW.final_result_id AND execution_id = NEW.id) THEN "
         "RAISE EXCEPTION 'final result must belong to execution'; END IF; "
         "IF NEW.final_reconciliation_id IS NOT NULL AND NOT EXISTS "
-        "(SELECT 1 FROM delivery_execution_reconciliations WHERE id = NEW.final_reconciliation_id AND execution_id = NEW.id) THEN "
-        "RAISE EXCEPTION 'final reconciliation must belong to execution'; END IF; RETURN NEW; END; $$"
+        "(SELECT 1 FROM delivery_execution_reconciliations WHERE id = "
+        "NEW.final_reconciliation_id AND execution_id = NEW.id) THEN "
+        "RAISE EXCEPTION 'final reconciliation must belong to execution'; "
+        "END IF; RETURN NEW; END; $$"
     )
     op.execute(
-        "CREATE TRIGGER trg_delivery_execution_final_links BEFORE INSERT OR UPDATE OF final_result_id, final_reconciliation_id "
-        "ON delivery_executions FOR EACH ROW EXECUTE FUNCTION delivery_execution_final_links_guard()"
+        "CREATE TRIGGER trg_delivery_execution_final_links BEFORE INSERT OR UPDATE OF "
+        "final_result_id, final_reconciliation_id ON delivery_executions FOR EACH ROW "
+        "EXECUTE FUNCTION delivery_execution_final_links_guard()"
     )
 
 
 def upgrade() -> None:
-    with op.batch_alter_table("delivery_executions") as batch:
+    # Legacy plugin databases may not carry the retired Studio parent tables
+    # referenced by these delivery FKs. Avoid resolving unrelated targets
+    # while rebuilding the local SQLite tables.
+    reflect_kwargs = {"resolve_fks": False}
+    with op.batch_alter_table("delivery_executions", reflect_kwargs=reflect_kwargs) as batch:
         batch.add_column(sa.Column("send_started_at", sa.DateTime(timezone=True), nullable=True))
-    with op.batch_alter_table("delivery_execution_results") as batch:
-        batch.create_check_constraint("ck_delivery_result_attempt_range", "attempt_number BETWEEN 1 AND 3")
-        batch.create_check_constraint("ck_delivery_result_outcome", "outcome IN ('accepted', 'rejected', 'unknown')")
-    with op.batch_alter_table("delivery_execution_reconciliations") as batch:
-        batch.create_check_constraint("ck_delivery_reconciliation_outcome", "outcome IN ('accepted', 'rejected')")
-    with op.batch_alter_table("controlled_receiver_deliveries") as batch:
-        batch.create_check_constraint("ck_receiver_delivery_status", "durable_status IN ('accepted', 'rejected')")
+    with op.batch_alter_table("delivery_execution_results", reflect_kwargs=reflect_kwargs) as batch:
+        batch.create_check_constraint(
+            "ck_delivery_result_attempt_range", "attempt_number BETWEEN 1 AND 3"
+        )
+        batch.create_check_constraint(
+            "ck_delivery_result_outcome", "outcome IN ('accepted', 'rejected', 'unknown')"
+        )
+    with op.batch_alter_table(
+        "delivery_execution_reconciliations", reflect_kwargs=reflect_kwargs
+    ) as batch:
+        batch.create_check_constraint(
+            "ck_delivery_reconciliation_outcome", "outcome IN ('accepted', 'rejected')"
+        )
+    with op.batch_alter_table(
+        "controlled_receiver_deliveries", reflect_kwargs=reflect_kwargs
+    ) as batch:
+        batch.create_check_constraint(
+            "ck_receiver_delivery_status", "durable_status IN ('accepted', 'rejected')"
+        )
     if op.get_bind().dialect.name == "sqlite":
         _sqlite_guards()
     else:
@@ -100,12 +123,21 @@ def downgrade() -> None:
             op.execute(f"DROP TRIGGER trg_{table.lower()}_append_only ON {table}")
         op.execute("DROP FUNCTION delivery_execution_final_links_guard()")
         op.execute("DROP FUNCTION delivery_evidence_append_only()")
-    with op.batch_alter_table("controlled_receiver_deliveries") as batch:
+    reflect_kwargs = {"resolve_fks": False}
+    with op.batch_alter_table(
+        "controlled_receiver_deliveries", reflect_kwargs=reflect_kwargs
+    ) as batch:
         batch.drop_constraint("ck_receiver_delivery_status", type_="check")
-    with op.batch_alter_table("delivery_execution_reconciliations") as batch:
+    with op.batch_alter_table(
+        "delivery_execution_reconciliations", reflect_kwargs=reflect_kwargs
+    ) as batch:
         batch.drop_constraint("ck_delivery_reconciliation_outcome", type_="check")
-    with op.batch_alter_table("delivery_execution_results") as batch:
+    with op.batch_alter_table(
+        "delivery_execution_results", reflect_kwargs=reflect_kwargs
+    ) as batch:
         batch.drop_constraint("ck_delivery_result_outcome", type_="check")
         batch.drop_constraint("ck_delivery_result_attempt_range", type_="check")
-    with op.batch_alter_table("delivery_executions") as batch:
+    with op.batch_alter_table(
+        "delivery_executions", reflect_kwargs=reflect_kwargs
+    ) as batch:
         batch.drop_column("send_started_at")

@@ -186,6 +186,11 @@ async def invoke_runtime(
     *,
     cdp_endpoint: str,
 ) -> dict:
+    if req.runtime == "codex":
+        raise HTTPException(
+            status_code=403,
+            detail="Codex runtime is only available through controller WS dispatch",
+        )
     if req.runtime == "script-host":
         return await invoke_script_host(req, cdp_endpoint=cdp_endpoint)
     try:

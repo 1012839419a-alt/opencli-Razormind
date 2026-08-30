@@ -38,6 +38,9 @@ class WorkbenchRuntimeRead(WorkbenchModel):
     name: str
     published_version: int
     runtime_type: str
+    readiness: Literal["ready", "blocked"] = "ready"
+    reason_code: str | None = None
+    reason: str | None = None
 
 
 class WorkbenchTestEvidence(WorkbenchRequest):

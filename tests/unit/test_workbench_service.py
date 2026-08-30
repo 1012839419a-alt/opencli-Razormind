@@ -397,9 +397,16 @@ async def test_turn_creation_pins_server_selected_runtime_and_is_idempotent(
     async def create_worktree(*_args, **_kwargs):
         return "/controller/worktrees/turn-2"
 
+    async def require_runtime_ready(*_args, **_kwargs):
+        return None
+
     monkeypatch.setattr("backend.services.workbench_service._select_runtime", select_runtime)
     monkeypatch.setattr("backend.services.workbench_service._resolve_base_sha", resolve_base)
     monkeypatch.setattr("backend.services.workbench_service._create_worktree", create_worktree)
+    monkeypatch.setattr(
+        "backend.services.workbench_service._require_runtime_fleet_ready",
+        require_runtime_ready,
+    )
     body = WorkbenchTurnCreate(
         runtime_id="browser-selected-identity-only",
         requirement="Implement the bounded fix",
@@ -426,6 +433,92 @@ async def test_turn_creation_pins_server_selected_runtime_and_is_idempotent(
     assert created.profile_version == 4
     assert created.runtime_type == "pi"
     assert created.base_sha == "c" * 40
+
+
+async def test_turn_creation_blocks_unregistered_runtime_before_worktree(
+    db_session, monkeypatch
+):
+    first_turn = await _turn(db_session)
+    thread = await get_thread(db_session, first_turn.workspace_id, first_turn.thread_id)
+    binding = SimpleNamespace(
+        runtime="codex",
+        workflow="coding",
+        agent_url="http://edge-1:19823",
+        execution_node_url="http://edge-1:19823",
+        shared_filesystem_id="workspace-volume-1",
+    )
+
+    async def select_runtime(*_args, **_kwargs):
+        return (
+            SimpleNamespace(id="codex-runtime", disabled=False),
+            SimpleNamespace(version=1),
+            SimpleNamespace(version=1, mode="suggest_changes"),
+            binding,
+        )
+
+    async def unexpected_worktree(*_args, **_kwargs):
+        pytest.fail("worktree must not be created for an unavailable runtime")
+
+    monkeypatch.setattr("backend.services.workbench_service._select_runtime", select_runtime)
+    monkeypatch.setattr(
+        "backend.services.workbench_service._create_worktree",
+        unexpected_worktree,
+    )
+
+    with pytest.raises(WorkbenchError, match="node_not_registered"):
+        await create_turn(
+            db_session,
+            thread=thread,
+            body=WorkbenchTurnCreate(
+                runtime_id="codex-runtime",
+                requirement="Inspect safely",
+                request_id="runtime-not-ready",
+            ),
+            user_id="operator-id",
+        )
+
+
+async def test_turn_creation_rejects_non_coding_runtime_before_worktree(
+    db_session, monkeypatch
+):
+    first_turn = await _turn(db_session)
+    thread = await get_thread(db_session, first_turn.workspace_id, first_turn.thread_id)
+    binding = SimpleNamespace(
+        runtime="miniflow",
+        workflow="coding",
+        agent_url="http://edge-1:19823",
+        execution_node_url="http://edge-1:19823",
+        shared_filesystem_id="workspace-volume-1",
+    )
+
+    async def select_runtime(*_args, **_kwargs):
+        return (
+            SimpleNamespace(id="miniflow-runtime", disabled=False),
+            SimpleNamespace(version=1),
+            SimpleNamespace(version=1, mode="suggest_changes"),
+            binding,
+        )
+
+    async def unexpected_worktree(*_args, **_kwargs):
+        pytest.fail("worktree must not be created for a non-coding runtime")
+
+    monkeypatch.setattr("backend.services.workbench_service._select_runtime", select_runtime)
+    monkeypatch.setattr(
+        "backend.services.workbench_service._create_worktree",
+        unexpected_worktree,
+    )
+
+    with pytest.raises(WorkbenchError, match="not a supported Workbench coding adapter"):
+        await create_turn(
+            db_session,
+            thread=thread,
+            body=WorkbenchTurnCreate(
+                runtime_id="miniflow-runtime",
+                requirement="Do not dispatch this runtime",
+                request_id="non-coding-runtime",
+            ),
+            user_id="operator-id",
+        )
 
 
 async def test_server_configuration_reconciles_a_repository_mapping(db_session, monkeypatch):

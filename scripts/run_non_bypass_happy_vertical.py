@@ -6,6 +6,7 @@ an in-network driver after the real Compose topology is admitted.  It persists a
 redacted bundle and verification key, while every credential and transport key
 lives only in the 0700 per-run scratch directory removed during cleanup.
 """
+
 import argparse
 import base64
 import hashlib
@@ -19,9 +20,10 @@ import sys
 import tempfile
 import time
 import uuid
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
@@ -32,13 +34,28 @@ ROOT = Path(__file__).resolve().parents[1]
 COMPOSE_FILE = ROOT / "docker-compose.non-bypass-acceptance.yml"
 FIXTURE = ROOT / "tests/acceptance/fixtures/opencli-proof"
 FIXTURE_DIGEST = ROOT / "tests/acceptance/fixtures/opencli-proof.sha256"
-PINNED_III = "iiidev/iii:0.19.4@sha256:14ed48b463d8a2e0d3583512acf106b3514f406c5e9965a5854710ff936e1e86"
-ALLOWED_BUNDLE_KEYS = frozenset({
-    "schemaVersion", "run", "image", "topology", "command", "attempt",
-    "lifecycleHashes", "reportHash", "ingressReceiptHash",
-    "researchGraphManifestRef", "pin", "decision", "execution",
-    "receiverReceipt", "redactionProfile",
-})
+PINNED_III = (
+    "iiidev/iii:0.19.4@sha256:14ed48b463d8a2e0d3583512acf106b3514f406c5e9965a5854710ff936e1e86"
+)
+ALLOWED_BUNDLE_KEYS = frozenset(
+    {
+        "schemaVersion",
+        "run",
+        "image",
+        "topology",
+        "command",
+        "attempt",
+        "lifecycleHashes",
+        "reportHash",
+        "ingressReceiptHash",
+        "researchGraphManifestRef",
+        "pin",
+        "decision",
+        "execution",
+        "receiverReceipt",
+        "redactionProfile",
+    }
+)
 _SECRET_NAME = re.compile(r"(?:secret|token|password|credential|private|key)", re.I)
 _SAFE_PROOF_FIELD_NAMES = frozenset(
     {"expectedRecordKeySetHash", "keyId", "nonSecretConfigHash", "excludedItemKeys"}
@@ -46,7 +63,7 @@ _SAFE_PROOF_FIELD_NAMES = frozenset(
 _HASH = re.compile(r"^[0-9a-f]{64}$")
 
 
-class ProofRejected(RuntimeError):
+class ProofRejected(RuntimeError):  # noqa: N818 - stable acceptance-harness API
     """A non-authoritative, substituted, or unsafe proof input was rejected."""
 
 
@@ -97,7 +114,10 @@ def validate_evidence(evidence: dict[str, Any], *, fixture_digest: str, run: str
     topology = evidence["topology"]
     if not isinstance(topology, dict) or topology.get("fixtureDigest") != fixture_digest:
         raise ProofRejected("fixture digest was substituted")
-    if topology.get("iiiCliPath") != "/opt/iii/iii" or topology.get("iiiUrl") != "ws://proof-iii:49134":
+    if (
+        topology.get("iiiCliPath") != "/opt/iii/iii"
+        or topology.get("iiiUrl") != "ws://proof-iii:49134"
+    ):
         raise ProofRejected("III admission facts are missing")
     if topology.get("relay") != "three-fixed-callback-paths":
         raise ProofRejected("callback relay was bypassed")
@@ -107,8 +127,10 @@ def validate_evidence(evidence: dict[str, Any], *, fixture_digest: str, run: str
         if not isinstance(evidence[field], str) or not evidence[field].startswith(prefix):
             raise ProofRejected(f"{field} is not a redacted correlated reference")
     hashes = evidence["lifecycleHashes"]
-    if not isinstance(hashes, list) or not hashes or not all(
-        isinstance(v, str) and v.startswith("lifecycle:") for v in hashes
+    if (
+        not isinstance(hashes, list)
+        or not hashes
+        or not all(isinstance(v, str) and v.startswith("lifecycle:") for v in hashes)
     ):
         raise ProofRejected("lifecycle evidence is incomplete")
     command, attempt = evidence["command"], evidence["attempt"]
@@ -128,7 +150,9 @@ def validate_evidence(evidence: dict[str, Any], *, fixture_digest: str, run: str
     execution = evidence["execution"]
     if execution.get("final_outcome") is not None:
         raise ProofRejected("execution contains an untrusted synthetic terminal field")
-    if execution.get("outcome") != "accepted" or execution.get("decisionId") != decision.get("decisionId"):
+    if execution.get("outcome") != "accepted" or execution.get("decisionId") != decision.get(
+        "decisionId"
+    ):
         raise ProofRejected("delivery execution is not terminally accepted")
     receipt = evidence["receiverReceipt"]
     if not isinstance(receipt, dict) or receipt.get("receipt") != "verified":
@@ -137,14 +161,19 @@ def validate_evidence(evidence: dict[str, Any], *, fixture_digest: str, run: str
         raise ProofRejected("receiver receipt is not terminally accepted")
 
 
-def assert_substitutions_rejected(evidence: dict[str, Any], *, fixture_digest: str, run: str) -> None:
+def assert_substitutions_rejected(
+    evidence: dict[str, Any], *, fixture_digest: str, run: str
+) -> None:
     """Five mandatory pre-sign substitutions must never get as far as signing."""
     substitutions = (
         ("engine", lambda proof: proof.__setitem__("image", "iiidev/iii:latest")),
         ("fixture", lambda proof: proof["topology"].__setitem__("fixtureDigest", "0" * 64)),
         ("relay", lambda proof: proof["topology"].__setitem__("relay", "direct-admin")),
         ("manifest", lambda proof: proof.__setitem__("researchGraphManifestRef", "replacement")),
-        ("terminal", lambda proof: proof["execution"].__setitem__("final_outcome", "accepted-by-2xx")),
+        (
+            "terminal",
+            lambda proof: proof["execution"].__setitem__("final_outcome", "accepted-by-2xx"),
+        ),
     )
     for name, mutate in substitutions:
         candidate = json.loads(json.dumps(evidence))
@@ -217,20 +246,43 @@ def _make_secrets(ledger: RunLedger) -> dict[str, str]:
     )
     for name, value in values.items():
         _write_private(ledger.scratch / name.lower(), value)
-    _run([
-        "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
-        "-subj", "/CN=proof-ca",
-        "-addext", "basicConstraints=critical,CA:TRUE",
-        "-addext", "keyUsage=critical,keyCertSign,cRLSign",
-        "-keyout", str(ledger.scratch / "ca-key.pem"),
-        "-out", str(ledger.scratch / "ca.pem"),
-    ])
-    _run([
-        "openssl", "req", "-newkey", "rsa:2048", "-nodes",
-        "-subj", "/CN=proof-controlled-receiver",
-        "-keyout", str(ledger.scratch / "receiver-key.pem"),
-        "-out", str(ledger.scratch / "receiver.csr"),
-    ])
+    _run(
+        [
+            "openssl",
+            "req",
+            "-x509",
+            "-newkey",
+            "rsa:2048",
+            "-nodes",
+            "-days",
+            "1",
+            "-subj",
+            "/CN=proof-ca",
+            "-addext",
+            "basicConstraints=critical,CA:TRUE",
+            "-addext",
+            "keyUsage=critical,keyCertSign,cRLSign",
+            "-keyout",
+            str(ledger.scratch / "ca-key.pem"),
+            "-out",
+            str(ledger.scratch / "ca.pem"),
+        ]
+    )
+    _run(
+        [
+            "openssl",
+            "req",
+            "-newkey",
+            "rsa:2048",
+            "-nodes",
+            "-subj",
+            "/CN=proof-controlled-receiver",
+            "-keyout",
+            str(ledger.scratch / "receiver-key.pem"),
+            "-out",
+            str(ledger.scratch / "receiver.csr"),
+        ]
+    )
     _write_private(
         ledger.scratch / "receiver.ext",
         "basicConstraints=critical,CA:FALSE\n"
@@ -238,16 +290,28 @@ def _make_secrets(ledger: RunLedger) -> dict[str, str]:
         "extendedKeyUsage=serverAuth\n"
         "subjectAltName=DNS:proof-controlled-receiver,IP:8.8.8.8\n",
     )
-    _run([
-        "openssl", "x509", "-req", "-days", "1",
-        "-in", str(ledger.scratch / "receiver.csr"),
-        "-CA", str(ledger.scratch / "ca.pem"),
-        "-CAkey", str(ledger.scratch / "ca-key.pem"),
-        "-CAcreateserial",
-        "-extfile", str(ledger.scratch / "receiver.ext"),
-        "-out", str(ledger.scratch / "receiver-cert.pem"),
-    ])
+    _run(
+        [
+            "openssl",
+            "x509",
+            "-req",
+            "-days",
+            "1",
+            "-in",
+            str(ledger.scratch / "receiver.csr"),
+            "-CA",
+            str(ledger.scratch / "ca.pem"),
+            "-CAkey",
+            str(ledger.scratch / "ca-key.pem"),
+            "-CAcreateserial",
+            "-extfile",
+            str(ledger.scratch / "receiver.ext"),
+            "-out",
+            str(ledger.scratch / "receiver-cert.pem"),
+        ]
+    )
     return values
+
 
 def _b64url(value: bytes) -> str:
     return base64.urlsafe_b64encode(value).rstrip(b"=").decode("ascii")
@@ -294,7 +358,17 @@ def _make_identities(ledger: RunLedger, values: dict[str, str]) -> None:
 
 def _compose(ledger: RunLedger, env: dict[str, str], *arguments: str) -> str:
     return _run(
-        ["docker", "compose", "--parallel", "1", "-p", ledger.project, "-f", str(COMPOSE_FILE), *arguments],
+        [
+            "docker",
+            "compose",
+            "--parallel",
+            "1",
+            "-p",
+            ledger.project,
+            "-f",
+            str(COMPOSE_FILE),
+            *arguments,
+        ],
         env=env,
     )
 
@@ -326,11 +400,18 @@ def _build_images(ledger: RunLedger, env: dict[str, str]) -> None:
             ["docker", "build", "-t", f"{ledger.project}-{service}", "-f", dockerfile, "iii"],
             env=env,
         )
+
+
 def _migrate_fresh_admin(ledger: RunLedger, env: dict[str, str]) -> None:
     """Exercise Alembic against the empty Admin and controlled-receiver databases."""
     _compose(
-        ledger, env, "up", "-d", "--wait",
-        "proof-admin-postgres", "proof-receiver-postgres",
+        ledger,
+        env,
+        "up",
+        "-d",
+        "--wait",
+        "proof-admin-postgres",
+        "proof-receiver-postgres",
     )
     for service in ("proof-admin", "proof-controlled-receiver"):
         _compose(
@@ -361,21 +442,52 @@ def _admit(ledger: RunLedger, env: dict[str, str], fixture_digest: str) -> None:
         except RuntimeError:
             logs = "Compose logs unavailable"
         raise RuntimeError(f"{exc}\n{logs}") from exc
-    cli = _compose(ledger, env, "exec", "-T", "proof-admin", "/bin/sh", "-c", 'test "$III_CLI_PATH" = /opt/iii/iii && test "$III_URL" = ws://proof-iii:49134 && /opt/iii/iii --version').strip()
+    cli = _compose(
+        ledger,
+        env,
+        "exec",
+        "-T",
+        "proof-admin",
+        "/bin/sh",
+        "-c",
+        (
+            'test "$III_CLI_PATH" = /opt/iii/iii '
+            '&& test "$III_URL" = ws://proof-iii:49134 '
+            "&& /opt/iii/iii --version"
+        ),
+    ).strip()
     jwks = _compose(
-        ledger, env, "exec", "-T", "proof-admin", "curl", "-fsS",
+        ledger,
+        env,
+        "exec",
+        "-T",
+        "proof-admin",
+        "curl",
+        "-fsS",
         "http://proof-oidc/jwks.json",
     )
     if '"kid":"proof-jwks-v1"' not in jwks:
         raise ProofRejected("per-run OIDC JWKS is not reachable from Admin")
     if cli != "0.19.4":
         raise ProofRejected("copied III CLI is not exactly 0.19.4")
-    actual_fixture = _compose(ledger, env, "exec", "-T", "proof-collector", "sha256sum", "/proof/opencli-proof").split()[0]
+    actual_fixture = _compose(
+        ledger, env, "exec", "-T", "proof-collector", "sha256sum", "/proof/opencli-proof"
+    ).split()[0]
     if actual_fixture != fixture_digest:
         raise ProofRejected("collector fixture digest mismatch")
     _compose(
-        ledger, env, "exec", "-T", "proof-admin", "/opt/iii/iii", "trigger",
-        "--address", "proof-iii", "--port", "49134", "opencli::status",
+        ledger,
+        env,
+        "exec",
+        "-T",
+        "proof-admin",
+        "/opt/iii/iii",
+        "trigger",
+        "--address",
+        "proof-iii",
+        "--port",
+        "49134",
+        "opencli::status",
     )
 
 
@@ -394,8 +506,15 @@ def _driver_evidence(ledger: RunLedger, env: dict[str, str]) -> dict[str, Any]:
     )
     try:
         output = _compose(
-            ledger, env, "exec", "-T", "proof-driver", "python",
-            "/app/tests/acceptance/non_bypass_vertical.py", "--run", ledger.run,
+            ledger,
+            env,
+            "exec",
+            "-T",
+            "proof-driver",
+            "python",
+            "/app/tests/acceptance/non_bypass_vertical.py",
+            "--run",
+            ledger.run,
         )
     except RuntimeError as exc:
         logs = _compose(
@@ -427,9 +546,7 @@ def _sign(ledger: RunLedger, evidence: dict[str, Any]) -> None:
     (ledger.artifact_dir / "proof.json.sig").write_text(
         base64.b64encode(signature).decode() + "\n", encoding="ascii"
     )
-    public_bytes = public.public_bytes(
-        serialization.Encoding.Raw, serialization.PublicFormat.Raw
-    )
+    public_bytes = public.public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
     (ledger.artifact_dir / "proof.pub").write_text(
         base64.b64encode(public_bytes).decode() + "\n", encoding="ascii"
     )
@@ -438,7 +555,15 @@ def _sign(ledger: RunLedger, evidence: dict[str, Any]) -> None:
 def _cleanup(ledger: RunLedger, env: dict[str, str]) -> None:
     try:
         _compose(ledger, env, "down", "--volumes", "--remove-orphans")
-        leaks = _run(["docker", "ps", "-aq", "--filter", f"label=com.docker.compose.project={ledger.project}"])
+        leaks = _run(
+            [
+                "docker",
+                "ps",
+                "-aq",
+                "--filter",
+                f"label=com.docker.compose.project={ledger.project}",
+            ]
+        )
         if leaks.strip():
             raise RuntimeError("ledger-labeled containers remain after cleanup")
     finally:

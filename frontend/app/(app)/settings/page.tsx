@@ -435,7 +435,7 @@ export default function SettingsPage() {
       <Card className="max-w-xl">
         <CardHeader>
           <CardTitle className="text-base">本地管理员密码</CardTitle>
-          <CardDescription>修改本地登录密码；首次使用时请替换默认密码。</CardDescription>
+          <CardDescription>修改本地登录密码；首次使用时请替换安装器生成的初始密码。</CardDescription>
         </CardHeader>
         <CardContent>
           <form className="space-y-5" onSubmit={handlePasswordSubmit}>

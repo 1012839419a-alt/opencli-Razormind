@@ -80,6 +80,23 @@ def test_collect_auth_fails_closed_and_accepts_exact_bearer(monkeypatch):
     agent_server._require_collect_auth("Bearer secret")
 
 
+@pytest.mark.asyncio
+async def test_direct_http_runtime_endpoint_rejects_codex(monkeypatch):
+    monkeypatch.setattr(agent_server, "_AGENT_API_TOKEN", "secret")
+    request = agent_runtime_dispatch.RuntimeInvokeRequest(
+        runtime="codex",
+        workflow="exec",
+        instructions="inspect",
+        input={"message": "inspect"},
+        config={"cwd": "C:/controller/worktree"},
+    )
+
+    with pytest.raises(HTTPException) as blocked:
+        await agent_server.invoke_runtime_http(request, "Bearer secret")
+
+    assert blocked.value.status_code == 403
+
+
 # ── _register_with_center attaches Authorization header ────────────────────
 
 
@@ -248,15 +265,30 @@ class _StubAdapter:
         events: list[dict] | None = None,
         raise_exc: Exception | None = None,
         config_errors: list[str] | None = None,
+        readiness_status: str = "ready",
+        readiness_reason: str | None = None,
     ) -> None:
         self._events = events or []
         self._raise_exc = raise_exc
         self._config_errors = config_errors or []
+        self._readiness_status = readiness_status
+        self._readiness_reason = readiness_reason
+        self.invoked = False
 
     def validate_config(self, config):
         return self._config_errors
 
+    async def readiness(self, config):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            status=self._readiness_status,
+            reason=self._readiness_reason,
+            reason_code="missing_binary" if self._readiness_status != "ready" else None,
+        )
+
     async def invoke(self, task):
+        self.invoked = True
         if self._raise_exc is not None:
             raise self._raise_exc
         for event in self._events:
@@ -354,6 +386,23 @@ async def test_handle_ws_agent_task_rejects_invalid_config_before_invoke(monkeyp
     assert ws.sent[0]["result"]["type"] == "error"
     assert ws.sent[0]["result"]["error_type"] == "ConfigError"
     assert "explicit extensions" in ws.sent[0]["result"]["message"]
+
+
+@pytest.mark.asyncio
+async def test_handle_ws_agent_task_blocks_failed_readiness_before_invoke(monkeypatch):
+    adapter = _StubAdapter(
+        events=[{"type": "done", "task_id": "req-1", "result": {}}],
+        readiness_status="blocked",
+        readiness_reason="codex binary not found",
+    )
+    monkeypatch.setattr(agent_server, "get_runtime", lambda _runtime: adapter)
+
+    ws = _FakeWs()
+    await agent_server._handle_ws_agent_task(ws, _agent_task_msg(runtime="codex"))
+
+    assert adapter.invoked is False
+    assert ws.sent[0]["result"]["type"] == "error"
+    assert ws.sent[0]["result"]["error_type"] == "missing_binary"
 
 
 @pytest.mark.asyncio

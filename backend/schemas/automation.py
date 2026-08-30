@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from backend.schemas.common import UTCModel
 
@@ -15,6 +15,8 @@ STARTER_KEYS: tuple[str, ...] = (
 )
 
 class AutomationCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: str = Field(min_length=1, max_length=255)
     prompt: str = Field(min_length=1, max_length=20000)
     precheck: str | None = Field(default=None, max_length=4000)
@@ -25,7 +27,6 @@ class AutomationCreate(BaseModel):
     approval_mode: ApprovalMode = "suggest_changes"
     project: dict = Field(default_factory=dict)
     enabled: bool = True
-    starter_key: StarterKey | None = None
 
 class AutomationUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=255)

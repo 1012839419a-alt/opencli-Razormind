@@ -682,7 +682,7 @@ def _catalog_capabilities(
             source="backend.channels.doubao_research_channel",
             manifest=_manifest(
                 schema="capability.source.doubao-research.v1",
-                input_ports=[_port("in", "input", "items[]")],
+                input_ports=[_port("in", "items[]")],
                 output_ports=[_port("out", "items[]")],
                 resources=["doubao_research_channel", "opencli_session"],
                 permissions=["network.fetch"],

@@ -7,6 +7,28 @@ import { fileURLToPath } from 'node:url'
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const source = (file) => readFile(path.join(root, file), 'utf8')
 
+test('coding workbench scopes repository, runtime, and thread selection to the active workspace', async () => {
+  const page = await source('app/(app)/agent-workbench/page.tsx')
+
+  assert.match(page, /const routedWorkspaceId = searchParams\.get\('workspace'\)/)
+  assert.match(page, /routedWorkspaceId === workspaceId \? searchParams\.get\('thread'\) : null/)
+  assert.match(page, /const changeWorkspace = useCallback\(\(nextWorkspaceId: string \| null\) =>/)
+  assert.match(page, /routedWorkspaceId && available\.some/)
+  assert.match(page, /workspaceId !== routedWorkspaceId/)
+  assert.match(page, /setWorkspaceId\(routedWorkspaceId\)/)
+  assert.match(page, /setRepositoryId\(''\)/)
+  assert.match(page, /setRuntimeId\(''\)/)
+  assert.match(page, /params\.delete\('thread'\)/)
+  assert.match(page, /params\.delete\('turn'\)/)
+  assert.match(page, /available\.some\(\(repository\) => repository\.id === repositoryId\)/)
+  assert.match(page, /available\.some\(\(runtime\) => runtime\.id === runtimeId\)/)
+  assert.match(page, /repositories\.data\?\.some\(\(repository\) => repository\.id === repositoryId\)/)
+  assert.match(page, /runtimes\.data\?\.some\(\(runtime\) => runtime\.id === runtimeId && runtime\.readiness === 'ready'\)/)
+  assert.match(page, /disabled=\{runtime\.readiness !== 'ready'\}/)
+  assert.match(page, /selectedRuntime\?\.readiness !== 'ready'/)
+  assert.match(page, /workspace=\$\{workspaceId\}&thread=\$\{threads\.data\[0\]\.id\}/)
+})
+
 test('project navigation exposes orchestration, data, and evidence as project surfaces', async () => {
   const navigation = await source('components/studio/project-navigation.tsx')
   assert.match(navigation, /\| 'orchestration'/)

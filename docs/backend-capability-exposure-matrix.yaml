@@ -1,6 +1,6 @@
 version: 1
 source: backend.main.app.openapi
-openapi_operation_count: 240
+openapi_operation_count: 283
 allowed_dispositions:
 - operator_ui
 - studio_binding
@@ -2398,6 +2398,393 @@ operations:
   decision: Start only published project workflows through the Studio runtime boundary.
   target_epic: Epic 8
   capability_id: studio.workflow
+- method: GET
+  path: /api/v1/workspaces/{workspace_id}/automations/starters/preview
+  operation_id: preview_automation_starters_api_v1_workspaces__workspace_id__automations_starters_preview_get
+  disposition: internal_only
+  frontend_route: null
+  wrapper: null
+  decision: Keep starter preview available for backend and contract inspection without a frontend caller.
+  target_epic: Internal
+  projection_reason: No frontend caller currently consumes starter preview; keep it internal until an explicit UI projection is introduced.
+- method: POST
+  path: /api/v1/workspaces/{workspace_id}/automations/starters/install
+  operation_id: install_automation_starters_api_v1_workspaces__workspace_id__automations_starters_install_post
+  disposition: operator_ui
+  frontend_route: /operations-agents
+  wrapper: installAutomationStarters
+  decision: Install workspace automation starters through the Operations Agents UI.
+  target_epic: Epic 8
+  capability_id: operator.workspace-governance
+- method: GET
+  path: /api/v1/workspaces/{workspace_id}/projects/{project_id}/workflows/{workflow_id}/runs/{run_id}/delivery-authorizations
+  operation_id: list_authorizations_api_v1_workspaces__workspace_id__projects__project_id__workflows__workflow_id__runs__run_id__delivery_authorizations_get
+  disposition: studio_binding
+  frontend_route: /studio
+  wrapper: null
+  decision: Bind run delivery authorization inspection to Workflow Studio.
+  target_epic: Epic 8
+  capability_id: studio.workflow
+- method: GET
+  path: /api/v1/workspaces/{workspace_id}/projects/{project_id}/workflows/{workflow_id}/runs/{run_id}/delivery-authorizations/{decision_id}
+  operation_id: read_authorization_api_v1_workspaces__workspace_id__projects__project_id__workflows__workflow_id__runs__run_id__delivery_authorizations__decision_id__get
+  disposition: studio_binding
+  frontend_route: /studio
+  wrapper: null
+  decision: Bind run delivery authorization detail to Workflow Studio.
+  target_epic: Epic 8
+  capability_id: studio.workflow
+- method: GET
+  path: /api/v1/workspaces/{workspace_id}/projects/{project_id}/workflows/{workflow_id}/runs/{run_id}/delivery-executions
+  operation_id: list_executions_api_v1_workspaces__workspace_id__projects__project_id__workflows__workflow_id__runs__run_id__delivery_executions_get
+  disposition: studio_binding
+  frontend_route: /studio
+  wrapper: null
+  decision: Bind run delivery execution history to Workflow Studio.
+  target_epic: Epic 8
+  capability_id: studio.workflow
+- method: GET
+  path: /api/v1/workspaces/{workspace_id}/projects/{project_id}/workflows/{workflow_id}/runs/{run_id}/delivery-executions/{execution_id}
+  operation_id: read_execution_api_v1_workspaces__workspace_id__projects__project_id__workflows__workflow_id__runs__run_id__delivery_executions__execution_id__get
+  disposition: studio_binding
+  frontend_route: /studio
+  wrapper: null
+  decision: Bind run delivery execution detail to Workflow Studio.
+  target_epic: Epic 8
+  capability_id: studio.workflow
+- method: GET
+  path: /api/v1/workspaces/{workspace_id}/projects/{project_id}/workflows/{workflow_id}/runs/{run_id}/delivery-targets
+  operation_id: list_targets_api_v1_workspaces__workspace_id__projects__project_id__workflows__workflow_id__runs__run_id__delivery_targets_get
+  disposition: studio_binding
+  frontend_route: /studio
+  wrapper: null
+  decision: Bind run delivery target inspection to Workflow Studio.
+  target_epic: Epic 8
+  capability_id: studio.workflow
+- method: GET
+  path: /api/v1/workspaces/{workspace_id}/projects/{project_id}/workflows/{workflow_id}/runs/{run_id}/delivery-targets/{target_id}
+  operation_id: read_target_api_v1_workspaces__workspace_id__projects__project_id__workflows__workflow_id__runs__run_id__delivery_targets__target_id__get
+  disposition: studio_binding
+  frontend_route: /studio
+  wrapper: null
+  decision: Bind run delivery target detail to Workflow Studio.
+  target_epic: Epic 8
+  capability_id: studio.workflow
+- method: POST
+  path: /api/v1/workspaces/{workspace_id}/projects/{project_id}/workflows/{workflow_id}/runs/{run_id}/delivery-authorizations
+  operation_id: create_authorization_api_v1_workspaces__workspace_id__projects__project_id__workflows__workflow_id__runs__run_id__delivery_authorizations_post
+  disposition: studio_binding
+  frontend_route: /studio
+  wrapper: null
+  decision: Create run delivery authorization through Workflow Studio.
+  target_epic: Epic 8
+  capability_id: studio.workflow
+- method: POST
+  path: /api/v1/workspaces/{workspace_id}/projects/{project_id}/workflows/{workflow_id}/runs/{run_id}/delivery-executions
+  operation_id: execute_api_v1_workspaces__workspace_id__projects__project_id__workflows__workflow_id__runs__run_id__delivery_executions_post
+  disposition: studio_binding
+  frontend_route: /studio
+  wrapper: null
+  decision: Execute an authorized run delivery through Workflow Studio.
+  target_epic: Epic 8
+  capability_id: studio.workflow
+- method: POST
+  path: /api/v1/workspaces/{workspace_id}/projects/{project_id}/workflows/{workflow_id}/runs/{run_id}/delivery-executions/{execution_id}/cancel
+  operation_id: cancel_execution_api_v1_workspaces__workspace_id__projects__project_id__workflows__workflow_id__runs__run_id__delivery_executions__execution_id__cancel_post
+  disposition: studio_binding
+  frontend_route: /studio
+  wrapper: null
+  decision: Cancel an in-flight run delivery through Workflow Studio.
+  target_epic: Epic 8
+  capability_id: studio.workflow
+- method: POST
+  path: /api/v1/workspaces/{workspace_id}/projects/{project_id}/workflows/{workflow_id}/runs/{run_id}/delivery-executions/{execution_id}/reconcile
+  operation_id: reconcile_execution_api_v1_workspaces__workspace_id__projects__project_id__workflows__workflow_id__runs__run_id__delivery_executions__execution_id__reconcile_post
+  disposition: studio_binding
+  frontend_route: /studio
+  wrapper: null
+  decision: Reconcile run delivery state through Workflow Studio.
+  target_epic: Epic 8
+  capability_id: studio.workflow
+- method: POST
+  path: /api/v1/workspaces/{workspace_id}/projects/{project_id}/workflows/{workflow_id}/runs/{run_id}/delivery-targets
+  operation_id: configure_target_api_v1_workspaces__workspace_id__projects__project_id__workflows__workflow_id__runs__run_id__delivery_targets_post
+  disposition: studio_binding
+  frontend_route: /studio
+  wrapper: null
+  decision: Configure a run delivery target through Workflow Studio.
+  target_epic: Epic 8
+  capability_id: studio.workflow
+- method: GET
+  path: /api/v1/workspaces/{workspace_id}/projects/{project_id}/workflows/{workflow_id}/runs/{run_id}/evidence-batches/v1
+  operation_id: list_studio_evidence_batch_materializations_api_v1_workspaces__workspace_id__projects__project_id__workflows__workflow_id__runs__run_id__evidence_batches_v1_get
+  disposition: studio_binding
+  frontend_route: /studio
+  wrapper: null
+  decision: Bind evidence batch materialization listing to Workflow Studio.
+  target_epic: Epic 8
+  capability_id: studio.workflow
+- method: GET
+  path: /api/v1/workspaces/{workspace_id}/projects/{project_id}/workflows/{workflow_id}/runs/{run_id}/evidence-batches/v1/{batch_id}
+  operation_id: get_studio_evidence_batch_materialization_api_v1_workspaces__workspace_id__projects__project_id__workflows__workflow_id__runs__run_id__evidence_batches_v1__batch_id__get
+  disposition: studio_binding
+  frontend_route: /studio
+  wrapper: null
+  decision: Bind evidence batch materialization detail to Workflow Studio.
+  target_epic: Epic 8
+  capability_id: studio.workflow
+- method: GET
+  path: /api/v1/workspaces/{workspace_id}/projects/{project_id}/workflows/{workflow_id}/runs/{run_id}/evidence-batches/v1/{batch_id}/status
+  operation_id: get_studio_evidence_batch_materialization_status_api_v1_workspaces__workspace_id__projects__project_id__workflows__workflow_id__runs__run_id__evidence_batches_v1__batch_id__status_get
+  disposition: studio_binding
+  frontend_route: /studio
+  wrapper: null
+  decision: Bind evidence batch materialization status to Workflow Studio.
+  target_epic: Epic 8
+  capability_id: studio.workflow
+- method: GET
+  path: /api/v1/workspaces/{workspace_id}/projects/{project_id}/workflows/{workflow_id}/runs/{run_id}/iii-collections/{command_id}
+  operation_id: get_iii_collection_status_api_v1_workspaces__workspace_id__projects__project_id__workflows__workflow_id__runs__run_id__iii_collections__command_id__get
+  disposition: studio_binding
+  frontend_route: /studio
+  wrapper: null
+  decision: Bind III collection run status to Workflow Studio.
+  target_epic: Epic 8
+  capability_id: studio.workflow
+- method: GET
+  path: /api/v1/workspaces/{workspace_id}/projects/{project_id}/workflows/{workflow_id}/runs/{run_id}/iii-collections/{command_id}/materialization
+  operation_id: get_iii_collection_materialization_api_v1_workspaces__workspace_id__projects__project_id__workflows__workflow_id__runs__run_id__iii_collections__command_id__materialization_get
+  disposition: studio_binding
+  frontend_route: /studio
+  wrapper: null
+  decision: Bind III collection materialization inspection to Workflow Studio.
+  target_epic: Epic 8
+  capability_id: studio.workflow
+- method: GET
+  path: /api/v1/workspaces/{workspace_id}/projects/{project_id}/workflows/{workflow_id}/runs/{run_id}/iii-collections/{command_id}/odp-reconciliation/{mode}
+  operation_id: reconcile_iii_collection_odp_api_v1_workspaces__workspace_id__projects__project_id__workflows__workflow_id__runs__run_id__iii_collections__command_id__odp_reconciliation__mode__get
+  disposition: studio_binding
+  frontend_route: /studio
+  wrapper: null
+  decision: Bind III ODP reconciliation inspection to Workflow Studio.
+  target_epic: Epic 8
+  capability_id: studio.workflow
+- method: POST
+  path: /api/v1/workspaces/{workspace_id}/projects/{project_id}/workflows/{workflow_id}/runs/{run_id}/iii-collections
+  operation_id: submit_iii_collection_api_v1_workspaces__workspace_id__projects__project_id__workflows__workflow_id__runs__run_id__iii_collections_post
+  disposition: studio_binding
+  frontend_route: /studio
+  wrapper: null
+  decision: Submit an III collection from Workflow Studio.
+  target_epic: Epic 8
+  capability_id: studio.workflow
+- method: POST
+  path: /api/v1/workspaces/{workspace_id}/projects/{project_id}/workflows/{workflow_id}/runs/{run_id}/iii-collections/{command_id}/cancel
+  operation_id: cancel_iii_collection_api_v1_workspaces__workspace_id__projects__project_id__workflows__workflow_id__runs__run_id__iii_collections__command_id__cancel_post
+  disposition: studio_binding
+  frontend_route: /studio
+  wrapper: null
+  decision: Cancel an III collection from Workflow Studio.
+  target_epic: Epic 8
+  capability_id: studio.workflow
+- method: POST
+  path: /api/v1/workspaces/{workspace_id}/projects/{project_id}/workflows/{workflow_id}/runs/{run_id}/iii-collections/{command_id}/materialize
+  operation_id: materialize_iii_collection_api_v1_workspaces__workspace_id__projects__project_id__workflows__workflow_id__runs__run_id__iii_collections__command_id__materialize_post
+  disposition: studio_binding
+  frontend_route: /studio
+  wrapper: null
+  decision: Materialize an III collection from Workflow Studio.
+  target_epic: Epic 8
+  capability_id: studio.workflow
+- method: POST
+  path: /api/v1/workspaces/{workspace_id}/projects/{project_id}/workflows/{workflow_id}/runs/{run_id}/iii-collections/{command_id}/recover
+  operation_id: recover_iii_collection_materialization_api_v1_workspaces__workspace_id__projects__project_id__workflows__workflow_id__runs__run_id__iii_collections__command_id__recover_post
+  disposition: studio_binding
+  frontend_route: /studio
+  wrapper: null
+  decision: Recover III collection materialization from Workflow Studio.
+  target_epic: Epic 8
+  capability_id: studio.workflow
+- method: POST
+  path: /api/v1/workspaces/{workspace_id}/projects/{project_id}/workflows/{workflow_id}/runs/{run_id}/iii-collections/{command_id}/resume
+  operation_id: resume_iii_collection_api_v1_workspaces__workspace_id__projects__project_id__workflows__workflow_id__runs__run_id__iii_collections__command_id__resume_post
+  disposition: studio_binding
+  frontend_route: /studio
+  wrapper: null
+  decision: Resume an III collection from Workflow Studio.
+  target_epic: Epic 8
+  capability_id: studio.workflow
+- method: GET
+  path: /api/v1/workspaces/{workspace_id}/projects/{project_id}/workflows/{workflow_id}/runs/{run_id}/research-graph-v2
+  operation_id: get_research_graph_v2_api_v1_workspaces__workspace_id__projects__project_id__workflows__workflow_id__runs__run_id__research_graph_v2_get
+  disposition: studio_binding
+  frontend_route: /studio
+  wrapper: null
+  decision: Bind research graph inspection to Workflow Studio.
+  target_epic: Epic 8
+  capability_id: studio.workflow
+- method: POST
+  path: /api/v1/workspaces/{workspace_id}/projects/{project_id}/workflows/{workflow_id}/runs/{run_id}/research-graph-v2/mutations
+  operation_id: mutate_research_graph_v2_api_v1_workspaces__workspace_id__projects__project_id__workflows__workflow_id__runs__run_id__research_graph_v2_mutations_post
+  disposition: studio_binding
+  frontend_route: /studio
+  wrapper: null
+  decision: Bind research graph mutations to Workflow Studio.
+  target_epic: Epic 8
+  capability_id: studio.workflow
+- method: GET
+  path: /api/v1/workspaces/{workspace_id}/workbench/repositories
+  operation_id: get_repositories_api_v1_workspaces__workspace_id__workbench_repositories_get
+  disposition: operator_ui
+  frontend_route: /agent-workbench
+  wrapper: listWorkbenchRepositories
+  decision: Expose governed repository inventory in Agent Workbench.
+  target_epic: Epic 8
+  capability_id: operator.workspace-governance
+- method: GET
+  path: /api/v1/workspaces/{workspace_id}/workbench/runtimes
+  operation_id: get_runtimes_api_v1_workspaces__workspace_id__workbench_runtimes_get
+  disposition: operator_ui
+  frontend_route: /agent-workbench
+  wrapper: listWorkbenchRuntimes
+  decision: Expose available governed runtimes in Agent Workbench.
+  target_epic: Epic 8
+  capability_id: operator.workspace-governance
+- method: GET
+  path: /api/v1/workspaces/{workspace_id}/workbench/threads
+  operation_id: get_threads_api_v1_workspaces__workspace_id__workbench_threads_get
+  disposition: operator_ui
+  frontend_route: /agent-workbench
+  wrapper: listWorkbenchThreads
+  decision: List governed agent threads in Agent Workbench.
+  target_epic: Epic 8
+  capability_id: operator.workspace-governance
+- method: GET
+  path: /api/v1/workspaces/{workspace_id}/workbench/threads/{thread_id}
+  operation_id: get_thread_snapshot_api_v1_workspaces__workspace_id__workbench_threads__thread_id__get
+  disposition: operator_ui
+  frontend_route: /agent-workbench
+  wrapper: getWorkbenchThread
+  decision: Show governed thread state in Agent Workbench.
+  target_epic: Epic 8
+  capability_id: operator.workspace-governance
+- method: GET
+  path: /api/v1/workspaces/{workspace_id}/workbench/threads/{thread_id}/turns/{turn_id}/events
+  operation_id: get_events_api_v1_workspaces__workspace_id__workbench_threads__thread_id__turns__turn_id__events_get
+  disposition: operator_ui
+  frontend_route: /agent-workbench
+  wrapper: listWorkbenchEvents
+  decision: Show governed turn events in Agent Workbench.
+  target_epic: Epic 8
+  capability_id: operator.workspace-governance
+- method: GET
+  path: /api/v1/workspaces/{workspace_id}/workbench/threads/{thread_id}/turns/{turn_id}/events/stream
+  operation_id: stream_events_api_v1_workspaces__workspace_id__workbench_threads__thread_id__turns__turn_id__events_stream_get
+  disposition: operator_ui
+  frontend_route: /agent-workbench
+  wrapper: workbenchEventStreamUrl
+  decision: Stream governed turn events in Agent Workbench.
+  target_epic: Epic 8
+  capability_id: operator.workspace-governance
+- method: POST
+  path: /api/v1/workspaces/{workspace_id}/workbench/threads
+  operation_id: create_thread_api_v1_workspaces__workspace_id__workbench_threads_post
+  disposition: operator_ui
+  frontend_route: /agent-workbench
+  wrapper: createWorkbenchThread
+  decision: Create a governed agent thread in Agent Workbench.
+  target_epic: Epic 8
+  capability_id: operator.workspace-governance
+- method: POST
+  path: /api/v1/workspaces/{workspace_id}/workbench/threads/{thread_id}/proposals/{proposal_id}/confirm
+  operation_id: confirm_thread_proposal_api_v1_workspaces__workspace_id__workbench_threads__thread_id__proposals__proposal_id__confirm_post
+  disposition: operator_ui
+  frontend_route: /agent-workbench
+  wrapper: confirmWorkbenchProposal
+  decision: Confirm a governed thread proposal in Agent Workbench.
+  target_epic: Epic 8
+  capability_id: operator.workspace-governance
+- method: POST
+  path: /api/v1/workspaces/{workspace_id}/workbench/threads/{thread_id}/turns
+  operation_id: create_thread_turn_api_v1_workspaces__workspace_id__workbench_threads__thread_id__turns_post
+  disposition: operator_ui
+  frontend_route: /agent-workbench
+  wrapper: createWorkbenchTurn
+  decision: Create a governed agent turn in Agent Workbench.
+  target_epic: Epic 8
+  capability_id: operator.workspace-governance
+- method: POST
+  path: /api/v1/workspaces/{workspace_id}/workbench/threads/{thread_id}/turns/{turn_id}/cancel
+  operation_id: cancel_thread_turn_api_v1_workspaces__workspace_id__workbench_threads__thread_id__turns__turn_id__cancel_post
+  disposition: operator_ui
+  frontend_route: /agent-workbench
+  wrapper: cancelWorkbenchTurn
+  decision: Cancel a governed agent turn in Agent Workbench.
+  target_epic: Epic 8
+  capability_id: operator.workspace-governance
+- method: POST
+  path: /api/v1/auth/login
+  operation_id: local_login_api_v1_auth_login_post
+  disposition: operator_ui
+  frontend_route: /login
+  wrapper: loginWithPassword
+  decision: Authenticate local operators through the existing login surface.
+  target_epic: Epic 8
+  capability_id: platform.governance
+- method: POST
+  path: /api/v1/auth/password
+  operation_id: change_local_password_api_v1_auth_password_post
+  disposition: operator_ui
+  frontend_route: /settings
+  wrapper: changeLocalPassword
+  decision: Allow local operators to rotate credentials in the existing settings surface.
+  target_epic: Epic 8
+  capability_id: platform.governance
+- method: POST
+  path: /api/v1/controlled-receiver/v2/deliver
+  operation_id: deliver_api_v1_controlled_receiver_v2_deliver_post
+  disposition: machine_ingress
+  frontend_route: null
+  wrapper: null
+  decision: Keep controlled receiver delivery as authenticated machine ingress.
+  target_epic: Epic 8
+  projection_reason: Machine-to-machine controlled receiver ingress; intentionally not projected to a human-facing surface.
+- method: POST
+  path: /api/v1/controlled-receiver/v2/status
+  operation_id: delivery_status_api_v1_controlled_receiver_v2_status_post
+  disposition: machine_ingress
+  frontend_route: null
+  wrapper: null
+  decision: Keep controlled receiver status as authenticated machine ingress.
+  target_epic: Epic 8
+  projection_reason: Machine-to-machine controlled receiver ingress; intentionally not projected to a human-facing surface.
+- method: POST
+  path: /api/v1/iii-collections/expected-key-reports
+  operation_id: ingest_iii_collection_expected_key_report_api_v1_iii_collections_expected_key_reports_post
+  disposition: machine_ingress
+  frontend_route: null
+  wrapper: null
+  decision: Keep III expected-key reports as machine ingress; project results through run-scoped Studio APIs.
+  target_epic: Epic 8
+  projection_reason: Machine-to-machine III collection ingress; intentionally not projected to a human-facing surface.
+- method: POST
+  path: /api/v1/iii-collections/ingress-receipts
+  operation_id: ingest_iii_collection_ingress_receipt_api_v1_iii_collections_ingress_receipts_post
+  disposition: machine_ingress
+  frontend_route: null
+  wrapper: null
+  decision: Keep III ingress receipts as machine ingress; project results through run-scoped Studio APIs.
+  target_epic: Epic 8
+  projection_reason: Machine-to-machine III collection ingress; intentionally not projected to a human-facing surface.
+- method: POST
+  path: /api/v1/iii-collections/lifecycle
+  operation_id: ingest_iii_collection_lifecycle_api_v1_iii_collections_lifecycle_post
+  disposition: machine_ingress
+  frontend_route: null
+  wrapper: null
+  decision: Keep III lifecycle receipts as machine ingress; project results through run-scoped Studio APIs.
+  target_epic: Epic 8
+  projection_reason: Machine-to-machine III collection ingress; intentionally not projected to a human-facing surface.
 unreferenced_wrappers:
 - wrapper: getOperationsAgentVersion
   operation_id: get_agent_version_api_v1_workspaces__workspace_id__operations_agents__agent_id__versions__version_number__get

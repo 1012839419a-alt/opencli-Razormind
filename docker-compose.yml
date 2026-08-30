@@ -153,7 +153,8 @@ services:
       CELERY_RESULT_BACKEND: redis://redis:6379/1
       REDIS_URL: redis://redis:6379/0
       DEBUG: ${DEBUG:-false}
-      SECRET_KEY: ${SECRET_KEY:-change-me-in-production}
+      SECRET_KEY: ${SECRET_KEY:?Set SECRET_KEY in .env or run scripts/install.sh}
+      LOCAL_AUTH_STATE_PATH: ${LOCAL_AUTH_STATE_PATH:-/data/local-admin-password.hash}
       API_AUTH_TOKEN: ${API_AUTH_TOKEN:?Set API_AUTH_TOKEN in .env or run scripts/install.sh}
       BOOTSTRAP_ADMIN_TOKEN: ${BOOTSTRAP_ADMIN_TOKEN:-}
       OPENCLI_MCP_ALLOWED_HOSTS: ${OPENCLI_MCP_ALLOWED_HOSTS:-}
@@ -245,7 +246,7 @@ services:
       CELERY_RESULT_BACKEND: redis://redis:6379/1
       REDIS_URL: redis://redis:6379/0
       RUN_MIGRATIONS: "false"
-      SECRET_KEY: ${SECRET_KEY:-change-me-in-production}
+      SECRET_KEY: ${SECRET_KEY:?Set SECRET_KEY in .env or run scripts/install.sh}
       API_AUTH_TOKEN: ${API_AUTH_TOKEN:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
@@ -306,7 +307,7 @@ services:
       CELERY_RESULT_BACKEND: redis://redis:6379/1
       REDIS_URL: redis://redis:6379/0
       RUN_MIGRATIONS: "false"
-      SECRET_KEY: ${SECRET_KEY:-change-me-in-production}
+      SECRET_KEY: ${SECRET_KEY:?Set SECRET_KEY in .env or run scripts/install.sh}
       API_AUTH_TOKEN: ${API_AUTH_TOKEN:-}
     depends_on:
       redis:
@@ -344,6 +345,10 @@ services:
   #   docker run -d --restart=unless-stopped \
   #     -e CENTRAL_API_URL=http://<center-ip>:8031 \
   #     -e AGENT_REGISTER=ws \
+  #     -e AGENT_CODEX_ISOLATED_RUNNER=/opt/opencli/codex-isolated-runner \
+  #     -e 'AGENT_CODEX_ALLOWED_ROOTS=["/workspaces"]' \
+  #     -v /host/opencli/codex-isolated-runner:/opt/opencli/codex-isolated-runner:ro \
+  #     -v /host/workspaces:/workspaces \
   #     -p 19823:19823 \
   #     ghcr.io/2233admin/opencli-admin-agent:0.4.0
   #
@@ -360,6 +365,8 @@ services:
       AGENT_LABEL: ${AGENT_LABEL:-}
       AGENT_REGISTER: ${AGENT_REGISTER:-http}
       OPENCLI_TIMEOUT: ${OPENCLI_TIMEOUT:-120}
+      AGENT_CODEX_ISOLATED_RUNNER: ${AGENT_CODEX_ISOLATED_RUNNER:-}
+      AGENT_CODEX_ALLOWED_ROOTS: ${AGENT_CODEX_ALLOWED_ROOTS:-}
       API_AUTH_TOKEN: ${API_AUTH_TOKEN:-}
       AGENT_API_TOKEN: ${AGENT_API_TOKEN:-}
       HTTP_PROXY: ${HTTP_PROXY:-}

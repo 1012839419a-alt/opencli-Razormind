@@ -1,7 +1,7 @@
 'use client'
 
 import { useRouter, useSearchParams } from 'next/navigation'
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Bot, LoaderCircle, Plus, RefreshCcw, Send } from 'lucide-react'
 import { toast } from 'sonner'
 
@@ -40,7 +40,8 @@ export default function WorkbenchPage() {
   const repositories = useWorkbenchRepositories(workspaceId)
   const runtimes = useWorkbenchRuntimes(workspaceId)
   const threads = useWorkbenchThreads(workspaceId)
-  const selectedThreadId = searchParams.get('thread')
+  const routedWorkspaceId = searchParams.get('workspace')
+  const selectedThreadId = routedWorkspaceId === workspaceId ? searchParams.get('thread') : null
   const selectedThread = useWorkbenchThread(workspaceId, selectedThreadId)
   const thread = selectedThread.data ?? threads.data?.find((candidate) => candidate.id === selectedThreadId) ?? null
   const selectedTurnId = searchParams.get('turn')
@@ -57,24 +58,54 @@ export default function WorkbenchPage() {
   const cancelTurn = useCancelWorkbenchTurn()
   const confirmProposal = useConfirmWorkbenchProposal()
 
-  useEffect(() => {
-    if (!workspaceId && workspaces.data?.length) setWorkspaceId(workspaces.data[0].id)
-  }, [workspaceId, workspaces.data])
+  const changeWorkspace = useCallback((nextWorkspaceId: string | null) => {
+    setWorkspaceId(nextWorkspaceId)
+    setRepositoryId('')
+    setRuntimeId('')
+    const params = new URLSearchParams(searchParams.toString())
+    params.delete('thread')
+    params.delete('turn')
+    if (nextWorkspaceId) params.set('workspace', nextWorkspaceId)
+    else params.delete('workspace')
+    router.replace(params.size ? `/agent-workbench?${params.toString()}` : '/agent-workbench')
+  }, [router, searchParams])
 
   useEffect(() => {
-    if (!repositoryId && repositories.data?.length) setRepositoryId(repositories.data[0].id)
-  }, [repositoryId, repositories.data])
+    const available = workspaces.data ?? []
+    if (routedWorkspaceId && available.some((workspace) => workspace.id === routedWorkspaceId)) {
+      if (workspaceId !== routedWorkspaceId) {
+        setWorkspaceId(routedWorkspaceId)
+        setRepositoryId('')
+        setRuntimeId('')
+      }
+      return
+    }
+    if (available.length) changeWorkspace(available[0].id)
+  }, [changeWorkspace, routedWorkspaceId, workspaceId, workspaces.data])
 
   useEffect(() => {
-    if (!runtimeId && runtimes.data?.length) setRuntimeId(runtimes.data[0].id)
-  }, [runtimeId, runtimes.data])
+    if (repositories.isLoading) return
+    const available = repositories.data ?? []
+    if (repositoryId && available.some((repository) => repository.id === repositoryId)) return
+    setRepositoryId(available[0]?.id ?? '')
+  }, [repositoryId, repositories.data, repositories.isLoading])
 
   useEffect(() => {
-    if (!selectedThreadId && threads.data?.[0]) router.replace(`/agent-workbench?thread=${threads.data[0].id}`)
-  }, [router, selectedThreadId, threads.data])
+    if (runtimes.isLoading) return
+    const available = (runtimes.data ?? []).filter((runtime) => runtime.readiness === 'ready')
+    if (runtimeId && available.some((runtime) => runtime.id === runtimeId)) return
+    setRuntimeId(available[0]?.id ?? '')
+  }, [runtimeId, runtimes.data, runtimes.isLoading])
+
+  useEffect(() => {
+    if (!selectedThreadId && workspaceId && threads.data?.[0]) {
+      router.replace(`/agent-workbench?workspace=${workspaceId}&thread=${threads.data[0].id}`)
+    }
+  }, [router, selectedThreadId, threads.data, workspaceId])
 
   function selectThread(nextThread: WorkbenchThread, nextTurn?: WorkbenchTurn) {
     const params = new URLSearchParams()
+    if (workspaceId) params.set('workspace', workspaceId)
     params.set('thread', nextThread.id)
     const turn = nextTurn ?? [...nextThread.turns].sort((left, right) => right.sequence - left.sequence)[0]
     if (turn) params.set('turn', turn.id)
@@ -83,6 +114,8 @@ export default function WorkbenchPage() {
 
   async function submitRequirement() {
     if (!workspaceId || !repositoryId || !runtimeId || !requirement.trim()) return
+    if (!repositories.data?.some((repository) => repository.id === repositoryId)) return
+    if (!runtimes.data?.some((runtime) => runtime.id === runtimeId && runtime.readiness === 'ready')) return
     const requestId = crypto.randomUUID()
     try {
       if (thread) {
@@ -167,7 +200,7 @@ export default function WorkbenchPage() {
           <CardContent className="space-y-4">
             <label className="block space-y-1.5 text-sm">
               工作区
-              <Select value={workspaceId ?? ''} onValueChange={setWorkspaceId}>
+              <Select value={workspaceId ?? ''} onValueChange={(value) => changeWorkspace(value || null)}>
                 <SelectTrigger><SelectValue placeholder="选择工作区" /></SelectTrigger>
                 <SelectContent>
                   {workspaces.data?.map((workspace) => (
@@ -233,7 +266,7 @@ export default function WorkbenchPage() {
                   运行时
                   <Select value={runtimeId} onValueChange={(value) => setRuntimeId(value ?? '')} disabled={runtimes.isLoading || !runtimes.data?.length}>
                     <SelectTrigger><SelectValue placeholder="选择运行时" /></SelectTrigger>
-                    <SelectContent>{runtimes.data?.map((runtime) => <SelectItem key={runtime.id} value={runtime.id}>{runtime.name} · v{runtime.publishedVersion}</SelectItem>)}</SelectContent>
+                    <SelectContent>{runtimes.data?.map((runtime) => <SelectItem key={runtime.id} value={runtime.id} disabled={runtime.readiness !== 'ready'}>{runtime.name} · v{runtime.publishedVersion}{runtime.readiness === 'blocked' ? ' · 不可用' : ''}</SelectItem>)}</SelectContent>
                   </Select>
                 </label>
               </div>
@@ -241,10 +274,11 @@ export default function WorkbenchPage() {
               {!repositories.isLoading && !repositories.isError && !repositories.data?.length ? <p role="status" className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">没有服务器配置的仓库。请让部署管理员设置 <code>WORKBENCH_REPOSITORIES</code>；不会在浏览器中输入或保存路径。</p> : null}
               {runtimes.isError ? <p role="alert" className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">无法读取编码运行时。检查后端连接后刷新。</p> : null}
               {!runtimes.isLoading && !runtimes.isError && !runtimes.data?.length ? <p role="status" className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">没有可运行的编码 Agent。请让部署管理员发布 suggest_changes 版本，并为它配置与仓库映射相同的执行节点 URL 和共享文件系统 ID。</p> : null}
+              {selectedRuntime?.readiness === 'blocked' ? <p role="status" className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-700">运行时暂不可用：{selectedRuntime.reason ?? selectedRuntime.reasonCode ?? '节点未就绪'}</p> : null}
               <Textarea value={requirement} onChange={(event) => setRequirement(event.target.value)} placeholder="描述要实现、修复或审阅的代码需求。运行时只会在控制器拥有的隔离工作树中提出变更。" className="min-h-28 resize-y" />
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <p className="text-xs text-muted-foreground">{selectedRepository && selectedRuntime ? `${selectedRepository.name} · ${selectedRuntime.name} v${selectedRuntime.publishedVersion}` : '选择仓库和运行时以继续'}</p>
-                <Button onClick={() => void submitRequirement()} disabled={busy || !workspaceId || !repositoryId || !runtimeId || !requirement.trim()}>
+                <Button onClick={() => void submitRequirement()} disabled={busy || !workspaceId || !repositoryId || !runtimeId || selectedRuntime?.readiness !== 'ready' || !requirement.trim()}>
                   {busy ? <LoaderCircle className="size-4 animate-spin" /> : thread ? <Send className="size-4" /> : <Plus className="size-4" />}
                   {thread ? '添加回合' : '开始会话'}
                 </Button>

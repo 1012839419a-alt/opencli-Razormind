@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
-import sys
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -18,14 +18,21 @@ spec.loader.exec_module(runner)
 
 
 def _evidence() -> dict:
-    digest = hashlib.sha256((ROOT / "tests/acceptance/fixtures/opencli-proof").read_bytes()).hexdigest()
+    digest = hashlib.sha256(
+        (ROOT / "tests/acceptance/fixtures/opencli-proof").read_bytes()
+    ).hexdigest()
     command_id = "command-36"
     decision_id = "decision-36"
     return {
         "schemaVersion": "NonBypassHappyVerticalProofV1",
         "run": "nbv-test",
         "image": runner.PINNED_III,
-        "topology": {"fixtureDigest": digest, "iiiCliPath": "/opt/iii/iii", "iiiUrl": "ws://proof-iii:49134", "relay": "three-fixed-callback-paths"},
+        "topology": {
+            "fixtureDigest": digest,
+            "iiiCliPath": "/opt/iii/iii",
+            "iiiUrl": "ws://proof-iii:49134",
+            "relay": "three-fixed-callback-paths",
+        },
         "command": {"id": command_id, "runId": "nbv-test"},
         "attempt": {"commandId": command_id},
         "lifecycleHashes": ["lifecycle:1"],
@@ -63,40 +70,62 @@ def test_fixture_is_committed_and_supports_only_canonical_calls(tmp_path: Path):
 
 def json_item(raw: str) -> dict:
     import json
+
     return json.loads(raw)[0]
 
 
 def test_pre_sign_validation_accepts_only_correlated_terminal_facts():
     evidence = _evidence()
-    runner.validate_evidence(evidence, fixture_digest=evidence["topology"]["fixtureDigest"], run="nbv-test")
+    runner.validate_evidence(
+        evidence, fixture_digest=evidence["topology"]["fixtureDigest"], run="nbv-test"
+    )
 
 
-@pytest.mark.parametrize("mutator", [
-    lambda value: value.__setitem__("image", "iiidev/iii:latest"),
-    lambda value: value["topology"].__setitem__("fixtureDigest", "0" * 64),
-    lambda value: value["topology"].__setitem__("relay", "direct-admin"),
-    lambda value: value.__setitem__("researchGraphManifestRef", "replacement"),
-    lambda value: value["execution"].__setitem__("final_outcome", "accepted-by-2xx"),
-    lambda value: value.__setitem__("privateKey", "must-not-sign"),
-])
+@pytest.mark.parametrize(
+    "mutator",
+    [
+        lambda value: value.__setitem__("image", "iiidev/iii:latest"),
+        lambda value: value["topology"].__setitem__("fixtureDigest", "0" * 64),
+        lambda value: value["topology"].__setitem__("relay", "direct-admin"),
+        lambda value: value.__setitem__("researchGraphManifestRef", "replacement"),
+        lambda value: value["execution"].__setitem__("final_outcome", "accepted-by-2xx"),
+        lambda value: value.__setitem__("privateKey", "must-not-sign"),
+    ],
+)
 def test_pre_sign_validation_rejects_substitutions_and_secrets(mutator):
     evidence = _evidence()
     mutator(evidence)
     with pytest.raises(runner.ProofRejected):
-        runner.validate_evidence(evidence, fixture_digest=hashlib.sha256((ROOT / "tests/acceptance/fixtures/opencli-proof").read_bytes()).hexdigest(), run="nbv-test")
+        runner.validate_evidence(
+            evidence,
+            fixture_digest=hashlib.sha256(
+                (ROOT / "tests/acceptance/fixtures/opencli-proof").read_bytes()
+            ).hexdigest(),
+            run="nbv-test",
+        )
 
 
 def test_mandatory_substitution_audit_is_itself_fail_closed():
     evidence = _evidence()
-    runner.assert_substitutions_rejected(evidence, fixture_digest=evidence["topology"]["fixtureDigest"], run="nbv-test")
+    runner.assert_substitutions_rejected(
+        evidence, fixture_digest=evidence["topology"]["fixtureDigest"], run="nbv-test"
+    )
 
 
 def test_compose_topology_is_isolated_and_has_the_required_proof_networks():
     import yaml
+
     topology = yaml.safe_load((ROOT / "docker-compose.non-bypass-acceptance.yml").read_text())
     services = topology["services"]
     assert not any("ports" in service for service in services.values())
     assert services["proof-iii"]["image"] == runner.PINNED_III
-    assert services["proof-controlled-receiver"]["networks"]["proof-receiver"]["ipv4_address"] == "8.8.8.8"
+    assert (
+        services["proof-controlled-receiver"]["networks"]["proof-receiver"]["ipv4_address"]
+        == "8.8.8.8"
+    )
     assert topology["networks"]["proof-receiver"]["ipam"]["config"][0]["subnet"] == "8.8.8.0/24"
-    assert set(services["proof-relay"]["networks"]) == {"proof-control", "proof-callback", "proof-iii"}
+    assert set(services["proof-relay"]["networks"]) == {
+        "proof-control",
+        "proof-callback",
+        "proof-iii",
+    }

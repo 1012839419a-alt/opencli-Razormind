@@ -8,7 +8,7 @@ import { toast } from 'sonner'
 import AgentAvatar from '@/components/smoothui/agent-avatar'
 import SwitchboardCard from '@/components/smoothui/switchboard-card'
 import { useAutomations, useCreateAutomation, useInstallAutomationStarters, useMyWorkspaces, useOperationsAgentActivity, useOperationsAgentDraft, useOperationsAgents, useOperationsAgentVersions, usePatchAutomation, usePublishOperationsAgentVersion, useStartOperationsAgentRun, useUpdateOperationsAgentDraft } from '@/lib/api/hooks'
-import type { Automation, OperationsAgent, OperationsAgentMode } from '@/lib/api/types'
+import type { AgentRuntimeBindingV1, Automation, OperationsAgent, OperationsAgentMode } from '@/lib/api/types'
 import { cn } from '@/lib/utils'
 import { BACKEND_HINT, EmptyState, ErrorState, LoadingState } from '@/components/shell/data-states'
 import { Button, buttonVariants } from '@/components/ui/button'
@@ -24,24 +24,27 @@ const SUGGESTIONS = [
 
 const AGENT_STARTERS = [
   {
-    ...SUGGESTIONS[0],
     name: '运行简报 Agent',
+    prompt: 'Prepare a concise daily run brief from the latest workspace activity and open work.',
+    schedule: 'daily@09:00',
     subtitle: '每天汇总运行、失败与待批准事项',
     executor: 'codex',
     pattern: [0, 1, 2, 18, 19, 20, 36, 37, 38, 54, 55, 56, 72, 73, 74],
   },
   {
-    ...SUGGESTIONS[1],
     name: '系统回顾 Agent',
+    prompt: 'Review the workspace system state, summarize trends, and identify actionable improvements.',
+    schedule: 'weekly@monday@09:00',
     subtitle: '每周整理变化、风险与待处理建议',
-    executor: 'claude',
+    executor: 'codex',
     pattern: [4, 5, 6, 22, 23, 24, 40, 41, 42, 58, 59, 60, 76, 77, 78],
   },
   {
-    ...SUGGESTIONS[2],
     name: '异常跟进 Agent',
-    subtitle: '工作日检查异常并生成证据化建议',
-    executor: 'chatcloud',
+    prompt: 'Review unresolved anomalies, gather evidence, and propose the next safe follow-up actions.',
+    schedule: 'on_anomaly',
+    subtitle: '异常出现时检查并生成证据化建议',
+    executor: 'codex',
     pattern: [8, 9, 10, 26, 27, 28, 44, 45, 46, 62, 63, 64, 80, 81, 82],
   },
 ] as const
@@ -71,8 +74,16 @@ function executorMeta(id: string) {
 }
 
 function scheduleText(value: string) {
-  const [kind, time] = value.split('@')
-  return `${kind === 'daily' ? '每天' : kind === 'weekdays' ? '工作日' : kind === 'weekly' ? '每周' : kind}${time ? ` ${time}` : ''}`
+  const [kind, qualifier, time] = value.split('@')
+  if (kind === 'on_anomaly') return '检测到异常时'
+  if (kind === 'weekly') {
+    const weekdays: Record<string, string> = {
+      monday: '一', tuesday: '二', wednesday: '三', thursday: '四', friday: '五', saturday: '六', sunday: '日',
+    }
+    return `每周${weekdays[qualifier] ?? qualifier}${time ? ` ${time}` : ''}`
+  }
+  const label = kind === 'daily' ? '每天' : kind === 'weekdays' ? '工作日' : kind === 'hourly' ? '每小时' : kind
+  return `${label}${qualifier ? ` ${qualifier}` : ''}`
 }
 
 const EMPTY_SCHEMA = { type: 'object', properties: {} }
@@ -93,6 +104,7 @@ function ContractEditor({ workspaceId, agent }: { workspaceId: string; agent: Op
   const [outputSchema, setOutputSchema] = useState('')
   const [stateSchema, setStateSchema] = useState('')
   const [agentUrl, setAgentUrl] = useState('')
+  const [runtime, setRuntime] = useState<AgentRuntimeBindingV1['runtime']>('pi')
   const [workflow, setWorkflow] = useState('')
   const [dispatchTimeout, setDispatchTimeout] = useState(1800)
   const [runtimeConfig, setRuntimeConfig] = useState('')
@@ -107,6 +119,7 @@ function ContractEditor({ workspaceId, agent }: { workspaceId: string; agent: Op
     setOutputSchema(JSON.stringify(contract?.output_schema ?? EMPTY_SCHEMA, null, 2))
     setStateSchema(JSON.stringify(contract?.state_schema ?? EMPTY_SCHEMA, null, 2))
     setAgentUrl(binding?.agent_url ?? '')
+    setRuntime(binding?.runtime ?? 'pi')
     setWorkflow(binding?.workflow ?? '')
     setDispatchTimeout(binding?.dispatch_timeout_seconds ?? 1800)
     setRuntimeConfig(JSON.stringify(binding?.config ?? { timeout_seconds: 1800 }, null, 2))
@@ -115,6 +128,7 @@ function ContractEditor({ workspaceId, agent }: { workspaceId: string; agent: Op
   async function saveDraft() {
     if (!draft.data) return
     try {
+      const binding = draft.data.model_configuration.runtime_binding
       await updateDraft.mutateAsync({
         workspaceId,
         agentId: agent.id,
@@ -130,9 +144,10 @@ function ContractEditor({ workspaceId, agent }: { workspaceId: string; agent: Op
               state_schema: parseJsonObject(stateSchema, 'State schema'),
             },
             runtime_binding: {
+              ...(binding ?? {}),
               schema_version: 'agent.runtime-binding.v1',
               agent_url: agentUrl.trim(),
-              runtime: 'pi',
+              runtime,
               workflow: workflow.trim(),
               dispatch_timeout_seconds: dispatchTimeout,
               config: parseJsonObject(runtimeConfig, 'Runtime config'),
@@ -185,7 +200,7 @@ function ContractEditor({ workspaceId, agent }: { workspaceId: string; agent: Op
             <summary className="cursor-pointer text-sm text-muted-foreground">Runtime Binding 高级配置</summary>
             <div className="mt-4 grid gap-4 sm:grid-cols-4">
               <label className="space-y-1.5 text-xs text-muted-foreground">Agent URL<Input type="url" value={agentUrl} onChange={(event) => setAgentUrl(event.target.value)} placeholder="https://agent.example.com" /></label>
-              <label className="space-y-1.5 text-xs text-muted-foreground">Runtime<Input value="pi" readOnly aria-readonly="true" /></label>
+              <label className="space-y-1.5 text-xs text-muted-foreground">Runtime<select value={runtime} onChange={(event) => setRuntime(event.target.value as AgentRuntimeBindingV1['runtime'])} className="h-9 w-full rounded-lg border bg-background px-3 text-sm text-foreground"><option value="miniflow">MiniFlow</option><option value="pi">Pi</option><option value="codex">Codex</option></select></label>
               <label className="space-y-1.5 text-xs text-muted-foreground">Workflow<Input value={workflow} onChange={(event) => setWorkflow(event.target.value)} placeholder="default" /></label>
               <label className="space-y-1.5 text-xs text-muted-foreground">深度执行超时（秒）<Input type="number" min={1} max={3600} value={dispatchTimeout} onChange={(event) => setDispatchTimeout(Number(event.target.value))} /><span className="block text-[11px] leading-4 text-muted-foreground">默认 30 分钟；本地 CLI 不暴露 5 小时额度，因此不伪造剩余额度。</span></label>
             </div>
@@ -228,6 +243,7 @@ export default function OperationsAgentsPage() {
   const [projectPath, setProjectPath] = useState('')
   const [branch, setBranch] = useState('main')
   const [scheduleKind, setScheduleKind] = useState('weekdays')
+  const [weeklyDay, setWeeklyDay] = useState('monday')
   const [time, setTime] = useState('09:00')
   const [sessionMode, setSessionMode] = useState<'fresh' | 'reuse'>('fresh')
   const [approvalMode, setApprovalMode] = useState<OperationsAgentMode>('suggest_changes')
@@ -248,9 +264,14 @@ export default function OperationsAgentsPage() {
     setPrompt(preset?.prompt ?? '')
     setExecutor(preset?.executor ?? 'codex')
     if (preset) {
-      const [kind, presetTime] = preset.schedule.split('@')
+      const [kind, qualifier, weeklyTime] = preset.schedule.split('@')
       setScheduleKind(kind)
-      setTime(presetTime)
+      if (kind === 'weekly') {
+        setWeeklyDay(qualifier || 'monday')
+        setTime(weeklyTime || '09:00')
+      } else if (qualifier) {
+        setTime(qualifier)
+      }
     }
     setOpen(true)
   }
@@ -276,9 +297,14 @@ export default function OperationsAgentsPage() {
   async function submitCreate() {
     if (!workspaceId) return
     try {
+      const schedule = scheduleKind === 'on_anomaly'
+        ? 'on_anomaly'
+        : scheduleKind === 'weekly'
+          ? `weekly@${weeklyDay}@${time}`
+          : `${scheduleKind}@${time}`
       await createAutomation.mutateAsync({ workspaceId, data: {
         name: name.trim(), prompt: prompt.trim(), precheck: precheck.trim() || null,
-        executor, schedule: `${scheduleKind}@${time}`, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        executor, schedule, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
         session_mode: sessionMode, approval_mode: approvalMode,
         project: { path: projectPath.trim() || null, branch: branch.trim() || null }, enabled: true,
       } })
@@ -399,7 +425,7 @@ export default function OperationsAgentsPage() {
             <label className="space-y-1.5 text-xs text-muted-foreground">提示词<Textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="每次运行要完成什么？" className="min-h-40 resize-y text-sm" /></label>
             <fieldset><legend className="mb-2 text-xs text-muted-foreground">选择智能体</legend><div className="grid grid-cols-2 gap-2 sm:grid-cols-4">{EXECUTORS.map((item) => { const Icon = item.icon; return <button key={item.id} type="button" aria-pressed={executor === item.id} onClick={() => setExecutor(item.id)} className={cn('flex items-center gap-2 rounded-lg border px-3 py-3 text-left text-sm', executor === item.id ? 'border-foreground bg-white/[0.06]' : 'border-white/[0.08] hover:bg-white/[0.03]')}><Icon className={cn('size-4', item.color)} />{item.name}</button> })}</div></fieldset>
             <div className="grid gap-4 sm:grid-cols-2"><label className="space-y-1.5 text-xs text-muted-foreground">项目路径<Input value={projectPath} onChange={(event) => setProjectPath(event.target.value)} placeholder="/workspace/project" /></label><label className="space-y-1.5 text-xs text-muted-foreground">基础分支<Input value={branch} onChange={(event) => setBranch(event.target.value)} /></label></div>
-            <div className="grid gap-4 sm:grid-cols-3"><label className="space-y-1.5 text-xs text-muted-foreground">日程<select value={scheduleKind} onChange={(event) => setScheduleKind(event.target.value)} className="h-9 w-full rounded-lg border bg-background px-3 text-sm"><option value="hourly">每小时</option><option value="daily">每天</option><option value="weekdays">工作日</option><option value="weekly">每周</option></select></label><label className="space-y-1.5 text-xs text-muted-foreground">时间<Input type="time" value={time} onChange={(event) => setTime(event.target.value)} disabled={scheduleKind === 'hourly'} /></label><label className="space-y-1.5 text-xs text-muted-foreground">会话<select value={sessionMode} onChange={(event) => setSessionMode(event.target.value as 'fresh' | 'reuse')} className="h-9 w-full rounded-lg border bg-background px-3 text-sm"><option value="fresh">每次新会话</option><option value="reuse">重复利用会话</option></select></label></div>
+            <div className="grid gap-4 sm:grid-cols-4"><label className="space-y-1.5 text-xs text-muted-foreground">日程<select value={scheduleKind} onChange={(event) => setScheduleKind(event.target.value)} className="h-9 w-full rounded-lg border bg-background px-3 text-sm"><option value="hourly">每小时</option><option value="daily">每天</option><option value="weekdays">工作日</option><option value="weekly">每周</option><option value="on_anomaly">检测到异常时</option></select></label>{scheduleKind === 'weekly' ? <label className="space-y-1.5 text-xs text-muted-foreground">星期<select value={weeklyDay} onChange={(event) => setWeeklyDay(event.target.value)} className="h-9 w-full rounded-lg border bg-background px-3 text-sm"><option value="monday">周一</option><option value="tuesday">周二</option><option value="wednesday">周三</option><option value="thursday">周四</option><option value="friday">周五</option><option value="saturday">周六</option><option value="sunday">周日</option></select></label> : null}<label className="space-y-1.5 text-xs text-muted-foreground">时间<Input type="time" value={time} onChange={(event) => setTime(event.target.value)} disabled={scheduleKind === 'hourly' || scheduleKind === 'on_anomaly'} /></label><label className="space-y-1.5 text-xs text-muted-foreground">会话<select value={sessionMode} onChange={(event) => setSessionMode(event.target.value as 'fresh' | 'reuse')} className="h-9 w-full rounded-lg border bg-background px-3 text-sm"><option value="fresh">每次新会话</option><option value="reuse">重复利用会话</option></select></label></div>
             <fieldset><legend className="mb-2 text-xs text-muted-foreground">审批方式</legend><div className="grid gap-2 sm:grid-cols-3">{APPROVALS.map((item) => <button key={item.id} type="button" onClick={() => setApprovalMode(item.id)} className={cn('rounded-lg border p-3 text-left', approvalMode === item.id ? 'border-foreground bg-white/[0.06]' : 'border-white/[0.08]')}><span className="block text-sm font-medium">{item.label}</span><span className="mt-1 block text-xs text-muted-foreground">{item.detail}</span></button>)}</div></fieldset>
             <details className="rounded-lg border border-white/[0.08] px-4 py-3"><summary className="cursor-pointer text-sm text-muted-foreground">高级设置</summary><label className="mt-4 block space-y-1.5 text-xs text-muted-foreground"><Terminal className="mr-1 inline size-3" />预检查<Input value={precheck} onChange={(event) => setPrecheck(event.target.value)} placeholder="可选：运行前检查命令" className="font-mono" /></label></details>
           </div>

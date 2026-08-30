@@ -41,6 +41,11 @@ Environment variables:
     OPENCLI_CDP_ENDPOINT    Default Chrome CDP endpoint (default: http://localhost:19222)
     OPENCLI_DAEMON_PORT     Bridge daemon port (default: 19825)
     OPENCLI_TIMEOUT         opencli subprocess timeout in seconds (default: 120)
+    AGENT_CODEX_ISOLATED_RUNNER Absolute path to an administrator-owned, externally
+                            isolated Codex-compatible runner. Direct CLI execution
+                            is disabled.
+    AGENT_CODEX_ALLOWED_ROOTS JSON array of server-owned roots allowed for Codex cwd.
+                            Empty or invalid configuration disables Codex dispatch.
 """
 
 import asyncio
@@ -391,6 +396,12 @@ async def _handle_ws_agent_task(ws, msg: dict) -> None:
         config_errors = adapter.validate_config(task.config)
         if config_errors:
             raise RuntimeInvocationError("; ".join(config_errors), error_type="ConfigError")
+        readiness = await adapter.readiness(task.config)
+        if readiness.status != "ready":
+            raise RuntimeInvocationError(
+                readiness.reason or f"runtime {runtime_type!r} is not ready",
+                error_type=readiness.reason_code or "RuntimeNotReady",
+            )
 
         terminal_event: dict | None = None
         async for event in adapter.invoke(task):
@@ -475,9 +486,8 @@ async def _register_via_ws(advertise_url: str) -> None:
         + "/api/v1/nodes/ws"
     )
     _proxy = _HTTPS_PROXY or _HTTP_PROXY or None
-    # Computed once (not per reconnect attempt): available_runtimes() does a
-    # handful of cheap shutil.which() checks, not worth repeating on every
-    # reconnect. A node's installed runtimes don't change without a restart.
+    # Computed once (not per reconnect attempt): runtime availability includes
+    # fixed-binary compatibility probes and does not change without a restart.
     register_payload = json.dumps(
         {
             "type": "register",
@@ -630,6 +640,11 @@ async def invoke_runtime_http(
     req: RuntimeInvokeRequest, authorization: str | None = Header(default=None)
 ) -> dict:
     _require_collect_auth(authorization)
+    if req.runtime == "codex":
+        raise HTTPException(
+            status_code=403,
+            detail="Codex runtime is only available through controller WS dispatch",
+        )
     return await invoke_runtime(str(uuid.uuid4()), req, cdp_endpoint=_DEFAULT_CDP)
 
 

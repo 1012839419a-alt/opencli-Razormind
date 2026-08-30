@@ -1,3 +1,4 @@
+import secrets
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -5,7 +6,10 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from backend.security.local_auth import DEFAULT_LOCAL_ADMIN_PASSWORD_HASH
+# Keep local development usable without a checked-in secret while ensuring
+# every process starts with an unpredictable signing key. Docker deployments
+# require SECRET_KEY explicitly (see docker-compose.yml).
+_EPHEMERAL_SECRET_KEY = secrets.token_urlsafe(48)
 
 
 class WorkbenchRepositoryConfiguration(BaseModel):
@@ -55,7 +59,19 @@ class Settings(BaseSettings):
     app_name: str = "opencli-admin"
     app_env: Literal["development", "staging", "production"] = "development"
     debug: bool = False
-    secret_key: str = "change-me-in-production"
+    secret_key: str = _EPHEMERAL_SECRET_KEY
+
+    @field_validator("secret_key")
+    @classmethod
+    def secret_key_is_not_public_or_weak(cls, value: str) -> str:
+        normalized = value.strip()
+        public_defaults = {
+            "change-me-in-production",
+            "change-me-in-production-use-long-random-string",
+        }
+        if len(normalized) < 32 or normalized in public_defaults:
+            raise ValueError("SECRET_KEY must be at least 32 characters and not a public default")
+        return normalized
     # Fernet key used to encrypt provider credentials at rest. Keep this
     # stable after providers have been saved, or their stored API keys cannot
     # be decrypted on the next process start.
@@ -138,10 +154,17 @@ class Settings(BaseSettings):
     oidc_audience: str = ""
     oidc_jwks_url: str = ""
     bootstrap_admin_token: str = ""
-    # Local-first account used by the NAS/server deployment. The password hash
-    # is persisted in .env after the user changes the default password.
+    # Local-first account used by the NAS/server deployment. Durable state is
+    # initialized explicitly by the installer; there is no public fallback
+    # password hash in application defaults.
     local_admin_username: str = "admin"
-    local_admin_password_hash: str = DEFAULT_LOCAL_ADMIN_PASSWORD_HASH
+    local_admin_password_hash: str = ""
+    # Optional durable state file. Docker points this at the /data volume so a
+    # password change survives container replacement without mutating /app.
+    local_auth_state_path: str = Field(
+        default="./data/local-admin-password.hash",
+        min_length=1,
+    )
 
     # CLI channel binary allowlist (ADR-0005, audit P0-4). The cli channel is
     # an arbitrary-binary-execution surface, so it only runs binaries the

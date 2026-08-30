@@ -1257,10 +1257,12 @@ export interface AgentContractV1 {
 export interface AgentRuntimeBindingV1 {
   schema_version: "agent.runtime-binding.v1";
   agent_url: string;
-  runtime: "pi";
+  runtime: "miniflow" | "pi" | "codex";
   workflow: string;
   config: Record<string, unknown>;
   dispatch_timeout_seconds: number;
+  execution_node_url?: string | null;
+  shared_filesystem_id?: string | null;
 }
 
 export interface OperationsAgentDraft {
@@ -1336,6 +1338,9 @@ export interface WorkbenchRuntime {
   name: string
   publishedVersion: number
   runtimeType: string
+  readiness: 'ready' | 'blocked'
+  reasonCode: string | null
+  reason: string | null
 }
 
 export interface WorkbenchTestEvidence {

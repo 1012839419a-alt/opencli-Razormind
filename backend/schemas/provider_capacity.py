@@ -9,9 +9,10 @@ remaining percentage.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime
 from enum import StrEnum
-from typing import Any, Mapping
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
@@ -53,11 +54,15 @@ class ProviderCapacityRead(BaseModel):
         return self
 
     @classmethod
-    def unavailable(cls, *, reason: str = "No supported provider usage endpoint") -> ProviderCapacityRead:
+    def unavailable(
+        cls, *, reason: str = "No supported provider usage endpoint"
+    ) -> ProviderCapacityRead:
         return cls(state=ProviderCapacityState.UNAVAILABLE, reason=reason)
 
     @classmethod
-    def not_applicable(cls, *, reason: str = "Runtime has no provider quota semantics") -> ProviderCapacityRead:
+    def not_applicable(
+        cls, *, reason: str = "Runtime has no provider quota semantics"
+    ) -> ProviderCapacityRead:
         return cls(state=ProviderCapacityState.NOT_APPLICABLE, reason=reason)
 
     @classmethod

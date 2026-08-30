@@ -66,6 +66,13 @@ V2_BUNDLE_MANIFEST = {
 }
 
 
+def _table_exists(table_name: str) -> bool:
+    context = op.get_context()
+    if context.as_sql:
+        return True
+    return sa.inspect(op.get_bind()).has_table(table_name)
+
+
 def upgrade() -> None:
     bundles = sa.table(
         "browser_runtime_bundles",
@@ -91,39 +98,43 @@ def upgrade() -> None:
         ],
         multiinsert=False,
     )
-    op.execute(
-        sa.text(
-            "UPDATE browser_instances SET runtime_bundle_id = :v2 "
-            "WHERE runtime_bundle_id = :v1"
-        ).bindparams(v2=V2_BUNDLE_ID, v1=V1_BUNDLE_ID)
-    )
-    op.execute(
-        sa.text(
-            "UPDATE browser_runtime_deployments "
-            "SET state = 'RESTART_REQUIRED' "
-            "WHERE browser_instance_id IN ("
-            "SELECT id FROM browser_instances WHERE runtime_bundle_id = :v2"
-            ")"
-        ).bindparams(v2=V2_BUNDLE_ID)
-    )
+    if _table_exists("browser_instances"):
+        op.execute(
+            sa.text(
+                "UPDATE browser_instances SET runtime_bundle_id = :v2 "
+                "WHERE runtime_bundle_id = :v1"
+            ).bindparams(v2=V2_BUNDLE_ID, v1=V1_BUNDLE_ID)
+        )
+        if _table_exists("browser_runtime_deployments"):
+            op.execute(
+                sa.text(
+                    "UPDATE browser_runtime_deployments "
+                    "SET state = 'RESTART_REQUIRED' "
+                    "WHERE browser_instance_id IN ("
+                    "SELECT id FROM browser_instances WHERE runtime_bundle_id = :v2"
+                    ")"
+                ).bindparams(v2=V2_BUNDLE_ID)
+            )
 
 
 def downgrade() -> None:
-    op.execute(
-        sa.text(
-            "UPDATE browser_instances SET runtime_bundle_id = :v1 "
-            "WHERE runtime_bundle_id = :v2"
-        ).bindparams(v1=V1_BUNDLE_ID, v2=V2_BUNDLE_ID)
-    )
-    op.execute(
-        sa.text(
-            "UPDATE browser_runtime_deployments "
-            "SET state = 'RESTART_REQUIRED' "
-            "WHERE browser_instance_id IN ("
-            "SELECT id FROM browser_instances WHERE runtime_bundle_id = :v1"
-            ")"
-        ).bindparams(v1=V1_BUNDLE_ID)
-    )
+    if _table_exists("browser_instances"):
+        op.execute(
+            sa.text(
+                "UPDATE browser_instances SET runtime_bundle_id = :v1 "
+                "WHERE runtime_bundle_id = :v2"
+            ).bindparams(v1=V1_BUNDLE_ID, v2=V2_BUNDLE_ID)
+        )
+        if _table_exists("browser_runtime_deployments"):
+            op.execute(
+                sa.text(
+                    "UPDATE browser_runtime_deployments "
+                    "SET state = 'RESTART_REQUIRED' "
+                    "WHERE browser_instance_id IN ("
+                    "SELECT id FROM browser_instances WHERE runtime_bundle_id = :v1"
+                    ")"
+                ).bindparams(v1=V1_BUNDLE_ID)
+            )
     op.execute(
         sa.text("DELETE FROM browser_runtime_bundles WHERE id = :v2").bindparams(
             v2=V2_BUNDLE_ID

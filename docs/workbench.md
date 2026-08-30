@@ -36,6 +36,20 @@ A coding runtime is shown only when its published `agent.runtime-binding.v1` dec
 
 The managed coding adapters are `codex` and `pi`; the edge node advertises only binaries it can actually launch. A Workbench binding uses one of those values for `runtime` and continues to accept only controller-supplied worktree and timeout configuration.
 
+Codex is disabled unless the Agent has both `AGENT_CODEX_ISOLATED_RUNNER` and
+`AGENT_CODEX_ALLOWED_ROOTS`. The runner is a deployment trust boundary, not a
+path alias to the ordinary `codex` binary: it must execute Codex under a
+dedicated OS principal, container, or VM that can read only the mounted
+worktree plus its own credential store, and it must terminate its complete
+process tree when the top-level command exits. The Agent passes the runner a
+minimal environment and forces Codex shell commands to a non-secret core
+environment. Do not enable this runtime on a host-user account that can read
+Fleet tokens or deployment secrets. Container deployments must mount the same
+worktree path declared by the repository mapping into that isolation boundary.
+The standard Agent image intentionally does not bundle such a runner; operators
+must mount their audited executable explicitly, as shown in the remote Agent
+example in `docker-compose.yml`.
+
 `execution_node_url` must equal the runtime's `agent_url`, and both values must exactly match the repository mapping. The named filesystem is an operator assertion that the controller-created worktree is mounted at the same path on that edge node. A mismatch fails before dispatch, so a central-only worktree is never sent to an arbitrary edge runtime.
 
 ## Confirmation

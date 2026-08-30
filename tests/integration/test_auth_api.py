@@ -17,7 +17,7 @@ from backend.security.identity import (
     get_request_identity,
     identity_dependency,
 )
-from backend.security.local_auth import DEFAULT_LOCAL_ADMIN_PASSWORD_HASH
+from backend.security.local_auth import hash_password, initialize_password_hash
 
 TOKEN = "fleet-test-token"
 
@@ -144,10 +144,17 @@ async def test_health_exempt_and_leaks_nothing(client, auth_enabled):
 
 
 @pytest.mark.asyncio
-async def test_local_admin_login_uses_simple_credentials(client, auth_enabled):
+async def test_local_admin_login_uses_simple_credentials(
+    client, auth_enabled, monkeypatch, tmp_path
+):
+    state_path = tmp_path / "local-admin-password.hash"
+    initial_password = f"initial-{secrets.token_hex(12)}"
+    monkeypatch.setenv("LOCAL_AUTH_STATE_PATH", str(state_path))
+    get_settings.cache_clear()
+    initialize_password_hash(hash_password(initial_password), str(state_path))
     response = await client.post(
         "/api/v1/auth/login",
-        json={"username": "admin", "password": "admin"},
+        json={"username": "admin", "password": initial_password},
     )
     assert response.status_code == 200
     payload = response.json()["data"]
@@ -160,6 +167,7 @@ async def test_local_admin_login_uses_simple_credentials(client, auth_enabled):
     )
     assert identity.status_code == 200
     assert identity.json()["data"]["auth_method"] == "local"
+    get_settings.cache_clear()
 
 
 @pytest.mark.asyncio
@@ -176,8 +184,8 @@ async def test_local_admin_login_rejects_wrong_password(client, auth_disabled):
 @pytest.mark.asyncio
 async def test_local_admin_can_change_password(client, auth_disabled, monkeypatch, tmp_path):
     new_password = f"local-{secrets.token_hex(8)}"
-    monkeypatch.setenv("ENV_FILE_PATH", str(tmp_path / ".env"))
-    monkeypatch.setenv("LOCAL_ADMIN_PASSWORD_HASH", DEFAULT_LOCAL_ADMIN_PASSWORD_HASH)
+    monkeypatch.setenv("LOCAL_AUTH_STATE_PATH", str(tmp_path / "local-admin-password.hash"))
+    initialize_password_hash(hash_password("admin"), str(tmp_path / "local-admin-password.hash"))
     get_settings.cache_clear()
     try:
         login = await client.post(
@@ -203,5 +211,43 @@ async def test_local_admin_can_change_password(client, auth_disabled, monkeypatc
                 json={"username": "admin", "password": new_password},
             )
         ).status_code == 200
+        changed_login = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "admin", "password": new_password},
+        )
+        assert changed_login.json()["data"]["using_default_password"] is False
+    finally:
+        get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_local_admin_password_survives_settings_reload(
+    client, auth_disabled, monkeypatch, tmp_path
+):
+    state_path = tmp_path / "local-admin-password.hash"
+    new_password = f"durable-{secrets.token_hex(8)}"
+    monkeypatch.setenv("LOCAL_AUTH_STATE_PATH", str(state_path))
+    initialize_password_hash(hash_password("admin"), str(state_path))
+    get_settings.cache_clear()
+    try:
+        login = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "admin", "password": "admin"},
+        )
+        changed = await client.post(
+            "/api/v1/auth/password",
+            headers={"Authorization": f"Bearer {login.json()['data']['access_token']}"},
+            json={"current_password": "admin", "new_password": new_password},
+        )
+        assert changed.status_code == 200
+        assert state_path.is_file()
+
+        monkeypatch.setenv("LOCAL_ADMIN_PASSWORD_HASH", "ignored-configured-fallback")
+        get_settings.cache_clear()
+        reloaded = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "admin", "password": new_password},
+        )
+        assert reloaded.status_code == 200
     finally:
         get_settings.cache_clear()

@@ -79,6 +79,7 @@ function Set-EnvValue([string]$Key, [string]$Value) {
 }
 
 $apiToken = New-HexSecret 32
+$localAdminPassword = New-HexSecret 24
 $bootstrapToken = New-HexSecret 32
 Set-EnvValue "API_AUTH_TOKEN" $apiToken
 Set-EnvValue "BOOTSTRAP_ADMIN_TOKEN" $bootstrapToken
@@ -89,6 +90,8 @@ Push-Location $resolvedInstallDir
 try {
     docker compose pull api frontend agent-1
     Assert-NativeSuccess "Failed to pull OpenCLI Admin images."
+    $localAdminPassword | docker compose run --rm -T --no-deps api python -c 'import sys; from backend.security.local_auth import hash_password, initialize_password_hash; initialize_password_hash(hash_password(sys.stdin.read().strip()), "/data/local-admin-password.hash")'
+    Assert-NativeSuccess "Failed to initialize the local administrator password."
     docker compose up -d
     Assert-NativeSuccess "Failed to start OpenCLI Admin."
 
@@ -115,6 +118,7 @@ try {
 Write-Host ""
 Write-Host "OpenCLI Admin $Version is ready."
 Write-Host "URL: http://localhost:$frontendPort"
+Write-Host "Local login: admin / $localAdminPassword"
 Write-Host "BOOTSTRAP_ADMIN_TOKEN: $bootstrapToken"
 Write-Host "API_AUTH_TOKEN: $apiToken"
-Write-Host "Use BOOTSTRAP_ADMIN_TOKEN in the first login field and API_AUTH_TOKEN in the optional fleet field. Both are stored in $envPath"
+Write-Host "Emergency BOOTSTRAP_ADMIN_TOKEN and fleet API_AUTH_TOKEN are stored in $envPath; local login uses the random password shown above."
