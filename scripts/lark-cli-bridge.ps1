@@ -18,16 +18,28 @@ function Invoke-LocalCli {
         [Parameter(Mandatory = $true)][string]$Name,
         [Parameter(Mandatory = $false)][string[]]$Arguments = @()
     )
-    $command = (Get-Command $Name -CommandType ExternalScript -ErrorAction Stop).Source
+    # Invoke the native npm shim directly. Running the PowerShell wrapper as a
+    # child process can normalize escaped newlines inside JSON cell values into
+    # literal newlines before the HTTP response is written.
+    $command = (Get-Command "$Name.cmd" -CommandType Application -ErrorAction Stop).Source
     $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
-    $startInfo.FileName = "pwsh"
+    if ($Name -eq "lark-cli") {
+        # Avoid the PowerShell/cmd shim entirely: the shim's child-process
+        # output is not stable for multiline Feishu cell values.
+        $node = Get-Command node -CommandType Application -ErrorAction Stop |
+            Where-Object { $_.Source -match '\\node\.exe$' } |
+            Select-Object -First 1
+        if (-not $node) { throw "node.exe was not found" }
+        $startInfo.FileName = $node.Source
+        $startInfo.ArgumentList.Add((Join-Path (Split-Path $command -Parent) "node_modules\@larksuite\cli\scripts\run.js"))
+    } else {
+        $startInfo.FileName = $command
+    }
     $startInfo.UseShellExecute = $false
     $startInfo.RedirectStandardOutput = $true
     $startInfo.RedirectStandardError = $true
-    $startInfo.ArgumentList.Add("-NoLogo")
-    $startInfo.ArgumentList.Add("-NoProfile")
-    $startInfo.ArgumentList.Add("-File")
-    $startInfo.ArgumentList.Add($command)
+    $startInfo.StandardOutputEncoding = [System.Text.Encoding]::UTF8
+    $startInfo.StandardErrorEncoding = [System.Text.Encoding]::UTF8
     foreach ($argument in $Arguments) { $startInfo.ArgumentList.Add([string]$argument) }
     $process = [System.Diagnostics.Process]::new()
     $process.StartInfo = $startInfo
@@ -124,8 +136,10 @@ try {
                     if ($request.profile) { $args += @("--profile", [string]$request.profile) }
                     if ($offset -gt 0) { $args += @("--offset", "$offset") }
                     $run = Invoke-LocalCli -Name "lark-cli" -Arguments $args
-                    if ($run.returncode -ne 0) { throw "lark-cli failed with exit code $($run.returncode)" }
-                    $body = $run.stdout
+                    if ($run.returncode -ne 0) {
+                        throw "lark-cli failed with exit code $($run.returncode): $($run.stderr.ToString().Trim())"
+                    }
+                    $body = [string]$run.stdout
                 }
             }
         } catch {

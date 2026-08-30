@@ -249,7 +249,17 @@ class FeishuTableChannel(AbstractChannel):
         base_token = _text(config.get("app_token"))
         if not base_token:
             raise ChannelFetchError("'app_token' is required for lark-cli", "InvalidSourceConfig")
-        limit = _positive_int(config.get("page_size"), _DEFAULT_PAGE_SIZE, 200)
+        max_rows = _positive_int(config.get("max_rows"), _DEFAULT_MAX_ROWS, 5000)
+        offset = _positive_int((ctx.cursor or {}).get("offset"), 0, 5_000_000)
+        remaining = max_rows - offset
+        if remaining <= 0:
+            return FetchResult(
+                items=[],
+                next_cursor=None,
+                has_more=False,
+                metadata={"source": "feishu_table", "transport": "lark-cli", "rowCount": 0},
+            )
+        limit = min(_positive_int(config.get("page_size"), _DEFAULT_PAGE_SIZE, 200), remaining)
         args = [
             binary,
             "base",
@@ -267,7 +277,6 @@ class FeishuTableChannel(AbstractChannel):
             args.extend(["--view-id", _text(config["view_id"])])
         if _text(config.get("profile")):
             args.extend(["--profile", _text(config["profile"])])
-        offset = _positive_int((ctx.cursor or {}).get("offset"), 0, 5_000_000)
         if offset:
             args.extend(["--offset", str(offset)])
         try:
@@ -290,10 +299,11 @@ class FeishuTableChannel(AbstractChannel):
             payload = json.loads(stdout.decode(errors="replace"))
         except json.JSONDecodeError as exc:
             raise ChannelFetchError("lark-cli returned invalid JSON", "JSONDecodeError") from exc
-        rows = _cli_rows(payload)
+        rows = _cli_rows(payload)[:remaining]
         result = await self._rows_to_result(ctx, rows)
-        max_rows = _positive_int(config.get("max_rows"), _DEFAULT_MAX_ROWS, 5000)
-        has_more = len(rows) >= limit and len(rows) < max_rows
+        cli_data = payload.get("data") if isinstance(payload, dict) else None
+        cli_has_more = bool(cli_data.get("has_more")) if isinstance(cli_data, dict) else False
+        has_more = cli_has_more and offset + len(rows) < max_rows
         next_cursor = {"offset": offset + len(rows)} if has_more and rows else None
         return FetchResult(
             items=result,
@@ -310,8 +320,17 @@ class FeishuTableChannel(AbstractChannel):
         the read-only CLI response to this container.
         """
         config = ctx.config
-        limit = _positive_int(config.get("page_size"), _DEFAULT_PAGE_SIZE, 200)
         offset = _positive_int((ctx.cursor or {}).get("offset"), 0, 5_000_000)
+        max_rows = _positive_int(config.get("max_rows"), _DEFAULT_MAX_ROWS, 5000)
+        remaining = max_rows - offset
+        if remaining <= 0:
+            return FetchResult(
+                items=[],
+                next_cursor=None,
+                has_more=False,
+                metadata={"source": "feishu_table", "transport": "lark-cli-bridge", "rowCount": 0},
+            )
+        limit = min(_positive_int(config.get("page_size"), _DEFAULT_PAGE_SIZE, 200), remaining)
         payload = {
             "app_token": config.get("app_token"),
             "table_id": config.get("table_id"),
@@ -341,12 +360,11 @@ class FeishuTableChannel(AbstractChannel):
                 f"lark-cli bridge response was invalid: {exc}", type(exc).__name__
             ) from exc
 
-        rows = _cli_rows(cli_payload)
+        rows = _cli_rows(cli_payload)[:remaining]
         result = await self._rows_to_result(ctx, rows)
-        max_rows = _positive_int(config.get("max_rows"), _DEFAULT_MAX_ROWS, 5000)
         cli_data = cli_payload.get("data") if isinstance(cli_payload, dict) else None
         cli_has_more = bool(cli_data.get("has_more")) if isinstance(cli_data, dict) else False
-        has_more = cli_has_more and len(rows) < max_rows
+        has_more = cli_has_more and offset + len(rows) < max_rows
         next_cursor = {"offset": offset + len(rows)} if has_more and rows else None
         return FetchResult(
             items=result,
@@ -416,7 +434,17 @@ class FeishuTableChannel(AbstractChannel):
         base_token = _text(config.get("app_token"))
         if not base_token:
             raise ChannelFetchError("'app_token' is required for lark-cli", "InvalidSourceConfig")
-        limit = _positive_int(config.get("page_size"), _DEFAULT_PAGE_SIZE, 200)
+        max_rows = _positive_int(config.get("max_rows"), _DEFAULT_MAX_ROWS, 5000)
+        offset = _positive_int((ctx.cursor or {}).get("offset"), 0, 5_000_000)
+        remaining = max_rows - offset
+        if remaining <= 0:
+            return FetchResult(
+                items=[],
+                next_cursor=None,
+                has_more=False,
+                metadata={"source": "feishu_table", "transport": "lark-cli", "rowCount": 0},
+            )
+        limit = min(_positive_int(config.get("page_size"), _DEFAULT_PAGE_SIZE, 200), remaining)
         args = [
             binary,
             "base",
@@ -434,7 +462,6 @@ class FeishuTableChannel(AbstractChannel):
             args.extend(["--view-id", _text(config["view_id"])])
         if _text(config.get("profile")):
             args.extend(["--profile", _text(config["profile"])])
-        offset = _positive_int((ctx.cursor or {}).get("offset"), 0, 5_000_000)
         if offset:
             args.extend(["--offset", str(offset)])
         try:
@@ -457,12 +484,11 @@ class FeishuTableChannel(AbstractChannel):
             payload = json.loads(stdout.decode(errors="replace"))
         except json.JSONDecodeError as exc:
             raise ChannelFetchError("lark-cli returned invalid JSON", "JSONDecodeError") from exc
-        rows = _cli_rows(payload)
+        rows = _cli_rows(payload)[:remaining]
         result = await self._rows_to_result(ctx, rows)
-        max_rows = _positive_int(config.get("max_rows"), _DEFAULT_MAX_ROWS, 5000)
         cli_data = payload.get("data") if isinstance(payload, dict) else None
         cli_has_more = bool(cli_data.get("has_more")) if isinstance(cli_data, dict) else False
-        has_more = cli_has_more and len(rows) < max_rows
+        has_more = cli_has_more and offset + len(rows) < max_rows
         next_cursor = {"offset": offset + len(rows)} if has_more and rows else None
         return FetchResult(
             items=result,
