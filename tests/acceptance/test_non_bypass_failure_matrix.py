@@ -481,6 +481,17 @@ def test_catalog_build_occurs_once_before_multiple_fresh_rows(monkeypatch, tmp_p
     runner.run_matrix(tmp_path, compose_file=ROOT / "docker-compose.non-bypass-acceptance.yml", overlay_file=ROOT / "docker-compose.non-bypass-failure.yml")
     assert calls == ["build", "admit:first", "admit:second"]
 
+def test_catalog_uses_buildx_loaded_images_not_legacy_builder():
+    runner = _runner_module()
+    commands = runner._catalog_build_commands(
+        {
+            name: f"opencli-proof-{name}:catalog"
+            for name in runner.CATALOG_NAMES
+        }
+    )
+    assert len(commands) == 6
+    assert all(command[:4] == ["docker", "buildx", "build", "--load"] for _, command in commands)
+
 
 def test_per_row_admission_only_configs_and_inspects_prebuilt_catalog(monkeypatch, tmp_path):
     runner = _runner_module()

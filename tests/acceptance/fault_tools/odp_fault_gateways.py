@@ -10,8 +10,8 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from pathlib import Path
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal
 
 import httpx
@@ -29,7 +29,7 @@ app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 class GatewayState:
     mode: GatewayMode
     armed: bool = False
-    
+
 
 
 STATES = {
@@ -99,7 +99,13 @@ class PostgresCommitObserver:
                 return
             message_type, body = self._frontend[0:1], bytes(self._frontend[5:total])
             del self._frontend[:total]
-            sql = body if message_type == b"Q" else body.split(b"\0", 1)[1] if message_type == b"P" and b"\0" in body else b""
+            sql = (
+                body
+                if message_type == b"Q"
+                else body.split(b"\0", 1)[1]
+                if message_type == b"P" and b"\0" in body
+                else b""
+            )
             if self._is_commit_sql(sql):
                 self.pending_commit = True
 
@@ -124,7 +130,11 @@ def _redis_filter_enabled(state: GatewayState) -> bool:
     return state.armed and _commit_marker().exists()
 
 @app.post("/_gate/{name}/arm")
-async def arm(name: str, body: ArmRequest, x_api_token: str | None = Header(default=None)) -> dict[str, bool]:
+async def arm(
+    name: str,
+    body: ArmRequest,
+    x_api_token: str | None = Header(default=None),
+) -> dict[str, bool]:
     _authenticated(x_api_token)
     _state(name).armed = body.armed
     return {"armed": body.armed}
@@ -134,7 +144,13 @@ async def http_schema_mutator(path: str, request: Request) -> Response:
     body = await request.body()
     if _state("http-schema-mutator").armed:
         document = json.loads(body)
-        event = document["events"][0] if isinstance(document, dict) and isinstance(document.get("events"), list) and document["events"] else document
+        event = (
+            document["events"][0]
+            if isinstance(document, dict)
+            and isinstance(document.get("events"), list)
+            and document["events"]
+            else document
+        )
         if not isinstance(event, dict) or "schema_version" not in event:
             raise HTTPException(422, "ingress document has no event schema_version")
         event["schema_version"] = 999
@@ -156,7 +172,7 @@ async def http_schema_mutator(path: str, request: Request) -> Response:
         status_code=upstream.status_code,
         media_type=upstream.headers.get("content-type"),
     )
-    
+
 
 
 def _is_committed_xadd(chunk: bytes) -> bool:
@@ -217,7 +233,14 @@ class RespCommandBuffer:
         return commands
 
 
-async def _copy(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, state: GatewayState, *, outbound: bool, observer: PostgresCommitObserver | None = None) -> None:
+async def _copy(
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter,
+    state: GatewayState,
+    *,
+    outbound: bool,
+    observer: PostgresCommitObserver | None = None,
+) -> None:
     resp = RespCommandBuffer() if state.mode == "store-redis-committed-xadd" and outbound else None
     while data := await reader.read(65536):
         if observer:
@@ -227,14 +250,26 @@ async def _copy(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, stat
                 writer.close()
                 await writer.wait_closed()
                 return
-            if state.mode == "store-redis-committed-xadd" and outbound and _is_committed_xadd(chunk) and _redis_filter_enabled(state):
+            if (
+                state.mode == "store-redis-committed-xadd"
+                and outbound
+                and _is_committed_xadd(chunk)
+                and _redis_filter_enabled(state)
+            ):
                 chunk = chunk.replace(b"odp.record.committed", b"odp.record.discarded")
             writer.write(chunk)
             await writer.drain()
     writer.close()
     await writer.wait_closed()
-async def relay(client_reader: asyncio.StreamReader, client_writer: asyncio.StreamWriter, state: GatewayState) -> None:
-    upstream_reader, upstream_writer = await asyncio.open_connection(os.environ["UPSTREAM_HOST"], int(os.environ["UPSTREAM_PORT"]))
+async def relay(
+    client_reader: asyncio.StreamReader,
+    client_writer: asyncio.StreamWriter,
+    state: GatewayState,
+) -> None:
+    upstream_reader, upstream_writer = await asyncio.open_connection(
+        os.environ["UPSTREAM_HOST"],
+        int(os.environ["UPSTREAM_PORT"]),
+    )
     observer = PostgresCommitObserver() if state.mode == "store-pg-cut" else None
     await asyncio.gather(
         _copy(client_reader, upstream_writer, state, outbound=True, observer=observer),
@@ -250,7 +285,12 @@ async def serve_tcp(mode: GatewayMode) -> None:
         int(os.environ["GATEWAY_PORT"]),
     )
     control = uvicorn.Server(
-        uvicorn.Config(app, host="0.0.0.0", port=int(os.environ.get("CONTROL_PORT", "8080")), log_level="warning")
+        uvicorn.Config(
+            app,
+            host="0.0.0.0",
+            port=int(os.environ.get("CONTROL_PORT", "8080")),
+            log_level="warning",
+        )
     )
     async with tcp_server:
         await asyncio.gather(tcp_server.serve_forever(), control.serve())

@@ -124,13 +124,27 @@ def _catalog_images(digest: str) -> dict[str, str]:
 
 
 def _catalog_build_commands(images: dict[str, str]) -> tuple[tuple[str, list[str]], ...]:
+    def build(image: str, dockerfile: str, context: str, *extra: str) -> list[str]:
+        return [
+            "docker",
+            "buildx",
+            "build",
+            "--load",
+            "--tag",
+            image,
+            *extra,
+            "-f",
+            dockerfile,
+            context,
+        ]
+
     return (
-        ("root", ["docker", "build", "--target", "non-bypass-acceptance", "--tag", images["root"], "-f", "Dockerfile", "."]),
-        ("collector", ["docker", "build", "--tag", images["collector"], "-f", "iii/workers/collector-opencli/Dockerfile", "iii"]),
-        ("bridge", ["docker", "build", "--tag", images["bridge"], "-f", "iii/workers/odp-ingest-bridge/Dockerfile", "iii"]),
-        ("ingest", ["docker", "build", "--tag", images["ingest"], "-f", "odp-rs/Dockerfile.ingest", "odp-rs"]),
-        ("store", ["docker", "build", "--tag", images["store"], "-f", "odp-rs/Dockerfile.store", "odp-rs"]),
-        ("query", ["docker", "build", "--tag", images["query"], "-f", "odp-rs/Dockerfile.query", "odp-rs"]),
+        ("root", build(images["root"], "Dockerfile", ".", "--target", "non-bypass-acceptance")),
+        ("collector", build(images["collector"], "iii/workers/collector-opencli/Dockerfile", "iii")),
+        ("bridge", build(images["bridge"], "iii/workers/odp-ingest-bridge/Dockerfile", "iii")),
+        ("ingest", build(images["ingest"], "odp-rs/Dockerfile.ingest", "odp-rs")),
+        ("store", build(images["store"], "odp-rs/Dockerfile.store", "odp-rs")),
+        ("query", build(images["query"], "odp-rs/Dockerfile.query", "odp-rs")),
     )
 
 
@@ -156,10 +170,10 @@ def _build_catalog(env: dict[str, str], base: Path, overlay: Path) -> dict[str, 
     digest = _catalog_digest(base, overlay)
     images = _catalog_images(digest)
     deadline = time.monotonic() + 120
-    # Docker Desktop's BuildKit session metadata is invalid in this checkout.
-    # The legacy builder is the verified local path; the shared deadline still
-    # makes failure admission-bounded.
-    builder_env = {**env, "PROOF_CATALOG_DIGEST": digest, "DOCKER_BUILDKIT": "0"}
+    # `docker build` uses Docker Desktop's broken session metadata path here.
+    # Buildx with the desktop builder and `--load` is the verified replacement:
+    # it produces daemon-inspectable IDs while retaining the shared deadline.
+    builder_env = {**env, "PROOF_CATALOG_DIGEST": digest}
     for _name, command in _catalog_build_commands(images):
         _run(command, env=builder_env, timeout=_remaining(deadline))
     catalog_ledger = ScenarioLedger("catalog", f"nbf-catalog-{digest[:12]}", ROOT, ROOT)
