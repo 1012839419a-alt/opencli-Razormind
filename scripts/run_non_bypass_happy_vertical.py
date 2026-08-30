@@ -38,6 +38,7 @@ try:
         PINNED_III,
         ProofRejected,
         assert_substitutions_rejected,
+        delivery_payload_hash,
         validate_evidence,
     )
 except ModuleNotFoundError:  # Direct script execution resolves its own directory first.
@@ -45,6 +46,7 @@ except ModuleNotFoundError:  # Direct script execution resolves its own director
         PINNED_III,
         ProofRejected,
         assert_substitutions_rejected,
+        delivery_payload_hash,
         validate_evidence,
     )
 
@@ -403,8 +405,8 @@ def _admit(ledger: RunLedger, env: dict[str, str], fixture_digest: str) -> None:
         "proof-admin",
         "/bin/sh",
         "-c",
-        "test \"$III_CLI_PATH\" = /opt/iii/iii "
-        "&& test \"$III_URL\" = ws://proof-iii:49134 "
+        'test "$III_CLI_PATH" = /opt/iii/iii '
+        '&& test "$III_URL" = ws://proof-iii:49134 '
         "&& /opt/iii/iii --version",
     ).strip()
     jwks = _compose(
@@ -493,6 +495,78 @@ def _driver_evidence(ledger: RunLedger, env: dict[str, str]) -> dict[str, Any]:
         return json.loads(output)
     except json.JSONDecodeError as exc:
         raise ProofRejected("in-network driver did not produce JSON evidence") from exc
+
+
+def _delivery_body(evidence: dict[str, Any]) -> bytes:
+    decision = evidence["decision"]
+    claims = decision["claims"]
+    manifests = decision["manifests"]
+    if decision["payloadHash"] != delivery_payload_hash(claims, manifests):
+        raise ProofRejected("delivery payload hash does not match the driver decision DTO")
+    payload = {
+        "schemaVersion": "delivery-claim-manifest-v1",
+        "claims": claims,
+        "manifestHashes": [manifest["manifestHash"] for manifest in manifests],
+    }
+    return _canonical(
+        {
+            "version": "v2",
+            "receiverIdentity": "controlled-receiver-proof",
+            "operationId": decision["operationId"],
+            "decisionHash": decision["decisionHash"],
+            "payloadHash": decision["payloadHash"],
+            "payload": payload,
+        }
+    )
+
+
+def _attach_status_receipt(
+    ledger: RunLedger, env: dict[str, str], evidence: dict[str, Any]
+) -> None:
+    body = _delivery_body(evidence)
+    output = _compose(
+        ledger,
+        env,
+        "exec",
+        "-T",
+        "proof-admin",
+        "python",
+        "/app/tests/acceptance/non_bypass_vertical.py",
+        "receipt-status",
+        "--body-base64",
+        base64.b64encode(body).decode("ascii"),
+    )
+    try:
+        signed_receipt = json.loads(output)
+    except json.JSONDecodeError as exc:
+        raise ProofRejected("controlled receiver status did not return JSON receipt") from exc
+    if not isinstance(signed_receipt, dict):
+        raise ProofRejected("controlled receiver status did not return a receipt object")
+    current = evidence["receiverReceipt"]
+    receipt_hash = hashlib.sha256(_canonical(signed_receipt)).hexdigest()
+    if (
+        signed_receipt.get("receiptId") != current["receiptId"]
+        or receipt_hash != current["receiptHash"]
+    ):
+        raise ProofRejected("controlled receiver status receipt conflicts with execution evidence")
+    preimage = {
+        key: signed_receipt[key]
+        for key in (
+            "version",
+            "receiverIdentity",
+            "operationId",
+            "decisionHash",
+            "payloadHash",
+            "durableStatus",
+            "receiptId",
+            "timestamp",
+        )
+    }
+    current.update(
+        receiverIdentity=signed_receipt.get("receiverIdentity"),
+        signedReceipt=signed_receipt,
+        receiptPreimage=_canonical(preimage).decode("utf-8"),
+    )
 
 
 def _sign(ledger: RunLedger, evidence: dict[str, Any]) -> None:
@@ -627,7 +701,14 @@ def run(artifact_dir: Path) -> Path:
         env["PROOF_FIXTURE_DIGEST"] = fixture_digest
         _admit(ledger, env, fixture_digest)
         evidence = _driver_evidence(ledger, env)
-        validate_evidence(evidence, fixture_digest=fixture_digest, run=run_id)
+        _attach_status_receipt(ledger, env, evidence)
+        validate_evidence(
+            evidence,
+            fixture_digest=fixture_digest,
+            run=run_id,
+            strict_receipt=True,
+            receipt_keys_json=env["CONTROLLED_RECEIVER_RECEIPT_KEYS_JSON"],
+        )
         assert_substitutions_rejected(evidence, fixture_digest=fixture_digest, run=run_id)
         _sign(ledger, evidence)
     except BaseException as exc:

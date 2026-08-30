@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import hashlib
 import json
 import os
@@ -15,6 +16,14 @@ import httpx
 
 from backend.database import AsyncSessionLocal
 from backend.models.studio import StudioWorkspace
+from backend.schemas.delivery_execution import ControlledReceiverDeliveryV2
+from backend.security.controlled_receiver import (
+    ControlledReceiverSecurityError,
+    canonical_json,
+    pinned_post,
+    request_headers,
+    resolve_receiver_identity,
+)
 
 BASE = "http://proof-admin:8000/api/v1"
 
@@ -74,6 +83,50 @@ def post(
 
 def get(client: httpx.Client, path: str, headers: dict[str, str] | None = None) -> dict[str, Any]:
     return data(client.get(f"{BASE}{path}", headers=headers))
+
+
+def receipt_status(body_base64: str) -> int:
+    """Re-submit the exact v2 body to the receiver's authenticated status API."""
+
+    try:
+        body = base64.b64decode(body_base64, validate=True)
+        value = ControlledReceiverDeliveryV2.model_validate_json(body)
+    except (ValueError, TypeError) as exc:
+        raise RuntimeError("receipt-status received an invalid canonical delivery body") from exc
+    if body != canonical_json(value.model_dump(by_alias=True)):
+        raise RuntimeError("receipt-status delivery body is not canonical")
+    try:
+        endpoint = resolve_receiver_identity(value.receiver_identity)
+        headers = request_headers(
+            body=body,
+            endpoint=endpoint,
+            operation_id=value.operation_id,
+            decision_hash=value.decision_hash,
+            payload_hash=value.payload_hash,
+        )
+        response = asyncio.run(
+            pinned_post(
+                endpoint,
+                body,
+                headers,
+                timeout_seconds=60,
+                status_query=True,
+            )
+        )
+    except ControlledReceiverSecurityError as exc:
+        raise RuntimeError(f"receipt-status controlled receiver request failed: {exc}") from exc
+    if response.status_code != 200:
+        raise RuntimeError(
+            f"receipt-status returned HTTP {response.status_code}: {response.text[:600]}"
+        )
+    try:
+        receipt = response.json()["receipt"]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError("receipt-status response did not contain a signed receipt") from exc
+    if not isinstance(receipt, dict):
+        raise RuntimeError("receipt-status response receipt is not an object")
+    print(json.dumps(receipt, sort_keys=True, separators=(",", ":")))
+    return 0
 
 
 def wait_for_materialization(
@@ -185,8 +238,16 @@ def graph() -> dict[str, Any]:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--run", required=True)
+    parser.add_argument("--run")
+    parser.add_argument("mode", nargs="?", choices=("receipt-status",))
+    parser.add_argument("--body-base64")
     args = parser.parse_args()
+    if args.mode == "receipt-status":
+        if not args.body_base64:
+            parser.error("receipt-status requires --body-base64")
+        return receipt_status(args.body_base64)
+    if not args.run:
+        parser.error("--run is required for the proof driver")
     fleet = {"X-API-Token": os.environ["API_AUTH_TOKEN"]}
     bootstrap = {**fleet, "Authorization": f"Bearer {os.environ['BOOTSTRAP_ADMIN_TOKEN']}"}
     proposer = {**fleet, "Authorization": f"Bearer {os.environ['PROOF_PROPOSER_JWT']}"}
@@ -499,9 +560,8 @@ def main() -> int:
                         "decisionHash": decision["decisionHash"],
                         "payloadHash": decision["payloadHash"],
                         "manifestSetHash": decision["manifestSetHash"],
-                        "manifests": [
-                            {"manifestHash": item["manifestHash"]} for item in decision["manifests"]
-                        ],
+                        "claims": decision["claims"],
+                        "manifests": decision["manifests"],
                     },
                     "execution": {
                         "executionId": execution["executionId"],

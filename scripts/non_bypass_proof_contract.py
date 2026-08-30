@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import base64
+import hmac
 import json
+import os
 import re
 from hashlib import sha256
 from typing import Any
@@ -35,6 +38,10 @@ _SAFE_NAMES = frozenset(
     {"expectedRecordKeySetHash", "keyId", "nonSecretConfigHash", "excludedItemKeys"}
 )
 _HASH = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _canonical_json(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
 class ProofRejected(RuntimeError):  # noqa: N818 - public contract name
@@ -74,7 +81,16 @@ def source_binding_hash(
         "reportHash": report_hash,
         "ingressReceiptHash": ingress_receipt_hash,
     }
-    return sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    return sha256(_canonical_json(value).encode()).hexdigest()
+
+
+def delivery_payload_hash(claims: list[dict[str, Any]], manifests: list[dict[str, Any]]) -> str:
+    payload = {
+        "schemaVersion": "delivery-claim-manifest-v1",
+        "claims": claims,
+        "manifestHashes": [manifest["manifestHash"] for manifest in manifests],
+    }
+    return sha256(_canonical_json(payload).encode()).hexdigest()
 
 
 def _object(value: Any, name: str, fields: set[str]) -> dict[str, Any]:
@@ -108,7 +124,14 @@ def _assert_no_secrets(value: Any, path: str = "bundle") -> None:
         raise ProofRejected(f"private transport material is forbidden at {path}")
 
 
-def validate_evidence(evidence: dict[str, Any], *, fixture_digest: str, run: str) -> None:
+def validate_evidence(
+    evidence: dict[str, Any],
+    *,
+    fixture_digest: str,
+    run: str,
+    strict_receipt: bool = False,
+    receipt_keys_json: str | None = None,
+) -> None:
     if not isinstance(evidence, dict) or set(evidence) != ALLOWED_BUNDLE_KEYS:
         raise ProofRejected("proof bundle keys are not the acceptance allowlist")
     _assert_no_secrets(evidence)
@@ -286,6 +309,7 @@ def validate_evidence(evidence: dict[str, Any], *, fixture_digest: str, run: str
             "decisionHash",
             "payloadHash",
             "manifestSetHash",
+            "claims",
             "manifests",
         },
     )
@@ -301,17 +325,58 @@ def validate_evidence(evidence: dict[str, Any], *, fixture_digest: str, run: str
     )
     if _hash(decision["manifestSetHash"], "decision.manifestSetHash") != pin_hash:
         raise ProofRejected("frozen decision is not bound to the pinned graph")
+    claims = decision["claims"]
+    if not isinstance(claims, list) or not claims:
+        raise ProofRejected("delivery claims are absent")
+    for item in claims:
+        claim = _object(item, "decision.claims[]", {"claimId", "contentHash"})
+        _identifier(claim["claimId"], "decision.claims[].claimId")
+        _hash(claim["contentHash"], "decision.claims[].contentHash")
+    if len({claim["claimId"] for claim in claims}) != len(claims):
+        raise ProofRejected("delivery claims are not distinct")
     if not isinstance(decision["manifests"], list) or not decision["manifests"]:
         raise ProofRejected("decision manifests are absent")
-    manifest_hashes = {
-        _hash(
-            _object(item, "decision.manifests[]", {"manifestHash"})["manifestHash"],
-            "decision.manifests[].manifestHash",
+    decision_manifests = []
+    for item in decision["manifests"]:
+        selected = _object(
+            item,
+            "decision.manifests[]",
+            {
+                "batchId",
+                "derivation",
+                "reconciliationRevision",
+                "manifestSchemaVersion",
+                "manifestHash",
+                "expectedRecordKeySetHash",
+                "recordRefSetHash",
+                "materializationStatus",
+            },
         )
-        for item in decision["manifests"]
-    }
+        _identifier(selected["batchId"], "decision.manifests[].batchId")
+        _hash(selected["manifestHash"], "decision.manifests[].manifestHash")
+        _hash(selected["expectedRecordKeySetHash"], "decision.manifests[].expectedRecordKeySetHash")
+        _hash(selected["recordRefSetHash"], "decision.manifests[].recordRefSetHash")
+        decision_manifests.append(selected)
+    manifest_hashes = {item["manifestHash"] for item in decision_manifests}
     if manifest["manifestHash"] not in manifest_hashes:
         raise ProofRejected("decision does not retain the materialized manifest")
+    matching_manifest = next(
+        item for item in decision_manifests if item["manifestHash"] == manifest["manifestHash"]
+    )
+    for name in (
+        "batchId",
+        "derivation",
+        "reconciliationRevision",
+        "manifestSchemaVersion",
+        "manifestHash",
+        "expectedRecordKeySetHash",
+        "recordRefSetHash",
+        "materializationStatus",
+    ):
+        if matching_manifest[name] != manifest[name]:
+            raise ProofRejected("decision manifest does not match materialized manifest")
+    if decision_payload != delivery_payload_hash(claims, decision_manifests):
+        raise ProofRejected("delivery payload hash does not match frozen claims and manifests")
     execution = _object(
         evidence["execution"],
         "execution",
@@ -347,6 +412,9 @@ def validate_evidence(evidence: dict[str, Any], *, fixture_digest: str, run: str
             "receipt",
             "durableReceipt",
             "outcome",
+            "receiverIdentity",
+            "signedReceipt",
+            "receiptPreimage",
         },
     )
     if (
@@ -360,7 +428,83 @@ def validate_evidence(evidence: dict[str, Any], *, fixture_digest: str, run: str
         or receipt["outcome"] != "accepted"
     ):
         raise ProofRejected("accepted delivery lacks its matching verified durable receipt")
-    _hash(receipt["receiptHash"], "receiverReceipt.receiptHash")
+    signed_receipt = _object(
+        receipt["signedReceipt"],
+        "receiverReceipt.signedReceipt",
+        {
+            "version",
+            "receiverIdentity",
+            "operationId",
+            "decisionHash",
+            "payloadHash",
+            "durableStatus",
+            "receiptId",
+            "timestamp",
+            "keyId",
+            "signature",
+        },
+    )
+    if (
+        signed_receipt["version"] != "v2"
+        or receipt["receiverIdentity"] != "controlled-receiver-proof"
+        or signed_receipt["receiverIdentity"] != receipt["receiverIdentity"]
+        or signed_receipt["operationId"] != operation_id
+        or signed_receipt["decisionHash"] != decision_hash
+        or signed_receipt["payloadHash"] != decision_payload
+        or signed_receipt["durableStatus"] != "accepted"
+        or signed_receipt["receiptId"] != receipt["receiptId"]
+        or signed_receipt["keyId"] != "receipt-key-proof"
+        or not isinstance(signed_receipt["timestamp"], str)
+        or not signed_receipt["timestamp"].isdigit()
+        or not isinstance(signed_receipt["signature"], str)
+        or not signed_receipt["signature"]
+        or len(signed_receipt["signature"]) > 512
+    ):
+        raise ProofRejected("signed durable receipt is not bound to frozen delivery facts")
+    try:
+        base64.b64decode(signed_receipt["signature"], validate=True)
+    except (ValueError, TypeError):
+        raise ProofRejected("signed durable receipt signature encoding is invalid")
+    receipt_fields = {
+        key: signed_receipt[key]
+        for key in (
+            "version",
+            "receiverIdentity",
+            "operationId",
+            "decisionHash",
+            "payloadHash",
+            "durableStatus",
+            "receiptId",
+            "timestamp",
+        )
+    }
+    if receipt["receiptPreimage"] != _canonical_json(receipt_fields):
+        raise ProofRejected("receipt canonical preimage was substituted")
+    if (
+        _hash(receipt["receiptHash"], "receiverReceipt.receiptHash")
+        != sha256(_canonical_json(signed_receipt).encode()).hexdigest()
+    ):
+        raise ProofRejected("receipt hash does not match the signed receiver receipt")
+    if strict_receipt:
+        keys_json = receipt_keys_json or os.environ.get("CONTROLLED_RECEIVER_RECEIPT_KEYS_JSON")
+        if not keys_json:
+            raise ProofRejected("strict receipt validation requires the receipt key configuration")
+        try:
+            keys = json.loads(keys_json)
+        except json.JSONDecodeError as exc:
+            raise ProofRejected(
+                "strict receipt validation has invalid receipt key configuration"
+            ) from exc
+        if not isinstance(keys, dict) or not isinstance(keys.get(signed_receipt["keyId"]), str):
+            raise ProofRejected("strict receipt validation could not resolve the receipt key")
+        key = keys[signed_receipt["keyId"]].encode()
+        if len(key) < 32:
+            raise ProofRejected("strict receipt validation has an undersized receipt key")
+        expected_signature = base64.b64encode(
+            hmac.new(key, receipt["receiptPreimage"].encode(), sha256).digest()
+        ).decode()
+        if not hmac.compare_digest(expected_signature, signed_receipt["signature"]):
+            raise ProofRejected("signed durable receipt HMAC verification failed")
     if not isinstance(evidence["redactionProfile"], str) or not evidence["redactionProfile"]:
         raise ProofRejected("redaction profile is absent")
 

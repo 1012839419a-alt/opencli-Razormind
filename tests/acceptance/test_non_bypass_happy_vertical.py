@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
 import importlib.util
 import json
 import subprocess
@@ -12,10 +13,11 @@ from uuid import NAMESPACE_URL, uuid5
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
-from scripts.non_bypass_proof_contract import source_binding_hash
+from scripts.non_bypass_proof_contract import delivery_payload_hash, source_binding_hash
 
 ROOT = Path(__file__).resolve().parents[2]
 RUNNER_PATH = ROOT / "scripts/run_non_bypass_happy_vertical.py"
+TEST_RECEIPT_KEY = "receipt-test-key-012345678901234567890123456789"
 spec = importlib.util.spec_from_file_location("non_bypass_runner", RUNNER_PATH)
 assert spec and spec.loader
 runner = importlib.util.module_from_spec(spec)
@@ -48,6 +50,20 @@ def _evidence() -> dict:
     }
     report_hash = "4" * 64
     ingress_hash = "5" * 64
+    claims = [{"claimId": "claim-36", "contentHash": "6" * 64}]
+    manifests = [
+        {
+            "batchId": batch_id,
+            "derivation": "dispatch-task-v1",
+            "reconciliationRevision": 1,
+            "manifestSchemaVersion": "v1",
+            "manifestHash": manifest_hash,
+            "expectedRecordKeySetHash": "6" * 64,
+            "recordRefSetHash": "7" * 64,
+            "materializationStatus": "completed",
+        }
+    ]
+    delivery_hash = delivery_payload_hash(claims, manifests)
     operation_id = "delivery-nbv-test-{}".format(
         source_binding_hash(
             run="nbv-test",
@@ -65,6 +81,31 @@ def _evidence() -> dict:
             ingress_receipt_hash=ingress_hash,
         )
     )
+    receipt_id = "receiver-receipt-36"
+    receipt_preimage = {
+        "version": "v2",
+        "receiverIdentity": "controlled-receiver-proof",
+        "operationId": operation_id,
+        "decisionHash": "8" * 64,
+        "payloadHash": delivery_hash,
+        "durableStatus": "accepted",
+        "receiptId": receipt_id,
+        "timestamp": "1700000000",
+    }
+    signed_receipt = {
+        **receipt_preimage,
+        "keyId": "receipt-key-proof",
+        "signature": base64.b64encode(
+            hmac.new(
+                TEST_RECEIPT_KEY.encode(),
+                json.dumps(receipt_preimage, sort_keys=True, separators=(",", ":")).encode(),
+                hashlib.sha256,
+            ).digest()
+        ).decode(),
+    }
+    receipt_hash = hashlib.sha256(
+        json.dumps(signed_receipt, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
     return {
         "schemaVersion": "NonBypassHappyVerticalProofV1",
         "run": "nbv-test",
@@ -122,27 +163,31 @@ def _evidence() -> dict:
             "operationId": operation_id,
             "decisionId": decision_id,
             "decisionHash": "8" * 64,
-            "payloadHash": "0" * 64,
+            "payloadHash": delivery_hash,
             "manifestSetHash": pin_hash,
-            "manifests": [{"manifestHash": manifest_hash}],
+            "claims": claims,
+            "manifests": manifests,
         },
         "execution": {
             "executionId": "execution-36",
             "operationId": operation_id,
             "decisionId": decision_id,
             "decisionHash": "8" * 64,
-            "payloadHash": "0" * 64,
+            "payloadHash": delivery_hash,
             "outcome": "accepted",
             "attemptCount": 1,
         },
         "receiverReceipt": {
             "attemptNumber": 1,
-            "receiptId": "receiver-receipt-36",
-            "receiptHash": "9" * 64,
+            "receiptId": receipt_id,
+            "receiptHash": receipt_hash,
             "httpStatus": 200,
             "receipt": "verified",
             "durableReceipt": "verified",
             "outcome": "accepted",
+            "receiverIdentity": "controlled-receiver-proof",
+            "signedReceipt": signed_receipt,
+            "receiptPreimage": json.dumps(receipt_preimage, sort_keys=True, separators=(",", ":")),
         },
         "redactionProfile": "non-bypass-happy-v1",
     }
@@ -174,13 +219,45 @@ def json_item(raw: str) -> dict:
 def test_pre_sign_validation_accepts_only_correlated_terminal_facts():
     evidence = _evidence()
     runner.validate_evidence(
-        evidence, fixture_digest=evidence["topology"]["fixtureDigest"], run="nbv-test"
+        evidence,
+        fixture_digest=evidence["topology"]["fixtureDigest"],
+        run="nbv-test",
+        strict_receipt=True,
+        receipt_keys_json=json.dumps({"receipt-key-proof": TEST_RECEIPT_KEY}),
     )
 
 
 def test_rejects_command_payload_spliced_from_another_evidence_chain():
     evidence = _evidence()
     evidence["command"]["payloadHash"] = "d" * 64
+    _assert_rejected(evidence)
+
+
+def test_rejects_tampered_receipt_preimage_and_hash():
+    preimage = _evidence()
+    preimage["receiverReceipt"]["receiptPreimage"] += " "
+    _assert_rejected(preimage)
+    receipt_hash = _evidence()
+    receipt_hash["receiverReceipt"]["receiptHash"] = "0" * 64
+    _assert_rejected(receipt_hash)
+
+
+def test_strict_pre_sign_rejects_tampered_receipt_signature():
+    evidence = _evidence()
+    evidence["receiverReceipt"]["signedReceipt"]["signature"] = "A" * 88
+    evidence["receiverReceipt"]["receiptHash"] = hashlib.sha256(
+        json.dumps(
+            evidence["receiverReceipt"]["signedReceipt"],
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
+    _assert_rejected(evidence, strict_receipt=True)
+
+
+def test_rejects_tampered_signed_receipt_binding_field():
+    evidence = _evidence()
+    evidence["receiverReceipt"]["signedReceipt"]["operationId"] = "delivery-tampered"
     _assert_rejected(evidence)
 
 
@@ -222,7 +299,70 @@ def test_rejects_collection_chain_spliced_into_the_original_delivery_chain():
     _assert_rejected(evidence)
 
 
-def _assert_rejected(evidence: dict) -> None:
+def test_rejects_synchronized_collection_and_delivery_chain_with_old_receipt():
+    evidence = _evidence()
+    workflow_id = "workflow-other"
+    workflow_run_id = "workflow-run-other"
+    task_id = "task-other"
+    batch_id = str(
+        uuid5(
+            NAMESPACE_URL,
+            f"opencli-admin/workflow/{workflow_id}/run/{workflow_run_id}/batch/{task_id}",
+        )
+    )
+    lifecycle_hashes = {
+        "bridgeAccepted": "0" * 64,
+        "collectorStarted": "1" * 64,
+        "collectorReturned": "2" * 64,
+    }
+    evidence["command"].update(
+        id="command-other", workflowId=workflow_id, workflowRunId=workflow_run_id
+    )
+    evidence["attempt"].update(id="attempt-other", commandId="command-other", taskId=task_id)
+    evidence["researchGraphManifestRef"].update(batchId=batch_id)
+    evidence["lifecycleHashes"] = lifecycle_hashes
+    evidence["reportHash"] = "3" * 64
+    evidence["ingressReceiptHash"] = "4" * 64
+    evidence["researchGraphManifestRef"]["sourceCorrelation"] = {
+        "workflowRunId": workflow_run_id,
+        "commandId": "command-other",
+        "attemptId": "attempt-other",
+        "payloadHash": evidence["command"]["payloadHash"],
+        "batchId": batch_id,
+        "manifestHash": evidence["researchGraphManifestRef"]["manifestHash"],
+        "reportHash": "3" * 64,
+        "ingressReceiptHash": "4" * 64,
+        "lifecycleHashes": lifecycle_hashes,
+    }
+    alternate_operation_id = "delivery-nbv-test-{}".format(
+        source_binding_hash(
+            run="nbv-test",
+            workflow_id=workflow_id,
+            workflow_run_id=workflow_run_id,
+            command_id="command-other",
+            attempt_id="attempt-other",
+            attempt_number=1,
+            task_id=task_id,
+            payload_hash=evidence["command"]["payloadHash"],
+            batch_id=batch_id,
+            manifest_hash=evidence["researchGraphManifestRef"]["manifestHash"],
+            lifecycle_hashes=lifecycle_hashes,
+            report_hash="3" * 64,
+            ingress_receipt_hash="4" * 64,
+        )
+    )
+    evidence["decision"].update(
+        operationId=alternate_operation_id,
+        decisionHash="5" * 64,
+    )
+    evidence["execution"].update(
+        operationId=alternate_operation_id,
+        decisionHash="5" * 64,
+    )
+    _assert_rejected(evidence)
+
+
+def _assert_rejected(evidence: dict, *, strict_receipt: bool = False) -> None:
     with pytest.raises(runner.ProofRejected):
         runner.validate_evidence(
             evidence,
@@ -230,6 +370,10 @@ def _assert_rejected(evidence: dict) -> None:
                 (ROOT / "tests/acceptance/fixtures/opencli-proof").read_bytes()
             ).hexdigest(),
             run="nbv-test",
+            strict_receipt=strict_receipt,
+            receipt_keys_json=(
+                json.dumps({"receipt-key-proof": TEST_RECEIPT_KEY}) if strict_receipt else None
+            ),
         )
 
 
