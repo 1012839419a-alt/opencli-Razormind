@@ -80,7 +80,15 @@ def admin_crash(run: str) -> dict[str, Any]:
             time.sleep(0.2)
         if not release.exists():
             raise RuntimeError("orchestrator did not complete the admin crash gate")
-        resumed = _post(client, control, f"{collections}/{command_id}/resume", {"idempotencyKey": run}, proposer)
+        deadline = time.monotonic() + 30
+        while True:
+            try:
+                resumed = _post(client, control, f"{collections}/{command_id}/resume", {"idempotencyKey": run}, proposer)
+                break
+            except httpx.ConnectError:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.5)
         status = _get(client, control, f"{collections}/{command_id}", proposer)
     hashes = {"submission": submission["payloadSha256"]}
     for item in status.get("evidenceReferences", []):
