@@ -9,6 +9,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic.alias_generators import to_camel
 
+from backend.schemas.delivery_execution import HeaderSafeOperationId
 from backend.schemas.research_graph_v2 import ResearchGraphV2PinnedReference
 
 
@@ -72,7 +73,7 @@ class DeliveryTargetListV1(_V1Model):
 
 class DeliveryAuthorizationCreateV1(_V1Model):
     version: Literal["v1"] = "v1"
-    operation_id: str = Field(min_length=1, max_length=255)
+    operation_id: HeaderSafeOperationId
     idempotency_key: str = Field(min_length=1, max_length=255)
     node_id: str = Field(min_length=1, max_length=255)
     target_id: str = Field(min_length=1, max_length=36)

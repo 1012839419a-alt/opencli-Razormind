@@ -362,12 +362,17 @@ async def execute_delivery(db: AsyncSession, *, scope: DeliveryAuthorizationScop
     if execution.lease_token:
         if execution.lease_acquired_at is None or execution.lease_acquired_at <= _now() - timedelta(seconds=60):
             reserved = execution.reserved_attempt_number or len(prior) + 1
+            if execution.state == "reserved" and execution.send_started_at is None:
+                execution.state = "pending"
+                execution.lease_token, execution.lease_acquired_at, execution.reserved_attempt_number = None, None, None
+                await db.commit()
+                return await execute_delivery(db, scope=scope, decision_id=decision_id)
             result = await _record(
                 db, execution, attempt=reserved, transport="crash-ambiguous", http_status=None,
                 receipt="missing", protocol="unknown", outcome="unknown",
             )
             execution.state, execution.final_outcome, execution.final_result_id = "blocked", "unknown", result.id
-            execution.lease_token, execution.lease_acquired_at, execution.reserved_attempt_number = None, None, None
+            execution.lease_token, execution.lease_acquired_at, execution.send_started_at, execution.reserved_attempt_number = None, None, None, None
             await db.flush()
             return _read(execution, await _results(db, execution.id))
         return _read(execution, prior)
@@ -394,11 +399,12 @@ async def execute_delivery(db: AsyncSession, *, scope: DeliveryAuthorizationScop
             }
         )
         lease_token = secrets.token_urlsafe(24)
-        execution.state = "in-flight"
+        execution.state = "reserved"
         execution.lease_token = lease_token
         execution.lease_acquired_at = _now()
+        execution.send_started_at = None
         execution.reserved_attempt_number = attempt
-        await db.commit()  # Reservation is durable and all DB locks are released before network I/O.
+        await db.commit()  # The pre-send reservation is durable and cancellation-visible.
         try:
             headers = request_headers(
                 body=body, endpoint=endpoint, operation_id=decision.operation_id,
@@ -412,10 +418,24 @@ async def execute_delivery(db: AsyncSession, *, scope: DeliveryAuthorizationScop
                 db, execution, attempt=attempt, transport="protocol-error", http_status=None,
                 receipt="missing", protocol="invalid", outcome="unknown",
             )
-            execution.lease_token, execution.lease_acquired_at, execution.reserved_attempt_number = None, None, None
+            execution.lease_token, execution.lease_acquired_at, execution.send_started_at, execution.reserved_attempt_number = None, None, None, None
             execution.state, execution.final_outcome, execution.final_result_id = "blocked", "unknown", result.id
             await db.flush()
             return _read(execution, await _results(db, execution.id))
+        execution = await db.scalar(
+            select(DeliveryExecution).where(DeliveryExecution.id == execution.id).with_for_update()
+        )
+        if execution is None:
+            raise DeliveryExecutionConflictError("Delivery execution disappeared before send")
+        if execution.final_outcome is not None or execution.lease_token != lease_token:
+            return _read(execution, await _results(db, execution.id))
+        if execution.cancel_requested_at:
+            execution.state, execution.final_outcome = "cancelled", "unknown"
+            execution.lease_token, execution.lease_acquired_at, execution.send_started_at, execution.reserved_attempt_number = None, None, None, None
+            await db.commit()
+            return _read(execution, await _results(db, execution.id))
+        execution.state, execution.send_started_at = "in-flight", _now()
+        await db.commit()  # Cancellation before this locked boundary cannot cause a post.
         transport, http_status, receipt_classification, protocol, outcome, receipt_id, receipt_hash = (
             "network-error", None, "missing", "unknown", "unknown", None, None,
         )
@@ -453,7 +473,7 @@ async def execute_delivery(db: AsyncSession, *, scope: DeliveryAuthorizationScop
             receipt=receipt_classification, protocol=protocol, outcome=outcome,
             receipt_id=receipt_id, receipt_hash=receipt_hash,
         )
-        execution.lease_token, execution.lease_acquired_at, execution.reserved_attempt_number = None, None, None
+        execution.lease_token, execution.lease_acquired_at, execution.send_started_at, execution.reserved_attempt_number = None, None, None, None
         if outcome in {"accepted", "rejected"}:
             execution.state, execution.final_outcome, execution.final_result_id = "completed", outcome, result.id
             await db.flush()
