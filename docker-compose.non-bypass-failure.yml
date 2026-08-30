@@ -22,11 +22,18 @@ services:
       - ./tests/acceptance/fixtures/opencli-failure-proof:/proof/opencli-failure-proof:ro
   proof-bridge:
     labels: *failure-labels
-  proof-relay:
-    labels: *failure-labels
   proof-odp-ingest:
     labels: *failure-labels
-  proof-odp-store:
+  proof-relay:
+    build:
+      context: .
+      target: non-bypass-acceptance
+    entrypoint: []
+    command: [uvicorn, tests.acceptance.fault_tools.callback_relay:app, --host, 0.0.0.0, --port, "8080"]
+    environment:
+      API_AUTH_TOKEN: ${API_AUTH_TOKEN:-runtime-secret-required}
+      PROOF_PRIMARY_ADMIN: http://proof-admin:8000
+      PROOF_CONTROL_ADMIN: http://proof-admin-control:8000
     labels: *failure-labels
   proof-odp-query:
     labels: *failure-labels

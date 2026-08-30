@@ -6,6 +6,8 @@ import sys
 from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
+
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -88,3 +90,27 @@ def test_overlay_has_no_host_ports_and_internal_fault_network():
     assert compose["networks"]["proof-fault"]["internal"] is True
     assert all("ports" not in service for service in compose["services"].values())
     assert {"proof-fault-gateway", "proof-iii-actuator", "proof-governance", "proof-admin-control"} <= set(compose["services"])
+
+
+def test_callback_relay_routes_only_the_three_real_callback_paths(monkeypatch):
+    relay_path = ROOT / "tests/acceptance/fault_tools/callback_relay.py"
+    relay_spec = importlib.util.spec_from_file_location("callback_relay", relay_path)
+    assert relay_spec and relay_spec.loader
+    relay = importlib.util.module_from_spec(relay_spec)
+    sys.modules[relay_spec.name] = relay
+    relay_spec.loader.exec_module(relay)
+    calls: list[str] = []
+
+    def proxied(url: str, **_kwargs):
+        calls.append(url)
+        import httpx
+        return httpx.Response(202, content=b'{"data":{}}', headers={"content-type": "application/json"})
+
+    monkeypatch.setattr(relay.httpx, "post", proxied)
+    client = TestClient(relay.app)
+    assert client.post(
+        "/api/v1/iii-collections/lifecycle",
+        content=b"{}",
+    ).status_code == 202
+    assert calls == ["http://proof-admin:8000/api/v1/iii-collections/lifecycle"]
+    assert client.post("/not-an-allowlisted-callback", content=b"{}").status_code == 404
