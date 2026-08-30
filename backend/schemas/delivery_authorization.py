@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime
-from typing import Literal
+from typing import Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic.alias_generators import to_camel
@@ -15,6 +15,16 @@ from backend.schemas.research_graph_v2 import ResearchGraphV2PinnedReference
 class _V1Model(BaseModel):
     model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True, extra="forbid")
 
+
+
+class DeliveryAuthorizingActor(Protocol):
+    """Authorization evidence consumed by the delivery boundary."""
+
+    actor_type: str
+    actor_id: str
+    principal: str
+    capability: str
+    policy_version: str
 
 
 

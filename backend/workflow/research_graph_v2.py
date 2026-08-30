@@ -15,7 +15,7 @@ from backend.models.iii_collection import (
     IIICollectionExpectedKeyReportV1,
 )
 from backend.models.workflow_run import WorkflowRun, WorkflowRunEvent
-from backend.schemas.record import ResearchGraphV2ManifestRef, record_ref_set_hash
+from backend.schemas.evidence_manifest import ResearchGraphV2ManifestRef, record_ref_set_hash
 from backend.schemas.research_graph_v2 import (
     AuthorizedResearchGraphEventV2,
     ResearchGraphV2ActorEvidence,

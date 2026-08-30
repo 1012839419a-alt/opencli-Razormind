@@ -5,14 +5,13 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
-from pydantic.alias_generators import to_camel
+from pydantic import Field
 
-import backend.schemas.record as record_schema
+import backend.schemas.evidence_manifest
 
 
-class _V2Model(BaseModel):
-    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True, extra="forbid")
+class _V2Model(backend.schemas.evidence_manifest.EvidenceManifestModel):
+    pass
 
 
 
@@ -43,7 +42,9 @@ class AuthorizedResearchGraphEventV2(_V2Model):
     node_id: str = Field(min_length=1, max_length=255)
     claim_id: str | None = Field(default=None, min_length=1, max_length=255)
     claim_content_hash: str | None = Field(default=None, min_length=64, max_length=64)
-    manifest_refs: list[record_schema.ResearchGraphV2ManifestRef] = Field(default_factory=list, max_length=200)
+    manifest_refs: list[backend.schemas.evidence_manifest.ResearchGraphV2ManifestRef] = Field(
+        default_factory=list, max_length=200
+    )
     actor: ResearchGraphV2ActorEvidence
     supersedes_event_id: str | None = Field(default=None, min_length=1, max_length=255)
     pinned_sequence: int | None = Field(default=None, ge=1)
@@ -58,16 +59,16 @@ class ResearchGraphV2MutationRequest(_V2Model):
     claim_id: str | None = Field(default=None, min_length=1, max_length=255)
     claim_content_hash: str | None = Field(default=None, min_length=64, max_length=64)
     supersedes_event_id: str | None = Field(default=None, min_length=1, max_length=255)
-    manifest_refs: list[record_schema.ResearchGraphV2ManifestRef] = Field(default_factory=list, max_length=200)
-
+    manifest_refs: list[backend.schemas.evidence_manifest.ResearchGraphV2ManifestRef] = Field(
+        default_factory=list, max_length=200
+    )
 
 class ResearchGraphV2ClaimRead(_V2Model):
     claim_id: str
     content_hash: str
     state: Literal["proposed", "verified", "rejected", "retracted", "superseded"]
     proposer_actor_id: str
-    manifest_refs: list[record_schema.ResearchGraphV2ManifestRef]
-
+    manifest_refs: list[backend.schemas.evidence_manifest.ResearchGraphV2ManifestRef]
 
 class ResearchGraphV2PinnedFoldRead(_V2Model):
     sequence: int = Field(ge=1)
