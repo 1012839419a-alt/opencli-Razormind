@@ -1,0 +1,114 @@
+name: non-bypass-failure
+
+x-failure-labels: &failure-labels
+  com.opencli.proof.release: "failure-recovery"
+  com.opencli.proof.scenario: ${PROOF_SCENARIO:-unbound}
+
+services:
+  proof-admin:
+    labels: *failure-labels
+  proof-driver:
+    labels: *failure-labels
+    networks: [proof-control, proof-fault]
+  proof-admin-postgres:
+    labels: *failure-labels
+  proof-redis:
+    labels: *failure-labels
+  proof-iii:
+    labels: *failure-labels
+  proof-collector:
+    labels: *failure-labels
+    volumes:
+      - ./tests/acceptance/fixtures/opencli-failure-proof:/proof/opencli-failure-proof:ro
+  proof-bridge:
+    labels: *failure-labels
+  proof-relay:
+    labels: *failure-labels
+  proof-odp-ingest:
+    labels: *failure-labels
+  proof-odp-store:
+    labels: *failure-labels
+  proof-odp-query:
+    labels: *failure-labels
+  proof-odp-postgres:
+    labels: *failure-labels
+  proof-oidc:
+    labels: *failure-labels
+  proof-controlled-receiver:
+    labels: *failure-labels
+  proof-receiver-postgres:
+    labels: *failure-labels
+
+  proof-admin-control:
+    build:
+      context: .
+      target: non-bypass-acceptance
+    # Primary performs the one schema migration; control only serves the same
+    # public API against that completed schema, avoiding a migration race.
+    entrypoint: []
+    command: [uvicorn, backend.main:app, --host, 0.0.0.0, --port, "8000"]
+    environment:
+      API_AUTH_TOKEN: ${API_AUTH_TOKEN:-runtime-secret-required}
+      III_LIFECYCLE_TOKEN: ${III_LIFECYCLE_TOKEN:-runtime-secret-required}
+      III_INGRESS_RECEIPT_SECRET: ${III_INGRESS_RECEIPT_SECRET:-runtime-secret-required}
+      ODP_QUERY_ADMIN_CREDENTIAL: ${ODP_QUERY_ADMIN_CREDENTIAL:-runtime-secret-required}
+      ODP_QUERY_CURSOR_SECRET: ${ODP_QUERY_CURSOR_SECRET:-runtime-secret-required}
+      DATABASE_URL: postgresql+asyncpg://proof:proof@proof-admin-postgres:5432/proof_admin
+      REDIS_URL: redis://proof-redis:6379/0
+      ODP_QUERY_URL: http://proof-odp-query:8042
+      III_URL: ws://proof-iii:49134
+      III_LIFECYCLE_URL: http://proof-relay:8080/api/v1/iii-collections/lifecycle
+      III_CLI_PATH: /opt/iii/iii
+      OIDC_ISSUER: http://proof-oidc
+      OIDC_AUDIENCE: proof-admin
+      OIDC_JWKS_URL: http://proof-oidc/jwks.json
+      BOOTSTRAP_ADMIN_TOKEN: ${BOOTSTRAP_ADMIN_TOKEN:-runtime-secret-required}
+    volumes:
+      - ${PROOF_SECRETS_DIR:-./.artifacts/non-bypass-secrets}:/run/proof:ro
+    networks: [proof-control, proof-query, proof-callback, proof-receiver, proof-iii-admin]
+    depends_on:
+      proof-admin: {condition: service_healthy}
+    labels: *failure-labels
+
+  proof-fault-gateway:
+    build:
+      context: .
+      target: non-bypass-acceptance
+    command: [uvicorn, tests.acceptance.fault_tools.semantic_gateway:app, --host, 0.0.0.0, --port, "8000"]
+    environment:
+      PROOF_SCENARIO: ${PROOF_SCENARIO:-unbound}
+    networks: [proof-fault]
+    labels: *failure-labels
+
+  proof-iii-actuator:
+    build:
+      context: .
+      target: non-bypass-acceptance
+    command: [uvicorn, tests.acceptance.fault_tools.proof_iii_actuator:app, --host, 0.0.0.0, --port, "8000"]
+    environment:
+      PROOF_III_BRIDGE_URL: http://proof-bridge:8080
+      API_AUTH_TOKEN: ${API_AUTH_TOKEN:-runtime-secret-required}
+    networks: [proof-fault, proof-iii-worker]
+    depends_on:
+      proof-bridge: {condition: service_started}
+    labels: *failure-labels
+
+  proof-governance:
+    build:
+      context: .
+      target: non-bypass-acceptance
+    command: [uvicorn, scripts.proof_bundle_governance_http:app, --host, 0.0.0.0, --port, "8000"]
+    environment:
+      PROOF_GOVERNANCE_ROOT: /proof-artifacts/governance
+      PROOF_GOVERNANCE_JWKS: ${PROOF_GOVERNANCE_JWKS:-{"keys":[]}}
+      PROOF_GOVERNANCE_ISSUER: http://proof-oidc
+      PROOF_GOVERNANCE_AUDIENCE: proof-governance
+    volumes:
+      - ${PROOF_SECRETS_DIR:-./.artifacts/non-bypass-secrets}:/run/proof:ro
+      - ${PROOF_ARTIFACT_DIR:-./.artifacts/non-bypass-failures}:/proof-artifacts
+    networks: [proof-fault]
+    labels: *failure-labels
+
+networks:
+  proof-fault:
+    internal: true
