@@ -1654,6 +1654,32 @@ def _require_reconciled_delivery(
     return outcome, receipt_hash
 
 
+def _reconcile_after_restart(
+    client: httpx.Client,
+    setup: dict[str, Any],
+    reviewer: dict[str, str],
+    execution_id: str,
+    *,
+    label: str,
+) -> httpx.Response:
+    deadline = time.monotonic() + 30
+    while True:
+        response = client.post(
+            f"{setup['primary']}{setup['route']}/{setup['runId']}/delivery-executions/"
+            f"{execution_id}/reconcile",
+            json={},
+            headers=reviewer,
+        )
+        if (
+            response.status_code != 409
+            or "Controlled receiver reconciliation remains unknown" not in response.text
+            or time.monotonic() >= deadline
+        ):
+            _require_status(response, 200, f"{label} public reconciliation")
+            return response
+        time.sleep(0.5)
+
+
 def receiver_recovery(run: str) -> dict[str, Any]:
     """Prove receiver MAC, timeout, and 5xx recovery through public APIs only."""
     stable_source_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"proof-receiver/{run}"))
@@ -1830,13 +1856,13 @@ def receiver_recovery(run: str) -> dict[str, Any]:
 
         reconciled: dict[str, dict[str, Any]] = {}
         for name in ("timeout", "five_xx"):
-            response = client.post(
-                f"{setup['primary']}{setup['route']}/{setup['runId']}/delivery-executions/"
-                f"{executions[name]['executionId']}/reconcile",
-                json={},
-                headers=reviewer,
+            response = _reconcile_after_restart(
+                client,
+                setup,
+                reviewer,
+                executions[name]["executionId"],
+                label=name,
             )
-            _require_status(response, 200, f"{name} public reconciliation")
             reconciliation = _data(response)
             _require_reconciled_delivery(reconciliation, expected_attempts=3)
             reconciled[name] = reconciliation
