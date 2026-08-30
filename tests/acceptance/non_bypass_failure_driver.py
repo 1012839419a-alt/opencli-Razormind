@@ -111,10 +111,10 @@ def admin_crash(run: str, scenario: str = "admin-crash") -> dict[str, Any]:
                 time.sleep(0.5)
         materialization: dict[str, Any] | None = None
         if scenario in {"no-report", "signed-zero"}:
-            deadline = time.monotonic() + 45
+            materialization = _post(client, primary, f"{collections}/{command_id}/materialize", {}, proposer)
+            batch_id = materialization["batchId"]
+            deadline = time.monotonic() + 60
             while time.monotonic() < deadline:
-                materialization = _post(client, primary, f"{collections}/{command_id}/materialize", {}, proposer)
-                batch_id = materialization["batchId"]
                 materialization = _get(client, primary, f"{route}/{run_id}/evidence-batches/v1/{batch_id}/status", proposer)
                 if scenario != "signed-zero" or materialization.get("materializationStatus") == "completed_empty":
                     break
