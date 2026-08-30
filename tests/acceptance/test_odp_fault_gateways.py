@@ -62,24 +62,37 @@ def test_resp_buffer_forwards_fragmented_commands_and_identifies_only_committed_
 
 
 
-def test_store_redis_filter_requires_successful_fragmented_postgres_commit(monkeypatch):
+def _startup() -> bytes:
+    return (8).to_bytes(4, "big") + (196608).to_bytes(4, "big")
+
+
+def _frontend(kind: bytes, body: bytes) -> bytes:
+    return kind + (len(body) + 4).to_bytes(4, "big") + body
+
+
+def _backend(kind: bytes, body: bytes) -> bytes:
+    return kind + (len(body) + 4).to_bytes(4, "big") + body
+
+
+def test_store_redis_filter_requires_successful_commit_from_same_fragmented_relay(monkeypatch):
     with tempfile.TemporaryDirectory() as directory:
         marker = Path(directory) / "commit-ready"
         monkeypatch.setenv("COMMIT_MARKER_PATH", str(marker))
-        pg = gateways.GatewayState("store-pg-cut")
         redis = gateways.GatewayState("store-redis-committed-xadd", armed=True)
-        committed = b"*3\r\n$4\r\nXADD\r\n$20\r\nodp.record.committed\r\n$1\r\n*\r\n"
-        assert not gateways._redis_filter_enabled(redis)
-        assert gateways._is_committed_xadd(committed)
-        gateways._observe_postgres_chunk(pg, b"COM", outbound=True)
+        first, second = gateways.PostgresCommitObserver(), gateways.PostgresCommitObserver()
+        first.feed_frontend(_startup()[:3])
+        first.feed_frontend(_startup()[3:] + _frontend(b"P", b"stmt\0COMMIT\0"))
+        second.feed_frontend(_startup() + _frontend(b"Q", b"SELECT 'Z'\0"))
+        second.feed_backend(_backend(b"Z", b"I"))
+        assert not marker.exists() and not gateways._redis_filter_enabled(redis)
+        first.feed_backend(_backend(b"E", b"error") + _backend(b"Z", b"E"))
         assert not marker.exists()
-        gateways._observe_postgres_chunk(pg, b"MIT", outbound=True)
-        gateways._observe_postgres_chunk(pg, b"Z\x00\x00\x00\x05E", outbound=False)
+        first.feed_frontend(_frontend(b"Q", b"COMMIT\0"))
+        ready = _backend(b"Z", b"I")
+        first.feed_backend(ready[:3])
         assert not marker.exists()
-        gateways._observe_postgres_chunk(pg, b"COMMIT", outbound=True)
-        gateways._observe_postgres_chunk(pg, b"Z\x00\x00\x00\x05I", outbound=False)
-        assert marker.exists()
-        assert gateways._redis_filter_enabled(redis)
+        first.feed_backend(ready[3:])
+        assert marker.exists() and gateways._redis_filter_enabled(redis)
         assert not gateways._is_committed_xadd(b"*2\r\n$4\r\nXACK\r\n$3\r\nkey\r\n")
 
 def test_cut_modes_arm_only_after_explicit_control(monkeypatch):

@@ -29,8 +29,7 @@ app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 class GatewayState:
     mode: GatewayMode
     armed: bool = False
-    pending_commit: bool = False
-    postgres_frontend_buffer: bytes = b""
+    
 
 
 STATES = {
@@ -68,15 +67,57 @@ def _mark_commit_ready() -> None:
 
 
 
-def _observe_postgres_chunk(state: GatewayState, chunk: bytes, *, outbound: bool) -> None:
-    if outbound:
-        state.postgres_frontend_buffer = (state.postgres_frontend_buffer + chunk.upper())[-64:]
-        if b"COMMIT" in state.postgres_frontend_buffer:
-            state.pending_commit = True
-    if not outbound and state.pending_commit and b"Z" in chunk:
-        if chunk.endswith(b"I"):
-            _mark_commit_ready()
-        state.pending_commit = False
+class PostgresCommitObserver:
+    """Per-relay PostgreSQL frame observer; never changes forwarded bytes."""
+    def __init__(self) -> None:
+        self._frontend = bytearray()
+        self._backend = bytearray()
+        self._startup_pending = True
+        self.pending_commit = False
+
+    @staticmethod
+    def _is_commit_sql(sql: bytes) -> bool:
+        return sql.rstrip(b"\0").strip().rstrip(b";").strip().upper() == b"COMMIT"
+
+    def feed_frontend(self, data: bytes) -> None:
+        self._frontend.extend(data)
+        while True:
+            if self._startup_pending:
+                if len(self._frontend) < 4:
+                    return
+                length = int.from_bytes(self._frontend[:4], "big")
+                if length < 8 or len(self._frontend) < length:
+                    return
+                del self._frontend[:length]
+                self._startup_pending = False
+                continue
+            if len(self._frontend) < 5:
+                return
+            length = int.from_bytes(self._frontend[1:5], "big")
+            total = 1 + length
+            if length < 4 or len(self._frontend) < total:
+                return
+            message_type, body = self._frontend[0:1], bytes(self._frontend[5:total])
+            del self._frontend[:total]
+            sql = body if message_type == b"Q" else body.split(b"\0", 1)[1] if message_type == b"P" and b"\0" in body else b""
+            if self._is_commit_sql(sql):
+                self.pending_commit = True
+
+    def feed_backend(self, data: bytes) -> None:
+        self._backend.extend(data)
+        while len(self._backend) >= 5:
+            length = int.from_bytes(self._backend[1:5], "big")
+            total = 1 + length
+            if length < 4 or len(self._backend) < total:
+                return
+            message_type, body = self._backend[0:1], bytes(self._backend[5:total])
+            del self._backend[:total]
+            if message_type == b"E":
+                self.pending_commit = False
+            elif message_type == b"Z":
+                if self.pending_commit and body == b"I":
+                    _mark_commit_ready()
+                self.pending_commit = False
 
 
 def _redis_filter_enabled(state: GatewayState) -> bool:
@@ -176,12 +217,12 @@ class RespCommandBuffer:
         return commands
 
 
-async def _copy(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, state: GatewayState, *, outbound: bool) -> None:
+async def _copy(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, state: GatewayState, *, outbound: bool, observer: PostgresCommitObserver | None = None) -> None:
     resp = RespCommandBuffer() if state.mode == "store-redis-committed-xadd" and outbound else None
     while data := await reader.read(65536):
+        if observer:
+            (observer.feed_frontend if outbound else observer.feed_backend)(data)
         for chunk in (resp.feed(data) if resp else [data]):
-            if state.mode == "store-pg-cut":
-                _observe_postgres_chunk(state, chunk, outbound=outbound)
             if state.armed and state.mode in {"ingest-redis-cut", "store-pg-cut"} and outbound:
                 writer.close()
                 await writer.wait_closed()
@@ -194,9 +235,10 @@ async def _copy(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, stat
     await writer.wait_closed()
 async def relay(client_reader: asyncio.StreamReader, client_writer: asyncio.StreamWriter, state: GatewayState) -> None:
     upstream_reader, upstream_writer = await asyncio.open_connection(os.environ["UPSTREAM_HOST"], int(os.environ["UPSTREAM_PORT"]))
+    observer = PostgresCommitObserver() if state.mode == "store-pg-cut" else None
     await asyncio.gather(
-        _copy(client_reader, upstream_writer, state, outbound=True),
-        _copy(upstream_reader, client_writer, state, outbound=False),
+        _copy(client_reader, upstream_writer, state, outbound=True, observer=observer),
+        _copy(upstream_reader, client_writer, state, outbound=False, observer=observer),
     )
 
 
