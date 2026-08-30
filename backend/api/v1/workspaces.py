@@ -4,6 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.database import get_db
 from backend.models.identity import User, Workspace, WorkspaceMembership, WorkspaceRole
+from backend.models.studio import StudioWorkspace
 from backend.models.workflow import Project
 from backend.schemas.common import ApiResponse
 from backend.schemas.workflow_asset import ProjectRead
@@ -132,6 +133,7 @@ async def create_workspace(
     workspace = Workspace(name=body.name, slug=body.slug)
     db.add(workspace)
     await db.flush()
+    db.add(StudioWorkspace(id=workspace.id, name=workspace.name, slug=workspace.slug))
     membership = WorkspaceMembership(
         workspace_id=workspace.id,
         user_id=first_admin.id,
