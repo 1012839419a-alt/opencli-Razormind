@@ -13,6 +13,8 @@ from backend.api.v1 import (
     cookies,
     dashboard,
     delivery_authorization_routes,
+    controlled_receiver_routes,
+    delivery_execution_routes,
     dify_imports,
     geo_acquisition,
     iii_collections,
@@ -90,4 +92,6 @@ v1_router.include_router(workspaces.router)
 v1_router.include_router(workspace_sources.router)
 v1_router.include_router(project_source_bindings.router)
 v1_router.include_router(delivery_authorization_routes.router)
+v1_router.include_router(delivery_execution_routes.router)
+v1_router.include_router(controlled_receiver_routes.router)
 v1_router.include_router(research_graph_v2_routes.router)

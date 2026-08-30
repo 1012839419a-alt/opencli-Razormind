@@ -22,6 +22,13 @@ from backend.models.delivery_authorization import (
     DeliveryTarget,
     DeliveryTargetRevision,
 )
+from backend.models.delivery_execution import (
+    ControlledReceiverDelivery,
+    ControlledReceiverNonce,
+    DeliveryExecution,
+    DeliveryExecutionResult,
+)
+
 
 from backend.models.iii_collection import (
     EvidenceBatchMaterializationEventV1,
@@ -129,6 +136,10 @@ __all__ = [
     "DeliveryTarget",
     "DeliveryTargetRevision",
     "DeliveryAuthorizationDecisionV1",
+    "DeliveryExecution",
+    "DeliveryExecutionResult",
+    "ControlledReceiverDelivery",
+    "ControlledReceiverNonce",
     "IIICollectionAttemptV1",
     "IIICollectionOutboundV1",
     "IIICollectionLifecycleObservationV1",

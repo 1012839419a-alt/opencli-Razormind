@@ -58,6 +58,14 @@ class Settings(BaseSettings):
     iii_ingress_receipt_secret: str = ""
     iii_dispatch_lease_seconds: float = 60.0
 
+    # JSON server-owned registry for delivery receiver v2. Endpoint identity,
+    # request key reference, and receipt verification key are never API input.
+    controlled_receiver_registry_json: str = "{}"
+    controlled_receiver_credentials_json: str = "{}"
+    controlled_receiver_receipt_keys_json: str = "{}"
+    controlled_receiver_inbound_keys_json: str = "{}"
+    controlled_receiver_max_clock_skew_seconds: int = 300
+
     # Redis / Celery — only required when task_executor="celery"
     redis_url: str = "redis://localhost:6379/0"
     celery_broker_url: str = "redis://localhost:6379/0"
