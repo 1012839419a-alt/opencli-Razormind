@@ -112,9 +112,9 @@ def _catalog_digest(base: Path, overlay: Path) -> str:
     )
     digest = hashlib.sha256()
     for path in inputs:
-        digest.update(path.relative_to(ROOT).as_posix().encode())
+        digest.update(path.resolve().relative_to(ROOT).as_posix().encode())
         digest.update(b"\0")
-        digest.update(path.read_bytes())
+        digest.update(path.resolve().read_bytes())
         digest.update(b"\0")
     return digest.hexdigest()
 
