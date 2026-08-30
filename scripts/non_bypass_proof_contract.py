@@ -59,11 +59,27 @@ def validate_evidence(evidence: dict[str, Any], *, fixture_digest: str, run: str
     _assert_no_secrets(evidence)
     if evidence["schemaVersion"] != "NonBypassHappyVerticalProofV1" or evidence["run"] != run or evidence["image"] != PINNED_III:
         raise ProofRejected("proof identity or pinned engine changed")
-    topology = _object(evidence["topology"], "topology", {"fixtureDigest", "iiiCliPath", "iiiUrl", "relay"})
+    topology = _object(
+        evidence["topology"],
+        "topology",
+        {
+            "fixtureDigest", "iiiCliPath", "iiiUrl", "relay", "containerTransport",
+            "callbackRoute", "receiverEndpoint", "receiverExposure", "receiverKind",
+        },
+    )
     if _hash(topology["fixtureDigest"], "topology.fixtureDigest") != fixture_digest:
         raise ProofRejected("fixture digest was substituted")
-    if topology["iiiCliPath"] != "/opt/iii/iii" or topology["iiiUrl"] != "ws://proof-iii:49134" or topology["relay"] != "three-fixed-callback-paths":
-        raise ProofRejected("III admission facts are missing or bypassed")
+    if topology["iiiCliPath"] != "/opt/iii/iii" or topology["iiiUrl"] != "ws://proof-iii:49134":
+        raise ProofRejected("III admission facts are missing")
+    if (
+        topology["relay"] != "three-fixed-callback-paths"
+        or topology["containerTransport"] != "docker-internal"
+        or topology["callbackRoute"] != "relay-only"
+        or topology["receiverEndpoint"] != "https://8.8.8.8:8000"
+        or topology["receiverExposure"] != "internal-only"
+        or topology["receiverKind"] != "controlled-receiver-v2"
+    ):
+        raise ProofRejected("proof topology has bypassed isolated relay or receiver transport")
     command = _object(evidence["command"], "command", {"id", "workflowRunId", "payloadHash"})
     command_id = _identifier(command["id"], "command.id")
     if _identifier(command["workflowRunId"], "command.workflowRunId") == run:
@@ -77,10 +93,27 @@ def validate_evidence(evidence: dict[str, Any], *, fixture_digest: str, run: str
     report_hash, ingress_hash = _hash(evidence["reportHash"], "reportHash"), _hash(evidence["ingressReceiptHash"], "ingressReceiptHash")
     if len({*lifecycle.values(), report_hash, ingress_hash}) != 5:
         raise ProofRejected("vertical evidence hashes are not distinct immutable facts")
-    manifest = _object(evidence["researchGraphManifestRef"], "researchGraphManifestRef", {"batchId", "derivation", "reconciliationRevision", "manifestSchemaVersion", "manifestHash", "expectedRecordKeySetHash", "recordRefSetHash", "materializationStatus"})
-    if _identifier(manifest["batchId"], "manifest.batchId") is None or manifest["derivation"] != "dispatch-task-v1" or manifest["manifestSchemaVersion"] != "v1" or manifest["materializationStatus"] != "completed" or not isinstance(manifest["reconciliationRevision"], int) or manifest["reconciliationRevision"] < 1:
-        raise ProofRejected("materialized manifest is not a completed canonical reference")
-    for name in ("manifestHash", "expectedRecordKeySetHash", "recordRefSetHash"): _hash(manifest[name], f"manifest.{name}")
+    manifest = _object(
+        evidence["researchGraphManifestRef"],
+        "researchGraphManifestRef",
+        {
+            "batchId", "derivation", "reconciliationRevision", "manifestSchemaVersion",
+            "manifestHash", "expectedRecordKeySetHash", "recordRefSetHash",
+            "materializationStatus", "materializationAuthority",
+        },
+    )
+    if (
+        _identifier(manifest["batchId"], "manifest.batchId") is None
+        or manifest["derivation"] != "dispatch-task-v1"
+        or manifest["manifestSchemaVersion"] != "v1"
+        or manifest["materializationStatus"] != "completed"
+        or manifest["materializationAuthority"] != "scoped-admin-api"
+        or not isinstance(manifest["reconciliationRevision"], int)
+        or manifest["reconciliationRevision"] < 1
+    ):
+        raise ProofRejected("materialized manifest is not a completed authoritative scoped reference")
+    for name in ("manifestHash", "expectedRecordKeySetHash", "recordRefSetHash"):
+        _hash(manifest[name], f"manifest.{name}")
     pin = _object(evidence["pin"], "pin", {"sequence", "researchRevisionId", "manifestSetHash"})
     if not isinstance(pin["sequence"], int) or pin["sequence"] < 1: raise ProofRejected("pin.sequence is invalid")
     _identifier(pin["researchRevisionId"], "pin.researchRevisionId")
@@ -95,16 +128,50 @@ def validate_evidence(evidence: dict[str, Any], *, fixture_digest: str, run: str
     execution = _object(evidence["execution"], "execution", {"executionId", "operationId", "decisionId", "decisionHash", "payloadHash", "outcome", "attemptCount"})
     if _identifier(execution["executionId"], "execution.executionId") is None or execution["operationId"] != operation_id or execution["decisionId"] != decision_id or _hash(execution["decisionHash"], "execution.decisionHash") != decision_hash or _hash(execution["payloadHash"], "execution.payloadHash") != decision_payload or execution["outcome"] != "accepted" or not isinstance(execution["attemptCount"], int) or execution["attemptCount"] < 1:
         raise ProofRejected("delivery execution is not terminally accepted and frozen")
-    receipt = _object(evidence["receiverReceipt"], "receiverReceipt", {"attemptNumber", "receiptId", "receiptHash", "receipt", "outcome"})
-    if not isinstance(receipt["attemptNumber"], int) or receipt["attemptNumber"] < 1 or not _identifier(receipt["receiptId"], "receiverReceipt.receiptId") or receipt["receipt"] != "verified" or receipt["outcome"] != "accepted": raise ProofRejected("verified receiver receipt is absent")
+    receipt = _object(
+        evidence["receiverReceipt"],
+        "receiverReceipt",
+        {
+            "attemptNumber", "receiptId", "receiptHash", "httpStatus",
+            "receipt", "durableReceipt", "outcome",
+        },
+    )
+    if (
+        not isinstance(receipt["attemptNumber"], int)
+        or receipt["attemptNumber"] != execution["attemptCount"]
+        or receipt["attemptNumber"] < 1
+        or not _identifier(receipt["receiptId"], "receiverReceipt.receiptId")
+        or receipt["httpStatus"] != 200
+        or receipt["receipt"] != "verified"
+        or receipt["durableReceipt"] != "verified"
+        or receipt["outcome"] != "accepted"
+    ):
+        raise ProofRejected("accepted delivery lacks its matching verified durable receipt")
     _hash(receipt["receiptHash"], "receiverReceipt.receiptHash")
     if not isinstance(evidence["redactionProfile"], str) or not evidence["redactionProfile"]: raise ProofRejected("redaction profile is absent")
 
 
 def assert_substitutions_rejected(evidence: dict[str, Any], *, fixture_digest: str, run: str) -> None:
-    substitutions = (("engine", lambda p: p.__setitem__("image", "iiidev/iii:latest")), ("fixture", lambda p: p["topology"].__setitem__("fixtureDigest", "0" * 64)), ("relay", lambda p: p["topology"].__setitem__("relay", "direct-admin")), ("manifest", lambda p: p.__setitem__("researchGraphManifestRef", "replacement")), ("terminal", lambda p: p["execution"].__setitem__("final_outcome", "accepted-by-2xx")))
+    """The five provenance substitutes must fail before signing."""
+
+    substitutions = (
+        ("mock_transport", lambda proof: proof["topology"].__setitem__("containerTransport", "mock")),
+        ("public_webhook_receiver", lambda proof: proof["topology"].update(
+            receiverEndpoint="https://public-webhook.invalid", receiverExposure="public"
+        )),
+        ("projection_only_manifest_source", lambda proof: proof["researchGraphManifestRef"].__setitem__(
+            "materializationAuthority", "projection-only"
+        )),
+        ("direct_admin_fallback", lambda proof: proof["topology"].__setitem__("callbackRoute", "direct-admin")),
+        ("bare_http_2xx", lambda proof: proof["receiverReceipt"].__setitem__(
+            "durableReceipt", "missing"
+        )),
+    )
     for name, mutate in substitutions:
-        candidate = json.loads(json.dumps(evidence)); mutate(candidate)
-        try: validate_evidence(candidate, fixture_digest=fixture_digest, run=run)
-        except ProofRejected: continue
+        candidate = json.loads(json.dumps(evidence))
+        mutate(candidate)
+        try:
+            validate_evidence(candidate, fixture_digest=fixture_digest, run=run)
+        except ProofRejected:
+            continue
         raise AssertionError(f"unsafe {name} substitution reached signing")
