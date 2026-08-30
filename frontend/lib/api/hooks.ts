@@ -1437,3 +1437,125 @@ export function useOdpState() {
     refetchInterval: 15_000,
   });
 }
+
+export function useWorkbenchRepositories(workspaceId: string | null) {
+  return useQuery({
+    queryKey: ['workbench', workspaceId, 'repositories'],
+    queryFn: () => api.listWorkbenchRepositories(workspaceId as string),
+    enabled: !!workspaceId,
+  })
+}
+
+export function useWorkbenchRuntimes(workspaceId: string | null) {
+  return useQuery({
+    queryKey: ['workbench', workspaceId, 'runtimes'],
+    queryFn: () => api.listWorkbenchRuntimes(workspaceId as string),
+    enabled: !!workspaceId,
+    refetchInterval: 15_000,
+  })
+}
+
+export function useWorkbenchThreads(workspaceId: string | null) {
+  return useQuery({
+    queryKey: ['workbench', workspaceId, 'threads'],
+    queryFn: () => api.listWorkbenchThreads(workspaceId as string),
+    enabled: !!workspaceId,
+    refetchInterval: 10_000,
+  })
+}
+
+export function useWorkbenchThread(workspaceId: string | null, threadId: string | null) {
+  return useQuery({
+    queryKey: ['workbench', workspaceId, 'threads', threadId],
+    queryFn: () => api.getWorkbenchThread(workspaceId as string, threadId as string),
+    enabled: !!workspaceId && !!threadId,
+    refetchInterval: 5_000,
+  })
+}
+
+export function useWorkbenchEvents(
+  workspaceId: string | null,
+  threadId: string | null,
+  turnId: string | null,
+) {
+  return useQuery({
+    queryKey: ['workbench', workspaceId, 'threads', threadId, 'turns', turnId, 'events'],
+    queryFn: () => api.listWorkbenchEvents(workspaceId as string, threadId as string, turnId as string),
+    enabled: !!workspaceId && !!threadId && !!turnId,
+  })
+}
+
+export function useCreateWorkbenchThread() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({
+      workspaceId,
+      data,
+    }: {
+      workspaceId: string
+      data: Parameters<typeof api.createWorkbenchThread>[1]
+    }) => api.createWorkbenchThread(workspaceId, data),
+    onSuccess: (thread, { workspaceId }) => {
+      queryClient.setQueryData(['workbench', workspaceId, 'threads', thread.id], thread)
+      void queryClient.invalidateQueries({ queryKey: ['workbench', workspaceId, 'threads'] })
+    },
+  })
+}
+
+export function useCreateWorkbenchTurn() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({
+      workspaceId,
+      threadId,
+      data,
+    }: {
+      workspaceId: string
+      threadId: string
+      data: Parameters<typeof api.createWorkbenchTurn>[2]
+    }) => api.createWorkbenchTurn(workspaceId, threadId, data),
+    onSuccess: (_turn, { workspaceId, threadId }) => {
+      void queryClient.invalidateQueries({
+        queryKey: ['workbench', workspaceId, 'threads', threadId],
+      })
+      void queryClient.invalidateQueries({ queryKey: ['workbench', workspaceId, 'threads'] })
+    },
+  })
+}
+
+export function useCancelWorkbenchTurn() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ workspaceId, threadId, turnId }: {
+      workspaceId: string
+      threadId: string
+      turnId: string
+    }) => api.cancelWorkbenchTurn(workspaceId, threadId, turnId),
+    onSuccess: (_turn, { workspaceId, threadId, turnId }) => {
+      void queryClient.invalidateQueries({
+        queryKey: ['workbench', workspaceId, 'threads', threadId],
+      })
+      void queryClient.invalidateQueries({
+        queryKey: ['workbench', workspaceId, 'threads', threadId, 'turns', turnId, 'events'],
+      })
+      void queryClient.invalidateQueries({ queryKey: ['workbench', workspaceId, 'threads'] })
+    },
+  })
+}
+
+export function useConfirmWorkbenchProposal() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ workspaceId, threadId, proposalId }: {
+      workspaceId: string
+      threadId: string
+      proposalId: string
+    }) => api.confirmWorkbenchProposal(workspaceId, threadId, proposalId),
+    onSuccess: (_proposal, { workspaceId, threadId }) => {
+      void queryClient.invalidateQueries({
+        queryKey: ['workbench', workspaceId, 'threads', threadId],
+      })
+      void queryClient.invalidateQueries({ queryKey: ['workbench', workspaceId, 'threads'] })
+    },
+  })
+}

@@ -51,6 +51,7 @@ import type {
 } from "./types";
 export * from "./workspace-endpoints";
 export * from "./browser-endpoints";
+export * from "./workbench-endpoints";
 
 // ── Dashboard ──────────────────────────────────────────────────────────────────
 export const getDashboardStats = (params?: {

@@ -102,6 +102,13 @@ from backend.models.studio import (
     StudioWorkspace,
 )
 from backend.models.task import CollectionTask, TaskRun, TaskRunEvent
+from backend.models.workbench import (
+    WorkbenchProposal,
+    WorkbenchRepository,
+    WorkbenchThread,
+    WorkbenchTurn,
+    WorkbenchTurnEvent,
+)
 from backend.models.worker import WorkerNode
 from backend.models.workflow import Project, Workflow, WorkflowDraft, WorkflowVersion
 from backend.models.workflow_run import WorkflowRun, WorkflowRunEvent
@@ -134,6 +141,11 @@ __all__ = [
     "OperationsAgentDraft",
     "PublishedOperationsAgentVersion",
     "OperationsAgentRun",
+    "WorkbenchRepository",
+    "WorkbenchThread",
+    "WorkbenchTurn",
+    "WorkbenchTurnEvent",
+    "WorkbenchProposal",
     "FeedProvider",
     "IntelligenceSession",
     "IntelligenceArtifact",

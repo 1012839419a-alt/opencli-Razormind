@@ -1,7 +1,44 @@
 from functools import lru_cache
+from pathlib import Path
 from typing import Literal
 
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class WorkbenchRepositoryConfiguration(BaseModel):
+    """A controller-owned repository mapping loaded only from backend settings."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    workspace_id: str = Field(min_length=1, max_length=36)
+    name: str = Field(min_length=1, max_length=255)
+    repository_path: str = Field(min_length=1)
+    base_ref: str = Field(pattern=r"^refs/heads/[A-Za-z0-9][A-Za-z0-9._/-]*$")
+    worktree_root: str = Field(min_length=1)
+    execution_node_url: str = Field(min_length=1, max_length=512)
+    shared_filesystem_id: str = Field(
+        min_length=1,
+        max_length=255,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+    )
+    active: bool = True
+
+    @field_validator("repository_path", "worktree_root")
+    @classmethod
+    def paths_are_absolute(cls, value: str) -> str:
+        path = Path(value)
+        if not path.is_absolute():
+            raise ValueError("must be an absolute server path")
+        return str(path)
+
+    @field_validator("execution_node_url")
+    @classmethod
+    def execution_node_is_http(cls, value: str) -> str:
+        normalized = value.rstrip("/")
+        if not normalized.startswith(("http://", "https://")):
+            raise ValueError("must be an http/https edge-node URL")
+        return normalized
 
 
 class Settings(BaseSettings):
@@ -25,6 +62,10 @@ class Settings(BaseSettings):
     # Database
     database_url: str = "sqlite+aiosqlite:///./opencli_admin.db"
 
+    # Server-only Workbench repository-to-edge affinity mappings. This JSON
+    # setting is reconciled for the authorized workspace at API access time;
+    # neither paths nor execution topology are accepted from the browser.
+    workbench_repositories: list[WorkbenchRepositoryConfiguration] = Field(default_factory=list)
     # Task execution mode: "local" (in-process asyncio) or "celery" (distributed)
     task_executor: Literal["local", "celery"] = "local"
 
