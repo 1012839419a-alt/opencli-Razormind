@@ -41,11 +41,11 @@ def test_http_mutator_forwards_to_real_upstream_and_preserves_context(monkeypatc
     gateways.STATES["http-schema-mutator"].armed = False
     client = TestClient(gateways.app)
     payload = b'{"schema_version":1,"command_id":"fixed","context":{"attempt":"a1"}}'
-    plain = client.post("/http/ingest", content=payload, headers={"Authorization": "Bearer real-token", "Content-Type": "application/json"})
+    plain = client.post("/ingest", content=payload, headers={"Authorization": "Bearer real-token", "Content-Type": "application/json"})
     assert plain.status_code == 207 and plain.content == b'{"upstream":"real"}'
     assert seen == {"path": "/ingest", "body": payload, "authorization": "Bearer real-token"}
     assert client.post("/_gate/http-schema-mutator/arm", json={"armed": True}, headers={"X-API-Token": "control-token"}).status_code == 200
-    mutated = client.post("/http/ingest", content=payload, headers={"Authorization": "Bearer real-token", "Content-Type": "application/json"})
+    mutated = client.post("/ingest", content=payload, headers={"Authorization": "Bearer real-token", "Content-Type": "application/json"})
     assert mutated.status_code == 207
     assert json.loads(seen["body"]) == {"schema_version": 999, "command_id": "fixed", "context": {"attempt": "a1"}}
     upstream.shutdown()

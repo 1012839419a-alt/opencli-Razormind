@@ -216,3 +216,14 @@ def test_failure_driver_dispatches_every_implemented_scenario(monkeypatch, capsy
     monkeypatch.setattr(sys, "argv", ["driver", "--scenario", scenario, "--run", "r1"])
     assert driver.main() == 0
     assert __import__("json").loads(capsys.readouterr().out)["handler"] == handler
+
+
+def test_failure_overlay_routes_all_odp_writers_through_named_fault_gateways():
+    compose = yaml.load((ROOT / "docker-compose.non-bypass-failure.yml").read_text(), Loader=ComposeLoader)
+    services = compose["services"]
+    assert {"proof-odp-http-gateway", "proof-odp-ingest-redis-gateway", "proof-odp-store-pg-gateway", "proof-odp-store-redis-gateway"} <= set(services)
+    assert services["proof-collector"]["environment"]["ODP_INGEST_URL"] == "http://proof-odp-http-gateway:8040"
+    assert services["proof-bridge"]["environment"]["ODP_INGEST_URL"] == "http://proof-odp-http-gateway:8040"
+    assert services["proof-odp-ingest"]["environment"]["ODP_REDIS_URL"] == "redis://proof-odp-ingest-redis-gateway:6379/2"
+    assert services["proof-odp-store"]["environment"]["ODP_REDIS_URL"] == "redis://proof-odp-store-redis-gateway:6379/2"
+    assert "@proof-odp-store-pg-gateway:5432/" in services["proof-odp-store"]["environment"]["ODP_DATABASE_URL"]

@@ -23,13 +23,18 @@ services:
     labels: *failure-labels
     environment:
       PROOF_SCENARIO: ${PROOF_SCENARIO:-unbound}
+      ODP_INGEST_URL: http://proof-odp-http-gateway:8040
     command: [/bin/sh, -ec, 'if [ "$PROOF_SCENARIO" = signed-zero ]; then printf "%s\n" "#!/bin/sh" "exec /proof/opencli-failure-proof zero" > /tmp/opencli-proof && chmod 0555 /tmp/opencli-proof; else install -m 0555 /proof/opencli-proof /tmp/opencli-proof; fi; exec python worker/src/main.py']
     volumes:
       - ./tests/acceptance/fixtures/opencli-failure-proof:/proof/opencli-failure-proof:ro
   proof-bridge:
     labels: *failure-labels
+    environment:
+      ODP_INGEST_URL: http://proof-odp-http-gateway:8040
   proof-odp-ingest:
     labels: *failure-labels
+    environment:
+      ODP_REDIS_URL: redis://proof-odp-ingest-redis-gateway:6379/2
   proof-relay:
     build:
       context: .
@@ -132,18 +137,54 @@ services:
     networks: [proof-fault]
     labels: *failure-labels
 
-  proof-odp-gateway:
-    build:
-      context: .
-      target: non-bypass-acceptance
+  proof-odp-http-gateway:
+    build: {context: ., target: non-bypass-acceptance}
+    entrypoint: [uvicorn, tests.acceptance.fault_tools.odp_fault_gateways:app, --host, 0.0.0.0, --port, "8040"]
+    environment:
+      API_AUTH_TOKEN: ${API_AUTH_TOKEN:-runtime-secret-required}
+      HTTP_UPSTREAM_URL: http://proof-odp-ingest:8040
+    networks: [proof-odp, proof-fault]
+    labels: *failure-labels
+  proof-odp-ingest-redis-gateway:
+    build: {context: ., target: non-bypass-acceptance}
     entrypoint: [python, tests/acceptance/fault_tools/odp_fault_gateways.py]
     environment:
       API_AUTH_TOKEN: ${API_AUTH_TOKEN:-runtime-secret-required}
-      UPSTREAM_HOST: proof-odp-ingest
-      UPSTREAM_PORT: "8040"
-      GATEWAY_PORT: "8040"
+      GATEWAY_MODE: ingest-redis-cut
+      GATEWAY_PORT: "6379"
+      CONTROL_PORT: "8081"
+      UPSTREAM_HOST: proof-redis
+      UPSTREAM_PORT: "6379"
     networks: [proof-odp, proof-fault]
     labels: *failure-labels
+  proof-odp-store-pg-gateway:
+    build: {context: ., target: non-bypass-acceptance}
+    entrypoint: [python, tests/acceptance/fault_tools/odp_fault_gateways.py]
+    environment:
+      API_AUTH_TOKEN: ${API_AUTH_TOKEN:-runtime-secret-required}
+      GATEWAY_MODE: store-pg-cut
+      GATEWAY_PORT: "5432"
+      CONTROL_PORT: "8082"
+      UPSTREAM_HOST: proof-odp-postgres
+      UPSTREAM_PORT: "5432"
+    networks: [proof-odp, proof-fault]
+    labels: *failure-labels
+  proof-odp-store-redis-gateway:
+    build: {context: ., target: non-bypass-acceptance}
+    entrypoint: [python, tests/acceptance/fault_tools/odp_fault_gateways.py]
+    environment:
+      API_AUTH_TOKEN: ${API_AUTH_TOKEN:-runtime-secret-required}
+      GATEWAY_MODE: store-redis-committed-xadd
+      GATEWAY_PORT: "6379"
+      CONTROL_PORT: "8083"
+      UPSTREAM_HOST: proof-redis
+      UPSTREAM_PORT: "6379"
+    networks: [proof-odp, proof-fault]
+    labels: *failure-labels
+  proof-odp-store:
+    environment:
+      ODP_REDIS_URL: redis://proof-odp-store-redis-gateway:6379/2
+      ODP_DATABASE_URL: postgresql://proof:proof@proof-odp-store-pg-gateway:5432/proof_odp
 
 networks:
   proof-fault:

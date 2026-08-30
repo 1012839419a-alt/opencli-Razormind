@@ -60,7 +60,7 @@ async def arm(name: str, body: ArmRequest, x_api_token: str | None = Header(defa
     _authenticated(x_api_token)
     _state(name).armed = body.armed
     return {"armed": body.armed}
-@app.api_route("/http/{path:path}", methods=["POST", "PUT"])
+@app.api_route("/{path:path}", methods=["POST", "PUT"])
 async def http_schema_mutator(path: str, request: Request) -> Response:
     """Forward the actual ingress request, changing only JSON schema_version."""
     body = await request.body()
