@@ -1538,7 +1538,7 @@ def amendment_decision_conflict(run: str) -> dict[str, Any]:
             json={
                 "targetId": target["targetId"],
                 "receiverIdentity": "controlled-receiver-proof",
-                "endpointIdentity": "receiver-channel-proof-amended",
+                "endpointIdentity": "receiver-channel-proof",
                 "credentialReference": "credential-reference-proof",
             },
             headers=reviewer,
