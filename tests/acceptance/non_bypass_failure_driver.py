@@ -9,6 +9,7 @@ import json
 import os
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -529,14 +530,30 @@ def public_setup(client: httpx.Client, run: str) -> dict[str, Any]:
     proposer)
     if not validation.get("valid"):
         raise RuntimeError("public workflow validation failed")
-    _post(client, primary, route.rsplit("/runs", 1)[0] + "/versions", {"reason": "ODP loss proof",
-    "expectedRevision": 1, "validationRunId": validation["runId"]}, proposer)
+    published_version = _post(
+        client,
+        primary,
+        route.rsplit("/runs", 1)[0] + "/versions",
+        {"reason": "ODP loss proof", "expectedRevision": 1, "validationRunId": validation["runId"]},
+        proposer,
+    )
     workflow_run = _post_published_run(client, primary, route, {"inputs": {},
     "responseMode": "async", "user": "proof-proposer", "requestId": run, "idempotencyKey": run},
     proposer)
-    return {"primary": primary, "proposer": proposer, "route": route,
-    "runId": workflow_run["runId"],
-    "collections": f"{route}/{workflow_run['runId']}/iii-collections"}
+    return {
+        "primary": primary,
+        "proposer": proposer,
+        "route": route,
+        "runId": workflow_run["runId"],
+        "collections": f"{route}/{workflow_run['runId']}/iii-collections",
+        "immutableScope": {
+            "workspace_id": workspace_id,
+            "project_id": boot["project"]["id"],
+            "workflow_id": boot["primary_workflow"]["id"],
+            "studio_workflow_version_id": published_version["id"],
+            "node_id": "opencli-source",
+        },
+    }
 
 
 def public_disposable_run(
@@ -633,6 +650,93 @@ def _arm_gateway(client: httpx.Client, name: str, armed: bool) -> None:
         raise RuntimeError(f"authenticated gateway arm failed: {response.status_code}")
 
 
+def _set_receipt_gate(client: httpx.Client, mode: str) -> None:
+    response = client.post(
+        "http://proof-relay:8080/_gate/receipt",
+        json={"mode": mode},
+        headers={"X-API-Token": os.environ["API_AUTH_TOKEN"]},
+    )
+    if response.status_code != 200:
+        raise RuntimeError(f"authenticated receipt gate update failed: {response.status_code}")
+
+
+def _arm_query_page_gate(client: httpx.Client, armed: bool) -> None:
+    response = client.post(
+        "http://proof-odp-query-pg-gate:8000/_gate/query-page/arm",
+        json={"armed": armed},
+        headers={"X-API-Token": os.environ["API_AUTH_TOKEN"]},
+    )
+    if response.status_code != 200:
+        raise RuntimeError(f"authenticated query-page gate arm failed: {response.status_code}")
+
+
+def _release_query_page_gate(client: httpx.Client) -> None:
+    response = client.post(
+        "http://proof-odp-query-pg-gate:8000/_gate/query-page/release",
+        headers={"X-API-Token": os.environ["API_AUTH_TOKEN"]},
+    )
+    if response.status_code != 200:
+        raise RuntimeError(f"authenticated query-page gate release failed: {response.status_code}")
+
+
+def _wait_for_query_page_gate(client: httpx.Client) -> None:
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        response = client.get(
+            "http://proof-odp-query-pg-gate:8000/_gate/query-page/held",
+            headers={"X-API-Token": os.environ["API_AUTH_TOKEN"]},
+        )
+        if response.status_code == 200 and response.json().get("held") is True:
+            return
+        time.sleep(0.2)
+    raise RuntimeError("real ODP attempt-page SELECT did not reach the protocol gate")
+
+
+def _wait_for_held_receipts(client: httpx.Client, expected_count: int) -> None:
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        response = client.get(
+            "http://proof-relay:8080/_gate/receipt-held",
+            headers={"X-API-Token": os.environ["API_AUTH_TOKEN"]},
+        )
+        if response.status_code == 200 and response.json().get("count", 0) >= expected_count:
+            return
+        time.sleep(0.2)
+    raise RuntimeError("real actor ingress receipt did not reach the held callback path")
+
+
+def _actuate_correlated_ingress(
+    setup: dict[str, Any],
+    submission: dict[str, Any],
+    *,
+    source_id: str,
+    phase: str,
+    event_id: str,
+) -> None:
+    with httpx.Client(timeout=45) as client:
+        response = client.post(
+            "http://proof-iii-actuator:8000/actuate/ingress",
+            json={
+                **setup["immutableScope"],
+                "phase": phase,
+                "run_id": setup["runId"],
+                "command_id": submission["commandId"],
+                "attempt_id": submission["attemptId"],
+                "attempt_number": submission["attemptNumber"],
+                "task_id": submission["taskId"],
+                "trace_id": submission["traceId"],
+                "source_id": source_id,
+                "source_binding_id": None,
+                "source_binding_revision_id": None,
+                "source_binding_revision_number": None,
+                "payload_sha256": submission["payloadSha256"],
+                "event_id": event_id,
+            },
+            headers={"X-API-Token": os.environ["API_AUTH_TOKEN"]},
+        )
+    if response.status_code != 200:
+        raise RuntimeError(f"real III actor invocation failed: {response.status_code}")
+
 def _public_hash(value: dict[str, Any]) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",",
     ":")).encode()).hexdigest()
@@ -655,6 +759,25 @@ def _wait_for_ingress_receipt(
         time.sleep(0.5)
     raise RuntimeError(
         "authenticated public status never exposed an ingress-receipt reference: "
+        + json.dumps(last, sort_keys=True)
+    )
+
+
+def _wait_for_expected_key_report(
+    client: httpx.Client, setup: dict[str, Any], command_id: str
+) -> dict[str, Any]:
+    deadline = time.monotonic() + 30
+    last: dict[str, Any] | None = None
+    while time.monotonic() < deadline:
+        last = public_status(client, setup, command_id)
+        if any(
+            reference.get("kind") == "expected_key_report"
+            for reference in last.get("evidenceReferences", [])
+        ):
+            return last
+        time.sleep(0.5)
+    raise RuntimeError(
+        "authenticated public status never exposed an expected-key report: "
         + json.dumps(last, sort_keys=True)
     )
 
@@ -888,6 +1011,132 @@ def _storage_loss_source_id(run: str, index: int, source: str) -> str:
     return f"loss-{index}-{source[:8]}-{run_digest}"
 
 
+
+def _completed_hundred_exact(value: dict[str, Any]) -> bool:
+    counts = value.get("counts")
+    return (
+        value.get("materializationStatus") == "completed"
+        and isinstance(counts, dict)
+        and counts.get("record_present") == 100
+        and counts.get("unknown") == 0
+        and isinstance(value.get("pageSnapshotAsOf"), str)
+        and bool(value["pageSnapshotAsOf"])
+    )
+
+
+def query_page_race(run: str) -> dict[str, Any]:
+    """Freeze a real ODP page snapshot between two correlated III ingresses."""
+    stable_source_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"proof-query-page/{run}"))
+    keyword = f"query-page-{hashlib.sha256(run.encode()).hexdigest()[:16]}"
+    hashes: dict[str, str] = {}
+    with httpx.Client(timeout=60) as client:
+        setup = public_setup(client, run)
+        submission = public_submit(
+            client,
+            setup,
+            source_id=keyword,
+            stable_odp_source_id=stable_source_id,
+            site="github",
+            command="issues",
+            idempotency_key="query-page-race",
+        )
+        _wait_for_expected_key_report(client, setup, submission["commandId"])
+        before_actor, original_receipt = _wait_for_ingress_receipt(
+            client, setup, submission["commandId"], timeout=30
+        )
+
+        page_gate_armed = False
+        actor_futures = []
+        executor = ThreadPoolExecutor(max_workers=3)
+        try:
+            _set_receipt_gate(client, "hold")
+            actor_futures.append(
+                executor.submit(
+                    _actuate_correlated_ingress,
+                    setup,
+                    submission,
+                    source_id=stable_source_id,
+                    phase="pre_snapshot_101",
+                    event_id=f"actor-101-{submission['attemptId']}",
+                )
+            )
+            _wait_for_held_receipts(client, 1)
+
+            _arm_query_page_gate(client, True)
+            page_gate_armed = True
+            def materialize() -> dict[str, Any]:
+                with httpx.Client(timeout=60) as materialize_client:
+                    return public_materialize(materialize_client, setup, submission["commandId"])
+
+            materialization_future = executor.submit(materialize)
+            _wait_for_query_page_gate(client)
+
+            actor_futures.append(
+                executor.submit(
+                    _actuate_correlated_ingress,
+                    setup,
+                    submission,
+                    source_id=stable_source_id,
+                    phase="late_102",
+                    event_id=f"actor-102-{submission['attemptId']}",
+                )
+            )
+            _wait_for_held_receipts(client, 2)
+            _release_query_page_gate(client)
+            materialized = materialization_future.result(timeout=30)
+            page_gate_armed = False
+
+            recovered = materialized
+            deadline = time.monotonic() + 30
+            while not _completed_hundred_exact(recovered) and time.monotonic() < deadline:
+                time.sleep(1)
+                recovered = public_recover(client, setup, submission["commandId"])
+            if not _completed_hundred_exact(recovered):
+                raise RuntimeError(
+                    "authenticated materialize/recover did not prove exact presence of 100 keys: "
+                    + json.dumps(recovered, sort_keys=True)
+                )
+            final_status = public_status(client, setup, submission["commandId"])
+            hashes.update(
+                {
+                    "collection_before_actor": _public_hash(before_actor),
+                    "collection_after_materialization": _public_hash(final_status),
+                    "materialization_after_page_release": _public_hash(materialized),
+                    "materialization_after_recover": _public_hash(recovered),
+                    "original_ingress_receipt": original_receipt,
+                }
+            )
+            result = _failure_result(
+                scenario="query-page-race",
+                run=run,
+                fault="real-odp-attempt-page-snapshot-race",
+                command_id=submission["commandId"],
+                attempt_id=submission["attemptId"],
+                workflow_run_id=setup["runId"],
+                hashes=hashes,
+                collection={
+                    "blockingStage": "none",
+                    "recoveryAction": "recover",
+                    "sideEffectUncertainty": False,
+                },
+                materialization={
+                    "status": "completed",
+                    "blocker": "none",
+                    "recoveryAction": "recover",
+                    "manifestHash": recovered.get("manifestHash"),
+                    "reconciliationRevision": recovered["reconciliationRevision"],
+                    "pageSnapshotAsOf": recovered["pageSnapshotAsOf"],
+                },
+            )
+        finally:
+            if page_gate_armed:
+                _release_query_page_gate(client)
+            _arm_query_page_gate(client, False)
+            _set_receipt_gate(client, "forward")
+            executor.shutdown(wait=True)
+    return result
+
+
 def ingest_redis_store_loss(run: str) -> dict[str, Any]:
     """Exercise four real loss seams while preserving only public API facts."""
     cases = (
@@ -971,10 +1220,13 @@ def main() -> int:
         result = ingest_redis_store_loss(args.run)
     elif args.scenario == "duplicate-dlq":
         result = duplicate_dlq(args.run)
+    elif args.scenario == "query-page-race":
+        result = query_page_race(args.run)
     else:
         raise RuntimeError("scenario driver is not implemented")
     print(json.dumps(result, sort_keys=True))
     return 0
+
 
 if __name__ == "__main__":
     raise SystemExit(main())

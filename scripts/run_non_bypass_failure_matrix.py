@@ -383,6 +383,7 @@ def _facts_from_driver(
         "signed-zero",
         "ingest-redis-store-loss",
         "duplicate-dlq",
+        "query-page-race",
     }
     if ledger.scenario not in supported:
         raise FailureRunRejectedError(
@@ -398,7 +399,7 @@ def _facts_from_driver(
         command, cwd=ROOT, env=env, text=True,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )
-    if ledger.scenario in {"ingest-redis-store-loss", "duplicate-dlq"}:
+    if ledger.scenario in {"ingest-redis-store-loss", "duplicate-dlq", "query-page-race"}:
         stdout, stderr = process.communicate(timeout=360)
         if process.returncode:
             raise FailureRunRejectedError(

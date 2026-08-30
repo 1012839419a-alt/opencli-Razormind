@@ -60,6 +60,10 @@ services:
     labels: *failure-labels
   proof-odp-query:
     image: "opencli-proof-query:${PROOF_CATALOG_DIGEST:-unbound}"
+    environment:
+      ODP_QUERY_DATABASE_URL: postgresql://proof:proof@proof-odp-query-pg-gate:5432/proof_odp
+    depends_on:
+      proof-odp-query-pg-gate: {condition: service_healthy}
     labels: *failure-labels
   proof-odp-postgres:
     labels: *failure-labels
@@ -124,11 +128,32 @@ services:
       target: non-bypass-acceptance
     command: [uvicorn, tests.acceptance.fault_tools.proof_iii_actuator:app, --host, 0.0.0.0, --port, "8000"]
     environment:
-      PROOF_III_BRIDGE_URL: http://proof-bridge:8080
+      PROOF_III_URL: ws://proof-iii:49134
+      III_CLI_PATH: /opt/iii/iii
       API_AUTH_TOKEN: ${API_AUTH_TOKEN:-runtime-secret-required}
     networks: [proof-fault, proof-iii-worker]
     depends_on:
-      proof-bridge: {condition: service_started}
+      proof-iii: {condition: service_started}
+
+  proof-odp-query-pg-gate:
+    image: "opencli-proof-root:${PROOF_CATALOG_DIGEST:-unbound}"
+    build:
+      context: .
+      target: non-bypass-acceptance
+    command: [uvicorn, tests.acceptance.fault_tools.odp_query_pg_gate:app, --host, 0.0.0.0, --port, "8000"]
+    environment:
+      TARGET_HOST: proof-odp-postgres
+      TARGET_PORT: "5432"
+      GATE_PORT: "5432"
+      API_AUTH_TOKEN: ${API_AUTH_TOKEN:-runtime-secret-required}
+    networks: [proof-fault, proof-odp]
+    depends_on:
+      proof-odp-postgres: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, curl, -fsS, http://localhost:8000/health]
+      interval: 5s
+      timeout: 3s
+      retries: 20
     labels: *failure-labels
 
   proof-governance:

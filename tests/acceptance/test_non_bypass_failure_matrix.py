@@ -3,8 +3,9 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import sys
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-
 import pytest
 import yaml
 from fastapi.testclient import TestClient
@@ -231,6 +232,7 @@ def test_overlay_has_no_host_ports_and_internal_fault_network():
     assert {
         "proof-fault-gateway",
         "proof-iii-actuator",
+        "proof-odp-query-pg-gate",
         "proof-governance",
         "proof-admin-control",
         "proof-odp-ingest-redis-mutator",
@@ -283,6 +285,39 @@ def test_callback_relay_routes_only_the_three_real_callback_paths(monkeypatch):
     assert calls == ["http://proof-admin:8000/api/v1/iii-collections/lifecycle"]
     assert client.post("/not-an-allowlisted-callback", content=b"{}").status_code == 404
 
+
+def test_receipt_gate_counts_the_real_held_callback(monkeypatch):
+    relay_path = ROOT / "tests/acceptance/fault_tools/callback_relay.py"
+    relay_spec = importlib.util.spec_from_file_location("callback_relay_counter", relay_path)
+    assert relay_spec and relay_spec.loader
+    relay = importlib.util.module_from_spec(relay_spec)
+    sys.modules[relay_spec.name] = relay
+    relay_spec.loader.exec_module(relay)
+    monkeypatch.setenv("API_AUTH_TOKEN", "gate-token")
+    monkeypatch.setattr(
+        relay.httpx,
+        "post",
+        lambda *_args, **_kwargs: __import__("httpx").Response(
+            202, content=b'{"data":{}}', headers={"content-type": "application/json"}
+        ),
+    )
+    with TestClient(relay.app) as client:
+        headers = {"X-API-Token": "gate-token"}
+        assert client.post("/_gate/receipt", json={"mode": "hold"}, headers=headers).status_code == 200
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            callback = executor.submit(
+                client.post,
+                "/api/v1/iii-collections/ingress-receipts",
+                content=b"{}",
+            )
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline:
+                held = client.get("/_gate/receipt-held", headers=headers).json()
+                if held["count"] == 1:
+                    break
+            assert held == {"count": 1}
+            assert client.post("/_gate/receipt", json={"mode": "forward"}, headers=headers).status_code == 200
+            assert callback.result(timeout=2).status_code == 202
 
 @pytest.mark.parametrize("scenario", ["admin-crash", "no-report"])
 def test_failure_driver_main_prints_its_fact_document(monkeypatch, capsys, scenario):
@@ -488,6 +523,61 @@ def test_duplicate_dlq_row_binds_replay_duplicate_and_retention_public_outcomes(
     runner = (ROOT / "scripts/run_non_bypass_failure_matrix.py").read_text(encoding="utf-8")
     assert '"duplicate-dlq"' in runner
 
+
+
+def test_query_page_race_uses_real_iii_and_scoped_public_reconciliation_only():
+    driver = (ROOT / "tests/acceptance/non_bypass_failure_driver.py").read_text(encoding="utf-8")
+    runner = (ROOT / "scripts/run_non_bypass_failure_matrix.py").read_text(encoding="utf-8")
+    actuator = (ROOT / "tests/acceptance/fault_tools/proof_iii_actuator.py").read_text(
+        encoding="utf-8"
+    )
+    compose = yaml.load(
+        (ROOT / "docker-compose.non-bypass-failure.yml").read_text(),
+        Loader=ComposeLoader,
+    )
+
+    assert all(
+        name in driver
+        for name in (
+            "def query_page_race(",
+            "_wait_for_expected_key_report",
+            "_wait_for_held_receipts",
+            "_actuate_correlated_ingress",
+            "_wait_for_query_page_gate",
+            "collection_before_actor",
+            "original_ingress_receipt",
+            "materialization_after_recover",
+            "record_present",
+        )
+    )
+    assert '"query-page-race"' in runner
+    assert "communicate(timeout=360)" in runner
+    assert "odp.ingest::batch" in actuator
+    assert "admin_collection" in actuator
+    assert "actor credential denied" in actuator
+    assert "PROOF_III_BRIDGE_URL" not in actuator
+    assert compose["services"]["proof-iii-actuator"]["environment"]["PROOF_III_URL"] == (
+        "ws://proof-iii:49134"
+    )
+    assert compose["services"]["proof-odp-query"]["environment"]["ODP_QUERY_DATABASE_URL"].startswith(
+        "postgresql://proof:proof@proof-odp-query-pg-gate:"
+    )
+
+
+def test_failure_driver_dispatches_query_page_race(monkeypatch, capsys):
+    driver = _failure_driver_module()
+    monkeypatch.setattr(
+        driver, "query_page_race", lambda run: {"handler": "query_page_race", "run": run}
+    )
+    monkeypatch.setattr(
+        sys, "argv", ["driver", "--scenario", "query-page-race", "--run", "r1"]
+    )
+
+    assert driver.main() == 0
+    assert __import__("json").loads(capsys.readouterr().out) == {
+        "handler": "query_page_race",
+        "run": "r1",
+    }
 
 def _runner_module():
     path = ROOT / "scripts/run_non_bypass_failure_matrix.py"

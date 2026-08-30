@@ -5,8 +5,8 @@ Only the fixed III callback routes are proxied. Switch state is gate control,
 never a proof input; callers obtain evidence from scoped Admin reads.
 """
 from __future__ import annotations
-import asyncio
 
+import asyncio
 import os
 from typing import Literal
 
@@ -26,8 +26,12 @@ UPSTREAMS = {
 active: Literal["primary", "control"] = "primary"
 report_mode: Literal["forward", "drop", "hold"] = "forward"
 report_release = asyncio.Event()
+receipt_mode: Literal["forward", "hold"] = "forward"
+receipt_release = asyncio.Event()
+receipt_held_count = 0
 report_diagnostic: dict[str, str | int] = {"status": "not-called"}
 report_release.set()
+receipt_release.set()
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
 
@@ -42,7 +46,9 @@ class ReportMode(BaseModel):
 
 
 @app.post("/_gate/report")
-async def set_report_mode(body: ReportMode, x_api_token: str | None = Header(default=None)) -> dict[str, str]:
+async def set_report_mode(
+    body: ReportMode, x_api_token: str | None = Header(default=None)
+) -> dict[str, str]:
     if x_api_token != os.environ.get("API_AUTH_TOKEN"):
         raise HTTPException(401, "gate credential denied")
     global report_mode
@@ -53,9 +59,37 @@ async def set_report_mode(body: ReportMode, x_api_token: str | None = Header(def
         report_release.set()
     return {"status": "updated"}
 
+class ReceiptMode(BaseModel):
+    mode: Literal["forward", "hold"]
+
+
+@app.post("/_gate/receipt")
+async def set_receipt_mode(
+    body: ReceiptMode, x_api_token: str | None = Header(default=None)
+) -> dict[str, str]:
+    if x_api_token != os.environ.get("API_AUTH_TOKEN"):
+        raise HTTPException(401, "gate credential denied")
+    global receipt_mode, receipt_held_count
+    receipt_mode = body.mode
+    if body.mode == "hold":
+        receipt_held_count = 0
+        receipt_release.clear()
+    else:
+        receipt_release.set()
+    return {"status": "updated"}
+
+
+@app.get("/_gate/receipt-held")
+async def receipt_held(x_api_token: str | None = Header(default=None)) -> dict[str, int]:
+    if x_api_token != os.environ.get("API_AUTH_TOKEN"):
+        raise HTTPException(401, "gate credential denied")
+    return {"count": receipt_held_count}
+
 
 @app.get("/_gate/report-diagnostics")
-async def get_report_diagnostics(x_api_token: str | None = Header(default=None)) -> dict[str, str | int]:
+async def get_report_diagnostics(
+    x_api_token: str | None = Header(default=None),
+) -> dict[str, str | int]:
     if x_api_token != os.environ.get("API_AUTH_TOKEN"):
         raise HTTPException(401, "gate credential denied")
     return dict(report_diagnostic)
@@ -82,12 +116,23 @@ async def callback(path: str, request: Request) -> Response:
         raise HTTPException(404, "callback route is not allowlisted")
     if route == "/api/v1/iii-collections/expected-key-reports":
         if report_mode == "drop":
-            return Response(status_code=202, content=b'{"data":{"accepted":true}}', media_type="application/json")
+            return Response(
+                status_code=202,
+                content=b'{"data":{"accepted":true}}',
+                media_type="application/json",
+            )
         if report_mode == "hold":
             try:
                 await asyncio.wait_for(report_release.wait(), 30)
             except TimeoutError as exc:
                 raise HTTPException(504, "report gate timed out") from exc
+    if route == "/api/v1/iii-collections/ingress-receipts" and receipt_mode == "hold":
+        global receipt_held_count
+        receipt_held_count += 1
+        try:
+            await asyncio.wait_for(receipt_release.wait(), 30)
+        except TimeoutError as exc:
+            raise HTTPException(504, "receipt gate timed out") from exc
     body = await request.body()
     headers = {
         "authorization": request.headers.get("authorization", ""),
