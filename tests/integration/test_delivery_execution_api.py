@@ -19,7 +19,7 @@ def receiver_registry(monkeypatch):
 
 
 def _request():
-    payload = {"schemaVersion": "delivery-claim-manifest-v1", "claims": [], "manifestHashes": []}
+    payload = {"schemaVersion": "delivery-claim-manifest-v1", "claims": [{"claimId": "claim-1", "contentHash": "a" * 64}], "manifestHashes": ["b" * 64]}
     return {"version": "v2", "receiverIdentity": "receiver-a", "operationId": "op-1", "decisionHash": "d" * 64, "payloadHash": receiver.canonical_hash(payload), "payload": payload}
 
 
