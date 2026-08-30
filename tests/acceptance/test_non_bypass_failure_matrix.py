@@ -726,7 +726,7 @@ def test_receiver_recovery_driver_uses_public_attempts_and_signed_reconciliation
         for value in (
             "def receiver_recovery(",
             "corrupt_mac",
-            "withhold_response",
+            "delivery_deadline = time.monotonic() + 110",
             "replace_with_503",
             "receiver-restart-ready",
             "/reconcile",

@@ -1827,6 +1827,7 @@ def receiver_recovery(run: str) -> dict[str, Any]:
             hashes[f"{name}_authorization"] = _public_response_hash(response)
         if len({decision["decisionId"] for decision in decisions.values()}) != 3:
             raise RuntimeError("receiver proof requires three distinct authorizations")
+        delivery_deadline = time.monotonic() + 110
 
         executions: dict[str, dict[str, Any]] = {}
         for name, mode, attempts, transport, status in (
@@ -1891,6 +1892,8 @@ def receiver_recovery(run: str) -> dict[str, Any]:
             final_status, expected_attempts=3
         )
         hashes["final_delivery_status"] = _public_response_hash(final_status_response)
+        if time.monotonic() > delivery_deadline:
+            raise RuntimeError("receiver delivery and reconciliation exceeded 110 seconds")
 
     return _failure_result(
         scenario="receiver-recovery",
