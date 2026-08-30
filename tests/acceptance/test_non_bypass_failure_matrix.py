@@ -119,6 +119,7 @@ def test_callback_relay_routes_only_the_three_real_callback_paths(monkeypatch):
         assert kwargs["headers"] == {
             "authorization": "Bearer collector-fleet-token",
             "x-iii-bridge-token": "collector-bridge-token",
+            "content-type": "application/json",
         }
         return httpx.Response(202, content=b'{"data":{}}', headers={"content-type": "application/json"})
 
