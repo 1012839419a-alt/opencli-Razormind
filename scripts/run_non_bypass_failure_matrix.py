@@ -140,7 +140,7 @@ def _facts_from_driver(ledger: ScenarioLedger, env: dict[str, str], base: Path, 
     command = [
         "docker", "compose", "-p", ledger.project, "-f", str(base), "-f", str(overlay),
         "exec", "-T", "proof-driver", "python", "tests/acceptance/non_bypass_failure_driver.py",
-        "--scenario", ledger.scenario, "--run", ledger.run,
+        "--scenario", ledger.scenario, "--run", ledger.project,
     ]
     process = subprocess.Popen(command, cwd=ROOT, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     signal = ledger.artifact / "coordination" / f"{ledger.run}.submitted"
