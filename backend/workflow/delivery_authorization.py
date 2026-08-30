@@ -22,13 +22,14 @@ from backend.schemas.delivery_authorization import (
     DeliveryAuthorizationCreateV1,
     DeliveryAuthorizationListV1,
     DeliveryAuthorizationReadV1,
+    DeliveryAuthorizingActor,
     DeliveryClaimReadV1,
     DeliveryManifestReadV1,
     DeliveryTargetConfigureV1,
     DeliveryTargetListV1,
     DeliveryTargetReadV1,
 )
-from backend.schemas.record import DeliveryAuthorizingActor, ResearchGraphV2ManifestRef
+from backend.schemas.evidence_manifest import ResearchGraphV2ManifestRef
 from backend.security.controlled_receiver import (
     ControlledReceiverSecurityError,
     endpoint_config_hash,

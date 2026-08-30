@@ -31,16 +31,16 @@ from backend.odp.query_client import (
     build_exact_request,
     post_reconciliation_query,
 )
-from backend.schemas.iii_collection import (
-    EvidenceBatchMaterializationReadV1,
-    EvidenceBatchMaterializationSummaryV1,
-    EvidenceBatchRecordReferenceV1,
-)
-from backend.schemas.record import (
+from backend.schemas.evidence_manifest import (
     ResearchGraphV2ItemKey,
     ResearchGraphV2ManifestRef,
     ResearchGraphV2RecordRef,
     record_ref_set_hash,
+)
+from backend.schemas.iii_collection import (
+    EvidenceBatchMaterializationReadV1,
+    EvidenceBatchMaterializationSummaryV1,
+    EvidenceBatchRecordReferenceV1,
 )
 from backend.workflow.evidence_batch_materialization_facts import (
     delegation,
