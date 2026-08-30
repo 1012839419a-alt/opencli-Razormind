@@ -61,10 +61,28 @@ def issue_local_token(username: str, secret_key: str) -> str:
     )
 
 
+def load_password_hash(path: str, fallback: str) -> str:
+    """Load a persisted password hash, falling back to configured settings."""
+
+    try:
+        persisted = Path(path).read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeError):
+        return fallback
+    return persisted or fallback
+
+
 def persist_password_hash(password_hash: str) -> None:
-    """Persist the local password in the deployment .env and current process."""
+    """Persist the local password in the deployment and current process."""
 
     os.environ["LOCAL_ADMIN_PASSWORD_HASH"] = password_hash
+    durable_path = os.environ.get("LOCAL_ADMIN_PASSWORD_HASH_FILE")
+    if durable_path is None and Path("/data").is_dir():
+        durable_path = "/data/local_admin_password_hash"
+    if durable_path:
+        durable_file = Path(durable_path)
+        durable_file.parent.mkdir(parents=True, exist_ok=True)
+        durable_file.write_text(password_hash + "\n", encoding="utf-8")
+
     path = os.environ.get("ENV_FILE_PATH")
     if not path:
         for candidate in (Path("/app/.env"), Path(__file__).resolve().parents[2] / ".env"):

@@ -1781,20 +1781,20 @@ operations:
   path: /api/v1/governance/workspaces
   operation_id: list_accessible_workspaces_api_v1_governance_workspaces_get
   disposition: operator_ui
-  frontend_route: /sources
+  frontend_route: /operations-agents
   wrapper: null
-  decision: Expose the authenticated Workspace context required by Source and Agent governance.
+  decision: Expose the authenticated Workspace context required by Operations Agent governance.
   target_epic: Epic 8
-  capability_id: studio.sources
+  capability_id: operator.workspace-governance
 - method: GET
   path: /api/v1/governance/workspaces/{workspace_id}/projects
   operation_id: list_governance_projects_api_v1_governance_workspaces__workspace_id__projects_get
   disposition: operator_ui
-  frontend_route: /sources
+  frontend_route: /operations-agents
   wrapper: null
-  decision: Expose Workspace-owned Projects without colliding with the transitional Studio routes.
+  decision: Expose Workspace-owned Projects required by Operations Agent governance.
   target_epic: Epic 8
-  capability_id: studio.sources
+  capability_id: operator.workspace-governance
 - method: GET
   path: /api/v1/workspaces/{workspace_id}/automations
   operation_id: list_automations_api_v1_workspaces__workspace_id__automations_get

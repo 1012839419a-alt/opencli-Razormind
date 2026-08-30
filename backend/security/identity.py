@@ -35,6 +35,7 @@ class IdentitySettings:
             audience=settings.oidc_audience,
             jwks_url=settings.oidc_jwks_url,
             bootstrap_admin_token=settings.bootstrap_admin_token,
+            secret_key=settings.secret_key,
         )
 
 
