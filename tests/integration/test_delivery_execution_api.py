@@ -1,5 +1,6 @@
 """Integration contracts for the separately authenticated durable receiver surface."""
 
+import asyncio
 import json
 import uuid
 from datetime import datetime, timezone
@@ -328,3 +329,39 @@ async def test_sqlite_raw_evidence_mutations_are_rejected_after_durable_executio
             await db_session.execute(text(f"DELETE FROM {table}"))
             await db_session.commit()
         await db_session.rollback()
+
+
+@pytest.mark.asyncio
+async def test_two_sessions_cancel_before_send_start_prevents_post_and_result(db_session, db_engine, monkeypatch):
+    scope, decision_id = await _stored_frozen_decision(db_session)
+    sessions = async_sessionmaker(db_engine, expire_on_commit=False)
+    reserved = asyncio.Event()
+    release = asyncio.Event()
+    posts = []
+
+    async def hold_before_send(**_kwargs):
+        reserved.set()
+        await release.wait()
+
+    async def no_post(*_args, **_kwargs):
+        posts.append(True)
+        raise AssertionError("cancelled reservation must not post")
+
+    monkeypatch.setattr(delivery_execution, "_before_send_start", hold_before_send)
+    monkeypatch.setattr(delivery_execution, "pinned_post", no_post)
+    async with sessions() as executing, sessions() as cancelling:
+        task = asyncio.create_task(
+            delivery_execution.execute_delivery(executing, scope=scope, decision_id=decision_id)
+        )
+        await reserved.wait()
+        execution = await cancelling.scalar(
+            select(DeliveryExecution).where(DeliveryExecution.decision_id == decision_id)
+        )
+        await delivery_execution.cancel_delivery_execution(cancelling, scope=scope, execution_id=execution.id)
+        await cancelling.commit()
+        release.set()
+        result = await task
+    assert result.outcome == "unknown"
+    assert result.state == "cancelled"
+    assert posts == []
+    assert result.attempt_count == 0
