@@ -32,7 +32,7 @@ def _execution_claim(sql: bytes) -> bool:
     normalized = _normalized_sql(sql)
     return (
         b"from delivery_executions" in normalized
-        and b"decision_id" in normalized
+        and b"where delivery_executions.decision_id" in normalized
         and b"for update" in normalized
     )
 
@@ -54,13 +54,12 @@ def _reservation_update(sql: bytes) -> bool:
         and b"reserved_attempt_number" in normalized
     )
 
-
 def _locked_execution_read(sql: bytes) -> bool:
     normalized = _normalized_sql(sql)
     return (
         b"from delivery_executions" in normalized
+        and b"where delivery_executions.id" in normalized
         and b"for update" in normalized
-        and b"decision_id" not in normalized
     )
 
 

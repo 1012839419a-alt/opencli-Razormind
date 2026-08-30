@@ -27,7 +27,7 @@ def _bind(name: bytes, value: bytes) -> relay.FrontendFrame:
 
 
 CLAIM = (
-    b"SELECT delivery_executions.id FROM delivery_executions "
+    b"SELECT delivery_executions.id, delivery_executions.decision_id FROM delivery_executions "
     b"WHERE delivery_executions.decision_id = $1::UUID FOR UPDATE"
 )
 RESERVE = (
@@ -36,7 +36,7 @@ RESERVE = (
     b"WITH TIME ZONE, reserved_attempt_number=$5::INTEGER WHERE delivery_executions.id = $6::UUID"
 )
 LOCKED_READ = (
-    b"SELECT delivery_executions.id FROM delivery_executions "
+    b"SELECT delivery_executions.id, delivery_executions.decision_id FROM delivery_executions "
     b"WHERE delivery_executions.id = $1::UUID FOR UPDATE"
 )
 
