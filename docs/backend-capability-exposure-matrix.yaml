@@ -1750,6 +1750,24 @@ operations:
   decision: Keep internal and cover with contract tests; no frontend surface.
   target_epic: Internal
   projection_reason: Internal runtime contract; intentionally not projected to a user-facing surface.
+- method: POST
+  path: /api/v1/auth/login
+  operation_id: local_login_api_v1_auth_login_post
+  disposition: internal_only
+  frontend_route: /login
+  wrapper: null
+  decision: Keep local administrator authentication behind the login boundary; do not project credentials into the capability catalog.
+  target_epic: Epic 8
+  projection_reason: Local administrator authentication boundary; intentionally not projected to a user-facing capability.
+- method: POST
+  path: /api/v1/auth/password
+  operation_id: change_local_password_api_v1_auth_password_post
+  disposition: internal_only
+  frontend_route: /system
+  wrapper: null
+  decision: Keep local administrator password rotation behind the authenticated settings boundary; do not project credentials into the capability catalog.
+  target_epic: Epic 8
+  projection_reason: Local administrator credential rotation boundary; intentionally not projected to a user-facing capability.
 - method: GET
   path: /api/v1/auth/me
   operation_id: read_identity_api_v1_auth_me_get

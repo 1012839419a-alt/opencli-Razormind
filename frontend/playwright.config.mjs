@@ -7,7 +7,11 @@ export default defineConfig({
     browserName: 'chromium',
   },
   webServer: {
-    command: 'pnpm start --hostname 127.0.0.1 --port 3000',
+    command: 'node .next/standalone/server.js',
+    env: {
+      HOSTNAME: '127.0.0.1',
+      PORT: '3000',
+    },
     reuseExistingServer: !process.env.CI,
     timeout: 30_000,
   },
