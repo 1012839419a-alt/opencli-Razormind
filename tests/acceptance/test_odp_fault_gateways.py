@@ -3,8 +3,8 @@ from __future__ import annotations
 import importlib.util
 import json
 import sys
-import threading
 import tempfile
+import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -41,14 +41,44 @@ def test_http_mutator_forwards_to_real_upstream_and_preserves_context(monkeypatc
     monkeypatch.setenv("HTTP_UPSTREAM_URL", f"http://127.0.0.1:{upstream.server_port}")
     gateways.STATES["http-schema-mutator"].armed = False
     client = TestClient(gateways.app)
-    payload = b'{"batch_id":"batch-fixed","context":{"attempt":"a1"},"events":[{"schema_version":1,"event_id":"event-1","context":{"event":"keep"}},{"schema_version":2,"event_id":"event-2"}]}'
-    plain = client.post("/ingest", content=payload, headers={"Authorization": "Bearer real-token", "Content-Type": "application/json"})
+    payload = (
+        b'{"batch_id":"batch-fixed","context":{"attempt":"a1"},"events":[{"schema_version":1,'
+        b'"event_id":"event-1","context":{"event":"keep"}}'
+        b',{"schema_version":2,"event_id":"event-2"}]}'
+    )
+    plain = client.post(
+        "/ingest",
+        content=payload,
+        headers={"Authorization": "Bearer real-token", "Content-Type": "application/json"},
+    )
     assert plain.status_code == 207 and plain.content == b'{"upstream":"real"}'
-    assert seen == {"path": "/ingest", "body": payload, "authorization": "Bearer real-token"}
-    assert client.post("/_gate/http-schema-mutator/arm", json={"armed": True}, headers={"X-API-Token": "control-token"}).status_code == 200
-    mutated = client.post("/ingest", content=payload, headers={"Authorization": "Bearer real-token", "Content-Type": "application/json"})
+    assert seen == {
+        "path": "/ingest",
+        "body": payload,
+        "authorization": "Bearer real-token",
+    }
+    assert (
+        client.post(
+            "/_gate/http-schema-mutator/arm",
+            json={"armed": True},
+            headers={"X-API-Token": "control-token"},
+        ).status_code
+        == 200
+    )
+    mutated = client.post(
+        "/ingest",
+        content=payload,
+        headers={"Authorization": "Bearer real-token", "Content-Type": "application/json"},
+    )
     assert mutated.status_code == 207
-    assert json.loads(seen["body"]) == {"batch_id": "batch-fixed", "context": {"attempt": "a1"}, "events": [{"schema_version": 999, "event_id": "event-1", "context": {"event": "keep"}}, {"schema_version": 2, "event_id": "event-2"}]}
+    assert json.loads(seen["body"]) == {
+        "batch_id": "batch-fixed",
+        "context": {"attempt": "a1"},
+        "events": [
+            {"schema_version": 999, "event_id": "event-1", "context": {"event": "keep"}},
+            {"schema_version": 2, "event_id": "event-2"},
+        ],
+    }
     upstream.shutdown()
 
 
@@ -59,6 +89,30 @@ def test_resp_buffer_forwards_fragmented_commands_and_identifies_only_committed_
     assert buffer.feed(command[11:]) == [command]
     assert gateways._is_committed_xadd(command)
     assert not gateways._is_committed_xadd(b"*2\r\n$4\r\nXACK\r\n$3\r\nkey\r\n")
+
+
+def test_ingest_resp_mutator_only_poisoned_real_ingest_event_payload():
+    event = json.dumps(
+        {
+            "schema_version": 1,
+            "provider": "proof",
+            "source_id": "00000000-0000-0000-0000-000000000001",
+            "event_id": "event",
+            "payload": {"title": "proof"},
+            "raw_data": None,
+        },
+        separators=(",", ":"),
+    ).encode()
+    command = gateways._encode_resp(
+        [b"XADD", b"odp.ingest.raw", b"*", b"event", event]
+    )
+
+    parts = gateways._resp_parts(gateways._poison_ingest_xadd(command))
+    assert parts is not None
+    assert json.loads(parts[4])["raw_data"] == "\x00"
+    assert gateways._poison_ingest_xadd(
+        gateways._encode_resp([b"XADD", b"other.stream", b"*", b"event", event])
+    ) == gateways._encode_resp([b"XADD", b"other.stream", b"*", b"event", event])
 
 
 
@@ -100,8 +154,16 @@ def test_cut_modes_arm_only_after_explicit_control(monkeypatch):
     client = TestClient(gateways.app)
     for name in ("ingest-redis-cut", "store-pg-cut", "store-redis-committed-xadd"):
         gateways.STATES[name].armed = False
-        assert client.post(f"/_gate/{name}/arm", json={"armed": True}, headers={"X-API-Token": "control-token"}).json() == {"armed": True}
+        assert client.post(
+            f"/_gate/{name}/arm",
+            json={"armed": True},
+            headers={"X-API-Token": "control-token"},
+        ).json() == {"armed": True}
         assert gateways.STATES[name].armed is True
-    forbidden = client.post("/_gate/store-pg-cut/arm", json={"armed": False}, headers={"X-API-Token": "wrong"})
+    forbidden = client.post(
+        "/_gate/store-pg-cut/arm",
+        json={"armed": False},
+        headers={"X-API-Token": "wrong"},
+    )
     assert forbidden.status_code == 401
     assert b"control-token" not in forbidden.content

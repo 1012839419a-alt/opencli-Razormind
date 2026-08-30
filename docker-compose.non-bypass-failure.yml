@@ -39,7 +39,7 @@ services:
     image: "opencli-proof-ingest:${PROOF_CATALOG_DIGEST:-unbound}"
     labels: *failure-labels
     environment:
-      ODP_REDIS_URL: redis://proof-odp-ingest-redis-gateway:6379/2
+      ODP_REDIS_URL: redis://proof-odp-ingest-redis-mutator:6379/2
   proof-relay:
     build:
       context: .
@@ -167,6 +167,19 @@ services:
       GATEWAY_PORT: "6379"
       CONTROL_PORT: "8081"
       UPSTREAM_HOST: proof-redis
+      UPSTREAM_PORT: "6379"
+    networks: [proof-odp, proof-fault]
+    labels: *failure-labels
+  proof-odp-ingest-redis-mutator:
+    image: "opencli-proof-root:${PROOF_CATALOG_DIGEST:-unbound}"
+    build: {context: ., target: non-bypass-acceptance}
+    entrypoint: [python, tests/acceptance/fault_tools/odp_fault_gateways.py]
+    environment:
+      API_AUTH_TOKEN: ${API_AUTH_TOKEN:-runtime-secret-required}
+      GATEWAY_MODE: ingest-redis-payload-mutator
+      GATEWAY_PORT: "6379"
+      CONTROL_PORT: "8084"
+      UPSTREAM_HOST: proof-odp-ingest-redis-gateway
       UPSTREAM_PORT: "6379"
     networks: [proof-odp, proof-fault]
     labels: *failure-labels

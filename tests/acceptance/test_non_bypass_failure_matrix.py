@@ -233,7 +233,15 @@ def test_overlay_has_no_host_ports_and_internal_fault_network():
         "proof-iii-actuator",
         "proof-governance",
         "proof-admin-control",
+        "proof-odp-ingest-redis-mutator",
     } <= set(compose["services"])
+    assert compose["services"]["proof-odp-ingest"]["environment"]["ODP_REDIS_URL"].startswith(
+        "redis://proof-odp-ingest-redis-mutator:"
+    )
+    assert (
+        compose["services"]["proof-odp-ingest-redis-mutator"]["environment"]["GATEWAY_MODE"]
+        == "ingest-redis-payload-mutator"
+    )
 
 
 def test_callback_relay_routes_only_the_three_real_callback_paths(monkeypatch):
@@ -410,6 +418,7 @@ def test_failure_overlay_routes_all_odp_writers_through_named_fault_gateways():
     assert {
         "proof-odp-http-gateway",
         "proof-odp-ingest-redis-gateway",
+        "proof-odp-ingest-redis-mutator",
         "proof-odp-store-pg-gateway",
         "proof-odp-store-redis-gateway",
     } <= set(services)
@@ -423,7 +432,7 @@ def test_failure_overlay_routes_all_odp_writers_through_named_fault_gateways():
     )
     assert (
         services["proof-odp-ingest"]["environment"]["ODP_REDIS_URL"]
-        == "redis://proof-odp-ingest-redis-gateway:6379/2"
+        == "redis://proof-odp-ingest-redis-mutator:6379/2"
     )
     assert (
         services["proof-odp-store"]["environment"]["ODP_REDIS_URL"]
@@ -452,6 +461,29 @@ def test_storage_loss_row_uses_public_helpers_and_single_scenario_runner_selecti
     assert "store-redis-committed-xadd" in driver and "store-commit-ready" in driver
     assert 'parser.add_argument("--scenario", choices=SCENARIO_ORDER)' in runner
     assert "selected = (scenario,) if scenario else SCENARIO_ORDER" in runner
+
+
+def test_duplicate_dlq_row_binds_replay_duplicate_and_retention_public_outcomes():
+    driver = (ROOT / "tests/acceptance/non_bypass_failure_driver.py").read_text(encoding="utf-8")
+    assert all(
+        f"def {name}(" in driver
+        for name in (
+            "duplicate_dlq",
+            "_wait_for_ingress_receipt",
+            "_wait_for_materialization",
+        )
+    )
+    assert "ingest-redis-payload-mutator" in driver
+    assert '"duplicate-dlq"' in driver
+    assert all(
+        name in driver
+        for name in (
+            "replay_same_intent",
+            "duplicate_signed_receipt",
+            "retained_dlq_materialization",
+            "unknown_retention_materialization",
+        )
+    )
 
 
 def _runner_module():

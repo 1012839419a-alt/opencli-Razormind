@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -538,13 +539,43 @@ def public_setup(client: httpx.Client, run: str) -> dict[str, Any]:
     "collections": f"{route}/{workflow_run['runId']}/iii-collections"}
 
 
-def public_submit(client: httpx.Client, setup: dict[str, Any], *, source_id: str, site: str,
-command: str) -> dict[str, Any]:
-    return _post(client, setup["primary"], setup["collections"], {"version": "v1",
-    "idempotencyKey": source_id, "nodeId": "opencli-source", "collection": {"site": site,
-    "command": command, "args": {"keyword": source_id}, "sourceBindingId": source_id,
-    "sourceBindingRevisionId": f"{source_id}-v1", "sourceBindingRevisionNumber": 1}},
-    setup["proposer"])
+def public_submit(
+    client: httpx.Client,
+    setup: dict[str, Any],
+    *,
+    source_id: str,
+    site: str,
+    command: str,
+    idempotency_key: str | None = None,
+    stable_odp_source_id: str | None = None,
+) -> dict[str, Any]:
+    collection: dict[str, Any] = {
+        "site": site,
+        "command": command,
+        "args": {"keyword": source_id},
+    }
+    if stable_odp_source_id is None:
+        collection.update(
+            {
+                "sourceBindingId": source_id,
+                "sourceBindingRevisionId": f"{source_id}-v1",
+                "sourceBindingRevisionNumber": 1,
+            }
+        )
+    else:
+        collection["sourceId"] = stable_odp_source_id
+    return _post(
+        client,
+        setup["primary"],
+        setup["collections"],
+        {
+            "version": "v1",
+            "idempotencyKey": idempotency_key or source_id,
+            "nodeId": "opencli-source",
+            "collection": collection,
+        },
+        setup["proposer"],
+    )
 
 
 def public_status(client: httpx.Client, setup: dict[str, Any], command_id: str) -> dict[str, Any]:
@@ -569,6 +600,7 @@ def _arm_gateway(client: httpx.Client, name: str, armed: bool) -> None:
     controls = {
         "http-schema-mutator": "http://proof-odp-http-gateway:8040",
         "ingest-redis-cut": "http://proof-odp-ingest-redis-gateway:8081",
+        "ingest-redis-payload-mutator": "http://proof-odp-ingest-redis-mutator:8084",
         "store-pg-cut": "http://proof-odp-store-pg-gateway:8082",
         "store-redis-committed-xadd": "http://proof-odp-store-redis-gateway:8083",
     }
@@ -581,6 +613,249 @@ def _arm_gateway(client: httpx.Client, name: str, armed: bool) -> None:
 def _public_hash(value: dict[str, Any]) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",",
     ":")).encode()).hexdigest()
+
+
+def _wait_for_ingress_receipt(
+    client: httpx.Client, setup: dict[str, Any], command_id: str, *, timeout: int = 90
+) -> tuple[dict[str, Any], str]:
+    deadline = time.monotonic() + timeout
+    last: dict[str, Any] | None = None
+    while time.monotonic() < deadline:
+        last = public_status(client, setup, command_id)
+        for reference in last.get("evidenceReferences", []):
+            if (
+                reference.get("kind") == "ingress_receipt"
+                and isinstance(reference.get("hash"), str)
+                and len(reference["hash"]) == 64
+            ):
+                return last, reference["hash"]
+        time.sleep(0.5)
+    raise RuntimeError(
+        "authenticated public status never exposed an ingress-receipt reference: "
+        + json.dumps(last, sort_keys=True)
+    )
+
+
+def _wait_for_materialization(
+    client: httpx.Client,
+    setup: dict[str, Any],
+    command_id: str,
+    *,
+    predicate: Any,
+    timeout: int = 180,
+) -> dict[str, Any]:
+    deadline = time.monotonic() + timeout
+    result = public_materialize(client, setup, command_id)
+    while not predicate(result) and time.monotonic() < deadline:
+        time.sleep(2)
+        result = public_recover(client, setup, command_id)
+    if not predicate(result):
+        raise RuntimeError(
+            "authenticated materialization did not settle as required: "
+            + json.dumps(result, sort_keys=True)
+        )
+    return result
+
+
+def _completed_exact(value: dict[str, Any]) -> bool:
+    counts = value.get("counts")
+    return (
+        value.get("materializationStatus") == "completed"
+        and isinstance(counts, dict)
+        and counts.get("record_present") == 1
+        and counts.get("unknown") == 0
+    )
+
+
+def duplicate_dlq(run: str) -> dict[str, Any]:
+    """Prove replay, duplicate ingress, durable DLQ, and unknown retention publicly."""
+    stable_source_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"proof-duplicate/{run}"))
+    keyword = f"duplicate-{hashlib.sha256(run.encode()).hexdigest()[:16]}"
+    hashes: dict[str, str] = {}
+    with httpx.Client(timeout=60) as client:
+        first_setup = public_setup(client, f"{run}-first")
+        first = public_submit(
+            client,
+            first_setup,
+            source_id=keyword,
+            stable_odp_source_id=stable_source_id,
+            site="github",
+            command="issues",
+            idempotency_key="same-admin-replay",
+        )
+        if first.get("created") is not True:
+            raise RuntimeError("initial authenticated Admin submission was not created")
+        replay = public_submit(
+            client,
+            first_setup,
+            source_id=keyword,
+            stable_odp_source_id=stable_source_id,
+            site="github",
+            command="issues",
+            idempotency_key="same-admin-replay",
+        )
+        if (
+            replay.get("created") is not False
+            or any(replay.get(name) != first.get(name) for name in ("commandId", "attemptId", "payloadSha256"))
+        ):
+            raise RuntimeError("identical authenticated replay minted a different collection intent")
+        first_status, first_receipt = _wait_for_ingress_receipt(
+            client, first_setup, first["commandId"]
+        )
+        first_exact = _wait_for_materialization(
+            client, first_setup, first["commandId"], predicate=_completed_exact
+        )
+        hashes.update(
+            {
+                "replay_initial": _public_hash(first),
+                "replay_same_intent": _public_hash(replay),
+                "replay_status": _public_hash(first_status),
+                "replay_receipt": first_receipt,
+                "replay_exact": _public_hash(first_exact),
+            }
+        )
+
+        duplicate_setup = public_setup(client, f"{run}-duplicate")
+        duplicate = public_submit(
+            client,
+            duplicate_setup,
+            source_id=keyword,
+            stable_odp_source_id=stable_source_id,
+            site="github",
+            command="issues",
+            idempotency_key="second-disposable-command",
+        )
+        duplicate_status, duplicate_receipt = _wait_for_ingress_receipt(
+            client, duplicate_setup, duplicate["commandId"]
+        )
+        duplicate_exact = _wait_for_materialization(
+            client, duplicate_setup, duplicate["commandId"], predicate=_completed_exact
+        )
+        hashes.update(
+            {
+                "duplicate_submission": _public_hash(duplicate),
+                "duplicate_status": _public_hash(duplicate_status),
+                "duplicate_signed_receipt": duplicate_receipt,
+                "duplicate_exact_presence": _public_hash(duplicate_exact),
+            }
+        )
+
+        dlq_setup = public_setup(client, f"{run}-dlq")
+        _arm_gateway(client, "ingest-redis-payload-mutator", True)
+        try:
+            dlq = public_submit(
+                client,
+                dlq_setup,
+                source_id="poison",
+                stable_odp_source_id=str(uuid.uuid4()),
+                site="reddit",
+                command="posts",
+                idempotency_key="retained-dlq",
+            )
+            dlq_status, dlq_receipt = _wait_for_ingress_receipt(
+                client, dlq_setup, dlq["commandId"]
+            )
+        finally:
+            _arm_gateway(client, "ingest-redis-payload-mutator", False)
+        retained_dlq = _wait_for_materialization(
+            client,
+            dlq_setup,
+            dlq["commandId"],
+            predicate=lambda value: (
+                value.get("materializationStatus") == "partial"
+                and value.get("counts", {}).get("dlq") == 1
+                and value.get("counts", {}).get("unknown") == 0
+            ),
+        )
+        hashes.update(
+            {
+                "retained_dlq_submission": _public_hash(dlq),
+                "retained_dlq_status": _public_hash(dlq_status),
+                "retained_dlq_receipt": dlq_receipt,
+                "retained_dlq_materialization": _public_hash(retained_dlq),
+            }
+        )
+
+        unknown_setup = public_setup(client, f"{run}-unknown")
+        _arm_gateway(client, "store-pg-cut", True)
+        try:
+            unknown = public_submit(
+                client,
+                unknown_setup,
+                source_id="unknown",
+                stable_odp_source_id=str(uuid.uuid4()),
+                site="youtube",
+                command="videos",
+                idempotency_key="absent-retention",
+            )
+            unknown_status, unknown_receipt = _wait_for_ingress_receipt(
+                client, unknown_setup, unknown["commandId"]
+            )
+            unknown_retention = _wait_for_materialization(
+                client,
+                unknown_setup,
+                unknown["commandId"],
+                predicate=lambda value: (
+                    value.get("materializationStatus") == "indeterminate"
+                    and value.get("counts", {}).get("unknown") == 1
+                ),
+                timeout=60,
+            )
+        finally:
+            _arm_gateway(client, "store-pg-cut", False)
+        hashes.update(
+            {
+                "unknown_submission": _public_hash(unknown),
+                "unknown_status": _public_hash(unknown_status),
+                "unknown_receipt": unknown_receipt,
+                "unknown_retention_materialization": _public_hash(unknown_retention),
+            }
+        )
+
+    return {
+        "scenario": "duplicate-dlq",
+        "run": run,
+        "fault": "duplicate-ingress-retained-dlq-unknown-retention",
+        "actuator": {
+            "name": "proof-iii-actuator",
+            "invocationHash": hashlib.sha256(duplicate["commandId"].encode()).hexdigest(),
+        },
+        "correlation": {
+            "commandId": duplicate["commandId"],
+            "attemptId": duplicate["attemptId"],
+            "workflowRunId": duplicate_setup["runId"],
+            "hashes": hashes,
+        },
+        "collection": {
+            "blockingStage": "duplicate",
+            "recoveryAction": "recover",
+            "sideEffectUncertainty": True,
+        },
+        "materialization": {
+            "status": "indeterminate",
+            "blocker": "unknown_retention",
+            "recoveryAction": "recover",
+            "manifestHash": None,
+            "reconciliationRevision": unknown_retention["reconciliationRevision"],
+            "pageSnapshotAsOf": unknown_retention.get("pageSnapshotAsOf"),
+        },
+        "graph": {"pin": None, "sequence": None, "readBlocker": "none", "mutationStatus": "none"},
+        "delivery": {
+            "state": "none",
+            "outcome": "none",
+            "attemptCount": 0,
+            "receiptHash": None,
+            "reconciliation": "none",
+        },
+        "redactionProfile": "failure-v1",
+        "timing": {"startedAt": 0, "completedAt": 1, "deadlineSeconds": 360},
+        "governanceReference": {
+            "artifactId": "pending",
+            "keyId": "pending",
+            "trustRootFingerprint": "pending",
+        },
+        "authority": "authenticated-scoped-public-api",
+    }
 
 
 def _storage_loss_source_id(run: str, index: int, source: str) -> str:
@@ -670,6 +945,8 @@ def main() -> int:
         result = crash_after_ingest(args.run)
     elif args.scenario == "ingest-redis-store-loss":
         result = ingest_redis_store_loss(args.run)
+    elif args.scenario == "duplicate-dlq":
+        result = duplicate_dlq(args.run)
     else:
         raise RuntimeError("scenario driver is not implemented")
     print(json.dumps(result, sort_keys=True))

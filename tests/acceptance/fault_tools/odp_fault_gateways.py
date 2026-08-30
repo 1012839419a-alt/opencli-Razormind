@@ -20,7 +20,11 @@ from fastapi import FastAPI, Header, HTTPException, Request, Response
 from pydantic import BaseModel
 
 GatewayMode = Literal[
-    "http-schema-mutator", "ingest-redis-cut", "store-pg-cut", "store-redis-committed-xadd",
+    "http-schema-mutator",
+    "ingest-redis-cut",
+    "ingest-redis-payload-mutator",
+    "store-pg-cut",
+    "store-redis-committed-xadd",
 ]
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
@@ -35,6 +39,7 @@ class GatewayState:
 STATES = {
     "http-schema-mutator": GatewayState("http-schema-mutator"),
     "ingest-redis-cut": GatewayState("ingest-redis-cut"),
+    "ingest-redis-payload-mutator": GatewayState("ingest-redis-payload-mutator"),
     "store-pg-cut": GatewayState("store-pg-cut"),
     "store-redis-committed-xadd": GatewayState("store-redis-committed-xadd"),
 }
@@ -183,6 +188,73 @@ def _is_committed_xadd(chunk: bytes) -> bool:
     return b"XADD" in upper and b"ODP.RECORD.COMMITTED" in upper
 
 
+def _resp_parts(command: bytes) -> list[bytes] | None:
+    """Decode one complete RESP array command without interpreting its payload."""
+    if not command.startswith(b"*"):
+        return None
+    count_end = command.find(b"\r\n")
+    if count_end < 0:
+        return None
+    try:
+        count = int(command[1:count_end])
+    except ValueError:
+        return None
+    cursor = count_end + 2
+    parts: list[bytes] = []
+    for _ in range(count):
+        if command[cursor:cursor + 1] != b"$":
+            return None
+        size_end = command.find(b"\r\n", cursor)
+        if size_end < 0:
+            return None
+        try:
+            size = int(command[cursor + 1:size_end])
+        except ValueError:
+            return None
+        data_start = size_end + 2
+        data_end = data_start + size
+        if command[data_end:data_end + 2] != b"\r\n":
+            return None
+        parts.append(command[data_start:data_end])
+        cursor = data_end + 2
+    return parts if cursor == len(command) else None
+
+
+def _encode_resp(parts: list[bytes]) -> bytes:
+    return b"*" + str(len(parts)).encode() + b"\r\n" + b"".join(
+        b"$" + str(len(part)).encode() + b"\r\n" + part + b"\r\n"
+        for part in parts
+    )
+
+def _poison_ingest_xadd(command: bytes) -> bytes:
+    """Only poison the `event` payload on an actual ingest-stream XADD."""
+    parts = _resp_parts(command)
+    if (
+        parts is None
+        or len(parts) < 5
+        or parts[0].upper() != b"XADD"
+        or parts[1] != b"odp.ingest.raw"
+    ):
+        return command
+    for index in range(3, len(parts) - 1, 2):
+        if parts[index] != b"event":
+            continue
+        try:
+            event = json.loads(parts[index + 1])
+        except (TypeError, ValueError):
+            return command
+        if not isinstance(event, dict):
+            return command
+        # PostgreSQL cannot persist this JSONB raw_data value, while the
+        # record remains otherwise valid and is therefore retained in DLQ.
+        event["raw_data"] = "\x00"
+        parts[index + 1] = json.dumps(
+            event, separators=(",", ":"), ensure_ascii=False
+        ).encode()
+        return _encode_resp(parts)
+    return command
+
+
 class RespCommandBuffer:
     """Bounded RESP request framing sufficient for transparent command gating."""
     def __init__(self) -> None:
@@ -241,7 +313,12 @@ async def _copy(
     outbound: bool,
     observer: PostgresCommitObserver | None = None,
 ) -> None:
-    resp = RespCommandBuffer() if state.mode == "store-redis-committed-xadd" and outbound else None
+    resp = (
+        RespCommandBuffer()
+        if state.mode in {"ingest-redis-payload-mutator", "store-redis-committed-xadd"}
+        and outbound
+        else None
+    )
     while data := await reader.read(65536):
         if observer:
             (observer.feed_frontend if outbound else observer.feed_backend)(data)
@@ -257,6 +334,8 @@ async def _copy(
                 and _redis_filter_enabled(state)
             ):
                 chunk = chunk.replace(b"odp.record.committed", b"odp.record.discarded")
+            if state.mode == "ingest-redis-payload-mutator" and state.armed and outbound:
+                chunk = _poison_ingest_xadd(chunk)
             writer.write(chunk)
             await writer.drain()
     writer.close()
