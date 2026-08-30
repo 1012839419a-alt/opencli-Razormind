@@ -1932,6 +1932,276 @@ def receiver_recovery(run: str) -> dict[str, Any]:
     )
 
 
+def _arm_cancel_before_dispatch_gate(client: httpx.Client, run: str) -> None:
+    response = client.post(
+        "http://proof-admin-pg-relay:8080/_gate/cancel-before-dispatch/arm",
+        json={"run": run},
+        headers={"X-API-Token": os.environ["API_AUTH_TOKEN"]},
+    )
+    _require_status(response, 200, "cancel-before-dispatch relay arm")
+
+
+def _release_cancel_before_dispatch_gate(client: httpx.Client) -> None:
+    response = client.post(
+        "http://proof-admin-pg-relay:8080/_gate/cancel-before-dispatch/release",
+        json={},
+        headers={"X-API-Token": os.environ["API_AUTH_TOKEN"]},
+    )
+    _require_status(response, 200, "cancel-before-dispatch relay release")
+
+
+def _require_empty_delivery_evidence(
+    execution: dict[str, Any], *, state: str, outcome: str | None
+) -> None:
+    if (
+        execution.get("state") != state
+        or execution.get("outcome") != outcome
+        or execution.get("attemptCount") != 0
+        or execution.get("attempts") != []
+        or execution.get("reconciliations") != []
+    ):
+        raise RuntimeError(f"delivery evidence escaped cancellation boundary: {execution}")
+
+
+def cancel_before_dispatch(run: str) -> dict[str, Any]:
+    """Cancel a durably reserved execution before the post-reservation lock reaches PG."""
+    stable_source_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"proof-cancel/{run}"))
+    keyword = f"cancel-{hashlib.sha256(run.encode()).hexdigest()[:16]}"
+    hashes: dict[str, str] = {}
+    with httpx.Client(timeout=120) as client:
+        setup = public_setup(client, run)
+        control = "http://proof-admin-control:8000/api/v1"
+        reviewer = {
+            "X-API-Token": os.environ["API_AUTH_TOKEN"],
+            "Authorization": f"Bearer {os.environ['PROOF_REVIEWER_JWT']}",
+        }
+        reviewer_member_response = client.post(
+            f"{setup['primary']}/workspaces/{setup['workspaceId']}/members",
+            json={
+                "subject": "proof-reviewer",
+                "email": "proof-reviewer@proof.invalid",
+                "display_name": "proof-reviewer",
+                "role": "maintainer",
+            },
+            headers=setup["bootstrap"],
+        )
+        if _data(reviewer_member_response).get("role") != "maintainer":
+            raise RuntimeError("cancellation reviewer lacks approval capability")
+        submission = public_submit(
+            client,
+            setup,
+            source_id=keyword,
+            stable_odp_source_id=stable_source_id,
+            site="bilibili",
+            command="search",
+        )
+        _wait_for_expected_key_report(client, setup, submission["commandId"])
+        _wait_for_ingress_receipt(client, setup, submission["commandId"])
+        materialization = _wait_for_materialization(
+            client, setup, submission["commandId"], predicate=_completed_exact
+        )
+        manifest = materialization.get("researchGraphManifestRef")
+        if (
+            not isinstance(manifest, dict)
+            or manifest.get("materializationStatus") != "completed"
+            or not isinstance(manifest.get("manifestHash"), str)
+        ):
+            raise RuntimeError("cancellation proof lacks an eligible completed manifest")
+
+        graph_route = f"{setup['route']}/{setup['runId']}/research-graph-v2"
+        graph_initial = _get(client, setup["primary"], graph_route, setup["proposer"])
+        claim_id = f"cancel-before-dispatch-{run}"
+        proposed_response = client.post(
+            setup["primary"] + graph_route + "/mutations",
+            json={
+                "idempotencyKey": f"{run}-cancel-propose",
+                "action": "propose",
+                "expectedSequence": graph_initial["sequence"],
+                "expectedRevision": graph_initial["researchRevisionId"],
+                "nodeId": "opencli-source",
+                "claimId": claim_id,
+                "claimContentHash": manifest["manifestHash"],
+                "manifestRefs": [manifest],
+            },
+            headers=setup["proposer"],
+        )
+        _require_status(proposed_response, 201, "cancellation graph proposal")
+        proposed = _data(proposed_response)
+        verified_response = client.post(
+            setup["primary"] + graph_route + "/mutations",
+            json={
+                "idempotencyKey": f"{run}-cancel-verify",
+                "action": "verify",
+                "expectedSequence": proposed["sequence"],
+                "expectedRevision": proposed["researchRevisionId"],
+                "nodeId": "opencli-source",
+                "claimId": claim_id,
+                "claimContentHash": manifest["manifestHash"],
+                "manifestRefs": [manifest],
+            },
+            headers=reviewer,
+        )
+        _require_status(verified_response, 201, "cancellation graph verification")
+        verified = _data(verified_response)
+        pinned_response = client.post(
+            setup["primary"] + graph_route + "/mutations",
+            json={
+                "idempotencyKey": f"{run}-cancel-pin",
+                "action": "pin",
+                "expectedSequence": verified["sequence"],
+                "expectedRevision": verified["researchRevisionId"],
+                "nodeId": "opencli-source",
+                "manifestRefs": [manifest],
+            },
+            headers=reviewer,
+        )
+        _require_status(pinned_response, 201, "cancellation graph pin")
+        pinned = _data(pinned_response).get("pinnedFold")
+        if not isinstance(pinned, dict) or pinned.get("blocked"):
+            raise RuntimeError("cancellation proof requires an eligible graph pin")
+        graph_final = _get(client, setup["primary"], graph_route, reviewer)
+        if graph_final.get("pinnedFold") != pinned:
+            raise RuntimeError("cancellation proof public graph pin drifted")
+
+        target_response = client.post(
+            f"{setup['primary']}{setup['route']}/{setup['runId']}/delivery-targets",
+            json={
+                "receiverIdentity": "controlled-receiver-proof",
+                "endpointIdentity": "receiver-channel-proof",
+                "credentialReference": "credential-reference-proof",
+            },
+            headers=reviewer,
+        )
+        _require_status(target_response, 201, "cancellation delivery target")
+        target = _data(target_response)
+        decision_response = client.post(
+            f"{setup['primary']}{setup['route']}/{setup['runId']}/delivery-authorizations",
+            json={
+                "version": "v1",
+                "operationId": f"{run}-cancel-before-dispatch",
+                "idempotencyKey": f"{run}-cancel-before-dispatch-decision",
+                "nodeId": "opencli-source",
+                "targetId": target["targetId"],
+                "pinnedReference": _pinned_reference(pinned),
+                "selectedClaimIds": [claim_id],
+            },
+            headers=reviewer,
+        )
+        _require_status(decision_response, 201, "cancellation delivery authorization")
+        decision = _data(decision_response)
+
+        gate_armed = False
+        executor = ThreadPoolExecutor(max_workers=1)
+        try:
+            _arm_cancel_before_dispatch_gate(client, run)
+            gate_armed = True
+
+            def execute_primary() -> httpx.Response:
+                with httpx.Client(timeout=120) as primary_client:
+                    return primary_client.post(
+                        f"{setup['primary']}{setup['route']}/{setup['runId']}/delivery-executions",
+                        json={"decisionId": decision["decisionId"]},
+                        headers=reviewer,
+                    )
+
+            primary_future = executor.submit(execute_primary)
+            _wait_coordination(run, "cancel-before-dispatch-held")
+
+            reserved_list_response = client.get(
+                control + f"{setup['route']}/{setup['runId']}/delivery-executions",
+                headers=reviewer,
+            )
+            reserved_list = _data(reserved_list_response)
+            reserved_items = reserved_list.get("items")
+            if not isinstance(reserved_items, list) or len(reserved_items) != 1:
+                raise RuntimeError("control Admin did not expose one reserved execution")
+            reserved = reserved_items[0]
+            _require_empty_delivery_evidence(reserved, state="reserved", outcome=None)
+            hashes["reserved_list"] = _public_response_hash(reserved_list_response)
+
+            cancel_response = client.post(
+                control + f"{setup['route']}/{setup['runId']}/delivery-executions/"
+                f"{reserved['executionId']}/cancel",
+                json={},
+                headers=reviewer,
+            )
+            _require_status(cancel_response, 200, "control cancellation")
+            cancelled = _data(cancel_response)
+            _require_empty_delivery_evidence(cancelled, state="cancelled", outcome="unknown")
+            hashes["cancel"] = _public_response_hash(cancel_response)
+
+            _release_cancel_before_dispatch_gate(client)
+            gate_armed = False
+            primary_response = primary_future.result(timeout=30)
+            _require_status(primary_response, 201, "primary cancellation completion")
+            primary_result = _data(primary_response)
+            _require_empty_delivery_evidence(
+                primary_result, state="cancelled", outcome="unknown"
+            )
+            hashes["primary_result"] = _public_response_hash(primary_response)
+
+            final_list_response = client.get(
+                control + f"{setup['route']}/{setup['runId']}/delivery-executions",
+                headers=reviewer,
+            )
+            final_list = _data(final_list_response)
+            final_items = final_list.get("items")
+            if not isinstance(final_items, list) or len(final_items) != 1:
+                raise RuntimeError("control Admin did not retain one cancelled execution")
+            _require_empty_delivery_evidence(
+                final_items[0], state="cancelled", outcome="unknown"
+            )
+            hashes["control_final_list"] = _public_response_hash(final_list_response)
+            final_read_response = client.get(
+                control + f"{setup['route']}/{setup['runId']}/delivery-executions/"
+                f"{reserved['executionId']}",
+                headers=reviewer,
+            )
+            final_read = _data(final_read_response)
+            _require_empty_delivery_evidence(final_read, state="cancelled", outcome="unknown")
+            hashes["control_final_read"] = _public_response_hash(final_read_response)
+        finally:
+            if gate_armed:
+                _release_cancel_before_dispatch_gate(client)
+            executor.shutdown(wait=True)
+
+    return _failure_result(
+        scenario="cancel-before-dispatch",
+        run=run,
+        fault="durable-reservation-cancel-before-outbound-dispatch",
+        command_id=submission["commandId"],
+        attempt_id=submission["attemptId"],
+        workflow_run_id=setup["runId"],
+        hashes=hashes,
+        collection={
+            "blockingStage": "none",
+            "recoveryAction": "recover",
+            "sideEffectUncertainty": False,
+        },
+        materialization={
+            "status": "completed",
+            "blocker": "none",
+            "recoveryAction": "recover",
+            "manifestHash": manifest["manifestHash"],
+            "reconciliationRevision": materialization["reconciliationRevision"],
+            "pageSnapshotAsOf": materialization.get("pageSnapshotAsOf"),
+        },
+        graph={
+            "pin": _public_hash(pinned),
+            "sequence": graph_final["sequence"],
+            "readBlocker": "none",
+            "mutationStatus": "none",
+        },
+        delivery={
+            "state": "cancelled",
+            "outcome": "unknown",
+            "attemptCount": 0,
+            "receiptHash": None,
+            "reconciliation": "unknown",
+        },
+    )
+
+
 def duplicate_dlq(run: str) -> dict[str, Any]:
     """Prove replay, duplicate ingress, durable DLQ, and unknown retention publicly."""
     stable_source_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"proof-duplicate/{run}"))
@@ -2347,6 +2617,8 @@ def main() -> int:
         result = amendment_decision_conflict(args.run)
     elif args.scenario == "receiver-recovery":
         result = receiver_recovery(args.run)
+    elif args.scenario == "cancel-before-dispatch":
+        result = cancel_before_dispatch(args.run)
     else:
         raise RuntimeError("scenario driver is not implemented")
     print(json.dumps(result, sort_keys=True))

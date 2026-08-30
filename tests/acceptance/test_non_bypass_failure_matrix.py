@@ -800,6 +800,84 @@ def test_failure_driver_dispatches_receiver_recovery(monkeypatch, capsys):
     }
 
 
+def test_cancel_before_dispatch_uses_locked_database_boundary_and_public_cancel_only():
+    driver = (ROOT / "tests/acceptance/non_bypass_failure_driver.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert all(
+        value in driver
+        for value in (
+            "def cancel_before_dispatch(",
+            "_arm_cancel_before_dispatch_gate",
+            "cancel-before-dispatch-held",
+            'state="reserved", outcome=None',
+            'state="cancelled", outcome="unknown"',
+            '"attemptCount": 0',
+            '"reconciliation": "unknown"',
+            "control_final_list",
+            "control_final_read",
+            "primary_result",
+        )
+    )
+    cancel_section = driver.split("def cancel_before_dispatch(", 1)[1].split(
+        "def duplicate_dlq(", 1
+    )[0]
+    assert "_before_send_start" not in cancel_section
+    assert "proof-admin-pg-relay" in driver
+
+
+def test_cancel_before_dispatch_overlay_relays_primary_database_only():
+    overlay = yaml.load(
+        (ROOT / "docker-compose.non-bypass-failure.yml").read_text(encoding="utf-8"),
+        Loader=ComposeLoader,
+    )
+    services = overlay["services"]
+    relay = services["proof-admin-pg-relay"]
+
+    assert services["proof-admin"]["environment"]["DATABASE_URL"] == (
+        "postgresql+asyncpg://proof:proof@proof-admin-pg-relay:5432/proof_admin"
+    )
+    assert services["proof-admin-control"]["environment"]["DATABASE_URL"] == (
+        "postgresql+asyncpg://proof:proof@proof-admin-postgres:5432/proof_admin"
+    )
+    assert relay["environment"]["TARGET_HOST"] == "proof-admin-postgres"
+    assert relay["networks"] == ["proof-control", "proof-fault"]
+    assert relay["volumes"] == [
+        "${PROOF_ARTIFACT_DIR:-./.artifacts/non-bypass-failures}:/proof-artifacts"
+    ]
+
+
+def test_cancel_before_dispatch_runner_allows_long_public_driver():
+    runner = (ROOT / "scripts/run_non_bypass_failure_matrix.py").read_text(
+        encoding="utf-8"
+    )
+    section = runner.split("def _facts_from_driver(", 1)[1].split(
+        'if ledger.scenario == "signed-zero"', 1
+    )[0]
+
+    assert '"cancel-before-dispatch"' in section
+    assert "process.communicate(timeout=360)" in section
+
+
+def test_failure_driver_dispatches_cancel_before_dispatch(monkeypatch, capsys):
+    driver = _failure_driver_module()
+    monkeypatch.setattr(
+        driver,
+        "cancel_before_dispatch",
+        lambda run: {"handler": "cancel-before-dispatch", "run": run},
+    )
+    monkeypatch.setattr(
+        sys, "argv", ["driver", "--scenario", "cancel-before-dispatch", "--run", "r1"]
+    )
+
+    assert driver.main() == 0
+    assert __import__("json").loads(capsys.readouterr().out) == {
+        "handler": "cancel-before-dispatch",
+        "run": "r1",
+    }
+
+
 def _runner_module():
     path = ROOT / "scripts/run_non_bypass_failure_matrix.py"
     spec = importlib.util.spec_from_file_location("failure_runner_catalog", path)

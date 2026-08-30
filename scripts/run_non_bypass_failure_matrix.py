@@ -451,6 +451,7 @@ def _facts_from_driver(
         "graph-stale-auth-cas-retract",
         "amendment-decision-conflict",
         "receiver-recovery",
+        "cancel-before-dispatch",
     }
     if ledger.scenario not in supported:
         raise FailureRunRejectedError(
@@ -472,6 +473,7 @@ def _facts_from_driver(
         "query-page-race",
         "graph-stale-auth-cas-retract",
         "amendment-decision-conflict",
+        "cancel-before-dispatch",
     }:
         stdout, stderr = process.communicate(timeout=360)
         if process.returncode:

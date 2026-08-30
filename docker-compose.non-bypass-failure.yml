@@ -7,6 +7,10 @@ x-failure-labels: &failure-labels
 services:
   proof-admin:
     image: "opencli-proof-root:${PROOF_CATALOG_DIGEST:-unbound}"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://proof:proof@proof-admin-pg-relay:5432/proof_admin
+    depends_on:
+      proof-admin-pg-relay: {condition: service_healthy}
     networks: !override [proof-control, proof-query, proof-callback, proof-failure-receiver, proof-iii-admin]
     labels: *failure-labels
   proof-driver:
@@ -16,6 +20,31 @@ services:
     volumes:
       - ${PROOF_ARTIFACT_DIR:-./.artifacts/non-bypass-failures}:/proof-artifacts
   proof-admin-postgres:
+    labels: *failure-labels
+  # Acceptance-only protocol boundary: primary Admin is relayed; the control
+  # Admin retains its direct database connection for independent public reads.
+  proof-admin-pg-relay:
+    image: "opencli-proof-root:${PROOF_CATALOG_DIGEST:-unbound}"
+    build:
+      context: .
+      target: non-bypass-acceptance
+    command: [uvicorn, tests.acceptance.fault_tools.admin_pg_protocol_relay:app, --host, 0.0.0.0, --port, "8080"]
+    environment:
+      API_AUTH_TOKEN: ${API_AUTH_TOKEN:-runtime-secret-required}
+      TARGET_HOST: proof-admin-postgres
+      TARGET_PORT: "5432"
+      GATE_PORT: "5432"
+      PROOF_ARTIFACT_DIR: /proof-artifacts
+    volumes:
+      - ${PROOF_ARTIFACT_DIR:-./.artifacts/non-bypass-failures}:/proof-artifacts
+    networks: [proof-control, proof-fault]
+    depends_on:
+      proof-admin-postgres: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, curl, -fsS, http://localhost:8080/health]
+      interval: 5s
+      timeout: 3s
+      retries: 20
     labels: *failure-labels
   proof-redis:
     labels: *failure-labels
