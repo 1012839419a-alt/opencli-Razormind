@@ -97,25 +97,53 @@ CATALOG_NAMES = ("root", "collector", "bridge", "ingest", "store", "query")
 
 
 def _catalog_digest(base: Path, overlay: Path) -> str:
-    """Bind catalog names to every source file that defines the build inputs."""
+    """Bind catalog names to every source file copied into any catalog image."""
     inputs = (
         ROOT / "Dockerfile",
         ROOT / ".dockerignore",
+        ROOT / "pyproject.toml",
+        ROOT / "backend",
+        ROOT / "alembic.ini",
+        ROOT / "entrypoint.sh",
+        ROOT / "scripts/patch-opencli.js",
+        ROOT / "scripts/install-agent.sh",
+        ROOT / "scripts/proof_bundle_governance.py",
+        ROOT / "scripts/proof_bundle_governance_http.py",
+        ROOT / "scripts/non_bypass_failure_proof_contract.py",
+        ROOT / "tests/acceptance/non_bypass_vertical.py",
+        ROOT / "tests/acceptance/non_bypass_failure_matrix.py",
+        ROOT / "tests/acceptance/non_bypass_failure_driver.py",
+        ROOT / "tests/acceptance/fault_tools",
+        FIXTURE,
+        FIXTURE_DIGEST,
         ROOT / "iii/workers/collector-opencli/Dockerfile",
+        ROOT / "iii/workers/collector-opencli/pyproject.toml",
+        ROOT / "iii/workers/collector-opencli/src",
         ROOT / "iii/workers/odp-ingest-bridge/Dockerfile",
+        ROOT / "iii/workers/odp-ingest-bridge/pyproject.toml",
+        ROOT / "iii/workers/odp-ingest-bridge/src",
+        ROOT / "iii/lib",
         ROOT / "odp-rs/Dockerfile.ingest",
         ROOT / "odp-rs/Dockerfile.store",
         ROOT / "odp-rs/Dockerfile.query",
+        ROOT / "odp-rs/Cargo.toml",
+        ROOT / "odp-rs/Cargo.lock",
+        ROOT / "odp-rs/crates",
         base,
         overlay,
-        FIXTURE_DIGEST,
     )
     digest = hashlib.sha256()
-    for path in inputs:
-        digest.update(path.resolve().relative_to(ROOT).as_posix().encode())
-        digest.update(b"\0")
-        digest.update(path.resolve().read_bytes())
-        digest.update(b"\0")
+    for input_path in inputs:
+        files = (
+            (input_path,)
+            if input_path.is_file()
+            else sorted(path for path in input_path.rglob("*") if path.is_file())
+        )
+        for path in files:
+            digest.update(path.resolve().relative_to(ROOT).as_posix().encode())
+            digest.update(b"\0")
+            digest.update(path.read_bytes())
+            digest.update(b"\0")
     return digest.hexdigest()
 
 
