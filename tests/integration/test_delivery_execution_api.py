@@ -3,7 +3,7 @@
 import asyncio
 import json
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from httpx import AsyncClient
@@ -237,6 +237,95 @@ async def test_execution_and_read_survive_recreated_database_sessions(client: As
     assert recovered.outcome == "accepted"
     assert recovered.attempt_count == 1
 
+
+@pytest.mark.asyncio
+async def test_recreated_sessions_recover_stale_reservation_and_block_ambiguous_send(
+    client: AsyncClient, db_session, db_engine, monkeypatch
+):
+    scope, decision_a = await _stored_frozen_decision(db_session)
+    decision_a_row = await db_session.get(DeliveryAuthorizationDecisionV1, decision_a)
+    decision_b = str(uuid.uuid4())
+    decision_b_row = DeliveryAuthorizationDecisionV1(
+        **{
+            column.name: getattr(decision_a_row, column.name)
+            for column in DeliveryAuthorizationDecisionV1.__table__.columns
+            if column.name not in {"id", "created_at", "updated_at", "decision_hash", "binding_hash", "operation_id", "idempotency_key"}
+        },
+        id=decision_b,
+        operation_id="delivery-op-b",
+        idempotency_key="delivery-idempotency-b",
+        binding_hash="",
+        decision_hash="",
+    )
+    decision_b_row.approval_evidence = [delivery_execution._approval(decision_b_row, scope)]
+    decision_b_row.binding_hash = delivery_execution._canonical_hash(delivery_execution._decision_binding(decision_b_row, scope))
+    decision_b_row.decision_hash = delivery_execution._canonical_hash(
+        {"binding": delivery_execution._decision_binding(decision_b_row, scope), "approvalEvidence": decision_b_row.approval_evidence, "decisionedAt": decision_b_row.decisioned_at.isoformat()}
+    )
+    db_session.add(decision_b_row)
+    await db_session.commit()
+    decisions = {decision_a_row.id: decision_a_row, decision_b_row.id: decision_b_row}
+    old = datetime.now(timezone.utc) - timedelta(seconds=120)
+    execution_ids = {}
+    for label, decision_id, state, send_started_at in (
+        ("a", decision_a, "reserved", None),
+        ("b", decision_b, "in-flight", old),
+    ):
+        decision = decisions[decision_id]
+        execution = DeliveryExecution(
+            id=str(uuid.uuid4()),
+            decision_id=decision.id,
+            target_revision_id=decision.target_revision_id,
+            workspace_id=scope.workspace_id,
+            project_id=scope.project_id,
+            workflow_id=scope.workflow_id,
+            studio_workflow_version_id=scope.studio_workflow_version_id,
+            run_id=scope.run_id,
+            operation_id=decision.operation_id,
+            decision_hash=decision.decision_hash,
+            payload_hash=decision.payload_hash,
+            execution_binding_hash=delivery_execution._binding(decision),
+            state=state,
+            lease_token=f"stale-{label}",
+            lease_acquired_at=old,
+            send_started_at=send_started_at,
+            reserved_attempt_number=1,
+        )
+        db_session.add(execution)
+        execution_ids[label] = execution.id
+    await db_session.commit()
+
+    posts = []
+
+    async def deterministic_signed_post(endpoint, body, headers, *, timeout_seconds, status_query=False):
+        posts.append(body)
+        return await client.post("/api/v1/controlled-receiver/v2/deliver", content=body, headers=headers)
+
+    monkeypatch.setattr(delivery_execution, "pinned_post", deterministic_signed_post)
+    sessions = async_sessionmaker(db_engine, expire_on_commit=False)
+    async with sessions() as session_a:
+        recovered_a = await delivery_execution.execute_delivery(session_a, scope=scope, decision_id=decision_a)
+        await session_a.commit()
+    async with sessions() as session_b:
+        recovered_b = await delivery_execution.execute_delivery(session_b, scope=scope, decision_id=decision_b)
+        await session_b.commit()
+    assert recovered_a.outcome == "accepted"
+    assert recovered_a.attempt_count == 1
+    assert recovered_b.state == "blocked"
+    assert recovered_b.outcome == "unknown"
+    assert recovered_b.attempt_count == 1
+    assert len(posts) == 1
+    assert recovered_b.attempts[0].transport == "crash-ambiguous"
+
+    async with sessions() as replay_session:
+        replay_a = await delivery_execution.execute_delivery(replay_session, scope=scope, decision_id=decision_a)
+        replay_b = await delivery_execution.execute_delivery(replay_session, scope=scope, decision_id=decision_b)
+        rows = list((await replay_session.execute(select(DeliveryExecutionResult))).scalars())
+    assert replay_a.attempt_count == 1
+    assert replay_b.attempt_count == 1
+    assert len(posts) == 1
+    assert len(rows) == 2
+    assert {row.execution_id for row in rows} == set(execution_ids.values())
 
 @pytest.mark.asyncio
 async def test_studio_execution_routes_preserve_durable_attempt_and_reconciliation_evidence(client: AsyncClient, db_session, monkeypatch):
