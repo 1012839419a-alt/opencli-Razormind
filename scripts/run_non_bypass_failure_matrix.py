@@ -29,7 +29,7 @@ from scripts.run_non_bypass_happy_vertical import (
 
 from scripts.non_bypass_failure_proof_contract import canonical, content_hash, validate
 from scripts.proof_bundle_governance import Principal, ProofBundleStore
-from tests.acceptance.non_bypass_failure_matrix import SCENARIOS, normalize_public_facts
+from tests.acceptance.non_bypass_failure_matrix import SCENARIO_ORDER, SCENARIOS, normalize_public_facts
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / "tests/acceptance/fixtures/opencli-failure-proof"
@@ -200,10 +200,9 @@ def _cleanup(ledger: ScenarioLedger, env: dict[str, str], base: Path, overlay: P
     finally:
         shutil.rmtree(ledger.scratch, ignore_errors=True)
 
-
 def run_matrix(artifact_dir: Path, *, compose_file: Path, overlay_file: Path) -> list[Path]:
     results: list[Path] = []
-    for scenario in sorted(SCENARIOS):
+    for scenario in SCENARIO_ORDER:
         run_id = f"nbf-{scenario}-{uuid.uuid4().hex[:12]}"
         ledger = ScenarioLedger(scenario, run_id, Path(tempfile.mkdtemp(prefix=f"{run_id}-")), artifact_dir / scenario)
         os.chmod(ledger.scratch, 0o700)

@@ -21,6 +21,21 @@ SCENARIOS = frozenset({
     "ingest-redis-store-loss", "duplicate-dlq", "query-page-race", "graph-stale-auth-cas-retract",
     "amendment-decision-conflict", "receiver-recovery", "cancel-before-dispatch", "cancel-in-flight",
 })
+SCENARIO_ORDER = (
+    "admin-crash",
+    "iii-unreachable",
+    "no-report",
+    "signed-zero",
+    "crash-after-ingest",
+    "ingest-redis-store-loss",
+    "duplicate-dlq",
+    "query-page-race",
+    "graph-stale-auth-cas-retract",
+    "amendment-decision-conflict",
+    "receiver-recovery",
+    "cancel-before-dispatch",
+    "cancel-in-flight",
+)
 PUBLIC_FACT_KEYS = frozenset({
     "scenario", "run", "fault", "actuator", "correlation", "collection", "materialization", "graph", "delivery",
     "redactionProfile", "timing", "governanceReference", "authority",
