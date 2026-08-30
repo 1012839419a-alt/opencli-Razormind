@@ -108,7 +108,7 @@ patch(
 );
 
 // ── 4. execution.js: honour explicit CDP endpoint for web adapters ──────────
-// opencli 1.8.5 only reads OPENCLI_CDP_ENDPOINT inside the Electron branch.
+// opencli 1.8.6 only reads OPENCLI_CDP_ENDPOINT inside the Electron branch.
 // A normal web adapter therefore silently falls back to Browser Bridge and can
 // escape Admin's selected profile. Managed acquisition must fail closed at the
 // requested endpoint instead.
