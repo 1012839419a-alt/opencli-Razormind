@@ -6,9 +6,11 @@ x-failure-labels: &failure-labels
 
 services:
   proof-admin:
+    image: "opencli-proof-root:${PROOF_CATALOG_DIGEST:-unbound}"
     networks: !override [proof-control, proof-query, proof-callback, proof-failure-receiver, proof-iii-admin]
     labels: *failure-labels
   proof-driver:
+    image: "opencli-proof-root:${PROOF_CATALOG_DIGEST:-unbound}"
     labels: *failure-labels
     networks: [proof-control, proof-fault]
     volumes:
@@ -20,6 +22,7 @@ services:
   proof-iii:
     labels: *failure-labels
   proof-collector:
+    image: "opencli-proof-collector:${PROOF_CATALOG_DIGEST:-unbound}"
     labels: *failure-labels
     environment:
       PROOF_SCENARIO: ${PROOF_SCENARIO:-unbound}
@@ -28,10 +31,12 @@ services:
     volumes:
       - ./tests/acceptance/fixtures/opencli-failure-proof:/proof/opencli-failure-proof:ro
   proof-bridge:
+    image: "opencli-proof-bridge:${PROOF_CATALOG_DIGEST:-unbound}"
     labels: *failure-labels
     environment:
       ODP_INGEST_URL: http://proof-odp-http-gateway:8040
   proof-odp-ingest:
+    image: "opencli-proof-ingest:${PROOF_CATALOG_DIGEST:-unbound}"
     labels: *failure-labels
     environment:
       ODP_REDIS_URL: redis://proof-odp-ingest-redis-gateway:6379/2
@@ -39,7 +44,7 @@ services:
     build:
       context: .
       target: non-bypass-acceptance
-    image: ${PROOF_RELAY_IMAGE:-proof-failure-relay}
+    image: "opencli-proof-root:${PROOF_CATALOG_DIGEST:-unbound}"
     entrypoint: []
     command: [uvicorn, tests.acceptance.fault_tools.callback_relay:app, --host, 0.0.0.0, --port, "8080"]
     environment:
@@ -54,12 +59,14 @@ services:
     networks: [proof-control, proof-callback, proof-iii-worker, proof-fault]
     labels: *failure-labels
   proof-odp-query:
+    image: "opencli-proof-query:${PROOF_CATALOG_DIGEST:-unbound}"
     labels: *failure-labels
   proof-odp-postgres:
     labels: *failure-labels
   proof-oidc:
     labels: *failure-labels
   proof-controlled-receiver:
+    image: "opencli-proof-root:${PROOF_CATALOG_DIGEST:-unbound}"
     networks: !override
       proof-failure-receiver:
         ipv4_address: ${PROOF_RECEIVER_IP:-1.1.1.1}
@@ -68,6 +75,7 @@ services:
     labels: *failure-labels
 
   proof-admin-control:
+    image: "opencli-proof-root:${PROOF_CATALOG_DIGEST:-unbound}"
     build:
       context: .
       target: non-bypass-acceptance
@@ -99,6 +107,7 @@ services:
     labels: *failure-labels
 
   proof-fault-gateway:
+    image: "opencli-proof-root:${PROOF_CATALOG_DIGEST:-unbound}"
     build:
       context: .
       target: non-bypass-acceptance
@@ -109,6 +118,7 @@ services:
     labels: *failure-labels
 
   proof-iii-actuator:
+    image: "opencli-proof-root:${PROOF_CATALOG_DIGEST:-unbound}"
     build:
       context: .
       target: non-bypass-acceptance
@@ -122,6 +132,7 @@ services:
     labels: *failure-labels
 
   proof-governance:
+    image: "opencli-proof-root:${PROOF_CATALOG_DIGEST:-unbound}"
     build:
       context: .
       target: non-bypass-acceptance
@@ -138,6 +149,7 @@ services:
     labels: *failure-labels
 
   proof-odp-http-gateway:
+    image: "opencli-proof-root:${PROOF_CATALOG_DIGEST:-unbound}"
     build: {context: ., target: non-bypass-acceptance}
     entrypoint: [uvicorn, tests.acceptance.fault_tools.odp_fault_gateways:app, --host, 0.0.0.0, --port, "8040"]
     environment:
@@ -146,6 +158,7 @@ services:
     networks: [proof-odp, proof-fault]
     labels: *failure-labels
   proof-odp-ingest-redis-gateway:
+    image: "opencli-proof-root:${PROOF_CATALOG_DIGEST:-unbound}"
     build: {context: ., target: non-bypass-acceptance}
     entrypoint: [python, tests/acceptance/fault_tools/odp_fault_gateways.py]
     environment:
@@ -158,6 +171,7 @@ services:
     networks: [proof-odp, proof-fault]
     labels: *failure-labels
   proof-odp-store-pg-gateway:
+    image: "opencli-proof-root:${PROOF_CATALOG_DIGEST:-unbound}"
     build: {context: ., target: non-bypass-acceptance}
     entrypoint: [python, tests/acceptance/fault_tools/odp_fault_gateways.py]
     environment:
@@ -172,6 +186,7 @@ services:
     networks: [proof-odp, proof-fault]
     labels: *failure-labels
   proof-odp-store-redis-gateway:
+    image: "opencli-proof-root:${PROOF_CATALOG_DIGEST:-unbound}"
     build: {context: ., target: non-bypass-acceptance}
     entrypoint: [python, tests/acceptance/fault_tools/odp_fault_gateways.py]
     environment:
@@ -186,6 +201,7 @@ services:
     networks: [proof-odp, proof-fault]
     labels: *failure-labels
   proof-odp-store:
+    image: "opencli-proof-store:${PROOF_CATALOG_DIGEST:-unbound}"
     environment:
       ODP_REDIS_URL: redis://proof-odp-store-redis-gateway:6379/2
       ODP_DATABASE_URL: postgresql://proof:proof@proof-odp-store-pg-gateway:5432/proof_odp

@@ -6,9 +6,8 @@ import sys
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
-
 import yaml
+from fastapi.testclient import TestClient
 
 ROOT = Path(__file__).resolve().parents[2]
 HARNESS_PATH = ROOT / "tests/acceptance/non_bypass_failure_matrix.py"
@@ -24,7 +23,9 @@ class ComposeLoader(yaml.SafeLoader):
 
 
 def _compose_tag(loader, node):
-    return loader.construct_mapping(node) if isinstance(node, yaml.MappingNode) else loader.construct_sequence(node)
+    if isinstance(node, yaml.MappingNode):
+        return loader.construct_mapping(node)
+    return loader.construct_sequence(node)
 
 
 ComposeLoader.add_constructor("!override", _compose_tag)
@@ -36,42 +37,154 @@ def _hash(value: str) -> str:
 
 
 def public_facts(scenario: str) -> dict:
-    collection = {"blockingStage": "bridge_unavailable", "recoveryAction": "retry", "sideEffectUncertainty": True}
-    materialization = {"status": "unknown", "blocker": "none", "recoveryAction": "none", "manifestHash": None, "reconciliationRevision": None, "pageSnapshotAsOf": None}
-    graph = {"pin": None, "sequence": None, "readBlocker": "none", "mutationStatus": "none"}
-    delivery = {"state": "none", "outcome": "none", "attemptCount": 0, "receiptHash": None, "reconciliation": "none"}
+    collection = {
+        "blockingStage": "bridge_unavailable",
+        "recoveryAction": "retry",
+        "sideEffectUncertainty": True,
+    }
+    materialization = {
+        "status": "unknown",
+        "blocker": "none",
+        "recoveryAction": "none",
+        "manifestHash": None,
+        "reconciliationRevision": None,
+        "pageSnapshotAsOf": None,
+    }
+    graph = {
+        "pin": None,
+        "sequence": None,
+        "readBlocker": "none",
+        "mutationStatus": "none",
+    }
+    delivery = {
+        "state": "none",
+        "outcome": "none",
+        "attemptCount": 0,
+        "receiptHash": None,
+        "reconciliation": "none",
+    }
     if scenario == "admin-crash":
-        collection = {"blockingStage": "none", "recoveryAction": "resume", "sideEffectUncertainty": True}
+        collection = {
+            "blockingStage": "none",
+            "recoveryAction": "resume",
+            "sideEffectUncertainty": True,
+        }
     elif scenario == "signed-zero":
-        collection = {"blockingStage": "none", "recoveryAction": "none", "sideEffectUncertainty": False}
+        collection = {
+            "blockingStage": "none",
+            "recoveryAction": "none",
+            "sideEffectUncertainty": False,
+        }
         materialization["status"] = "completed_empty"
     elif scenario in {"no-report", "crash-after-ingest"}:
-        collection = {"blockingStage": "callback_missing", "recoveryAction": "recover", "sideEffectUncertainty": True}
-        materialization.update(status="indeterminate", blocker="missing_report", recoveryAction="recover")
+        collection = {
+            "blockingStage": "callback_missing",
+            "recoveryAction": "recover",
+            "sideEffectUncertainty": True,
+        }
+        materialization.update(
+            status="indeterminate",
+            blocker="missing_report",
+            recoveryAction="recover",
+        )
     elif scenario == "duplicate-dlq":
-        collection = {"blockingStage": "duplicate", "recoveryAction": "recover", "sideEffectUncertainty": False}
-        materialization.update(status="completed", blocker="retained_dlq", recoveryAction="recover", manifestHash=_hash("manifest"), reconciliationRevision=1)
+        collection = {
+            "blockingStage": "duplicate",
+            "recoveryAction": "recover",
+            "sideEffectUncertainty": False,
+        }
+        materialization.update(
+            status="completed",
+            blocker="retained_dlq",
+            recoveryAction="recover",
+            manifestHash=_hash("manifest"),
+            reconciliationRevision=1,
+        )
     elif scenario == "query-page-race":
-        collection = {"blockingStage": "none", "recoveryAction": "recover", "sideEffectUncertainty": False}
-        materialization.update(status="completed", recoveryAction="recover", manifestHash=_hash("manifest"), reconciliationRevision=1, pageSnapshotAsOf="2026-08-30T00:00:00Z")
+        collection = {
+            "blockingStage": "none",
+            "recoveryAction": "recover",
+            "sideEffectUncertainty": False,
+        }
+        materialization.update(
+            status="completed",
+            recoveryAction="recover",
+            manifestHash=_hash("manifest"),
+            reconciliationRevision=1,
+            pageSnapshotAsOf="2026-08-30T00:00:00Z",
+        )
     elif scenario == "graph-stale-auth-cas-retract":
-        graph = {"pin": None, "sequence": 7, "readBlocker": "stale_manifest", "mutationStatus": "denied"}
+        graph = {
+            "pin": None,
+            "sequence": 7,
+            "readBlocker": "stale_manifest",
+            "mutationStatus": "denied",
+        }
     elif scenario == "amendment-decision-conflict":
-        materialization.update(status="completed", recoveryAction="recover", manifestHash=_hash("amendment"), reconciliationRevision=2)
-        graph = {"pin": _hash("new-pin"), "sequence": 8, "readBlocker": "none", "mutationStatus": "re_review_required"}
+        materialization.update(
+            status="completed",
+            recoveryAction="recover",
+            manifestHash=_hash("amendment"),
+            reconciliationRevision=2,
+        )
+        graph = {
+            "pin": _hash("new-pin"),
+            "sequence": 8,
+            "readBlocker": "none",
+            "mutationStatus": "re_review_required",
+        }
     elif scenario == "receiver-recovery":
-        delivery = {"state": "unknown", "outcome": "unknown", "attemptCount": 1, "receiptHash": None, "reconciliation": "unknown"}
+        materialization.update(
+            status="completed",
+            recoveryAction="recover",
+            manifestHash=_hash("amendment"),
+            reconciliationRevision=2,
+        )
     elif scenario == "cancel-before-dispatch":
-        delivery = {"state": "cancelled", "outcome": "none", "attemptCount": 0, "receiptHash": None, "reconciliation": "none"}
+        delivery = {
+            "state": "cancelled",
+            "outcome": "none",
+            "attemptCount": 0,
+            "receiptHash": None,
+            "reconciliation": "none",
+        }
     elif scenario == "cancel-in-flight":
-        delivery = {"state": "unknown", "outcome": "unknown", "attemptCount": 1, "receiptHash": None, "reconciliation": "unknown"}
+        delivery = {
+            "state": "unknown",
+            "outcome": "unknown",
+            "attemptCount": 1,
+            "receiptHash": None,
+            "reconciliation": "unknown",
+        }
     return {
-        "scenario": scenario, "run": f"run-{scenario}", "fault": scenario,
-        "actuator": {"name": "proof-iii-actuator", "invocationHash": _hash(f"actor-{scenario}")},
-        "correlation": {"commandId": "command", "attemptId": "attempt", "workflowRunId": "workflow", "hashes": {"public": _hash(scenario)}},
-        "collection": collection, "materialization": materialization, "graph": graph, "delivery": delivery,
-        "redactionProfile": "failure-v1", "timing": {"startedAt": 1, "completedAt": 2, "deadlineSeconds": 360},
-        "governanceReference": {"artifactId": f"artifact-{scenario}", "keyId": "key-1", "trustRootFingerprint": _hash("trust")},
+        "scenario": scenario,
+        "run": f"run-{scenario}",
+        "fault": scenario,
+        "actuator": {
+            "name": "proof-iii-actuator",
+            "invocationHash": _hash(f"actor-{scenario}"),
+        },
+        "correlation": {
+            "commandId": "command",
+            "attemptId": "attempt",
+            "workflowRunId": "workflow",
+            "hashes": {"public": _hash(scenario)},
+        },
+        "collection": collection,
+        "materialization": materialization,
+        "graph": graph,
+        "delivery": delivery,
+        "redactionProfile": "failure-v1",
+        "timing": {
+            "startedAt": 1,
+            "completedAt": 2,
+            "deadlineSeconds": 360,
+        },
+        "governanceReference": {
+            "artifactId": f"artifact-{scenario}",
+            "keyId": "key-1",
+            "trustRootFingerprint": _hash("trust"),
+        },
         "authority": "authenticated-scoped-public-api",
     }
 
@@ -80,28 +193,47 @@ def public_facts(scenario: str) -> dict:
 def test_every_matrix_row_normalizes_only_authenticated_public_facts(scenario: str):
     result = harness.normalize_public_facts(public_facts(scenario))
     assert result["schemaVersion"] == "ScenarioResultV1"
-    assert result["forbiddenFacts"] == {"adminCreatedFallback": False, "lateEffectAbsenceClaim": False, "containerAuthority": False, "pageFinality": False}
+    assert result["forbiddenFacts"] == {
+        "adminCreatedFallback": False,
+        "lateEffectAbsenceClaim": False,
+        "containerAuthority": False,
+        "pageFinality": False,
+    }
 
 
 def test_internal_control_state_and_terminal_page_inference_are_rejected():
     facts = public_facts("query-page-race")
     facts["gateState"] = "released"
-    with pytest.raises(harness.PublicFactRejected):
+    with pytest.raises(harness.PublicFactRejectedError):
         harness.normalize_public_facts(facts)
 
 
 def test_fixture_is_pinned_and_has_only_one_zero_and_hundred_operations():
     fixture = ROOT / "tests/acceptance/fixtures/opencli-failure-proof"
-    recorded = (ROOT / "tests/acceptance/fixtures/opencli-failure-proof.sha256").read_text().split()[0]
+    recorded = (
+        ROOT / "tests/acceptance/fixtures/opencli-failure-proof.sha256"
+    ).read_text().split()[0]
     assert hashlib.sha256(fixture.read_bytes()).hexdigest() == recorded
-    assert "hundred" in fixture.read_text() and "zero" in fixture.read_text() and "one" in fixture.read_text()
+    assert (
+        "hundred" in fixture.read_text()
+        and "zero" in fixture.read_text()
+        and "one" in fixture.read_text()
+    )
 
 
 def test_overlay_has_no_host_ports_and_internal_fault_network():
-    compose = yaml.load((ROOT / "docker-compose.non-bypass-failure.yml").read_text(), Loader=ComposeLoader)
+    compose = yaml.load(
+        (ROOT / "docker-compose.non-bypass-failure.yml").read_text(),
+        Loader=ComposeLoader,
+    )
     assert compose["networks"]["proof-fault"]["internal"] is True
     assert all("ports" not in service for service in compose["services"].values())
-    assert {"proof-fault-gateway", "proof-iii-actuator", "proof-governance", "proof-admin-control"} <= set(compose["services"])
+    assert {
+        "proof-fault-gateway",
+        "proof-iii-actuator",
+        "proof-governance",
+        "proof-admin-control",
+    } <= set(compose["services"])
 
 
 def test_callback_relay_routes_only_the_three_real_callback_paths(monkeypatch):
@@ -121,7 +253,11 @@ def test_callback_relay_routes_only_the_three_real_callback_paths(monkeypatch):
             "x-iii-bridge-token": "collector-bridge-token",
             "content-type": "application/json",
         }
-        return httpx.Response(202, content=b'{"data":{}}', headers={"content-type": "application/json"})
+        return httpx.Response(
+            202,
+            content=b'{"data":{}}',
+            headers={"content-type": "application/json"},
+        )
 
     monkeypatch.setattr(relay.httpx, "post", proxied)
     client = TestClient(relay.app)
@@ -143,12 +279,18 @@ def test_callback_relay_routes_only_the_three_real_callback_paths(monkeypatch):
 @pytest.mark.parametrize("scenario", ["admin-crash", "no-report"])
 def test_failure_driver_main_prints_its_fact_document(monkeypatch, capsys, scenario):
     driver_path = ROOT / "tests/acceptance/non_bypass_failure_driver.py"
-    driver_spec = importlib.util.spec_from_file_location(f"failure_driver_main_{scenario}", driver_path)
+    driver_spec = importlib.util.spec_from_file_location(
+        f"failure_driver_main_{scenario}", driver_path
+    )
     assert driver_spec and driver_spec.loader
     driver = importlib.util.module_from_spec(driver_spec)
     sys.modules[driver_spec.name] = driver
     driver_spec.loader.exec_module(driver)
-    monkeypatch.setattr(driver, "admin_crash", lambda run, scenario: {"run": run, "scenario": scenario})
+    monkeypatch.setattr(
+        driver,
+        "admin_crash",
+        lambda run, scenario: {"run": run, "scenario": scenario},
+    )
     monkeypatch.setattr(sys, "argv", ["driver", "--scenario", scenario, "--run", "r1"])
     assert driver.main() == 0
     assert __import__("json").loads(capsys.readouterr().out) == {"run": "r1", "scenario": scenario}
@@ -182,14 +324,23 @@ def test_published_run_retries_only_the_documented_visibility_409(monkeypatch):
 
     monkeypatch.setattr(driver.time, "monotonic", lambda: 0)
     monkeypatch.setattr(driver.time, "sleep", lambda _seconds: None)
-    assert driver._post_published_run(Client(), "http://api", "/run", {"idempotencyKey": "same"}, {}) == {"runId": "run-1"}
+    assert driver._post_published_run(
+        Client(),
+        "http://api",
+        "/run",
+        {"idempotencyKey": "same"},
+        {},
+    ) == {"runId": "run-1"}
 
 
 def test_crash_after_ingest_uses_isolated_two_phase_orchestration():
     driver = (ROOT / "tests/acceptance/non_bypass_failure_driver.py").read_text(encoding="utf-8")
     runner = (ROOT / "scripts/run_non_bypass_failure_matrix.py").read_text(encoding="utf-8")
     assert "def crash_after_ingest(" in driver
-    assert all(name in driver for name in ("arm-report-hold", "ingress-observed", "collector-stopped"))
+    assert all(
+        name in driver
+        for name in ("arm-report-hold", "ingress-observed", "collector-stopped")
+    )
     assert "def _facts_from_crash_after_ingest(" in runner
     assert '"stop", "proof-collector"' in runner
     assert '{"mode":"hold"}' in runner
@@ -204,37 +355,140 @@ def test_crash_after_ingest_uses_isolated_two_phase_orchestration():
         ("ingest-redis-store-loss", "ingest_redis_store_loss"),
     ],
 )
-def test_failure_driver_dispatches_every_implemented_scenario(monkeypatch, capsys, scenario, handler):
+def test_failure_driver_dispatches_every_implemented_scenario(
+    monkeypatch,
+    capsys,
+    scenario,
+    handler,
+):
     driver_path = ROOT / "tests/acceptance/non_bypass_failure_driver.py"
     driver_spec = importlib.util.spec_from_file_location(f"failure_driver_{scenario}", driver_path)
     assert driver_spec and driver_spec.loader
     driver = importlib.util.module_from_spec(driver_spec)
     sys.modules[driver_spec.name] = driver
     driver_spec.loader.exec_module(driver)
-    monkeypatch.setattr(driver, "admin_crash", lambda run, name: {"handler": "admin_crash", "scenario": name})
-    monkeypatch.setattr(driver, "iii_unreachable", lambda run: {"handler": "iii_unreachable", "scenario": "iii-unreachable"})
-    monkeypatch.setattr(driver, "ingest_redis_store_loss", lambda run: {"handler": "ingest_redis_store_loss", "scenario": "ingest-redis-store-loss"})
-    monkeypatch.setattr(driver, "crash_after_ingest", lambda run: {"handler": "crash_after_ingest", "scenario": "crash-after-ingest"})
+    monkeypatch.setattr(
+        driver,
+        "admin_crash",
+        lambda run, name: {"handler": "admin_crash", "scenario": name},
+    )
+    monkeypatch.setattr(
+        driver,
+        "iii_unreachable",
+        lambda run: {
+            "handler": "iii_unreachable",
+            "scenario": "iii-unreachable",
+        },
+    )
+    monkeypatch.setattr(
+        driver,
+        "ingest_redis_store_loss",
+        lambda run: {
+            "handler": "ingest_redis_store_loss",
+            "scenario": "ingest-redis-store-loss",
+        },
+    )
+    monkeypatch.setattr(
+        driver,
+        "crash_after_ingest",
+        lambda run: {
+            "handler": "crash_after_ingest",
+            "scenario": "crash-after-ingest",
+        },
+    )
     monkeypatch.setattr(sys, "argv", ["driver", "--scenario", scenario, "--run", "r1"])
     assert driver.main() == 0
     assert __import__("json").loads(capsys.readouterr().out)["handler"] == handler
 
 
 def test_failure_overlay_routes_all_odp_writers_through_named_fault_gateways():
-    compose = yaml.load((ROOT / "docker-compose.non-bypass-failure.yml").read_text(), Loader=ComposeLoader)
+    compose = yaml.load(
+        (ROOT / "docker-compose.non-bypass-failure.yml").read_text(),
+        Loader=ComposeLoader,
+    )
     services = compose["services"]
-    assert {"proof-odp-http-gateway", "proof-odp-ingest-redis-gateway", "proof-odp-store-pg-gateway", "proof-odp-store-redis-gateway"} <= set(services)
-    assert services["proof-collector"]["environment"]["ODP_INGEST_URL"] == "http://proof-odp-http-gateway:8040"
-    assert services["proof-bridge"]["environment"]["ODP_INGEST_URL"] == "http://proof-odp-http-gateway:8040"
-    assert services["proof-odp-ingest"]["environment"]["ODP_REDIS_URL"] == "redis://proof-odp-ingest-redis-gateway:6379/2"
-    assert services["proof-odp-store"]["environment"]["ODP_REDIS_URL"] == "redis://proof-odp-store-redis-gateway:6379/2"
-    assert "@proof-odp-store-pg-gateway:5432/" in services["proof-odp-store"]["environment"]["ODP_DATABASE_URL"]
+    assert {
+        "proof-odp-http-gateway",
+        "proof-odp-ingest-redis-gateway",
+        "proof-odp-store-pg-gateway",
+        "proof-odp-store-redis-gateway",
+    } <= set(services)
+    assert (
+        services["proof-collector"]["environment"]["ODP_INGEST_URL"]
+        == "http://proof-odp-http-gateway:8040"
+    )
+    assert (
+        services["proof-bridge"]["environment"]["ODP_INGEST_URL"]
+        == "http://proof-odp-http-gateway:8040"
+    )
+    assert (
+        services["proof-odp-ingest"]["environment"]["ODP_REDIS_URL"]
+        == "redis://proof-odp-ingest-redis-gateway:6379/2"
+    )
+    assert (
+        services["proof-odp-store"]["environment"]["ODP_REDIS_URL"]
+        == "redis://proof-odp-store-redis-gateway:6379/2"
+    )
+    assert (
+        "@proof-odp-store-pg-gateway:5432/"
+        in services["proof-odp-store"]["environment"]["ODP_DATABASE_URL"]
+    )
 
 
 def test_storage_loss_row_uses_public_helpers_and_single_scenario_runner_selection():
     driver = (ROOT / "tests/acceptance/non_bypass_failure_driver.py").read_text(encoding="utf-8")
     runner = (ROOT / "scripts/run_non_bypass_failure_matrix.py").read_text(encoding="utf-8")
-    assert all(f"def {name}(" in driver for name in ("public_setup", "public_submit", "public_status", "public_materialize", "public_recover", "ingest_redis_store_loss"))
+    assert all(
+        f"def {name}(" in driver
+        for name in (
+            "public_setup",
+            "public_submit",
+            "public_status",
+            "public_materialize",
+            "public_recover",
+            "ingest_redis_store_loss",
+        )
+    )
     assert "store-redis-committed-xadd" in driver and "store-commit-ready" in driver
     assert 'parser.add_argument("--scenario", choices=SCENARIO_ORDER)' in runner
     assert "selected = (scenario,) if scenario else SCENARIO_ORDER" in runner
+
+
+def _runner_module():
+    path = ROOT / "scripts/run_non_bypass_failure_matrix.py"
+    spec = importlib.util.spec_from_file_location("failure_runner_catalog", path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_catalog_build_occurs_once_before_multiple_fresh_rows(monkeypatch, tmp_path):
+    runner = _runner_module()
+    calls: list[str] = []
+    monkeypatch.setattr(runner, "SCENARIO_ORDER", ("first", "second"))
+    monkeypatch.setattr(runner, "_build_catalog", lambda *_args: calls.append("build") or {"digest": "catalog", "fixtureDigest": "fixture", "imageIds": {}})
+    monkeypatch.setattr(runner, "_make_secrets", lambda _ledger: {})
+    monkeypatch.setattr(runner, "_make_identities", lambda *_args: None)
+    monkeypatch.setattr(runner, "_configure_failure_receiver", lambda *_args: None)
+    monkeypatch.setattr(runner, "_fixture_digest", lambda: "fixture")
+    monkeypatch.setattr(runner, "_admit", lambda ledger, *_args: calls.append(f"admit:{ledger.scenario}") or {})
+    monkeypatch.setattr(runner, "_compose", lambda *_args, **_kwargs: "")
+    monkeypatch.setattr(runner, "_facts_from_driver", lambda ledger, *_args: {"run": ledger.project})
+    monkeypatch.setattr(runner, "_govern", lambda _ledger, result, _now: result)
+    monkeypatch.setattr(runner, "_cleanup", lambda *_args: None)
+    runner.run_matrix(tmp_path, compose_file=ROOT / "docker-compose.non-bypass-acceptance.yml", overlay_file=ROOT / "docker-compose.non-bypass-failure.yml")
+    assert calls == ["build", "admit:first", "admit:second"]
+
+
+def test_per_row_admission_only_configs_and_inspects_prebuilt_catalog(monkeypatch, tmp_path):
+    runner = _runner_module()
+    ledger = runner.ScenarioLedger("first", "project", tmp_path, tmp_path)
+    compose_calls: list[tuple[str, ...]] = []
+    monkeypatch.setattr(runner, "_compose", lambda _ledger, _env, _base, _overlay, *args, **_kwargs: compose_calls.append(args) or "pinned\nroot")
+    monkeypatch.setattr(runner, "_inspect_images", lambda *_args, **_kwargs: {"pinned": "sha256:pinned", "root": "sha256:root"})
+    monkeypatch.setattr(runner, "_fixture_digest", lambda: "fixture")
+    monkeypatch.setattr(runner, "PINNED_III", "pinned")
+    runner._admit(ledger, {}, ROOT / "docker-compose.non-bypass-acceptance.yml", ROOT / "docker-compose.non-bypass-failure.yml", {"fixtureDigest": "fixture", "digest": "catalog", "imageIds": {"pinned": "sha256:pinned", "root": "sha256:root"}})
+    assert compose_calls == [("config", "--quiet"), ("config", "--images")]

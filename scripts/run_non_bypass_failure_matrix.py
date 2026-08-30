@@ -92,6 +92,85 @@ def _fixture_digest() -> str:
     return actual
 
 
+
+CATALOG_NAMES = ("root", "collector", "bridge", "ingest", "store", "query")
+
+
+def _catalog_digest(base: Path, overlay: Path) -> str:
+    """Bind catalog names to every source file that defines the build inputs."""
+    inputs = (
+        ROOT / "Dockerfile",
+        ROOT / ".dockerignore",
+        ROOT / "iii/workers/collector-opencli/Dockerfile",
+        ROOT / "iii/workers/odp-ingest-bridge/Dockerfile",
+        ROOT / "odp-rs/Dockerfile.ingest",
+        ROOT / "odp-rs/Dockerfile.store",
+        ROOT / "odp-rs/Dockerfile.query",
+        base,
+        overlay,
+        FIXTURE_DIGEST,
+    )
+    digest = hashlib.sha256()
+    for path in inputs:
+        digest.update(path.relative_to(ROOT).as_posix().encode())
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def _catalog_images(digest: str) -> dict[str, str]:
+    return {name: f"opencli-proof-{name}:{digest}" for name in CATALOG_NAMES}
+
+
+def _catalog_build_commands(images: dict[str, str]) -> tuple[tuple[str, list[str]], ...]:
+    return (
+        ("root", ["docker", "build", "--target", "non-bypass-acceptance", "--tag", images["root"], "-f", "Dockerfile", "."]),
+        ("collector", ["docker", "build", "--tag", images["collector"], "-f", "iii/workers/collector-opencli/Dockerfile", "iii"]),
+        ("bridge", ["docker", "build", "--tag", images["bridge"], "-f", "iii/workers/odp-ingest-bridge/Dockerfile", "iii"]),
+        ("ingest", ["docker", "build", "--tag", images["ingest"], "-f", "odp-rs/Dockerfile.ingest", "odp-rs"]),
+        ("store", ["docker", "build", "--tag", images["store"], "-f", "odp-rs/Dockerfile.store", "odp-rs"]),
+        ("query", ["docker", "build", "--tag", images["query"], "-f", "odp-rs/Dockerfile.query", "odp-rs"]),
+    )
+
+
+def _remaining(deadline: float) -> int:
+    remaining = int(deadline - time.monotonic())
+    if remaining <= 0:
+        raise FailureRunRejectedError("catalog admission exceeded 120 seconds")
+    return remaining
+
+
+def _inspect_images(images: list[str], env: dict[str, str], *, timeout: int) -> dict[str, str]:
+    result = {
+        image: _run(["docker", "image", "inspect", "--format", "{{.Id}}", image], env=env, timeout=timeout).strip()
+        for image in images
+    }
+    if any(not image_id.startswith("sha256:") for image_id in result.values()):
+        raise FailureRunRejectedError("catalog image identity is not immutable")
+    return result
+
+
+def _build_catalog(env: dict[str, str], base: Path, overlay: Path) -> dict[str, Any]:
+    """Build six content-addressed images once; scenarios never call build."""
+    digest = _catalog_digest(base, overlay)
+    images = _catalog_images(digest)
+    deadline = time.monotonic() + 120
+    # Docker Desktop's BuildKit session metadata is invalid in this checkout.
+    # The legacy builder is the verified local path; the shared deadline still
+    # makes failure admission-bounded.
+    builder_env = {**env, "PROOF_CATALOG_DIGEST": digest, "DOCKER_BUILDKIT": "0"}
+    for _name, command in _catalog_build_commands(images):
+        _run(command, env=builder_env, timeout=_remaining(deadline))
+    catalog_ledger = ScenarioLedger("catalog", f"nbf-catalog-{digest[:12]}", ROOT, ROOT)
+    configured = _compose(catalog_ledger, builder_env, base, overlay, "config", "--images", timeout=_remaining(deadline)).splitlines()
+    if PINNED_III not in configured:
+        raise FailureRunRejectedError("pinned III catalog image is absent")
+    if not set(images.values()) <= set(configured):
+        raise FailureRunRejectedError("overlay does not resolve to the complete catalog")
+    image_ids = _inspect_images(configured, builder_env, timeout=_remaining(deadline))
+    return {"digest": digest, "images": images, "imageIds": image_ids, "fixtureDigest": _fixture_digest()}
+
 def _compose(
     ledger: ScenarioLedger,
     env: dict[str, str],
@@ -162,29 +241,23 @@ def _admit(
     env: dict[str, str],
     base: Path,
     overlay: Path,
+    catalog: dict[str, Any],
 ) -> dict[str, Any]:
-    """Build one scenario-private catalog, then admit it before `up --no-build`."""
-    digest = _fixture_digest()
+    """Verify a fresh tuple against the prebuilt immutable catalog."""
     _compose(ledger, env, base, overlay, "config", "--quiet", timeout=120)
-    _compose(ledger, env, base, overlay, "build", timeout=120)
-    images = _compose(
-        ledger, env, base, overlay, "config", "--images", timeout=120
-    ).splitlines()
+    images = _compose(ledger, env, base, overlay, "config", "--images", timeout=120).splitlines()
     if PINNED_III not in images:
         raise FailureRunRejectedError("pinned III catalog image is absent")
-    image_ids = {
-        image: _run(
-            ["docker", "image", "inspect", "--format", "{{.Id}}", image],
-            env=env,
-            timeout=120,
-        ).strip()
-        for image in images
-    }
-    if any(not image_id.startswith("sha256:") for image_id in image_ids.values()):
-        raise FailureRunRejectedError("catalog image identity is not immutable")
+    image_ids = _inspect_images(images, env, timeout=120)
+    expected = catalog["imageIds"]
+    if image_ids != expected:
+        raise FailureRunRejectedError("scenario image catalog diverged from preflight")
+    if _fixture_digest() != catalog["fixtureDigest"]:
+        raise FailureRunRejectedError("scenario fixture digest diverged from preflight")
     report = {
         "scenario": ledger.scenario,
-        "fixtureDigest": digest,
+        "fixtureDigest": catalog["fixtureDigest"],
+        "catalogDigest": catalog["digest"],
         "catalogImageIds": image_ids,
         "project": ledger.project,
     }
@@ -192,7 +265,6 @@ def _admit(
     ledger.artifact.mkdir(parents=True, exist_ok=True)
     (ledger.artifact / "admission.json").write_bytes(canonical(report))
     return report
-
 
 def _facts_from_crash_after_ingest(
     ledger: ScenarioLedger,
@@ -445,6 +517,7 @@ def run_matrix(
     overlay_file: Path,
     scenario: str | None = None,
 ) -> list[Path]:
+    catalog = _build_catalog({**os.environ}, compose_file, overlay_file)
     results: list[Path] = []
     selected = (scenario,) if scenario else SCENARIO_ORDER
     for scenario in selected:
@@ -471,10 +544,11 @@ def run_matrix(
             "PROOF_ARTIFACT_DIR": str(ledger.artifact),
             "PROOF_FIXTURE_DIGEST": _fixture_digest(),
             "COMPOSE_PARALLEL_LIMIT": "1",
+            "PROOF_CATALOG_DIGEST": catalog["digest"],
         }
         started = time.monotonic()
         try:
-            _admit(ledger, env, compose_file, overlay_file)
+            _admit(ledger, env, compose_file, overlay_file, catalog)
             _compose(
                 ledger, env, compose_file, overlay_file,
                 "up", "--detach", "--no-build", timeout=120,
