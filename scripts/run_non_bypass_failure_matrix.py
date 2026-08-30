@@ -186,11 +186,11 @@ def _govern(ledger: ScenarioLedger, result: dict[str, Any], now: int) -> dict[st
     scope = {"workspace": "failure", "project": ledger.project, "workflow": "failure-matrix", "run": result["run"]}
     # The durable store contains only redacted records/audit data. The generated
     # audit private key is process-only scratch material and is never written.
-    root = ledger.artifact / "governance"
+    root = ledger.artifact / "g"
     store = ProofBundleStore(root, audit_private_key=Ed25519PrivateKey.generate(), now=lambda: now)
     admin, writer = Principal("key-admin", "key-admin", scope), Principal("bundle-writer", "bundle-writer", scope)
     key = store.bootstrap_active(admin, key_id="failure-active-v1", not_before=now - 1, not_after=now + 86400)
-    artifact_id = f"{ledger.scenario}-{uuid.uuid4().hex}"
+    artifact_id = f"{ledger.scenario[:8]}-{uuid.uuid4().hex[:12]}"
     result["governance"] = {"artifactId": artifact_id, "contentHash": content_hash({key: value for key, value in result.items() if key != "governance"}), "keyId": key.key_id, "trustRootFingerprint": store.trust_root_fingerprint}
     validate(result, scenario=ledger.scenario)
     envelope = {

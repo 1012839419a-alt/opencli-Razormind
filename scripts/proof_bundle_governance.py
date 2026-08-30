@@ -130,7 +130,9 @@ class ProofBundleStore:
         return {"keyId": self._audit_key_id, "fingerprint": self.trust_root_fingerprint, "algorithm": "Ed25519"}
 
     def _scope_hash(self, scope: Mapping[str, str]) -> str:
-        return digest(dict(sorted(scope.items())))
+        # 128 bits still makes cross-scenario collisions infeasible while keeping
+        # artifact paths below Windows' legacy path limit.
+        return digest(dict(sorted(scope.items())))[:32]
 
     def _scope_dir(self, scope: Mapping[str, str]) -> Path:
         path = self.root / self._scope_hash(scope)
