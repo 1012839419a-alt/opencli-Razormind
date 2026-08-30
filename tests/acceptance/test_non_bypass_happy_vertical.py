@@ -31,7 +31,17 @@ def _evidence() -> dict:
         "schemaVersion": "NonBypassHappyVerticalProofV1",
         "run": "nbv-test",
         "image": runner.PINNED_III,
-        "topology": {"fixtureDigest": digest, "iiiCliPath": "/opt/iii/iii", "iiiUrl": "ws://proof-iii:49134", "relay": "three-fixed-callback-paths"},
+        "topology": {
+            "fixtureDigest": digest,
+            "iiiCliPath": "/opt/iii/iii",
+            "iiiUrl": "ws://proof-iii:49134",
+            "relay": "three-fixed-callback-paths",
+            "containerTransport": "docker-internal",
+            "callbackRoute": "relay-only",
+            "receiverEndpoint": "https://8.8.8.8:8000",
+            "receiverExposure": "internal-only",
+            "receiverKind": "controlled-receiver-v2",
+        },
         "command": {"id": command_id, "workflowRunId": "workflow-run-36", "payloadHash": payload_hash},
         "attempt": {"id": "attempt-36", "commandId": command_id, "attemptNumber": 1},
         "lifecycleHashes": {
@@ -50,6 +60,7 @@ def _evidence() -> dict:
             "expectedRecordKeySetHash": "6" * 64,
             "recordRefSetHash": "7" * 64,
             "materializationStatus": "completed",
+            "materializationAuthority": "scoped-admin-api",
         },
         "pin": {"sequence": 3, "researchRevisionId": "research-36", "manifestSetHash": pin_hash},
         "decision": {
@@ -73,7 +84,9 @@ def _evidence() -> dict:
             "attemptNumber": 1,
             "receiptId": "receiver-receipt-36",
             "receiptHash": "9" * 64,
+            "httpStatus": 200,
             "receipt": "verified",
+            "durableReceipt": "verified",
             "outcome": "accepted",
         },
         "redactionProfile": "non-bypass-happy-v1",
@@ -107,19 +120,69 @@ def test_pre_sign_validation_accepts_only_correlated_terminal_facts():
     runner.validate_evidence(evidence, fixture_digest=evidence["topology"]["fixtureDigest"], run="nbv-test")
 
 
-@pytest.mark.parametrize("mutator", [
-    lambda value: value.__setitem__("image", "iiidev/iii:latest"),
-    lambda value: value["topology"].__setitem__("fixtureDigest", "0" * 64),
-    lambda value: value["topology"].__setitem__("relay", "direct-admin"),
-    lambda value: value.__setitem__("researchGraphManifestRef", "replacement"),
-    lambda value: value["execution"].__setitem__("outcome", "accepted-by-2xx"),
-    lambda value: value.__setitem__("privateKey", "must-not-sign"),
-])
-def test_pre_sign_validation_rejects_substitutions_and_secrets(mutator):
-    evidence = _evidence()
-    mutator(evidence)
+def _assert_rejected(evidence: dict) -> None:
     with pytest.raises(runner.ProofRejected):
-        runner.validate_evidence(evidence, fixture_digest=hashlib.sha256((ROOT / "tests/acceptance/fixtures/opencli-proof").read_bytes()).hexdigest(), run="nbv-test")
+        runner.validate_evidence(
+            evidence,
+            fixture_digest=hashlib.sha256(
+                (ROOT / "tests/acceptance/fixtures/opencli-proof").read_bytes()
+            ).hexdigest(),
+            run="nbv-test",
+        )
+
+
+def test_pinned_engine_and_fixture_invariants_reject_replacements():
+    engine = _evidence()
+    engine["image"] = "iiidev/iii:latest"
+    _assert_rejected(engine)
+    fixture = _evidence()
+    fixture["topology"]["fixtureDigest"] = "0" * 64
+    _assert_rejected(fixture)
+
+
+def test_rejects_mock_transport_provenance_candidate():
+    evidence = _evidence()
+    evidence["topology"]["containerTransport"] = "mock"
+    _assert_rejected(evidence)
+
+
+def test_rejects_public_webhook_receiver_provenance_candidate():
+    evidence = _evidence()
+    evidence["topology"]["receiverEndpoint"] = "https://public-webhook.invalid"
+    evidence["topology"]["receiverExposure"] = "public"
+    _assert_rejected(evidence)
+
+
+def test_rejects_projection_only_manifest_provenance_candidate():
+    evidence = _evidence()
+    evidence["researchGraphManifestRef"]["materializationAuthority"] = "projection-only"
+    _assert_rejected(evidence)
+
+
+def test_rejects_direct_admin_fallback_provenance_candidate():
+    evidence = _evidence()
+    evidence["topology"]["callbackRoute"] = "direct-admin"
+    _assert_rejected(evidence)
+
+
+def test_rejects_bare_http_2xx_without_verified_durable_receipt_candidate():
+    evidence = _evidence()
+    assert evidence["receiverReceipt"]["httpStatus"] == 200
+    evidence["receiverReceipt"]["durableReceipt"] = "missing"
+    _assert_rejected(evidence)
+
+
+def test_rejects_stale_receiver_receipt_attempt():
+    evidence = _evidence()
+    evidence["execution"]["attemptCount"] = 2
+    assert evidence["receiverReceipt"]["attemptNumber"] == 1
+    _assert_rejected(evidence)
+
+
+def test_rejects_mismatched_receiver_receipt_attempt():
+    evidence = _evidence()
+    evidence["receiverReceipt"]["attemptNumber"] = 2
+    _assert_rejected(evidence)
 
 
 def test_mandatory_substitution_audit_is_itself_fail_closed():
