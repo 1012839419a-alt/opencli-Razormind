@@ -490,3 +490,34 @@ async def test_two_sessions_cancel_after_send_start_records_one_unknown_attempt(
     assert result.state == "cancelled"
     assert result.outcome == "unknown"
     assert result.attempt_count == 1
+
+
+@pytest.mark.asyncio
+async def test_two_sessions_concurrent_execute_posts_once_and_replays_final(client: AsyncClient, db_session, db_engine, monkeypatch):
+    scope, decision_id = await _stored_frozen_decision(db_session)
+    sessions = async_sessionmaker(db_engine, expire_on_commit=False)
+    started = asyncio.Event()
+    release = asyncio.Event()
+    posts = []
+
+    async def blocked_receiver(endpoint, body, headers, *, timeout_seconds, status_query=False):
+        posts.append(True)
+        started.set()
+        await release.wait()
+        return await client.post("/api/v1/controlled-receiver/v2/deliver", content=body, headers=headers)
+
+    monkeypatch.setattr(delivery_execution, "pinned_post", blocked_receiver)
+    async with sessions() as first_session, sessions() as second_session:
+        first_task = asyncio.create_task(
+            delivery_execution.execute_delivery(first_session, scope=scope, decision_id=decision_id)
+        )
+        await started.wait()
+        competing = await delivery_execution.execute_delivery(second_session, scope=scope, decision_id=decision_id)
+        assert competing.attempt_count == 0
+        release.set()
+        accepted = await first_task
+        await first_session.commit()
+        replay = await delivery_execution.execute_delivery(second_session, scope=scope, decision_id=decision_id)
+    assert accepted.outcome == replay.outcome == "accepted"
+    assert accepted.attempt_count == replay.attempt_count == 1
+    assert posts == [True]

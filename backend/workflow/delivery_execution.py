@@ -366,7 +366,10 @@ async def execute_delivery(db: AsyncSession, *, scope: DeliveryAuthorizationScop
     if execution.final_outcome is not None:
         return _read(execution, prior)
     if execution.lease_token:
-        if execution.lease_acquired_at is None or execution.lease_acquired_at <= _now() - timedelta(seconds=60):
+        acquired_at = execution.lease_acquired_at
+        if acquired_at is not None and acquired_at.tzinfo is None:
+            acquired_at = acquired_at.replace(tzinfo=timezone.utc)
+        if acquired_at is None or acquired_at <= _now() - timedelta(seconds=60):
             reserved = execution.reserved_attempt_number or len(prior) + 1
             if execution.state == "reserved" and execution.send_started_at is None:
                 execution.state = "pending"
