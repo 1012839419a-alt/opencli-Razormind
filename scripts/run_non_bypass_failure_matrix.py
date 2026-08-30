@@ -189,7 +189,9 @@ def _facts_from_driver(ledger: ScenarioLedger, env: dict[str, str], base: Path, 
         facts = json.loads(stdout)
         return normalize_public_facts(facts)
     except (json.JSONDecodeError, RuntimeError) as exc:
-        raise FailureRunRejected("in-network driver did not emit normalized public facts") from exc
+        raise FailureRunRejected(
+            f"in-network driver facts failed normalization: {exc}"
+        ) from exc
 
 
 def _govern(ledger: ScenarioLedger, result: dict[str, Any], now: int) -> dict[str, Any]:
