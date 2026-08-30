@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import pytest
 from tests.acceptance.fault_tools import admin_pg_protocol_relay as relay
 
@@ -48,6 +49,26 @@ def test_relay_arm_requires_the_authenticated_token(monkeypatch):
 
     assert denied.value.status_code == 401
     relay._authorize("relay-token")
+def test_relay_arm_closes_preexisting_primary_pool_sockets():
+    class Writer:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+        async def wait_closed(self) -> None:
+            return None
+
+    writer = Writer()
+    connections = relay.RelayConnections()
+    connections.add(writer)  # type: ignore[arg-type]
+
+    asyncio.run(connections.close_all())
+
+    assert writer.closed is True
+
+
 
 
 
