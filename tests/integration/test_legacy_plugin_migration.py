@@ -87,7 +87,7 @@ def test_legacy_plugin_database_rejoins_current_migration_head(tmp_path: Path) -
     finally:
         connection.close()
 
-    assert revision == ("p3q4r5s6t7u8",)
+    assert revision == ("q4r5s6t7u8v9",)
     assert "version" in cursor_columns
     assert "identity_key" in record_columns
     assert "ix_collected_records_source_identity" in record_indexes
@@ -132,7 +132,7 @@ def test_current_database_repairs_missing_plugin_installation_table(tmp_path: Pa
     finally:
         connection.close()
 
-    assert revision == ("p3q4r5s6t7u8",)
+    assert revision == ("q4r5s6t7u8v9",)
     assert table == ("plugin_installations",)
     assert "ix_plugin_installations_provider_key" in indexes
 
@@ -181,7 +181,7 @@ def test_current_head_repairs_missing_record_identity_schema(tmp_path: Path) -> 
     finally:
         connection.close()
 
-    assert revision == ("p3q4r5s6t7u8",)
+    assert revision == ("q4r5s6t7u8v9",)
     assert "identity_key" in columns
     assert "ix_collected_records_source_identity" in indexes
     assert record == ("source-1", None)

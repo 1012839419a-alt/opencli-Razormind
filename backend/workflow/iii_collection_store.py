@@ -479,6 +479,7 @@ async def ingest_lifecycle(
             attempt_id=event.attempt_id,
             sequence=event.sequence,
             event_type=event.event_type,
+            event_hash=existing.canonical_content_hash,
             duplicate=True,
         )
     prior_sequence = await db.scalar(
@@ -540,6 +541,7 @@ async def ingest_lifecycle(
             attempt_id=event.attempt_id,
             sequence=event.sequence,
             event_type=event.event_type,
+            event_hash=existing.canonical_content_hash,
             duplicate=True,
         )
     return IIICollectionLifecycleReadV1(
@@ -547,6 +549,7 @@ async def ingest_lifecycle(
         attempt_id=event.attempt_id,
         sequence=event.sequence,
         event_type=event.event_type,
+        event_hash=content_hash,
         duplicate=False,
     )
 
@@ -791,25 +794,29 @@ async def collection_status(
         blocking_stage, action, uncertain = "reconciliation", "await_reconciliation", True
 
     evidence = [
-        VerticalEvidenceReferenceV1(kind="admin_requested", reference=f"command:{command.id}"),
-        VerticalEvidenceReferenceV1(kind="outbound", reference=f"outbound:{outbound.id}"),
         *[
             VerticalEvidenceReferenceV1(
-                kind="lifecycle", reference=f"lifecycle:{observation.sequence}"
+                kind="lifecycle",
+                hash=observation.canonical_content_hash,
+                event_type=observation.event_type,
             )
             for observation in observations
         ],
         *(
             [
                 VerticalEvidenceReferenceV1(
-                    kind="expected_key_report", reference=f"report:{report.report_id}"
+                    kind="expected_key_report",
+                    hash=report.report_hash,
                 )
             ]
             if report is not None
             else []
         ),
         *[
-            VerticalEvidenceReferenceV1(kind="ingress_receipt", reference=f"receipt:{receipt.receipt_id}")
+            VerticalEvidenceReferenceV1(
+                kind="ingress_receipt",
+                hash=receipt.receipt_hash,
+            )
             for receipt in receipts
         ],
     ]

@@ -12,7 +12,6 @@ import base64
 import hashlib
 import json
 import os
-import re
 import secrets
 import shutil
 import subprocess
@@ -34,43 +33,41 @@ ROOT = Path(__file__).resolve().parents[1]
 COMPOSE_FILE = ROOT / "docker-compose.non-bypass-acceptance.yml"
 FIXTURE = ROOT / "tests/acceptance/fixtures/opencli-proof"
 FIXTURE_DIGEST = ROOT / "tests/acceptance/fixtures/opencli-proof.sha256"
-PINNED_III = (
-    "iiidev/iii:0.19.4@sha256:14ed48b463d8a2e0d3583512acf106b3514f406c5e9965a5854710ff936e1e86"
-)
-ALLOWED_BUNDLE_KEYS = frozenset(
-    {
-        "schemaVersion",
-        "run",
-        "image",
-        "topology",
-        "command",
-        "attempt",
-        "lifecycleHashes",
-        "reportHash",
-        "ingressReceiptHash",
-        "researchGraphManifestRef",
-        "pin",
-        "decision",
-        "execution",
-        "receiverReceipt",
-        "redactionProfile",
-    }
-)
-_SECRET_NAME = re.compile(r"(?:secret|token|password|credential|private|key)", re.I)
-_SAFE_PROOF_FIELD_NAMES = frozenset(
-    {"expectedRecordKeySetHash", "keyId", "nonSecretConfigHash", "excludedItemKeys"}
-)
-_HASH = re.compile(r"^[0-9a-f]{64}$")
-
-
-class ProofRejected(RuntimeError):  # noqa: N818 - stable acceptance-harness API
-    """A non-authoritative, substituted, or unsafe proof input was rejected."""
-
-
-def _run(command: list[str], *, env: dict[str, str] | None = None, capture: bool = True) -> str:
-    completed = subprocess.run(
-        command, cwd=ROOT, text=True, capture_output=capture, check=False, env=env
+try:
+    from scripts.non_bypass_proof_contract import (
+        PINNED_III,
+        ProofRejected,
+        assert_substitutions_rejected,
+        validate_evidence,
     )
+except ModuleNotFoundError:  # Direct script execution resolves its own directory first.
+    from non_bypass_proof_contract import (  # type: ignore[no-redef]
+        PINNED_III,
+        ProofRejected,
+        assert_substitutions_rejected,
+        validate_evidence,
+    )
+
+
+def _run(
+    command: list[str],
+    *,
+    env: dict[str, str] | None = None,
+    capture: bool = True,
+    timeout: float = 300,
+) -> str:
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=ROOT,
+            text=True,
+            capture_output=capture,
+            check=False,
+            env=env,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"command timed out after {timeout}s: {' '.join(command)}") from exc
     if completed.returncode:
         raise RuntimeError(
             f"command failed ({completed.returncode}): {' '.join(command)}\n"
@@ -85,104 +82,6 @@ def _canonical(value: Any) -> bytes:
 
 def _sha256_file(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-def _assert_no_secrets(value: Any, path: str = "bundle") -> None:
-    if isinstance(value, dict):
-        for key, child in value.items():
-            if key not in _SAFE_PROOF_FIELD_NAMES and _SECRET_NAME.search(str(key)):
-                raise ProofRejected(f"secret-bearing field is forbidden at {path}.{key}")
-            _assert_no_secrets(child, f"{path}.{key}")
-    elif isinstance(value, list):
-        for index, child in enumerate(value):
-            _assert_no_secrets(child, f"{path}[{index}]")
-    elif isinstance(value, str) and "-----BEGIN" in value:
-        raise ProofRejected(f"private transport material is forbidden at {path}")
-
-
-def validate_evidence(evidence: dict[str, Any], *, fixture_digest: str, run: str) -> None:
-    """Fail closed before signing; acceptance never follows a transport 2xx."""
-    if set(evidence) != ALLOWED_BUNDLE_KEYS:
-        raise ProofRejected("proof bundle keys are not the acceptance allowlist")
-    _assert_no_secrets(evidence)
-    if evidence["schemaVersion"] != "NonBypassHappyVerticalProofV1":
-        raise ProofRejected("unexpected proof schema")
-    if evidence["run"] != run:
-        raise ProofRejected("run identity changed")
-    if evidence["image"] != PINNED_III:
-        raise ProofRejected("un-pinned III engine")
-    topology = evidence["topology"]
-    if not isinstance(topology, dict) or topology.get("fixtureDigest") != fixture_digest:
-        raise ProofRejected("fixture digest was substituted")
-    if (
-        topology.get("iiiCliPath") != "/opt/iii/iii"
-        or topology.get("iiiUrl") != "ws://proof-iii:49134"
-    ):
-        raise ProofRejected("III admission facts are missing")
-    if topology.get("relay") != "three-fixed-callback-paths":
-        raise ProofRejected("callback relay was bypassed")
-    if not isinstance(evidence["researchGraphManifestRef"], dict):
-        raise ProofRejected("materialized ResearchGraph manifest reference is absent")
-    for field, prefix in (("reportHash", "report:"), ("ingressReceiptHash", "receipt:")):
-        if not isinstance(evidence[field], str) or not evidence[field].startswith(prefix):
-            raise ProofRejected(f"{field} is not a redacted correlated reference")
-    hashes = evidence["lifecycleHashes"]
-    if (
-        not isinstance(hashes, list)
-        or not hashes
-        or not all(isinstance(v, str) and v.startswith("lifecycle:") for v in hashes)
-    ):
-        raise ProofRejected("lifecycle evidence is incomplete")
-    command, attempt = evidence["command"], evidence["attempt"]
-    if not isinstance(command, dict) or not isinstance(attempt, dict):
-        raise ProofRejected("command/attempt identities are missing")
-    if command.get("runId") != run or attempt.get("commandId") != command.get("id"):
-        raise ProofRejected("command/attempt correlation failed")
-    manifest = evidence["researchGraphManifestRef"]
-    pin = evidence["pin"]
-    decision = evidence["decision"]
-    if pin.get("manifestSetHash") != decision.get("manifestSetHash"):
-        raise ProofRejected("frozen decision is not bound to the pinned graph")
-    if manifest.get("manifestHash") not in {
-        item.get("manifestHash") for item in decision.get("manifests", [])
-    }:
-        raise ProofRejected("decision does not retain the materialized manifest")
-    execution = evidence["execution"]
-    if execution.get("final_outcome") is not None:
-        raise ProofRejected("execution contains an untrusted synthetic terminal field")
-    if execution.get("outcome") != "accepted" or execution.get("decisionId") != decision.get(
-        "decisionId"
-    ):
-        raise ProofRejected("delivery execution is not terminally accepted")
-    receipt = evidence["receiverReceipt"]
-    if not isinstance(receipt, dict) or receipt.get("receipt") != "verified":
-        raise ProofRejected("verified receiver receipt is absent")
-    if receipt.get("outcome") != "accepted":
-        raise ProofRejected("receiver receipt is not terminally accepted")
-
-
-def assert_substitutions_rejected(
-    evidence: dict[str, Any], *, fixture_digest: str, run: str
-) -> None:
-    """Five mandatory pre-sign substitutions must never get as far as signing."""
-    substitutions = (
-        ("engine", lambda proof: proof.__setitem__("image", "iiidev/iii:latest")),
-        ("fixture", lambda proof: proof["topology"].__setitem__("fixtureDigest", "0" * 64)),
-        ("relay", lambda proof: proof["topology"].__setitem__("relay", "direct-admin")),
-        ("manifest", lambda proof: proof.__setitem__("researchGraphManifestRef", "replacement")),
-        (
-            "terminal",
-            lambda proof: proof["execution"].__setitem__("final_outcome", "accepted-by-2xx"),
-        ),
-    )
-    for name, mutate in substitutions:
-        candidate = json.loads(json.dumps(evidence))
-        mutate(candidate)
-        try:
-            validate_evidence(candidate, fixture_digest=fixture_digest, run=run)
-        except ProofRejected:
-            continue
-        raise AssertionError(f"unsafe {name} substitution reached signing")
 
 
 @dataclass(frozen=True)
@@ -403,7 +302,8 @@ def _build_images(ledger: RunLedger, env: dict[str, str]) -> None:
 
 
 def _migrate_fresh_admin(ledger: RunLedger, env: dict[str, str]) -> None:
-    """Exercise Alembic against the empty Admin and controlled-receiver databases."""
+    """Prove fresh and server-truncated PostgreSQL migration paths converge."""
+
     _compose(
         ledger,
         env,
@@ -413,18 +313,71 @@ def _migrate_fresh_admin(ledger: RunLedger, env: dict[str, str]) -> None:
         "proof-admin-postgres",
         "proof-receiver-postgres",
     )
-    for service in ("proof-admin", "proof-controlled-receiver"):
-        _compose(
-            ledger,
-            env,
-            "run",
-            "--rm",
-            "--no-deps",
-            service,
-            "/bin/sh",
-            "-c",
-            "PYTHONUNBUFFERED=1 alembic upgrade head",
-        )
+    _compose(
+        ledger,
+        env,
+        "run",
+        "--rm",
+        "--no-deps",
+        "proof-admin",
+        "/bin/sh",
+        "-c",
+        "PYTHONUNBUFFERED=1 alembic upgrade g5b6c7d8e9f0",
+    )
+    _compose(
+        ledger,
+        env,
+        "exec",
+        "-T",
+        "proof-admin-postgres",
+        "psql",
+        "-U",
+        "proof",
+        "-d",
+        "proof_admin",
+        "-c",
+        "ALTER INDEX ix_evidence_batch_materialization_status "
+        "RENAME TO ix_evidence_batch_materialization_manifests_materialization_sta",
+    )
+    _compose(
+        ledger,
+        env,
+        "run",
+        "--rm",
+        "--no-deps",
+        "proof-admin",
+        "/bin/sh",
+        "-c",
+        "PYTHONUNBUFFERED=1 alembic upgrade head",
+    )
+    canonical = _compose(
+        ledger,
+        env,
+        "exec",
+        "-T",
+        "proof-admin-postgres",
+        "psql",
+        "-U",
+        "proof",
+        "-d",
+        "proof_admin",
+        "-At",
+        "-c",
+        "SELECT to_regclass('ix_evidence_batch_materialization_status')",
+    ).strip()
+    if canonical != "ix_evidence_batch_materialization_status":
+        raise ProofRejected("PostgreSQL materialization index did not converge")
+    _compose(
+        ledger,
+        env,
+        "run",
+        "--rm",
+        "--no-deps",
+        "proof-controlled-receiver",
+        "/bin/sh",
+        "-c",
+        "PYTHONUNBUFFERED=1 alembic upgrade head",
+    )
 
 
 def _admit(ledger: RunLedger, env: dict[str, str], fixture_digest: str) -> None:
@@ -450,11 +403,9 @@ def _admit(ledger: RunLedger, env: dict[str, str], fixture_digest: str) -> None:
         "proof-admin",
         "/bin/sh",
         "-c",
-        (
-            'test "$III_CLI_PATH" = /opt/iii/iii '
-            '&& test "$III_URL" = ws://proof-iii:49134 '
-            "&& /opt/iii/iii --version"
-        ),
+        "test \"$III_CLI_PATH\" = /opt/iii/iii "
+        "&& test \"$III_URL\" = ws://proof-iii:49134 "
+        "&& /opt/iii/iii --version",
     ).strip()
     jwks = _compose(
         ledger,
@@ -491,19 +442,25 @@ def _admit(ledger: RunLedger, env: dict[str, str], fixture_digest: str) -> None:
     )
 
 
-def _driver_evidence(ledger: RunLedger, env: dict[str, str]) -> dict[str, Any]:
+def _verify_receiver_tls(ledger: RunLedger, env: dict[str, str]) -> None:
+    """Prove the pinned client uses this run's CA and rejects the system trust store."""
+
     _compose(
         ledger,
         env,
         "exec",
         "-T",
         "proof-admin",
-        "curl",
-        "-fsS",
-        "--cacert",
-        "/run/proof/ca.pem",
-        "https://8.8.8.8:8000/health",
+        "/bin/sh",
+        "-ec",
+        'test "$SSL_CERT_FILE" = /run/proof/ca.pem; '
+        'curl -fsS --cacert "$SSL_CERT_FILE" https://8.8.8.8:8000/health; '
+        "! curl -fsS --cacert /etc/ssl/certs/ca-certificates.crt https://8.8.8.8:8000/health",
     )
+
+
+def _driver_evidence(ledger: RunLedger, env: dict[str, str]) -> dict[str, Any]:
+    _verify_receiver_tls(ledger, env)
     try:
         output = _compose(
             ledger,
@@ -517,17 +474,20 @@ def _driver_evidence(ledger: RunLedger, env: dict[str, str]) -> dict[str, Any]:
             ledger.run,
         )
     except RuntimeError as exc:
-        logs = _compose(
-            ledger,
-            env,
-            "logs",
-            "--no-color",
-            "proof-admin",
-            "proof-controlled-receiver",
-            "proof-collector",
-            "proof-bridge",
-            "proof-relay",
-        )
+        try:
+            logs = _compose(
+                ledger,
+                env,
+                "logs",
+                "--no-color",
+                "proof-admin",
+                "proof-controlled-receiver",
+                "proof-collector",
+                "proof-bridge",
+                "proof-relay",
+            )
+        except RuntimeError:
+            logs = "Compose logs unavailable"
         raise RuntimeError(f"{exc}\n{logs}") from exc
     try:
         return json.loads(output)
@@ -536,69 +496,153 @@ def _driver_evidence(ledger: RunLedger, env: dict[str, str]) -> dict[str, Any]:
 
 
 def _sign(ledger: RunLedger, evidence: dict[str, Any]) -> None:
-    ledger.artifact_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    staging = ledger.artifact_dir.with_name(f".{ledger.artifact_dir.name}.partial")
+    shutil.rmtree(staging, ignore_errors=True)
+    staging.mkdir(mode=0o700, parents=True)
     private = Ed25519PrivateKey.generate()
     public = private.public_key()
     payload = _canonical(evidence)
     signature = private.sign(payload)
     public.verify(signature, payload)
-    (ledger.artifact_dir / "proof.json").write_bytes(payload + b"\n")
-    (ledger.artifact_dir / "proof.json.sig").write_text(
+    (staging / "proof.json").write_bytes(payload + b"\n")
+    (staging / "proof.json.sig").write_text(
         base64.b64encode(signature).decode() + "\n", encoding="ascii"
     )
     public_bytes = public.public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
-    (ledger.artifact_dir / "proof.pub").write_text(
+    (staging / "proof.pub").write_text(
         base64.b64encode(public_bytes).decode() + "\n", encoding="ascii"
     )
+    if ledger.artifact_dir.exists():
+        raise ProofRejected("run-specific artifact directory already exists")
+    staging.replace(ledger.artifact_dir)
 
 
-def _cleanup(ledger: RunLedger, env: dict[str, str]) -> None:
-    try:
-        _compose(ledger, env, "down", "--volumes", "--remove-orphans")
-        leaks = _run(
-            [
-                "docker",
-                "ps",
-                "-aq",
-                "--filter",
-                f"label=com.docker.compose.project={ledger.project}",
-            ]
+def _cleanup(ledger: RunLedger, env: dict[str, str]) -> list[str]:
+    """Attempt every cleanup independently and return diagnostics without raising."""
+
+    diagnostics: list[str] = []
+
+    def attempt(label: str, command: list[str]) -> str:
+        try:
+            completed = subprocess.run(
+                command, cwd=ROOT, env=env, text=True, capture_output=True, check=False, timeout=120
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            diagnostics.append(f"{label}: {exc}")
+            return ""
+        if completed.returncode:
+            diagnostics.append(
+                f"{label}: exit {completed.returncode}: "
+                f"{(completed.stderr or completed.stdout).strip()[:500]}"
+            )
+        return completed.stdout
+
+    compose = [
+        "docker",
+        "compose",
+        "--parallel",
+        "1",
+        "-p",
+        ledger.project,
+        "-f",
+        str(COMPOSE_FILE),
+    ]
+    attempt("compose down", [*compose, "down", "--volumes", "--remove-orphans"])
+    resources = (
+        ("containers", ["docker", "ps", "-aq"]),
+        ("networks", ["docker", "network", "ls", "-q"]),
+        ("volumes", ["docker", "volume", "ls", "-q"]),
+    )
+    label = f"com.docker.compose.project={ledger.project}"
+    for kind, list_command in resources:
+        identifiers = attempt(
+            f"inspect labeled {kind}", [*list_command, "--filter", f"label={label}"]
+        ).split()
+        if identifiers:
+            remove = {
+                "containers": ["docker", "rm", "-f"],
+                "networks": ["docker", "network", "rm"],
+                "volumes": ["docker", "volume", "rm", "-f"],
+            }[kind]
+            attempt(f"remove labeled {kind}", [*remove, *identifiers])
+        remaining = attempt(
+            f"verify labeled {kind}", [*list_command, "--filter", f"label={label}"]
+        ).split()
+        if remaining:
+            diagnostics.append(f"ledger-labeled {kind} remain: {', '.join(remaining)}")
+    for service in (
+        "proof-admin",
+        "proof-driver",
+        "proof-controlled-receiver",
+        "proof-odp-ingest",
+        "proof-odp-store",
+        "proof-odp-query",
+        "proof-collector",
+        "proof-bridge",
+    ):
+        attempt(
+            f"remove image {service}",
+            ["docker", "image", "rm", "-f", f"{ledger.project}-{service}"],
         )
-        if leaks.strip():
-            raise RuntimeError("ledger-labeled containers remain after cleanup")
-    finally:
-        shutil.rmtree(ledger.scratch, ignore_errors=True)
+    shutil.rmtree(ledger.scratch, ignore_errors=True)
+    if ledger.scratch.exists():
+        diagnostics.append("per-run scratch directory remains")
+    staging = ledger.artifact_dir.with_name(f".{ledger.artifact_dir.name}.partial")
+    shutil.rmtree(staging, ignore_errors=True)
+    if staging.exists():
+        diagnostics.append("partial artifact directory remains")
+    return diagnostics
 
 
 def run(artifact_dir: Path) -> Path:
     run_id = f"nbv-{uuid.uuid4().hex}"
     scratch = Path(tempfile.mkdtemp(prefix=f"{run_id}-"))
-    os.chmod(scratch, 0o700)
-    ledger = RunLedger(run=run_id, project=run_id, scratch=scratch, artifact_dir=artifact_dir)
-    fixture_digest = FIXTURE_DIGEST.read_text(encoding="ascii").split()[0]
-    if _sha256_file(FIXTURE) != fixture_digest:
-        raise ProofRejected("committed fixture digest mismatch")
-    values = _make_secrets(ledger)
-    _make_identities(ledger, values)
-    values["PROOF_FIXTURE_DIGEST"] = fixture_digest
+    ledger = RunLedger(
+        run=run_id,
+        project=run_id,
+        scratch=scratch,
+        artifact_dir=artifact_dir / run_id,
+    )
     env = {
         **os.environ,
-        **values,
         "PROOF_SECRETS_DIR": str(scratch),
         "PROOF_RUN_ID": run_id,
-        # Docker Desktop's BuildKit session can corrupt concurrent nested
-        # Compose builds on Windows; serializing does not alter the topology.
         "COMPOSE_PARALLEL_LIMIT": "1",
     }
+    failure: BaseException | None = None
     try:
+        os.chmod(scratch, 0o700)
+        artifact_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        shutil.rmtree(ledger.artifact_dir, ignore_errors=True)
+        shutil.rmtree(
+            ledger.artifact_dir.with_name(f".{ledger.artifact_dir.name}.partial"),
+            ignore_errors=True,
+        )
+        fixture_digest = FIXTURE_DIGEST.read_text(encoding="ascii").split()[0]
+        if _sha256_file(FIXTURE) != fixture_digest:
+            raise ProofRejected("committed fixture digest mismatch")
+        values = _make_secrets(ledger)
+        _make_identities(ledger, values)
+        env.update(values)
+        env["PROOF_FIXTURE_DIGEST"] = fixture_digest
         _admit(ledger, env, fixture_digest)
         evidence = _driver_evidence(ledger, env)
         validate_evidence(evidence, fixture_digest=fixture_digest, run=run_id)
         assert_substitutions_rejected(evidence, fixture_digest=fixture_digest, run=run_id)
         _sign(ledger, evidence)
+    except BaseException as exc:
+        failure = exc
+        raise
     finally:
-        _cleanup(ledger, env)
-    return artifact_dir
+        cleanup_diagnostics = _cleanup(ledger, env)
+        if cleanup_diagnostics:
+            shutil.rmtree(ledger.artifact_dir, ignore_errors=True)
+            message = "cleanup incomplete: " + " | ".join(cleanup_diagnostics)
+            if failure is not None:
+                failure.add_note(message)
+            else:
+                raise RuntimeError(message)
+    return ledger.artifact_dir
 
 
 def main(argv: Iterable[str] | None = None) -> int:

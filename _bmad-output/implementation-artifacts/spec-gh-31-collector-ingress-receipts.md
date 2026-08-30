@@ -2,7 +2,7 @@
 title: 'GitHub #31: Collector Expected Keys and Signed Ingress Outcomes'
 type: 'feature'
 created: '2026-08-30'
-status: 'in-review'
+status: 'done'
 baseline_commit: 'cd380a984f788eaa16022ca08048ba772db5ba7d'
 review_loop_iteration: 0
 context:

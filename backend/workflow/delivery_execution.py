@@ -106,6 +106,8 @@ def _read(
                 receipt=result.receipt_classification,
                 protocol=result.protocol_classification,
                 outcome=result.outcome,
+                receipt_id=result.receipt_id,
+                receipt_hash=result.receipt_hash,
                 observed_at=result.observed_at,
             )
             for result in results

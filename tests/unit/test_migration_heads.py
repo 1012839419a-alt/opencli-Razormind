@@ -13,7 +13,7 @@ def test_alembic_has_one_head():
     config = Config()
     config.set_main_option("script_location", "backend/migrations")
 
-    assert ScriptDirectory.from_config(config).get_heads() == ["p3q4r5s6t7u8"]
+    assert ScriptDirectory.from_config(config).get_heads() == ["q4r5s6t7u8v9"]
 
 
 def test_upgrade_head_creates_identity_and_operations_tables(monkeypatch):

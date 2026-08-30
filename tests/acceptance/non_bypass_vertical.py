@@ -16,9 +16,6 @@ from backend.database import AsyncSessionLocal
 from backend.models.studio import StudioWorkspace
 
 BASE = "http://proof-admin:8000/api/v1"
-PINNED_III = (
-    "iiidev/iii:0.19.4@sha256:14ed48b463d8a2e0d3583512acf106b3514f406c5e9965a5854710ff936e1e86"
-)
 
 
 def data(response: httpx.Response) -> dict[str, Any]:
@@ -252,8 +249,8 @@ def main() -> int:
         manifest_ref = materialization["researchGraphManifestRef"]
         if manifest_ref.get("materializationStatus") != "completed":
             raise RuntimeError("only completed materialization can enter ResearchGraph")
-        # The remainder is deliberately scoped and identity-bound: no database
-        # reads or reconstructed manifest references are permitted.
+        # The graph receives this exact scoped manifest reference. The proof
+        # bundle below instead emits a deliberately narrower redacted DTO.
         graph_route = f"{route}/{run_id}/research-graph-v2"
         state = get(client, graph_route, proposer)
         claim_id = f"claim-{args.run}"
@@ -301,6 +298,7 @@ def main() -> int:
             },
             reviewer,
         )
+        pinned_fold = pinned["pinnedFold"]
         target = post(
             client,
             f"{route}/{run_id}/delivery-targets",
@@ -311,19 +309,20 @@ def main() -> int:
             },
             reviewer,
         )
+        operation_id = f"delivery-{args.run}"
         decision = post(
             client,
             f"{route}/{run_id}/delivery-authorizations",
             {
                 "version": "v1",
-                "operationId": f"delivery-{args.run}",
+                "operationId": operation_id,
                 "idempotencyKey": f"{args.run}-delivery",
                 "nodeId": "opencli-source",
                 "targetId": target["targetId"],
                 "pinnedReference": {
-                    "sequence": pinned["pinnedFold"]["sequence"],
-                    "researchRevisionId": pinned["pinnedFold"]["researchRevisionId"],
-                    "manifestSetHash": pinned["pinnedFold"]["manifestSetHash"],
+                    "sequence": pinned_fold["sequence"],
+                    "researchRevisionId": pinned_fold["researchRevisionId"],
+                    "manifestSetHash": pinned_fold["manifestSetHash"],
                 },
                 "selectedClaimIds": [claim_id],
             },
@@ -338,39 +337,114 @@ def main() -> int:
         if execution.get("outcome") != "accepted" or not execution.get("attempts"):
             raise RuntimeError(f"delivery execution did not reach accepted: {execution}")
         final_attempt = execution["attempts"][-1]
-        if final_attempt.get("receipt") != "verified":
-            raise RuntimeError(f"delivery receipt was not verified: {execution}")
+        if (
+            final_attempt.get("receipt") != "verified"
+            or final_attempt.get("outcome") != "accepted"
+            or not final_attempt.get("receiptId")
+            or not final_attempt.get("receiptHash")
+        ):
+            raise RuntimeError(f"delivery receipt was not durably verified: {execution}")
         vertical_status = get(client, f"{collection_route}/{command_id}", proposer)
-        references = vertical_status["evidenceReferences"]
-        lifecycle = [item["reference"] for item in references if item["kind"] == "lifecycle"]
-        report_ref = next(
-            item["reference"] for item in references if item["kind"] == "expected_key_report"
+        if vertical_status["commandId"] != command_id or vertical_status["attemptId"] != attempt_id:
+            raise RuntimeError("scoped status command/attempt correlation failed")
+        lifecycle = {
+            item["eventType"]: item["hash"]
+            for item in vertical_status["evidenceReferences"]
+            if item["kind"] == "lifecycle"
+        }
+        expected_lifecycle = {"bridge_accepted", "collector_started", "collector_returned"}
+        if set(lifecycle) != expected_lifecycle:
+            raise RuntimeError(f"lifecycle facts are incomplete: {vertical_status}")
+        report_hash = next(
+            item["hash"]
+            for item in vertical_status["evidenceReferences"]
+            if item["kind"] == "expected_key_report"
         )
-        ingress_ref = next(
-            item["reference"] for item in references if item["kind"] == "ingress_receipt"
+        ingress_receipt_hash = next(
+            item["hash"]
+            for item in vertical_status["evidenceReferences"]
+            if item["kind"] == "ingress_receipt"
         )
         print(
             json.dumps(
                 {
                     "schemaVersion": "NonBypassHappyVerticalProofV1",
                     "run": args.run,
-                    "image": PINNED_III,
+                    "image": (
+                        "iiidev/iii:0.19.4@sha256:14ed48b463d8a2e0d3583512acf106b3514f406c5e9965a5854710ff936e1e86"
+                    ),
                     "topology": {
                         "fixtureDigest": os.environ["PROOF_FIXTURE_DIGEST"],
                         "iiiCliPath": "/opt/iii/iii",
                         "iiiUrl": "ws://proof-iii:49134",
                         "relay": "three-fixed-callback-paths",
+                        "containerTransport": "docker-internal",
+                        "callbackRoute": "relay-only",
+                        "receiverEndpoint": "https://8.8.8.8:8000",
+                        "receiverExposure": "internal-only",
+                        "receiverKind": "controlled-receiver-v2",
                     },
-                    "command": {"id": command_id, "runId": args.run},
-                    "attempt": {"id": attempt_id, "commandId": command_id},
-                    "lifecycleHashes": lifecycle,
-                    "reportHash": report_ref,
-                    "ingressReceiptHash": ingress_ref,
-                    "researchGraphManifestRef": manifest_ref,
-                    "pin": pinned["pinnedFold"],
-                    "decision": decision,
-                    "execution": execution,
-                    "receiverReceipt": final_attempt,
+                    "command": {
+                        "id": command_id,
+                        "workflowRunId": run_id,
+                        "payloadHash": submission["payloadSha256"],
+                    },
+                    "attempt": {
+                        "id": attempt_id,
+                        "commandId": command_id,
+                        "attemptNumber": submission["attemptNumber"],
+                    },
+                    "lifecycleHashes": {
+                        "bridgeAccepted": lifecycle["bridge_accepted"],
+                        "collectorStarted": lifecycle["collector_started"],
+                        "collectorReturned": lifecycle["collector_returned"],
+                    },
+                    "reportHash": report_hash,
+                    "ingressReceiptHash": ingress_receipt_hash,
+                    "researchGraphManifestRef": {
+                        "batchId": manifest_ref["batchId"],
+                        "derivation": manifest_ref["derivation"],
+                        "reconciliationRevision": manifest_ref["reconciliationRevision"],
+                        "manifestSchemaVersion": manifest_ref["manifestSchemaVersion"],
+                        "manifestHash": manifest_ref["manifestHash"],
+                        "expectedRecordKeySetHash": manifest_ref["expectedRecordKeySetHash"],
+                        "recordRefSetHash": manifest_ref["recordRefSetHash"],
+                        "materializationStatus": manifest_ref["materializationStatus"],
+                        "materializationAuthority": "scoped-admin-api",
+                    },
+                    "pin": {
+                        "sequence": pinned_fold["sequence"],
+                        "researchRevisionId": pinned_fold["researchRevisionId"],
+                        "manifestSetHash": pinned_fold["manifestSetHash"],
+                    },
+                    "decision": {
+                        "operationId": decision["operationId"],
+                        "decisionId": decision["decisionId"],
+                        "decisionHash": decision["decisionHash"],
+                        "payloadHash": decision["payloadHash"],
+                        "manifestSetHash": decision["manifestSetHash"],
+                        "manifests": [
+                            {"manifestHash": item["manifestHash"]} for item in decision["manifests"]
+                        ],
+                    },
+                    "execution": {
+                        "executionId": execution["executionId"],
+                        "operationId": execution["operationId"],
+                        "decisionId": execution["decisionId"],
+                        "decisionHash": execution["decisionHash"],
+                        "payloadHash": execution["payloadHash"],
+                        "outcome": execution["outcome"],
+                        "attemptCount": execution["attemptCount"],
+                    },
+                    "receiverReceipt": {
+                        "attemptNumber": final_attempt["attemptNumber"],
+                        "receiptId": final_attempt["receiptId"],
+                        "receiptHash": final_attempt["receiptHash"],
+                        "httpStatus": final_attempt["httpStatus"],
+                        "receipt": final_attempt["receipt"],
+                        "durableReceipt": final_attempt["receipt"],
+                        "outcome": final_attempt["outcome"],
+                    },
                     "redactionProfile": materialization.get("redactionProfileVersion"),
                 },
                 sort_keys=True,
