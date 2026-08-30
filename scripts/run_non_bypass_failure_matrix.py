@@ -154,9 +154,23 @@ def _facts_from_driver(ledger: ScenarioLedger, env: dict[str, str], base: Path, 
             collector_log = _compose(
                 ledger, env, base, overlay, "logs", "--tail", "80", "proof-collector", timeout=30,
             )
+            hash_program = (
+                "import hashlib,os; "
+                "v=os.environ.get(os.environ['PROOF_HASH_KEY'],''); "
+                "print(f'{os.environ[\"PROOF_HASH_KEY\"]}:len={len(v)}:sha256={hashlib.sha256(v.encode()).hexdigest()}')"
+            )
+            collector_token = _compose(
+                ledger, env, base, overlay, "exec", "-T", "-e", "PROOF_HASH_KEY=ADMIN_III_LIFECYCLE_TOKEN",
+                "proof-collector", "python", "-c", hash_program, timeout=30,
+            )
+            admin_token = _compose(
+                ledger, env, base, overlay, "exec", "-T", "-e", "PROOF_HASH_KEY=III_LIFECYCLE_TOKEN",
+                "proof-admin", "python", "-c", hash_program, timeout=30,
+            )
             raise FailureRunRejected(
                 (stderr.strip() or stdout.strip() or "signed-zero driver failed")
                 + f"; relay report diagnostic: {diagnostic}; collector diagnostic: {collector_log}"
+                + f"; collector token: {collector_token.strip()}; admin token: {admin_token.strip()}"
             )
         return normalize_public_facts(json.loads(stdout))
     signal_name = "iii-ready" if ledger.scenario == "iii-unreachable" else "submitted"
