@@ -132,6 +132,19 @@ services:
     networks: [proof-fault]
     labels: *failure-labels
 
+  proof-odp-gateway:
+    build:
+      context: .
+      target: non-bypass-acceptance
+    entrypoint: [python, tests/acceptance/fault_tools/odp_fault_gateways.py]
+    environment:
+      API_AUTH_TOKEN: ${API_AUTH_TOKEN:-runtime-secret-required}
+      UPSTREAM_HOST: proof-odp-ingest
+      UPSTREAM_PORT: "8040"
+      GATEWAY_PORT: "8040"
+    networks: [proof-odp, proof-fault]
+    labels: *failure-labels
+
 networks:
   proof-fault:
     internal: true
