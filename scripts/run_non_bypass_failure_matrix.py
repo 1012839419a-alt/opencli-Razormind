@@ -146,7 +146,15 @@ def _facts_from_driver(ledger: ScenarioLedger, env: dict[str, str], base: Path, 
     if ledger.scenario == "signed-zero":
         stdout, stderr = process.communicate(timeout=120)
         if process.returncode:
-            raise FailureRunRejected(stderr.strip() or stdout.strip() or "signed-zero driver failed")
+            diagnostic = _compose(
+                ledger, env, base, overlay, "exec", "-T", "proof-driver", "curl", "-fsS",
+                "-H", f"X-API-Token: {env['API_AUTH_TOKEN']}",
+                "http://proof-relay:8080/_gate/report-diagnostics", timeout=30,
+            )
+            raise FailureRunRejected(
+                (stderr.strip() or stdout.strip() or "signed-zero driver failed")
+                + f"; relay report diagnostic: {diagnostic}"
+            )
         return normalize_public_facts(json.loads(stdout))
     signal_name = "iii-ready" if ledger.scenario == "iii-unreachable" else "submitted"
     signal = ledger.artifact / "coordination" / f"{ledger.project}.{signal_name}"

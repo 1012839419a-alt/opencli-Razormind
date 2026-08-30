@@ -26,6 +26,7 @@ UPSTREAMS = {
 active: Literal["primary", "control"] = "primary"
 report_mode: Literal["forward", "drop", "hold"] = "forward"
 report_release = asyncio.Event()
+report_diagnostic: dict[str, str | int] = {"status": "not-called"}
 report_release.set()
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
@@ -51,6 +52,15 @@ async def set_report_mode(body: ReportMode, x_api_token: str | None = Header(def
     else:
         report_release.set()
     return {"status": "updated"}
+
+
+@app.get("/_gate/report-diagnostics")
+async def get_report_diagnostics(x_api_token: str | None = Header(default=None)) -> dict[str, str | int]:
+    if x_api_token != os.environ.get("API_AUTH_TOKEN"):
+        raise HTTPException(401, "gate credential denied")
+    return dict(report_diagnostic)
+
+
 @app.post("/_gate/callback-upstream")
 async def switch(body: Switch, x_api_token: str | None = Header(default=None)) -> dict[str, str]:
     if x_api_token != os.environ.get("API_AUTH_TOKEN"):
@@ -82,6 +92,9 @@ async def callback(path: str, request: Request) -> Response:
     headers = {"X-III-Bridge-Token": request.headers.get("x-iii-bridge-token", "")}
     try:
         response = httpx.post(UPSTREAMS[active] + route, content=body, headers=headers, timeout=30)
+        if route == "/api/v1/iii-collections/expected-key-reports":
+            report_diagnostic.clear()
+            report_diagnostic.update(status=response.status_code, body=response.text[:512])
     except httpx.HTTPError as exc:
         raise HTTPException(502, "selected callback upstream is unavailable") from exc
     return Response(
