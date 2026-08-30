@@ -316,6 +316,16 @@ async def test_sqlite_raw_evidence_mutations_are_rejected_after_durable_executio
             f"CREATE TRIGGER raw_guard_{table}_delete BEFORE DELETE ON {table} "
             f"BEGIN SELECT RAISE(ABORT, '{table} is append-only'); END"
         ))
+    await db_session.execute(text(
+        "CREATE TRIGGER raw_result_checks BEFORE INSERT ON delivery_execution_results "
+        "WHEN NEW.attempt_number NOT BETWEEN 1 AND 3 OR NEW.outcome NOT IN ('accepted','rejected','unknown') "
+        "BEGIN SELECT RAISE(ABORT, 'invalid result'); END"
+    ))
+    await db_session.execute(text(
+        "CREATE TRIGGER raw_receiver_status_check BEFORE UPDATE OF durable_status ON controlled_receiver_deliveries "
+        "WHEN NEW.durable_status NOT IN ('accepted','rejected') "
+        "BEGIN SELECT RAISE(ABORT, 'invalid durable status'); END"
+    ))
     await db_session.commit()
     for table in (
         "delivery_execution_results", "delivery_execution_reconciliations",
