@@ -140,9 +140,12 @@ def _feishu_overrides(values: dict[str, Any]) -> dict[str, Any]:
         if key in mapping
         or key
         in {
+            "eligible_status",
+            "keyword_field",
             "number_field",
             "max_rows",
             "page_size",
+            "status_field",
             "view_id",
             "field_names",
             "source_group",
