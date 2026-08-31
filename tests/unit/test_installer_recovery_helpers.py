@@ -182,9 +182,10 @@ $ErrorActionPreference = 'Stop'
 $env:OS = 'Windows_NT'
 function Get-Service {{ return $null }}
 if (Test-OpenCliDockerBootPrerequisite) {{ throw 'Windows was misclassified as verified.' }}
+$installDirectory = Join-Path (Get-Location) "OpenCLI/O'Brien"
 $output = (& {{
   Write-OpenCliRestartStatus `
-    -Directory "C:\OpenCLI\O'Brien" `
+    -Directory $installDirectory `
     -FrontendPort 3010 `
     -ApiPort 8031 `
     -BaselineReady $true
