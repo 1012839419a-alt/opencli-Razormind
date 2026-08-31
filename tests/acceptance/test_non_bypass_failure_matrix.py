@@ -798,6 +798,24 @@ def test_receiver_profile_routes_only_receiver_dependent_scenarios():
     assert runner._scenario_compose_profiles("receiver-recovery") == "receiver"
     assert runner._scenario_compose_profiles("cancel-in-flight") == "receiver"
     assert runner._scenario_compose_profiles("cancel-before-dispatch") == ""
+def test_driver_waits_for_healthy_control_admin_before_public_boundary():
+    overlay = yaml.load(
+        (ROOT / "docker-compose.non-bypass-failure.yml").read_text(encoding="utf-8"),
+        Loader=ComposeLoader,
+    )
+    services = overlay["services"]
+
+    assert services["proof-driver"]["depends_on"]["proof-admin-control"] == {
+        "condition": "service_healthy"
+    }
+    assert services["proof-admin-control"]["healthcheck"]["test"] == [
+        "CMD",
+        "curl",
+        "-fsS",
+        "http://localhost:8000/health",
+    ]
+
+
 
 
 

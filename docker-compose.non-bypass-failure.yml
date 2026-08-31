@@ -17,6 +17,8 @@ services:
     image: "opencli-proof-root:${PROOF_CATALOG_DIGEST:-unbound}"
     labels: *failure-labels
     networks: [proof-control, proof-fault]
+    depends_on:
+      proof-admin-control: {condition: service_healthy}
     volumes:
       - ${PROOF_ARTIFACT_DIR:-./.artifacts/non-bypass-failures}:/proof-artifacts
   proof-admin-postgres:
@@ -166,6 +168,11 @@ services:
     networks: !override [proof-control, proof-query, proof-callback, proof-failure-receiver, proof-iii-admin]
     depends_on:
       proof-admin: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, curl, -fsS, http://localhost:8000/health]
+      interval: 5s
+      timeout: 3s
+      retries: 20
     labels: *failure-labels
 
   proof-fault-gateway:
