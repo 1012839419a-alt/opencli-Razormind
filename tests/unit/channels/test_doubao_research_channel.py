@@ -3,13 +3,8 @@ import pytest
 from backend.channels.doubao_research_channel import (
     DoubaoResearchChannel,
     _citations,
-# merge marker
     _conversation_url,
-# merge-base marker
-from backend.channels.doubao_research_channel import DoubaoResearchChannel, _citations
-# incoming marker
     _structured_response,
-# end marker
 )
 from backend.schemas.source import DataSourceCreate
 

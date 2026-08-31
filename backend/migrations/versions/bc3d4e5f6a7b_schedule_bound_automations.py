@@ -64,7 +64,7 @@ def upgrade() -> None:
         )
     # Previously enabled rows had no executable binding. Fail closed until an
     # operator explicitly pins a compatible published Agent version.
-    op.execute("UPDATE automations SET enabled = 0 WHERE operations_agent_id IS NULL")
+    op.execute("UPDATE automations SET enabled = false WHERE operations_agent_id IS NULL")
 
     run_columns = (
         (
