@@ -268,11 +268,15 @@ def _compose(
 def _receiver_address_values(
     project: str, environment: Mapping[str, str] | None = None
 ) -> dict[str, str]:
-    """Derive the isolated public receiver /24 for one fresh Compose project."""
+    """Derive the isolated public receiver /24 for one fresh Compose project.
+
+    Docker assigns the first dynamic endpoint to .1; reserve it and pin the
+    receiver proxy at .2 so Admin and control Admin can join this same network.
+    """
     digest = hashlib.sha256(project.encode("utf-8")).digest()
     defaults = {
         "PROOF_RECEIVER_SUBNET": f"11.{digest[0]}.{digest[1]}.0/24",
-        "PROOF_RECEIVER_IP": f"11.{digest[0]}.{digest[1]}.1",
+        "PROOF_RECEIVER_IP": f"11.{digest[0]}.{digest[1]}.2",
         "PROOF_RECEIVER_GATEWAY": f"11.{digest[0]}.{digest[1]}.254",
     }
     overrides = os.environ if environment is None else environment

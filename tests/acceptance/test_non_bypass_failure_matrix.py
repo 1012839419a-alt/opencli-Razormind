@@ -834,6 +834,10 @@ def test_receiver_address_tuple_is_deterministic_global_and_overrideable():
         first["PROOF_RECEIVER_SUBNET"]
     )
     assert first["PROOF_RECEIVER_IP"] != first["PROOF_RECEIVER_GATEWAY"]
+    receiver_network = ipaddress.ip_network(first["PROOF_RECEIVER_SUBNET"])
+    assert ipaddress.ip_address(first["PROOF_RECEIVER_IP"]) == (
+        receiver_network.network_address + 2
+    )
     override = {
         "PROOF_RECEIVER_IP": "12.34.56.1",
         "PROOF_RECEIVER_SUBNET": "12.34.56.0/24",
