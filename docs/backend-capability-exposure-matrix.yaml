@@ -2343,33 +2343,6 @@ operations:
   decision: Start only published project workflows through the Studio runtime boundary.
   target_epic: Epic 8
   capability_id: studio.workflow
-- method: GET
-  path: /api/v1/auth/local/status
-  operation_id: local_status_api_v1_auth_local_status_get
-  disposition: setup_status
-  frontend_route: /login
-  wrapper: getLocalAuthStatus
-  decision: Expose only whether the local administrator is configured; never expose credential material.
-  target_epic: Local-first auth
-  capability_id: platform.governance
-- method: POST
-  path: /api/v1/auth/local/login
-  operation_id: local_login_api_v1_auth_local_login_post
-  disposition: setup_status
-  frontend_route: /login
-  wrapper: loginLocalAdmin
-  decision: Keep password authentication inside the local login boundary.
-  target_epic: Local-first auth
-  capability_id: platform.governance
-- method: POST
-  path: /api/v1/auth/local/setup
-  operation_id: setup_local_admin_api_v1_auth_local_setup_post
-  disposition: setup_status
-  frontend_route: /login
-  wrapper: setupLocalAdmin
-  decision: Allow one-time local administrator setup through the guarded login surface.
-  target_epic: Local-first auth
-  capability_id: platform.governance
 - method: POST
   path: /api/v1/chat/stream
   operation_id: chat_stream_api_v1_chat_stream_post
@@ -2478,14 +2451,6 @@ operations:
   decision: Resume only the scoped published Gaojixing run after operator verification.
   target_epic: Gaojixing collection
   capability_id: studio.workflow
-- method: POST
-  path: /api/v1/auth/login
-  operation_id: compatibility_login_api_v1_auth_login_post
-  disposition: internal_only
-  frontend_route: /login
-  wrapper: null
-  decision: Keep the compatibility login endpoint behind the local authentication boundary while clients migrate to the first-party local login contract.
-  target_epic: Local-first auth
   projection_reason: Compatibility authentication transport; intentionally not projected to the capability catalog.
 unreferenced_wrappers:
 - wrapper: getOperationsAgentVersion

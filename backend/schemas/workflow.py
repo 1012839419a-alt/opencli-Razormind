@@ -421,6 +421,7 @@ class WorkflowToolCapabilityExecutor(BaseModel):
         "opentabs",
         "bbx",
         "kats_runtime",
+        "wigolo_embedded",
         "gaojixing_doubao_batch",
         "gaojixing_batch_certify",
     ]
