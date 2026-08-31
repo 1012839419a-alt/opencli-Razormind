@@ -21,11 +21,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from scripts.non_bypass_failure_proof_contract import canonical
 
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-
-from scripts.non_bypass_failure_proof_contract import canonical, content_hash, validate
-from scripts.proof_bundle_governance import Principal, ProofBundleStore
 from scripts.run_non_bypass_happy_vertical import (
     RunLedger as HappyRunLedger,
 )
@@ -646,55 +643,68 @@ def _facts_from_driver(
         ) from exc
 
 
-def _govern(ledger: ScenarioLedger, result: dict[str, Any], now: int) -> dict[str, Any]:
-    scope = {
-        "workspace": "failure",
-        "project": ledger.project,
-        "workflow": "failure-matrix",
-        "run": result["run"],
-    }
-    # The durable store contains only redacted records/audit data. The generated
-    # audit private key is process-only scratch material and is never written.
-    root = ledger.artifact / "g"
-    store = ProofBundleStore(
-        root, audit_private_key=Ed25519PrivateKey.generate(), now=lambda: now
+def _govern(
+    ledger: ScenarioLedger,
+    env: dict[str, str],
+    base: Path,
+    overlay: Path,
+    result: dict[str, Any],
+) -> tuple[dict[str, Any], bytes]:
+    """Delegate all key, envelope, signature, and audit authority in-network."""
+    client = (
+        "import json,os,sys,httpx\n"
+        "base='http://proof-governance:8000/v1'\n"
+        "payload=json.load(sys.stdin)\n"
+        "writer={'Authorization':'Bearer '+os.environ['PROOF_BUNDLE_WRITER_JWT']}\n"
+        "admin={'Authorization':'Bearer '+os.environ['PROOF_KEY_ADMIN_JWT']}\n"
+        "with httpx.Client(timeout=20, trust_env=False) as http:\n"
+        "  def call(method,path,headers,body=None):\n"
+        "    response=http.request(method,base+path,headers=headers,json=body)\n"
+        "    response.raise_for_status()\n"
+        "    return response\n"
+        "  call('POST','/keys/bootstrap-active',admin,{})\n"
+        "  trust=call('GET','/trust-root',writer).json()\n"
+        "  created_response=call('POST','/bundles',writer,{'payload':payload})\n"
+        "  created=created_response.json()\n"
+        "  artifact=created['record']['envelope']['artifactId']\n"
+        "  if call('GET','/bundles/'+artifact,writer).json() != created:\n"
+        "    raise RuntimeError('governance read did not preserve the record')\n"
+        "  if call('POST','/bundles/'+artifact+'/verify',writer,{}).json().get('verified') is not True:\n"
+        "    raise RuntimeError('governance verification failed')\n"
+        "  if call('GET','/audit',writer).json()[-1].get('action') != 'audit.read':\n"
+        "    raise RuntimeError('governance audit read failed')\n"
+        "  if trust.get('fingerprint') != created['record']['payload']['governance']['trustRootFingerprint']:\n"
+        "    raise RuntimeError('governance trust root mismatch')\n"
+        "print(created_response.text)\n"
     )
-    admin = Principal("key-admin", "key-admin", scope)
-    writer = Principal("bundle-writer", "bundle-writer", scope)
-    key = store.bootstrap_active(
-        admin, key_id="failure-active-v1", not_before=now - 1, not_after=now + 86400
+    stdout = _compose(
+        ledger,
+        env,
+        base,
+        overlay,
+        "exec",
+        "-T",
+        "proof-driver",
+        "python",
+        "-c",
+        client,
+        input=canonical(result).decode("utf-8"),
+        timeout=60,
     )
-    artifact_id = f"{ledger.scenario[:8]}-{uuid.uuid4().hex[:12]}"
-    result["governance"] = {
-        "artifactId": artifact_id,
-        "contentHash": content_hash(
-            {key: value for key, value in result.items() if key != "governance"}
-        ),
-        "keyId": key.key_id,
-        "trustRootFingerprint": store.trust_root_fingerprint,
-    }
-    validate(result, scenario=ledger.scenario)
-    envelope = {
-        "governanceSchemaVersion": "ProofBundleGovernanceV1",
-        "artifactId": artifact_id,
-        "scenarioId": ledger.scenario,
-        "run": result["run"],
-        "contentHash": content_hash(result),
-        "sourceSchemaVersion": "ScenarioResultV1",
-        "createdAt": now,
-        "expiresAt": now + 86400,
-        "retentionClass": "release-proof",
-        "retentionPolicyVersion": "v1",
-        "scope": scope,
-        "redactionProfile": result["redactionProfile"],
-        "signatureAlgorithm": "Ed25519",
-        "keyId": key.key_id,
-    }
-    saved = store.create(
-        writer, artifact_id=artifact_id, payload=result, envelope=envelope
-    )
-    store.verify(writer, artifact_id=artifact_id)
-    return saved
+    try:
+        saved = json.loads(stdout)
+        envelope = saved["record"]["envelope"]
+        if (
+            saved["record"]["payload"]["scenario"] != ledger.scenario
+            or envelope["run"] != result["run"]
+            or not isinstance(saved["signature"], str)
+        ):
+            raise ValueError("governance service response is incomplete")
+        return saved, stdout.encode("utf-8")
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise FailureRunRejectedError(
+            "in-network governance response is invalid"
+        ) from exc
 
 
 def _cleanup_command(
@@ -807,7 +817,16 @@ def run_matrix(
         values = _make_secrets(base_ledger)
         values.update(_receiver_address_values(ledger.project))
         _configure_failure_receiver(ledger, values)
-        _make_identities(base_ledger, values)
+        _make_identities(
+            base_ledger,
+            values,
+            governance_scope={
+                "workspace": "failure",
+                "project": ledger.project,
+                "workflow": "failure-matrix",
+                "run": ledger.project,
+            },
+        )
         env = {
             **os.environ,
             **values,
@@ -824,7 +843,7 @@ def run_matrix(
             _admit(ledger, env, compose_file, overlay_file, catalog)
             _compose(
                 ledger, env, compose_file, overlay_file,
-                "up", "--detach", "--no-build", timeout=120,
+                "up", "--detach", "--wait", "--no-build", timeout=120,
             )
             if scenario == "crash-after-ingest":
                 gather = _facts_from_crash_after_ingest
@@ -835,9 +854,11 @@ def run_matrix(
             result = gather(ledger, env, compose_file, overlay_file)
             if time.monotonic() - started > 360:
                 raise FailureRunRejectedError("scenario exceeded the 360 second bound")
-            saved = _govern(ledger, result, int(time.time()))
+            saved, saved_bytes = _govern(
+                ledger, env, compose_file, overlay_file, result
+            )
             path = ledger.artifact / "proof.json"
-            path.write_bytes(canonical(saved))
+            path.write_bytes(saved_bytes)
             results.append(path)
         finally:
             _cleanup(ledger, env, compose_file, overlay_file)

@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 import yaml
 from fastapi.testclient import TestClient
+from jose import jwt
 
 ROOT = Path(__file__).resolve().parents[2]
 HARNESS_PATH = ROOT / "tests/acceptance/non_bypass_failure_matrix.py"
@@ -286,6 +287,55 @@ def test_overlay_has_no_host_ports_and_internal_fault_network():
         == "ingest-redis-payload-mutator"
     )
 
+    governance = compose["services"]["proof-governance"]
+    assert governance["networks"] == ["proof-control"]
+    assert governance["depends_on"]["proof-oidc"]["condition"] == "service_healthy"
+    assert governance["environment"]["PROOF_GOVERNANCE_ROOT"] == "/proof-artifacts/governance"
+    assert governance["healthcheck"]["test"] == [
+        "CMD",
+        "curl",
+        "-fsS",
+        "http://localhost:8000/health",
+    ]
+    driver = compose["services"]["proof-driver"]
+    assert driver["depends_on"]["proof-governance"]["condition"] == "service_healthy"
+    assert set(driver["environment"]) >= {
+        "PROOF_BUNDLE_WRITER_JWT",
+        "PROOF_KEY_ADMIN_JWT",
+    }
+
+
+def test_failure_runner_has_no_local_governance_authority():
+    source = (ROOT / "scripts/run_non_bypass_failure_matrix.py").read_text()
+    assert "ProofBundleStore" not in source
+    assert "Principal" not in source
+    assert "Ed25519PrivateKey" not in source
+    assert "http://proof-governance:8000/v1" in source
+
+
+def test_governance_identities_are_opt_in_and_share_the_public_jwks(tmp_path):
+    runner = _runner_module()
+    ledger = runner.HappyRunLedger("run", "project", tmp_path / "scratch", tmp_path)
+    ledger.scratch.mkdir()
+    default: dict[str, str] = {}
+    runner._make_identities(ledger, default)
+    assert "PROOF_BUNDLE_WRITER_JWT" not in default
+    assert "PROOF_KEY_ADMIN_JWT" not in default
+
+    scope = {"workspace": "failure", "project": "project", "workflow": "failure-matrix", "run": "run"}
+    governed: dict[str, str] = {}
+    runner._make_identities(ledger, governed, governance_scope=scope)
+    jwks = json.loads((ledger.scratch / "jwks.json").read_text())
+    assert jwks["keys"][0]["kid"] == "proof-jwks-v1"
+    for environment, role in (
+        ("PROOF_BUNDLE_WRITER_JWT", "bundle-writer"),
+        ("PROOF_KEY_ADMIN_JWT", "key-admin"),
+    ):
+        claims = jwt.get_unverified_claims(governed[environment])
+        assert jwt.get_unverified_header(governed[environment])["kid"] == jwks["keys"][0]["kid"]
+        assert claims["aud"] == "proof-governance"
+        assert claims["role"] == role
+        assert claims["proof_scope"] == scope
 
 def test_callback_relay_routes_only_the_three_real_callback_paths(monkeypatch):
     relay_path = ROOT / "tests/acceptance/fault_tools/callback_relay.py"
@@ -1212,13 +1262,13 @@ def test_catalog_build_occurs_once_before_multiple_fresh_rows(monkeypatch, tmp_p
     monkeypatch.setattr(runner, "SCENARIO_ORDER", ("first", "second"))
     monkeypatch.setattr(runner, "_build_catalog", lambda *_args: calls.append("build") or {"digest": "catalog", "fixtureDigest": "fixture", "imageIds": {}})
     monkeypatch.setattr(runner, "_make_secrets", lambda _ledger: {})
-    monkeypatch.setattr(runner, "_make_identities", lambda *_args: None)
+    monkeypatch.setattr(runner, "_make_identities", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(runner, "_configure_failure_receiver", lambda *_args: None)
     monkeypatch.setattr(runner, "_fixture_digest", lambda: "fixture")
     monkeypatch.setattr(runner, "_admit", lambda ledger, *_args: calls.append(f"admit:{ledger.scenario}") or {})
     monkeypatch.setattr(runner, "_compose", lambda *_args, **_kwargs: "")
     monkeypatch.setattr(runner, "_facts_from_driver", lambda ledger, *_args: {"run": ledger.project})
-    monkeypatch.setattr(runner, "_govern", lambda _ledger, result, _now: result)
+    monkeypatch.setattr(runner, "_govern", lambda *_args: ({}, b"{}"))
     monkeypatch.setattr(runner, "_cleanup", lambda *_args: None)
     runner.run_matrix(tmp_path, compose_file=ROOT / "docker-compose.non-bypass-acceptance.yml", overlay_file=ROOT / "docker-compose.non-bypass-failure.yml")
     assert calls == ["build", "admit:first", "admit:second"]

@@ -16,9 +16,13 @@ services:
   proof-driver:
     image: "opencli-proof-root:${PROOF_CATALOG_DIGEST:-unbound}"
     labels: *failure-labels
+    environment:
+      PROOF_BUNDLE_WRITER_JWT: ${PROOF_BUNDLE_WRITER_JWT:-runtime-token-required}
+      PROOF_KEY_ADMIN_JWT: ${PROOF_KEY_ADMIN_JWT:-runtime-token-required}
     networks: [proof-control, proof-fault]
     depends_on:
       proof-admin-control: {condition: service_healthy}
+      proof-governance: {condition: service_healthy}
     volumes:
       - ${PROOF_ARTIFACT_DIR:-./.artifacts/non-bypass-failures}:/proof-artifacts
   proof-admin-postgres:
@@ -235,13 +239,19 @@ services:
     command: [uvicorn, scripts.proof_bundle_governance_http:app, --host, 0.0.0.0, --port, "8000"]
     environment:
       PROOF_GOVERNANCE_ROOT: /proof-artifacts/governance
-      PROOF_GOVERNANCE_JWKS: ${PROOF_GOVERNANCE_JWKS:-{"keys":[]}}
+      PROOF_GOVERNANCE_JWKS_URL: http://proof-oidc/jwks.json
       PROOF_GOVERNANCE_ISSUER: http://proof-oidc
       PROOF_GOVERNANCE_AUDIENCE: proof-governance
     volumes:
-      - ${PROOF_SECRETS_DIR:-./.artifacts/non-bypass-secrets}:/run/proof:ro
       - ${PROOF_ARTIFACT_DIR:-./.artifacts/non-bypass-failures}:/proof-artifacts
-    networks: [proof-fault]
+    networks: [proof-control]
+    depends_on:
+      proof-oidc: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, curl, -fsS, http://localhost:8000/health]
+      interval: 5s
+      timeout: 3s
+      retries: 20
     labels: *failure-labels
 
   proof-odp-http-gateway:

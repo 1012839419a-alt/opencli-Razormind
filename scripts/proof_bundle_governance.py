@@ -22,25 +22,61 @@ from typing import Any
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
+from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+    Ed25519PrivateKey,
+    Ed25519PublicKey,
+)
 from fastapi import Depends, FastAPI, HTTPException, Request
+
+from scripts.non_bypass_failure_proof_contract import content_hash, validate
 
 SCHEMA_VERSION = "ProofBundleGovernanceV1"
 BUNDLE_SCHEMA = "ScenarioResultV1"
 _HASH = re.compile(r"^[0-9a-f]{64}$")
-_SECRET = re.compile(r"(?:bearer|token|secret|password|credential|private|transport|receiver.*key)", re.I)
-ENVELOPE_FIELDS = frozenset({
-    "governanceSchemaVersion", "artifactId", "scenarioId", "run", "contentHash",
-    "sourceSchemaVersion", "createdAt", "expiresAt", "retentionClass",
-    "retentionPolicyVersion", "scope", "redactionProfile", "signatureAlgorithm", "keyId",
-})
-AUDIT_FIELDS = frozenset({
-    "auditSchemaVersion", "id", "at", "actor", "action", "artifactId", "contentHash",
-    "scopeHash", "outcome", "reason", "previousHash", "keyId", "signature",
-})
+_SECRET = re.compile(
+    r"(?:bearer|token|secret|password|credential|private|transport|receiver.*key)",
+    re.I,
+)
+_RAW_LOCATION = re.compile(r"^(?:https?|file)://|(?:^|[\\/])(?:tmp|var|proof-artifacts)(?:[\\/]|$)", re.I)
+_KEY_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+ENVELOPE_FIELDS = frozenset(
+    {
+        "governanceSchemaVersion",
+        "artifactId",
+        "scenarioId",
+        "run",
+        "contentHash",
+        "sourceSchemaVersion",
+        "createdAt",
+        "expiresAt",
+        "retentionClass",
+        "retentionPolicyVersion",
+        "scope",
+        "redactionProfile",
+        "signatureAlgorithm",
+        "keyId",
+    }
+)
+AUDIT_FIELDS = frozenset(
+    {
+        "auditSchemaVersion",
+        "id",
+        "at",
+        "actor",
+        "action",
+        "artifactId",
+        "contentHash",
+        "scopeHash",
+        "outcome",
+        "reason",
+        "previousHash",
+        "keyId",
+        "signature",
+    }
+)
 
 
-class GovernanceDenied(RuntimeError):
+class GovernanceDeniedError(RuntimeError):
     """An invalid governance operation which issued no certificate."""
 
     def __init__(self, reason: str, status_code: int = 403) -> None:
@@ -66,7 +102,9 @@ class SigningKey:
 
 
 def canonical(value: Any) -> bytes:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    return json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")
 
 
 def digest(value: Any) -> str:
@@ -85,7 +123,7 @@ def _unb64(value: str) -> bytes:
     try:
         return base64.b64decode(value.encode("ascii"), validate=True)
     except Exception as exc:
-        raise GovernanceDenied("invalid encoded public material", 422) from exc
+        raise GovernanceDeniedError("invalid encoded public material", 422) from exc
 
 
 def _public_bytes(private_key: Ed25519PrivateKey) -> bytes:
@@ -98,19 +136,31 @@ def _assert_redacted(value: Any, path: str = "bundle") -> None:
     if isinstance(value, dict):
         for name, child in value.items():
             if _SECRET.search(str(name)):
-                raise GovernanceDenied(f"secret-bearing field is forbidden at {path}.{name}", 422)
+                raise GovernanceDeniedError(
+                    f"secret-bearing field is forbidden at {path}.{name}", 422
+                )
             _assert_redacted(child, f"{path}.{name}")
     elif isinstance(value, list):
         for index, child in enumerate(value):
             _assert_redacted(child, f"{path}[{index}]")
-    elif isinstance(value, str) and ("-----BEGIN" in value or value.lower().startswith("bearer ")):
-        raise GovernanceDenied(f"private material is forbidden at {path}", 422)
+    elif isinstance(value, str) and (
+        "-----BEGIN" in value
+        or value.lower().startswith("bearer ")
+        or _RAW_LOCATION.search(value)
+    ):
+        raise GovernanceDeniedError(f"private material is forbidden at {path}", 422)
 
 
 class ProofBundleStore:
     """Append-only audit and immutable bundle store, scoped per scenario."""
 
-    def __init__(self, root: Path, *, audit_private_key: Ed25519PrivateKey | None = None, now: Callable[[], int] | None = None) -> None:
+    def __init__(
+        self,
+        root: Path,
+        *,
+        audit_private_key: Ed25519PrivateKey | None = None,
+        now: Callable[[], int] | None = None,
+    ) -> None:
         self.root = root
         self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
         os.chmod(self.root, 0o700)
@@ -127,7 +177,11 @@ class ProofBundleStore:
         return fingerprint(self._audit_public)
 
     def trust_root(self) -> dict[str, str]:
-        return {"keyId": self._audit_key_id, "fingerprint": self.trust_root_fingerprint, "algorithm": "Ed25519"}
+        return {
+            "keyId": self._audit_key_id,
+            "fingerprint": self.trust_root_fingerprint,
+            "algorithm": "Ed25519",
+        }
 
     def _scope_hash(self, scope: Mapping[str, str]) -> str:
         # 128 bits still makes cross-scenario collisions infeasible while keeping
@@ -150,17 +204,36 @@ class ProofBundleStore:
         try:
             return [json.loads(line) for line in path.read_text("utf-8").splitlines() if line]
         except (OSError, json.JSONDecodeError) as exc:
-            raise GovernanceDenied("audit continuity is unreadable", 409) from exc
+            raise GovernanceDeniedError("audit continuity is unreadable", 409) from exc
 
-    def _append_audit(self, principal: Principal, action: str, *, artifact_id: str | None = None, content_hash: str | None = None, outcome: str = "allowed", reason: str | None = None) -> dict[str, Any]:
-        _assert_redacted({"action": action, "artifactId": artifact_id, "contentHash": content_hash, "reason": reason})
+    def _append_audit(
+        self,
+        principal: Principal,
+        action: str,
+        *,
+        artifact_id: str | None = None,
+        content_hash: str | None = None,
+        outcome: str = "allowed",
+        reason: str | None = None,
+    ) -> dict[str, Any]:
+        _assert_redacted(
+            {
+                "action": action,
+                "artifactId": artifact_id,
+                "contentHash": content_hash,
+                "reason": reason,
+            }
+        )
         previous = self._records(principal.scope)
         predecessor = digest(previous[-1]) if previous else "0" * 64
         unsigned = {
             "auditSchemaVersion": SCHEMA_VERSION, "id": uuid.uuid4().hex, "at": self._now(),
             "actor": principal.subject, "action": action, "artifactId": artifact_id,
             "contentHash": content_hash, "scopeHash": self._scope_hash(principal.scope),
-            "outcome": outcome, "reason": reason, "previousHash": predecessor, "keyId": self._audit_key_id,
+            "outcome": outcome,
+            "reason": reason,
+            "previousHash": predecessor,
+            "keyId": self._audit_key_id,
         }
         record = {**unsigned, "signature": _b64(self._audit_private.sign(canonical(unsigned)))}
         path = self._audit_path(principal.scope)
@@ -169,41 +242,98 @@ class ProofBundleStore:
         os.chmod(path, 0o600)
         return record
 
-    def _deny(self, principal: Principal | None, action: str, reason: str, status: int = 403) -> None:
+    def _deny(
+        self,
+        principal: Principal | None,
+        action: str,
+        reason: str,
+        status: int = 403,
+    ) -> None:
         if principal is not None:
             self._append_audit(principal, action, outcome="denied", reason=reason)
-        raise GovernanceDenied(reason, status)
+        raise GovernanceDeniedError(reason, status)
 
     def _require_role(self, principal: Principal, role: str, action: str) -> None:
         if principal.role != role:
             self._deny(principal, action, "role is not authorized")
+    def _validate_key_id(
+        self, principal: Principal, action: str, key_id: object
+    ) -> str:
+        if not isinstance(key_id, str) or not _KEY_ID.fullmatch(key_id):
+            self._deny(principal, action, "key identity is invalid", 422)
+        return key_id
+
+    def _validate_key_window(
+        self,
+        principal: Principal,
+        action: str,
+        key_id: object,
+        not_before: object,
+        not_after: object,
+    ) -> tuple[str, int, int]:
+        valid_key_id = self._validate_key_id(principal, action, key_id)
+        if (
+            isinstance(not_before, bool)
+            or isinstance(not_after, bool)
+            or not isinstance(not_before, int)
+            or not isinstance(not_after, int)
+            or not_before >= not_after
+        ):
+            self._deny(principal, action, "key window is invalid", 422)
+        return valid_key_id, not_before, not_after
+
 
     def _bundle_dir(self, scope: Mapping[str, str], artifact_id: str) -> Path:
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", artifact_id):
-            raise GovernanceDenied("artifact id is invalid", 422)
+            raise GovernanceDeniedError("artifact id is invalid", 422)
         return self._scope_dir(scope) / "bundles" / artifact_id
 
     def _key_for_signing(self) -> SigningKey:
         if self._active_key is None:
-            raise GovernanceDenied("no active bundle key", 409)
+            raise GovernanceDeniedError("no active bundle key", 409)
         key = self._keys[self._active_key]
         now = self._now()
         if key.revoked_at is not None or not (key.not_before <= now < key.not_after):
-            raise GovernanceDenied("active bundle key is unusable", 409)
+            raise GovernanceDeniedError("active bundle key is unusable", 409)
         return key
 
-    def bootstrap_active(self, principal: Principal, *, key_id: str, not_before: int, not_after: int) -> SigningKey:
+    def bootstrap_active(
+        self,
+        principal: Principal,
+        *,
+        key_id: str,
+        not_before: int,
+        not_after: int,
+    ) -> SigningKey:
         self._require_role(principal, "key-admin", "key.bootstrap-active")
+        key_id, not_before, not_after = self._validate_key_window(
+            principal, "key.bootstrap-active", key_id, not_before, not_after
+        )
         if self._active_key is not None or key_id in self._keys or not_before >= not_after:
-            self._deny(principal, "key.bootstrap-active", "invalid immutable active-key bootstrap", 409)
+            self._deny(
+                principal,
+                "key.bootstrap-active",
+                "invalid immutable active-key bootstrap",
+                409,
+            )
         private = Ed25519PrivateKey.generate()
         key = SigningKey(key_id, _b64(_public_bytes(private)), not_before, not_after)
         self._keys[key_id], self._key_private[key_id], self._active_key = key, private, key_id
         self._append_audit(principal, "key.bootstrap-active")
         return key
 
-    def stage_next(self, principal: Principal, *, key_id: str, not_before: int, not_after: int) -> SigningKey:
+    def stage_next(
+        self,
+        principal: Principal,
+        *,
+        key_id: str,
+        not_before: int,
+        not_after: int,
+    ) -> SigningKey:
         self._require_role(principal, "key-admin", "key.stage-next")
+        key_id, not_before, not_after = self._validate_key_window(
+            principal, "key.stage-next", key_id, not_before, not_after
+        )
         if key_id in self._keys or not_before >= not_after:
             self._deny(principal, "key.stage-next", "invalid staged key", 409)
         private = Ed25519PrivateKey.generate()
@@ -214,8 +344,13 @@ class ProofBundleStore:
 
     def promote(self, principal: Principal, *, key_id: str) -> SigningKey:
         self._require_role(principal, "key-admin", "key.promote")
+        key_id = self._validate_key_id(principal, "key.promote", key_id)
         candidate = self._keys.get(key_id)
-        if candidate is None or candidate.revoked_at is not None or not (candidate.not_before <= self._now() < candidate.not_after):
+        if (
+            candidate is None
+            or candidate.revoked_at is not None
+            or not (candidate.not_before <= self._now() < candidate.not_after)
+        ):
             self._deny(principal, "key.promote", "staged key is not active-eligible", 409)
         self._active_key = key_id
         self._append_audit(principal, "key.promote")
@@ -223,6 +358,7 @@ class ProofBundleStore:
 
     def retire(self, principal: Principal, *, key_id: str) -> SigningKey:
         self._require_role(principal, "key-admin", "key.retire")
+        key_id = self._validate_key_id(principal, "key.retire", key_id)
         key = self._keys.get(key_id)
         if key is None or key.revoked_at is not None:
             self._deny(principal, "key.retire", "key cannot be retired", 409)
@@ -235,6 +371,7 @@ class ProofBundleStore:
 
     def revoke(self, principal: Principal, *, key_id: str) -> SigningKey:
         self._require_role(principal, "key-admin", "key.revoke")
+        key_id = self._validate_key_id(principal, "key.revoke", key_id)
         key = self._keys.get(key_id)
         if key is None or key.revoked_at is not None:
             self._deny(principal, "key.revoke", "key cannot be revoked", 409)
@@ -250,81 +387,224 @@ class ProofBundleStore:
     def _key_public(self, key_id: str) -> Ed25519PublicKey:
         key = self._keys.get(key_id)
         if key is None:
-            raise GovernanceDenied("unknown bundle key", 409)
+            raise GovernanceDeniedError("unknown bundle key", 409)
         return Ed25519PublicKey.from_public_bytes(_unb64(key.public_key))
 
-    def create(self, principal: Principal, *, artifact_id: str, payload: dict[str, Any], envelope: dict[str, Any]) -> dict[str, Any]:
+    def create(
+        self,
+        principal: Principal,
+        *,
+        artifact_id: str,
+        payload: dict[str, Any],
+        envelope: dict[str, Any],
+    ) -> dict[str, Any]:
         self._require_role(principal, "bundle-writer", "bundle.create")
-        _assert_redacted(payload)
-        if not isinstance(payload, dict) or payload.get("schemaVersion") != BUNDLE_SCHEMA:
+        if not isinstance(payload, dict) or not isinstance(envelope, dict):
+            self._deny(principal, "bundle.create", "bundle record is invalid", 422)
+        try:
+            _assert_redacted(payload)
+            _assert_redacted(envelope)
+        except GovernanceDeniedError as exc:
+            self._deny(principal, "bundle.create", "bundle redaction is invalid", exc.status_code)
+        if payload.get("schemaVersion") != BUNDLE_SCHEMA:
             self._deny(principal, "bundle.create", "only ScenarioResultV1 may be certified", 422)
         if set(envelope) != ENVELOPE_FIELDS:
             self._deny(principal, "bundle.create", "envelope is not the immutable allowlist", 422)
-        _assert_redacted(envelope)
         content_hash, now = digest(payload), self._now()
-        if envelope["governanceSchemaVersion"] != SCHEMA_VERSION or envelope["artifactId"] != artifact_id:
+        if (
+            envelope["governanceSchemaVersion"] != SCHEMA_VERSION
+            or envelope["artifactId"] != artifact_id
+        ):
             self._deny(principal, "bundle.create", "envelope identity is invalid", 422)
-        if envelope["contentHash"] != content_hash or envelope["sourceSchemaVersion"] != BUNDLE_SCHEMA:
+        if (
+            envelope["contentHash"] != content_hash
+            or envelope["sourceSchemaVersion"] != BUNDLE_SCHEMA
+        ):
             self._deny(principal, "bundle.create", "canonical content hash is invalid", 422)
         if envelope["scope"] != dict(principal.scope) or envelope["createdAt"] != now:
             self._deny(principal, "bundle.create", "scope or creation time is invalid", 422)
         if not isinstance(envelope["expiresAt"], int) or envelope["expiresAt"] <= now:
             self._deny(principal, "bundle.create", "certificate is already expired", 422)
-        key = self._key_for_signing()
+        try:
+            key = self._key_for_signing()
+        except GovernanceDeniedError as exc:
+            self._deny(principal, "bundle.create", "active key is unavailable", exc.status_code)
         if envelope["signatureAlgorithm"] != "Ed25519" or envelope["keyId"] != key.key_id:
             self._deny(principal, "bundle.create", "envelope key is not active", 422)
         if envelope["expiresAt"] > key.not_after:
-            self._deny(principal, "bundle.create", "bundle validity exceeds signing-key validity", 422)
-        target, record = self._bundle_dir(principal.scope, artifact_id), {"envelope": envelope, "payload": payload}
+            self._deny(
+                principal,
+                "bundle.create",
+                "bundle validity exceeds signing-key validity",
+                422,
+            )
+        try:
+            target = self._bundle_dir(principal.scope, artifact_id)
+        except GovernanceDeniedError as exc:
+            self._deny(principal, "bundle.create", "artifact identity is invalid", exc.status_code)
+        record = {"envelope": envelope, "payload": payload}
         if target.exists():
             try:
                 existing = json.loads((target / "record.json").read_text("utf-8"))
             except (OSError, json.JSONDecodeError):
                 self._deny(principal, "bundle.create", "immutable record is unreadable", 409)
             if canonical(existing["record"]) != canonical(record):
-                self._deny(principal, "bundle.create", "artifact id already has different bytes", 409)
-            self._append_audit(principal, "bundle.create", artifact_id=artifact_id, content_hash=content_hash)
+                self._deny(
+                    principal,
+                    "bundle.create",
+                    "artifact id already has different bytes",
+                    409,
+                )
+            self._append_audit(
+                principal,
+                "bundle.create",
+                artifact_id=artifact_id,
+                content_hash=content_hash,
+            )
             return existing
         signature = _b64(self._key_private[key.key_id].sign(canonical(record)))
         target.mkdir(mode=0o700, parents=True)
         saved = {"record": record, "signature": signature}
         (target / "record.json").write_bytes(canonical(saved))
         os.chmod(target / "record.json", 0o600)
-        self._append_audit(principal, "bundle.create", artifact_id=artifact_id, content_hash=content_hash)
+        self._append_audit(
+            principal,
+            "bundle.create",
+            artifact_id=artifact_id,
+            content_hash=content_hash,
+        )
         return saved
+    def bootstrap_for_scope(self, principal: Principal) -> SigningKey:
+        """Create the service-selected initial key for one fresh scope."""
+        now = self._now()
+        return self.bootstrap_active(
+            principal,
+            key_id=f"bundle-{uuid.uuid4().hex}",
+            not_before=now - 1,
+            not_after=now + 86400,
+        )
 
-    def _expire(self, principal: Principal, target: Path, artifact_id: str, saved: dict[str, Any]) -> None:
+    def certify(self, principal: Principal, *, payload: dict[str, Any]) -> dict[str, Any]:
+        """Generate every certificate field inside the governance authority."""
+        self._require_role(principal, "bundle-writer", "bundle.create")
+        if not isinstance(payload, dict):
+            self._deny(principal, "bundle.create", "bundle payload is invalid", 422)
+        try:
+            _assert_redacted(payload)
+            result = json.loads(canonical(payload))
+        except (GovernanceDeniedError, TypeError, ValueError) as exc:
+            self._deny(principal, "bundle.create", "bundle payload is invalid", 422)
+            raise AssertionError("unreachable") from exc
+        if result.get("schemaVersion") != BUNDLE_SCHEMA or result.get("run") != principal.scope[
+            "run"
+        ]:
+            self._deny(principal, "bundle.create", "bundle scope is invalid", 422)
+        if not isinstance(result.get("scenario"), str) or not result["scenario"]:
+            self._deny(principal, "bundle.create", "bundle payload is invalid", 422)
+        try:
+            key = self._key_for_signing()
+        except GovernanceDeniedError as exc:
+            self._deny(principal, "bundle.create", "active key is unavailable", exc.status_code)
+        now = self._now()
+        artifact_id = f"{result['scenario'][:8]}-{uuid.uuid4().hex[:12]}"
+        unsigned = {name: value for name, value in result.items() if name != "governance"}
+        result["governance"] = {
+            "artifactId": artifact_id,
+            "contentHash": content_hash(unsigned),
+            "keyId": key.key_id,
+            "trustRootFingerprint": self.trust_root_fingerprint,
+        }
+        try:
+            validate(result, scenario=result["scenario"])
+        except (KeyError, TypeError, ValueError, RuntimeError) as exc:
+            self._deny(principal, "bundle.create", "bundle payload is invalid", 422)
+            raise AssertionError("unreachable") from exc
+        envelope = {
+            "governanceSchemaVersion": SCHEMA_VERSION,
+            "artifactId": artifact_id,
+            "scenarioId": result["scenario"],
+            "run": result["run"],
+            "contentHash": digest(result),
+            "sourceSchemaVersion": BUNDLE_SCHEMA,
+            "createdAt": now,
+            "expiresAt": min(now + 86400, key.not_after),
+            "retentionClass": "release-proof",
+            "retentionPolicyVersion": "v1",
+            "scope": dict(principal.scope),
+            "redactionProfile": result["redactionProfile"],
+            "signatureAlgorithm": "Ed25519",
+            "keyId": key.key_id,
+        }
+        return self.create(
+            principal,
+            artifact_id=artifact_id,
+            payload=result,
+            envelope=envelope,
+        )
+
+
+    def _expire(
+        self,
+        principal: Principal,
+        target: Path,
+        artifact_id: str,
+        saved: dict[str, Any],
+    ) -> None:
         metadata = saved["record"]["envelope"]
-        tombstone = {key: metadata[key] for key in ("contentHash", "keyId", "retentionClass", "retentionPolicyVersion", "expiresAt")}
+        tombstone = {
+            key: metadata[key]
+            for key in (
+                "contentHash",
+                "keyId",
+                "retentionClass",
+                "retentionPolicyVersion",
+                "expiresAt",
+            )
+        }
         tombstone["artifactId"] = artifact_id
         (target / "tombstone.json").write_bytes(canonical(tombstone))
         os.chmod(target / "tombstone.json", 0o600)
         (target / "record.json").unlink(missing_ok=True)
-        self._append_audit(principal, "bundle.tombstone", artifact_id=artifact_id, content_hash=tombstone["contentHash"])
+        self._append_audit(
+            principal,
+            "bundle.tombstone",
+            artifact_id=artifact_id,
+            content_hash=tombstone["contentHash"],
+        )
 
-    def _load(self, principal: Principal, artifact_id: str) -> tuple[Path, dict[str, Any]]:
-        target = self._bundle_dir(principal.scope, artifact_id)
+    def _load(
+        self, principal: Principal, artifact_id: str, *, action: str
+    ) -> tuple[Path, dict[str, Any]]:
+        try:
+            target = self._bundle_dir(principal.scope, artifact_id)
+        except GovernanceDeniedError as exc:
+            self._deny(principal, action, "artifact identity is invalid", exc.status_code)
         if (target / "tombstone.json").exists():
-            self._deny(principal, "bundle.read", "bundle has expired", 410)
+            self._deny(principal, action, "bundle has expired", 410)
         try:
             saved = json.loads((target / "record.json").read_text("utf-8"))
         except FileNotFoundError:
-            self._deny(principal, "bundle.read", "bundle was not found", 404)
+            self._deny(principal, action, "bundle was not found", 404)
         except (OSError, json.JSONDecodeError):
-            self._deny(principal, "bundle.read", "bundle bytes are invalid", 409)
+            self._deny(principal, action, "bundle bytes are invalid", 409)
         envelope = saved.get("record", {}).get("envelope", {})
         if not isinstance(envelope, dict) or envelope.get("expiresAt", 0) <= self._now():
             self._expire(principal, target, artifact_id, saved)
-            self._deny(principal, "bundle.read", "bundle has expired", 410)
+            self._deny(principal, action, "bundle has expired", 410)
         return target, saved
 
     def read(self, principal: Principal, *, artifact_id: str) -> dict[str, Any]:
-        _, saved = self._load(principal, artifact_id)
-        self._append_audit(principal, "bundle.read", artifact_id=artifact_id, content_hash=saved["record"]["envelope"]["contentHash"])
+        _, saved = self._load(principal, artifact_id, action="bundle.read")
+        self._append_audit(
+            principal,
+            "bundle.read",
+            artifact_id=artifact_id,
+            content_hash=saved["record"]["envelope"]["contentHash"],
+        )
         return saved
 
     def verify(self, principal: Principal, *, artifact_id: str) -> dict[str, Any]:
-        _, saved = self._load(principal, artifact_id)
+        _, saved = self._load(principal, artifact_id, action="bundle.verify")
         record, signature = saved.get("record"), saved.get("signature")
         try:
             envelope = record["envelope"]
@@ -334,70 +614,155 @@ class ProofBundleStore:
                 or not (key.not_before <= envelope["createdAt"] < key.not_after)
                 or envelope["expiresAt"] > key.not_after
             ):
-                raise GovernanceDenied("bundle key lifecycle rejects verification", 409)
+                raise GovernanceDeniedError("bundle key lifecycle rejects verification", 409)
             self._key_public(key.key_id).verify(_unb64(signature), canonical(record))
-        except (KeyError, TypeError, InvalidSignature, GovernanceDenied):
+        except (KeyError, TypeError, InvalidSignature, GovernanceDeniedError):
             self._deny(principal, "bundle.verify", "bundle signature is invalid", 409)
-        self._append_audit(principal, "bundle.verify", artifact_id=artifact_id, content_hash=envelope["contentHash"])
-        return {"verified": True, "artifactId": artifact_id, "contentHash": envelope["contentHash"], "keyId": key.key_id}
+        self._append_audit(
+            principal,
+            "bundle.verify",
+            artifact_id=artifact_id,
+            content_hash=envelope["contentHash"],
+        )
+        return {
+            "verified": True,
+            "artifactId": artifact_id,
+            "contentHash": envelope["contentHash"],
+            "keyId": key.key_id,
+        }
 
-    def read_audit(self, principal: Principal) -> list[dict[str, Any]]:
-        self._append_audit(principal, "audit.read")
-        records, predecessor = self._records(principal.scope), "0" * 64
+    def _verify_audit_chain(self, scope: Mapping[str, str]) -> list[dict[str, Any]]:
+        records, predecessor = self._records(scope), "0" * 64
         for record in records:
-            if set(record) != AUDIT_FIELDS or record["previousHash"] != predecessor or record["keyId"] != self._audit_key_id:
-                self._deny(principal, "audit.read", "audit continuity is invalid", 409)
+            if (
+                set(record) != AUDIT_FIELDS
+                or record["previousHash"] != predecessor
+                or record["keyId"] != self._audit_key_id
+            ):
+                raise GovernanceDeniedError("audit continuity is invalid", 409)
             unsigned = {key: value for key, value in record.items() if key != "signature"}
             try:
-                self._audit_private.public_key().verify(_unb64(record["signature"]), canonical(unsigned))
-            except (InvalidSignature, GovernanceDenied):
-                self._deny(principal, "audit.read", "audit signature is invalid", 409)
+                self._audit_public_key().verify(
+                    _unb64(record["signature"]), canonical(unsigned)
+                )
+            except (InvalidSignature, GovernanceDeniedError) as exc:
+                raise GovernanceDeniedError("audit signature is invalid", 409) from exc
             predecessor = digest(record)
         return records
 
+    def _audit_public_key(self) -> Ed25519PublicKey:
+        return Ed25519PublicKey.from_public_bytes(self._audit_public)
+
+    def read_audit(self, principal: Principal) -> list[dict[str, Any]]:
+        self._require_role(principal, "bundle-writer", "audit.read")
+        try:
+            self._verify_audit_chain(principal.scope)
+        except GovernanceDeniedError as exc:
+            self._deny(principal, "audit.read", str(exc), exc.status_code)
+        self._append_audit(principal, "audit.read")
+        return self._verify_audit_chain(principal.scope)
+
+
+    def read_trust_root(self, principal: Principal) -> dict[str, str]:
+        self._require_role(principal, "bundle-writer", "trust-root.read")
+        self._append_audit(principal, "trust-root.read")
+        return self.trust_root()
+
 
 def create_app(store: ProofBundleStore, authenticate: Callable[[Request], Principal]) -> FastAPI:
-    """Create a no-port HTTP surface; the host supplies local-OIDC authentication."""
+    """Create a no-port HTTP surface with strict, role-separated DTOs."""
     app = FastAPI(title="proof-governance", docs_url=None, redoc_url=None, openapi_url=None)
 
     def principal(request: Request) -> Principal:
         try:
             return authenticate(request)
-        except GovernanceDenied as exc:
+        except GovernanceDeniedError as exc:
             raise HTTPException(exc.status_code, detail="authentication denied") from exc
 
     def invoke(action: Callable[[], Any]) -> Any:
         try:
             return action()
-        except GovernanceDenied as exc:
-            raise HTTPException(exc.status_code, detail=str(exc)) from exc
+        except GovernanceDeniedError as exc:
+            raise HTTPException(exc.status_code, detail="request denied") from exc
+
+    async def body(
+        request: Request,
+        actor: Principal,
+        *,
+        action: str,
+        fields: frozenset[str],
+    ) -> dict[str, Any]:
+        try:
+            value = await request.json()
+        except (ValueError, UnicodeDecodeError):
+            return invoke(lambda: store._deny(actor, action, "request is invalid", 422))
+        if not isinstance(value, dict) or set(value) != fields:
+            return invoke(lambda: store._deny(actor, action, "request is invalid", 422))
+        return value
+
+    @app.get("/health")
+    def health() -> dict[str, str]:
+        return {"status": "ok"}
 
     @app.get("/v1/trust-root")
     def trust_root(actor: Principal = Depends(principal)) -> Any:
-        return invoke(store.trust_root)
+        return invoke(lambda: store.read_trust_root(actor))
 
     @app.post("/v1/bundles")
     async def create_bundle(request: Request, actor: Principal = Depends(principal)) -> Any:
-        body = await request.json()
-        return invoke(lambda: store.create(actor, artifact_id=body.get("artifactId", ""), payload=body.get("payload"), envelope=body.get("envelope")))
+        value = await body(
+            request, actor, action="bundle.create", fields=frozenset({"payload"})
+        )
+        return invoke(lambda: store.certify(actor, payload=value["payload"]))
 
     @app.get("/v1/bundles/{artifact_id}")
     def read_bundle(artifact_id: str, actor: Principal = Depends(principal)) -> Any:
         return invoke(lambda: store.read(actor, artifact_id=artifact_id))
 
     @app.post("/v1/bundles/{artifact_id}/verify")
-    def verify_bundle(artifact_id: str, actor: Principal = Depends(principal)) -> Any:
+    async def verify_bundle(
+        artifact_id: str, request: Request, actor: Principal = Depends(principal)
+    ) -> Any:
+        await body(request, actor, action="bundle.verify", fields=frozenset())
         return invoke(lambda: store.verify(actor, artifact_id=artifact_id))
 
     @app.get("/v1/audit")
     def audit(actor: Principal = Depends(principal)) -> Any:
         return invoke(lambda: store.read_audit(actor))
 
-    for route, method in (("bootstrap-active", "bootstrap_active"), ("stage-next", "stage_next"), ("promote", "promote"), ("retire", "retire"), ("revoke", "revoke")):
-        async def key_operation(request: Request, actor: Principal = Depends(principal), _method: str = method) -> Any:
-            body = await request.json()
-            return invoke(lambda: asdict(getattr(store, _method)(actor, **body)))
-        app.post(f"/v1/keys/{route}")(key_operation)
+    @app.post("/v1/keys/bootstrap-active")
+    async def bootstrap_key(
+        request: Request, actor: Principal = Depends(principal)
+    ) -> Any:
+        await body(request, actor, action="key.bootstrap-active", fields=frozenset())
+        return invoke(lambda: asdict(store.bootstrap_for_scope(actor)))
+
+    key_fields = {
+        "stage-next": frozenset({"key_id", "not_before", "not_after"}),
+        "promote": frozenset({"key_id"}),
+        "retire": frozenset({"key_id"}),
+        "revoke": frozenset({"key_id"}),
+    }
+    key_methods = {
+        "stage-next": "stage_next",
+        "promote": "promote",
+        "retire": "retire",
+        "revoke": "revoke",
+    }
+    def key_operation(route: str, fields: frozenset[str]) -> Callable[..., Any]:
+        async def endpoint(
+            request: Request, actor: Principal = Depends(principal)
+        ) -> Any:
+            value = await body(
+                request, actor, action=f"key.{route}", fields=fields
+            )
+            method = getattr(store, key_methods[route])
+            return invoke(lambda: asdict(method(actor, **value)))
+
+        return endpoint
+
+    for route, fields in key_fields.items():
+        app.post(f"/v1/keys/{route}")(key_operation(route, fields))
     return app
 
 

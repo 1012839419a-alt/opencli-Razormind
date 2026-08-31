@@ -11,7 +11,6 @@ import base64
 import hashlib
 import json
 import os
-import re
 import secrets
 import shutil
 import subprocess
@@ -19,9 +18,10 @@ import sys
 import tempfile
 import time
 import uuid
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
@@ -183,8 +183,13 @@ def _b64url(value: bytes) -> str:
     return base64.urlsafe_b64encode(value).rstrip(b"=").decode("ascii")
 
 
-def _make_identities(ledger: RunLedger, values: dict[str, str]) -> None:
-    """Create the one-run OIDC key set and separate proposer/reviewer tokens."""
+def _make_identities(
+    ledger: RunLedger,
+    values: dict[str, str],
+    *,
+    governance_scope: Mapping[str, str] | None = None,
+) -> None:
+    """Create proof-admin identities and optional failure-governance identities."""
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     public = key.public_key().public_numbers()
     jwk = {
@@ -220,11 +225,47 @@ def _make_identities(ledger: RunLedger, values: dict[str, str]) -> None:
             headers={"kid": jwk["kid"]},
         )
     values["BOOTSTRAP_ADMIN_TOKEN"] = secrets.token_urlsafe(36)
+    if governance_scope is not None:
+        if set(governance_scope) != {"workspace", "project", "workflow", "run"} or any(
+            not isinstance(value, str) or not value
+            for value in governance_scope.values()
+        ):
+            raise ValueError("governance scope must use the exact proof scope")
+        scope = dict(governance_scope)
+        for environment, role in (
+            ("PROOF_BUNDLE_WRITER_JWT", "bundle-writer"),
+            ("PROOF_KEY_ADMIN_JWT", "key-admin"),
+        ):
+            subject = f"proof-{role}"
+            values[environment] = jwt.encode(
+                {
+                    "sub": subject,
+                    "iss": "http://proof-oidc",
+                    "aud": "proof-governance",
+                    "iat": now,
+                    "exp": now + 600,
+                    "role": role,
+                    "proof_scope": scope,
+                },
+                private,
+                algorithm="RS256",
+                headers={"kid": jwk["kid"]},
+            )
 
 
 def _compose(ledger: RunLedger, env: dict[str, str], *arguments: str) -> str:
     return _run(
-        ["docker", "compose", "--parallel", "1", "-p", ledger.project, "-f", str(COMPOSE_FILE), *arguments],
+        [
+            "docker",
+            "compose",
+            "--parallel",
+            "1",
+            "-p",
+            ledger.project,
+            "-f",
+            str(COMPOSE_FILE),
+            *arguments,
+        ],
         env=env,
     )
 
@@ -305,7 +346,17 @@ def _admit(ledger: RunLedger, env: dict[str, str], fixture_digest: str) -> None:
         except RuntimeError:
             logs = "Compose logs unavailable"
         raise RuntimeError(f"{exc}\n{logs}") from exc
-    cli = _compose(ledger, env, "exec", "-T", "proof-admin", "/bin/sh", "-c", 'test "$III_CLI_PATH" = /opt/iii/iii && test "$III_URL" = ws://proof-iii:49134 && /opt/iii/iii --version').strip()
+    cli = _compose(
+        ledger,
+        env,
+        "exec",
+        "-T",
+        "proof-admin",
+        "/bin/sh",
+        "-c",
+        'test "$III_CLI_PATH" = /opt/iii/iii && test "$III_URL" = ws://proof-iii:49134 '
+        "&& /opt/iii/iii --version",
+    ).strip()
     jwks = _compose(
         ledger, env, "exec", "-T", "proof-admin", "curl", "-fsS",
         "http://proof-oidc/jwks.json",
@@ -314,7 +365,15 @@ def _admit(ledger: RunLedger, env: dict[str, str], fixture_digest: str) -> None:
         raise ProofRejected("per-run OIDC JWKS is not reachable from Admin")
     if cli != "0.19.4":
         raise ProofRejected("copied III CLI is not exactly 0.19.4")
-    actual_fixture = _compose(ledger, env, "exec", "-T", "proof-collector", "sha256sum", "/proof/opencli-proof").split()[0]
+    actual_fixture = _compose(
+        ledger,
+        env,
+        "exec",
+        "-T",
+        "proof-collector",
+        "sha256sum",
+        "/proof/opencli-proof",
+    ).split()[0]
     if actual_fixture != fixture_digest:
         raise ProofRejected("collector fixture digest mismatch")
     _compose(
@@ -379,11 +438,17 @@ def _sign(ledger: RunLedger, evidence: dict[str, Any]) -> None:
     signature = private.sign(payload)
     public.verify(signature, payload)
     (staging / "proof.json").write_bytes(payload + b"\n")
-    (staging / "proof.json.sig").write_text(base64.b64encode(signature).decode() + "\n", encoding="ascii")
+    (staging / "proof.json.sig").write_text(
+        base64.b64encode(signature).decode() + "\n",
+        encoding="ascii",
+    )
     public_bytes = public.public_bytes(
         serialization.Encoding.Raw, serialization.PublicFormat.Raw
     )
-    (staging / "proof.pub").write_text(base64.b64encode(public_bytes).decode() + "\n", encoding="ascii")
+    (staging / "proof.pub").write_text(
+        base64.b64encode(public_bytes).decode() + "\n",
+        encoding="ascii",
+    )
     if ledger.artifact_dir.exists():
         raise ProofRejected("run-specific artifact directory already exists")
     staging.replace(ledger.artifact_dir)
@@ -397,7 +462,13 @@ def _cleanup(ledger: RunLedger, env: dict[str, str]) -> list[str]:
     def attempt(label: str, command: list[str]) -> str:
         try:
             completed = subprocess.run(
-                command, cwd=ROOT, env=env, text=True, capture_output=True, check=False, timeout=120
+                command,
+                cwd=ROOT,
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=120,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
             diagnostics.append(f"{label}: {exc}")
@@ -409,7 +480,16 @@ def _cleanup(ledger: RunLedger, env: dict[str, str]) -> list[str]:
             )
         return completed.stdout
 
-    compose = ["docker", "compose", "--parallel", "1", "-p", ledger.project, "-f", str(COMPOSE_FILE)]
+    compose = [
+        "docker",
+        "compose",
+        "--parallel",
+        "1",
+        "-p",
+        ledger.project,
+        "-f",
+        str(COMPOSE_FILE),
+    ]
     attempt("compose down", [*compose, "down", "--volumes", "--remove-orphans"])
     resources = (
         ("containers", ["docker", "ps", "-aq"]),
@@ -418,7 +498,10 @@ def _cleanup(ledger: RunLedger, env: dict[str, str]) -> list[str]:
     )
     label = f"com.docker.compose.project={ledger.project}"
     for kind, list_command in resources:
-        identifiers = attempt(f"inspect labeled {kind}", [*list_command, "--filter", f"label={label}"]).split()
+        identifiers = attempt(
+            f"inspect labeled {kind}",
+            [*list_command, "--filter", f"label={label}"],
+        ).split()
         if identifiers:
             remove = {
                 "containers": ["docker", "rm", "-f"],
@@ -426,14 +509,20 @@ def _cleanup(ledger: RunLedger, env: dict[str, str]) -> list[str]:
                 "volumes": ["docker", "volume", "rm", "-f"],
             }[kind]
             attempt(f"remove labeled {kind}", [*remove, *identifiers])
-        remaining = attempt(f"verify labeled {kind}", [*list_command, "--filter", f"label={label}"]).split()
+        remaining = attempt(
+            f"verify labeled {kind}",
+            [*list_command, "--filter", f"label={label}"],
+        ).split()
         if remaining:
             diagnostics.append(f"ledger-labeled {kind} remain: {', '.join(remaining)}")
     for service in (
         "proof-admin", "proof-driver", "proof-controlled-receiver", "proof-odp-ingest",
         "proof-odp-store", "proof-odp-query", "proof-collector", "proof-bridge",
     ):
-        attempt(f"remove image {service}", ["docker", "image", "rm", "-f", f"{ledger.project}-{service}"])
+        attempt(
+            f"remove image {service}",
+            ["docker", "image", "rm", "-f", f"{ledger.project}-{service}"],
+        )
     shutil.rmtree(ledger.scratch, ignore_errors=True)
     if ledger.scratch.exists():
         diagnostics.append("per-run scratch directory remains")
@@ -464,7 +553,10 @@ def run(artifact_dir: Path) -> Path:
         os.chmod(scratch, 0o700)
         artifact_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         shutil.rmtree(ledger.artifact_dir, ignore_errors=True)
-        shutil.rmtree(ledger.artifact_dir.with_name(f".{ledger.artifact_dir.name}.partial"), ignore_errors=True)
+        shutil.rmtree(
+            ledger.artifact_dir.with_name(f".{ledger.artifact_dir.name}.partial"),
+            ignore_errors=True,
+        )
         fixture_digest = FIXTURE_DIGEST.read_text(encoding="ascii").split()[0]
         if _sha256_file(FIXTURE) != fixture_digest:
             raise ProofRejected("committed fixture digest mismatch")
