@@ -94,11 +94,6 @@ export const NAV_GROUPS: NavGroup[] = [
         icon: Settings,
         match: ['/settings'],
       },
-      {
-        href: '/system',
-        label: '系统设置',
-        icon: Settings2,
-      },
     ],
   },
 ]
@@ -124,5 +119,8 @@ export const ROUTE_LABELS: Record<string, string> = {
   '/workers': 'Worker',
   '/browsers': 'Chrome 池',
   '/control/actions': '控制与审计',
+  '/control/kill-switch': '熔断开关',
+  '/control/advisory-report': '建议报告',
+  '/control/odp-state': 'ODP 状态',
   '/settings': '系统设置',
 }

@@ -15,6 +15,7 @@ import type {
   OperationsAgentMode,
   ProviderModelDiscoveryInput,
   SystemConfig,
+  WorkspaceSettingsValues,
 } from './types'
 
 export type { SystemConfig }

@@ -405,7 +405,7 @@ async def test_collect_via_agent_success():
     mock_response.raise_for_status = MagicMock()
     mock_response.json = MagicMock(return_value={
         "success": True, "items": [{"x": 1}],
-        "metadata": {"trace_artifact": "trace://1", "runtime": {"opencli_version": "1.8.5"}},
+        "metadata": {"trace_artifact": "trace://1", "runtime": {"opencli_version": "1.8.6"}},
     })
 
     mock_client = AsyncMock()
@@ -426,7 +426,7 @@ async def test_collect_via_agent_success():
     assert result.success is True
     assert result.items == [{"x": 1}]
     assert result.metadata["trace_artifact"] == "trace://1"
-    assert result.metadata["runtime"]["opencli_version"] == "1.8.5"
+    assert result.metadata["runtime"]["opencli_version"] == "1.8.6"
     assert mock_client.post.await_args.kwargs["headers"] == {
         "Authorization": "Bearer fleet-secret"
     }

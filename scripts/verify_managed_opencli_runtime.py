@@ -14,7 +14,7 @@ from typing import Any
 
 OHMYOPENCLI_COMMIT = "73cc60c83586ef2c95469b3b70d6cfc80fa5bc53"
 CAPABILITY_SOURCE_COMMIT = "73cc60c83586ef2c95469b3b70d6cfc80fa5bc53"
-OPENCLI_VERSION = "1.8.5"
+OPENCLI_VERSION = "1.8.6"
 
 
 class VerificationError(RuntimeError):

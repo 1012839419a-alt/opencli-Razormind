@@ -421,6 +421,7 @@ class WorkflowToolCapabilityExecutor(BaseModel):
         "opentabs",
         "bbx",
         "kats_runtime",
+        "wigolo_embedded",
     ]
     description: Optional[str] = None
     params: dict[str, Any] = Field(default_factory=dict)

@@ -48,8 +48,6 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
     celery_broker_url: str = "redis://localhost:6379/0"
     celery_result_backend: str = "redis://localhost:6379/1"
-    # Internal API URL used by Celery workers for API-owned WS Agent dispatch.
-    control_plane_url: str = "http://api:8000"
 
     # API Security
     # (api_key_enabled/api_key predate fleet auth and were never enforced by
@@ -63,10 +61,23 @@ class Settings(BaseSettings):
     # guard only allows on a localhost bind. Env: API_AUTH_TOKEN.
     api_auth_token: str = ""
 
+    # OIDC identity verification + emergency bootstrap admin token
+    # (backend/security/identity.py). Read via Settings — not raw
+    # os.getenv() — so these are correctly populated under plain
+    # `uv run uvicorn ...` even when uv does not inject .env into the
+    # process environment (uv only does that for `uv run --env-file .env`;
+    # BaseSettings' own env_file=".env" parsing is what actually reads
+    # these today). Empty (default) = OIDC not configured / bootstrap
+    # token disabled.
+    oidc_issuer: str = ""
+    oidc_audience: str = ""
+    oidc_jwks_url: str = ""
+    bootstrap_admin_token: str = ""
     # Local-first account used by the NAS/server deployment. The password hash
-    # is persisted in .env after the user changes the default password.
+    # is persisted to local_admin_password_hash_file and .env when available.
     local_admin_username: str = "admin"
     local_admin_password_hash: str = DEFAULT_LOCAL_ADMIN_PASSWORD_HASH
+    local_admin_password_hash_file: str = "/data/local_admin_password_hash"
 
     # CLI channel binary allowlist (ADR-0005, audit P0-4). The cli channel is
     # an arbitrary-binary-execution surface, so it only runs binaries the
@@ -149,12 +160,6 @@ class Settings(BaseSettings):
     # pinned Python 3.10 sidecar instead of the Python 3.13 API process.
     kats_runtime_url: str = "http://localhost:8096"
     kats_runtime_timeout_seconds: float = 120.0
-    # PAW runs only in its own offline sidecar. The URL and program identity are
-    # deployment-owned settings rather than agent-editable processor config.
-    paw_runtime_url: str = "http://localhost:8097"
-    paw_runtime_timeout_seconds: float = 30.0
-    paw_program_id: str = ""
-    paw_max_tokens: int = 512
     # Managed acquisition runtime. The commit/version are code-owned pins;
     # this path merely locates the installed checkout on every platform.
     ohmyopencli_root: str = "/opt/ohmyopencli"

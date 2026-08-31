@@ -1404,7 +1404,7 @@ test('the right inspector uses graph contracts instead of manual keys and field 
   assert.match(inspector, /onReconnect\(currentEdge, connection\)/)
   assert.match(inspector, /connectNodes\(connection\)/)
   assert.match(inspector, /removeEdgesByIds\(currentEdges\.map\(\(edge\) => edge\.id\)\)/)
-  assert.match(inspector, /<SelectValue>[\s\S]{0,500}copy\.inputUnbound/)
+  assert.match(inspector, /value === UNBOUND_INPUT_VALUE[\s\S]{0,120}copy\.inputUnbound/)
   assert.doesNotMatch(inspector, /placeholder=["']data\.source["']/)
   assert.doesNotMatch(inspector, /placeholder=["']data\.target["']/)
   assert.doesNotMatch(parameterInterface, /Config \(JSON\)/)

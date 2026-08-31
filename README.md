@@ -26,7 +26,7 @@ opencli-Razormind 是一个开源、自托管的研究与情报管线。它把�
 
 图中的网站变化监控项目已发布不可变 `v1`，并完成了基于该发布版本的真实运行与 Trace 记录。
 
-当前公开版本 **v0.4.0** 已打通：
+当前公开版本 **v0.4.1** 已打通：
 
 **登录采集账号 → 创建研究项目 → 编排工作流 → 执行与追踪 → 查看记录和证据 → 定时运行 / 对外交付**
 
@@ -37,13 +37,13 @@ opencli-Razormind 是一个开源、自托管的研究与情报管线。它把�
 Linux / macOS：
 
 ~~~bash
-curl -fsSL https://raw.githubusercontent.com/2233admin/opencli-Razormind/v0.4.0/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/2233admin/opencli-Razormind/v0.4.1/scripts/install.sh | sh
 ~~~
 
 Windows PowerShell：
 
 ~~~powershell
-Invoke-WebRequest https://raw.githubusercontent.com/2233admin/opencli-Razormind/v0.4.0/scripts/install.ps1 -OutFile install.ps1
+Invoke-WebRequest https://raw.githubusercontent.com/2233admin/opencli-Razormind/v0.4.1/scripts/install.ps1 -OutFile install.ps1
 .\install.ps1
 ~~~
 
@@ -168,7 +168,7 @@ flowchart LR
 
 ## 从源码开发
 
-前置要求：Python 3.13+、Node.js 26.3.1（见 `.nvmrc`）、uv、pnpm。
+前置要求：Python 3.13+、Node.js 26.5.1（见 `.nvmrc`）、uv、pnpm。
 
 ~~~bash
 git clone https://github.com/2233admin/opencli-Razormind.git
@@ -205,13 +205,13 @@ docker compose -f docker-compose.yml -f docker-compose.build.yml up --build -d
 
 ## 发布镜像
 
-v0.4.0 同时发布 `linux/amd64` 和 `linux/arm64`：
+v0.4.1 同时发布 `linux/amd64` 和 `linux/arm64`：
 
-- `ghcr.io/2233admin/opencli-admin-api:0.4.0`
-- `ghcr.io/2233admin/opencli-admin-frontend:0.4.0`
-- `ghcr.io/2233admin/opencli-admin-chrome:0.4.0`
-- `ghcr.io/2233admin/opencli-admin-agent:0.4.0`
-- `ghcr.io/2233admin/opencli-admin-agent:0.4.0-chrome`
+- `ghcr.io/2233admin/opencli-admin-api:0.4.1`
+- `ghcr.io/2233admin/opencli-admin-frontend:0.4.1`
+- `ghcr.io/2233admin/opencli-admin-chrome:0.4.1`
+- `ghcr.io/2233admin/opencli-admin-agent:0.4.1`
+- `ghcr.io/2233admin/opencli-admin-agent:0.4.1-chrome`
 
 查看 [最新 Release](https://github.com/2233admin/opencli-Razormind/releases/latest)。
 

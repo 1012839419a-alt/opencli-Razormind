@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import hmac
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -25,14 +24,18 @@ class IdentitySettings:
 
     @classmethod
     def from_env(cls) -> IdentitySettings:
-        from backend.config import get_settings
-
+        # Sourced from Settings (backend/config.py), not raw os.getenv(): the
+        # process environment alone is not a reliable source for these — under
+        # plain `uv run uvicorn ...` uv does not inject .env into os.environ,
+        # while Settings parses .env directly via pydantic-settings regardless
+        # of what the launching process actually exported.
+        settings = get_settings()
         return cls(
-            issuer=os.getenv("OIDC_ISSUER", "").rstrip("/"),
-            audience=os.getenv("OIDC_AUDIENCE", ""),
-            jwks_url=os.getenv("OIDC_JWKS_URL", ""),
-            bootstrap_admin_token=os.getenv("BOOTSTRAP_ADMIN_TOKEN", ""),
-            secret_key=get_settings().secret_key,
+            issuer=settings.oidc_issuer.rstrip("/"),
+            audience=settings.oidc_audience,
+            jwks_url=settings.oidc_jwks_url,
+            bootstrap_admin_token=settings.bootstrap_admin_token,
+            secret_key=settings.secret_key,
         )
 
 

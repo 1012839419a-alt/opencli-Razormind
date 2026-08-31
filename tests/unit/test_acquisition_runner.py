@@ -622,7 +622,7 @@ async def test_official_site_execution_preserves_payload_in_versioned_envelope(
                     "capability_source_commit": (
                         "73cc60c83586ef2c95469b3b70d6cfc80fa5bc53"
                     ),
-                    "opencli_version": "1.8.5",
+                    "opencli_version": "1.8.6",
                 },
                 "browser": {
                     "endpoint": "http://clean-profile:9222",
