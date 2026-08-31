@@ -1,9 +1,22 @@
 param(
     [int]$Port = 18765,
-    [string]$Prefix = "http://+:18765/"
+    [string]$Prefix = "http://+:18765/",
+    [string]$EnvFile = ""
 )
 
 $ErrorActionPreference = "Stop"
+
+if (-not $env:LARK_CLI_BRIDGE_TOKEN -and $EnvFile) {
+    if (-not (Test-Path -LiteralPath $EnvFile -PathType Leaf)) {
+        throw "Bridge environment file was not found"
+    }
+    $configuredToken = Get-Content -LiteralPath $EnvFile |
+        Where-Object { $_ -match '^(?:LARK_CLI_BRIDGE_TOKEN|API_AUTH_TOKEN)=' } |
+        Select-Object -First 1
+    if ($configuredToken) {
+        $env:LARK_CLI_BRIDGE_TOKEN = ($configuredToken -split '=', 2)[1].Trim().Trim('"')
+    }
+}
 
 # The default listener is reachable from Docker Desktop through
 # host.docker.internal. A token is mandatory whenever the listener is not
