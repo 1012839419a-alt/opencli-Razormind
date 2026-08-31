@@ -555,8 +555,15 @@ export const deleteSchedule = (id: string) =>
   apiClient.delete<ApiResponse<null>>(`/schedules/${id}`).then((r) => r.data)
 
 // ── Notifications ──────────────────────────────────────────────────────────────
-export const listNotificationRules = () =>
-  apiClient.get<ApiResponse<NotificationRule[]>>('/notifications/rules').then((r) => r.data)
+export const listNotificationRules = (params?: { page?: number; limit?: number }) =>
+  apiClient
+    .get<ApiResponse<NotificationRule[]>>('/notifications/rules', { params })
+    .then((r) => r.data)
+
+export const getNotificationRule = (id: string) =>
+  apiClient
+    .get<ApiResponse<NotificationRule>>(`/notifications/rules/${id}`)
+    .then((r) => r.data.data)
 
 export const createNotificationRule = (data: NotificationRuleInput) =>
   apiClient
