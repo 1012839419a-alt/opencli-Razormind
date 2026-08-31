@@ -359,11 +359,8 @@ export interface NotificationRule {
 // POST additionally requires name/trigger_event/notifier_type, enforced by
 // the backend schema, not this type.
 //
-// trigger_event is pinned to the literal 'on_new_record': dispatch_
-// notifications() (backend/pipeline/notifier_dispatch.py) only ever queries
-// rules with that value — there is no producer for anything else, so the
-// backend schema rejects any other string with a 422. Treat this as a fixed
-// field, not a preview of a future open set of trigger types.
+// trigger_event is limited to the events currently produced by the pipeline:
+// new records, completed AI processing, and failed tasks.
 //
 // source_id is accepted by NotificationRuleCreate but is deliberately absent
 // from NotificationRuleUpdate on the backend — a rule's source filter can be
@@ -373,7 +370,7 @@ export interface NotificationRule {
 export interface NotificationRuleInput {
   name?: string
   source_id?: string | null
-  trigger_event?: 'on_new_record'
+  trigger_event?: 'on_new_record' | 'on_ai_processed' | 'on_task_failed'
   notifier_type?: string
   notifier_config?: Record<string, unknown>
   filter_conditions?: Record<string, unknown> | null

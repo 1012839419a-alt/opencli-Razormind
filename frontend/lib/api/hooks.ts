@@ -788,10 +788,14 @@ export function useDeleteNotificationRule() {
   })
 }
 
-export function useNotificationLogs(params?: { rule_id?: string; page?: number; limit?: number }) {
+export function useNotificationLogs(
+  params?: { rule_id?: string; page?: number; limit?: number },
+  options?: { enabled?: boolean },
+) {
   return useQuery({
     queryKey: ['notification-logs', params],
     queryFn: () => api.listNotificationLogs(params),
+    enabled: options?.enabled ?? true,
   })
 }
 

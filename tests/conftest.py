@@ -18,10 +18,11 @@ os.environ["API_AUTH_TOKEN"] = ""
 os.environ["AGENT_API_TOKEN"] = ""
 
 from backend.auth import crypto
+from backend.config import get_settings
 from backend.database import Base, get_db
 from backend.main import app
 from backend.models import *  # noqa: F401, F403 — register all models
-
+from backend.security.local_auth import DEFAULT_LOCAL_ADMIN_PASSWORD_HASH
 
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
 
@@ -43,6 +44,23 @@ def _default_credential_key():
     yield
 
 
+@pytest.fixture(autouse=True)
+def _isolated_local_auth_file(tmp_path, monkeypatch):
+    """Keep password persistence state local to each test.
+
+    Production deployments intentionally persist the local administrator
+    password under ``/data``. Tests must not read or mutate that deployment
+    state because a password-change test would affect every later test.
+    """
+    monkeypatch.setenv(
+        "LOCAL_ADMIN_PASSWORD_HASH_FILE", str(tmp_path / "local_admin_password_hash")
+    )
+    monkeypatch.setenv("LOCAL_ADMIN_PASSWORD_HASH", DEFAULT_LOCAL_ADMIN_PASSWORD_HASH)
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
+
 @pytest.fixture(scope="session")
 def event_loop_policy():
     return asyncio.DefaultEventLoopPolicy()
@@ -60,7 +78,7 @@ async def db_engine():
 
 
 @pytest_asyncio.fixture(scope="function")
-async def db_session(db_engine) -> AsyncGenerator[AsyncSession, None]:
+async def db_session(db_engine) -> AsyncGenerator[AsyncSession]:
     session_factory = async_sessionmaker(
         db_engine, class_=AsyncSession, expire_on_commit=False
     )
@@ -70,7 +88,7 @@ async def db_session(db_engine) -> AsyncGenerator[AsyncSession, None]:
 
 
 @pytest_asyncio.fixture(scope="function")
-async def client(db_session: AsyncSession) -> AsyncGenerator[AsyncClient, None]:
+async def client(db_session: AsyncSession) -> AsyncGenerator[AsyncClient]:
     """HTTP test client with DB session override."""
 
     async def override_get_db():

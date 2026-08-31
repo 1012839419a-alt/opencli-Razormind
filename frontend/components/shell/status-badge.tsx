@@ -23,8 +23,11 @@ const STATUS_MAP: Record<string, { tone: Tone; label: string }> = {
   // task / run
   completed: { tone: 'success', label: '已完成' },
   success: { tone: 'success', label: '成功' },
+  sent: { tone: 'success', label: '已发送' },
+  acked: { tone: 'success', label: '已确认' },
   running: { tone: 'warning', label: '运行中' },
   pending: { tone: 'info', label: '等待中' },
+  not_required: { tone: 'muted', label: '无需确认' },
   queued: { tone: 'info', label: '排队中' },
   failed: { tone: 'danger', label: '失败' },
   error: { tone: 'danger', label: '错误' },
