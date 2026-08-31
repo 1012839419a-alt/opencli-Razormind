@@ -416,7 +416,11 @@ class DoubaoResearchChannel(AbstractChannel):
         # active chat id (https://www.doubao.com/chat/<id>).  This is a
         # read-only query against the same browser session; a failure here
         # must not fail the collect — the answer is already in hand.
-        conversation_url = _conversation_url(stdout) if config.get("capture_conversation_url", True) else ""
+        conversation_url = (
+            _conversation_url(stdout)
+            if config.get("capture_conversation_url", True)
+            else ""
+        )
         if config.get("capture_conversation_url", True):
             status_command = [
                 _opencli_binary(),

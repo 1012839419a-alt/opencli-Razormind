@@ -471,6 +471,8 @@ export function useRecords(params?: {
   search?: string
   page?: number
   limit?: number
+  sort_by?: 'created_at' | 'updated_at' | 'status' | 'source_id' | 'workflow_id' | 'workflow_run_id'
+  sort_order?: 'asc' | 'desc'
 }) {
   return useQuery({
     queryKey: ['records', params],

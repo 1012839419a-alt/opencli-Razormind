@@ -4,7 +4,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { AlertTriangle, ArrowLeft, CheckCircle2, Loader2, Plus, RefreshCw, Rocket, Workflow } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, CheckCircle2, ChevronDown, ChevronUp, Loader2, Plus, RefreshCw, Rocket, Workflow } from 'lucide-react'
 import { toast } from 'sonner'
 
 import { Button } from '@/components/ui/button'
@@ -61,6 +61,7 @@ export function WorkflowEditorSession({ forceStandalone = false }: WorkflowEdito
   const [releaseBlocker, setReleaseBlocker] = useState<string | null>(null)
   const [publishedVersion, setPublishedVersion] = useState<number | null>(null)
   const [validationScope, setValidationScope] = useState<{ active: number; parked: number } | null>(null)
+  const [lifecyclePanelOpen, setLifecyclePanelOpen] = useState(false)
   const loaded = useRef(false)
   const revision = useRef<number | null>(null)
   const pendingGraph = useRef<typeof workflowProject | null>(null)
@@ -462,51 +463,64 @@ export function WorkflowEditorSession({ forceStandalone = false }: WorkflowEdito
         </ErrorBoundary>
       )}
       {workspaceId && projectId && workflowId ? (
-        <div className="absolute inset-x-3 bottom-3 z-40 ml-auto flex max-w-4xl flex-col gap-2 rounded-md border bg-background/90 p-2 backdrop-blur-xl">
-          <WorkflowLifecycleStrip state={documentState === 'error' || documentState === 'conflict' || capabilityError ? 'blocked' : releaseState === 'idle' ? 'draft' : releaseState} revision={savedRevision} publishedVersion={publishedVersion} blockerText={documentState === 'conflict' ? '草稿已在其他位置更新，请重新加载。' : documentState === 'error' ? '草稿保存失败。' : capabilityError ? '运行能力目录不可用，暂时无法验证。' : (releaseBlocker ?? undefined)} />
-          {validationScope ? (
-            <div className="flex items-center justify-between gap-2 px-1.5 text-2xs text-muted-foreground" role="status" data-testid="workflow-validation-scope-summary">
-              <span>{`活动节点 ${validationScope.active} · 未接入节点 ${validationScope.parked}`}</span>
-              <span className="text-3xs opacity-70">未接入节点仅提示，不会阻止发布</span>
+        lifecyclePanelOpen ? (
+          <div className="absolute inset-x-3 bottom-3 z-40 ml-auto flex max-w-4xl flex-col gap-2 rounded-md border bg-background/90 p-2 backdrop-blur-xl" data-testid="workflow-lifecycle-panel">
+            <div className="flex justify-end">
+              <Button className="min-h-8 gap-1 text-xs" size="sm" variant="ghost" onClick={() => setLifecyclePanelOpen(false)} aria-expanded="true" aria-controls="workflow-lifecycle-panel">
+                收起状态
+                <ChevronDown className="size-3.5" />
+              </Button>
             </div>
-          ) : null}
-          <div className="flex flex-wrap items-center justify-end gap-2">
-            <div className="mr-auto flex items-center gap-1.5 px-1.5 text-xs text-muted-foreground" role="status">
-              {documentState === 'loading' || documentState === 'saving' ? <Loader2 className="size-3.5 animate-spin" /> : null}
-              {documentState === 'saved' ? <CheckCircle2 className="size-3.5 text-success" /> : null}
-              {documentState === 'error' || documentState === 'conflict' ? <AlertTriangle className="size-3.5 text-warning" /> : null}
-              {
+            <WorkflowLifecycleStrip state={documentState === 'error' || documentState === 'conflict' || capabilityError ? 'blocked' : releaseState === 'idle' ? 'draft' : releaseState} revision={savedRevision} publishedVersion={publishedVersion} blockerText={documentState === 'conflict' ? '草稿已在其他位置更新，请重新加载。' : documentState === 'error' ? '草稿保存失败。' : capabilityError ? '运行能力目录不可用，暂时无法验证。' : (releaseBlocker ?? undefined)} />
+            {validationScope ? (
+              <div className="flex items-center justify-between gap-2 px-1.5 text-2xs text-muted-foreground" role="status" data-testid="workflow-validation-scope-summary">
+                <span>{`活动节点 ${validationScope.active} · 未接入节点 ${validationScope.parked}`}</span>
+                <span className="text-3xs opacity-70">未接入节点仅提示，不会阻止发布</span>
+              </div>
+            ) : null}
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              <div className="mr-auto flex items-center gap-1.5 px-1.5 text-xs text-muted-foreground" role="status">
+                {documentState === 'loading' || documentState === 'saving' ? <Loader2 className="size-3.5 animate-spin" /> : null}
+                {documentState === 'saved' ? <CheckCircle2 className="size-3.5 text-success" /> : null}
+                {documentState === 'error' || documentState === 'conflict' ? <AlertTriangle className="size-3.5 text-warning" /> : null}
                 {
-                  loading: '加载中',
-                  saving: '保存中',
-                  saved: `已保存 · revision ${savedRevision ?? '—'}`,
-                  error: '保存失败',
-                  conflict: '保存冲突',
-                }[documentState]
-              }
+                  {
+                    loading: '加载中',
+                    saving: '保存中',
+                    saved: `已保存 · revision ${savedRevision ?? '—'}`,
+                    error: '保存失败',
+                    conflict: '保存冲突',
+                  }[documentState]
+                }
+              </div>
+              {documentState === 'conflict' ? (
+                <Button className="min-h-11 sm:min-h-7" size="sm" variant="outline" onClick={() => window.location.reload()}>
+                  <RefreshCw className="size-3.5" />
+                  重新加载
+                </Button>
+              ) : null}
+              {documentState === 'error' ? (
+                <Button className="min-h-11 sm:min-h-7" size="sm" variant="outline" onClick={() => void saveDraft(workflowProject)}>
+                  <RefreshCw className="size-3.5" />
+                  重试保存
+                </Button>
+              ) : null}
+              <Button className="min-h-11 sm:min-h-7" size="sm" variant="outline" onClick={validateDraft} disabled={capabilityLoading || Boolean(capabilityError) || releaseState === 'validating' || releaseState === 'publishing'} title={capabilityLoading ? '正在加载运行能力目录' : capabilityError ? '运行能力目录不可用' : undefined}>
+                {capabilityLoading || releaseState === 'validating' ? <Loader2 className="size-3.5 animate-spin" /> : <CheckCircle2 className="size-3.5" />}
+                验证
+              </Button>
+              <Button className="min-h-11 sm:min-h-7" size="sm" onClick={publishDraft} disabled={releaseState !== 'validated'}>
+                {releaseState === 'publishing' ? <Loader2 className="size-3.5 animate-spin" /> : <Rocket className="size-3.5" />}
+                发布
+              </Button>
             </div>
-            {documentState === 'conflict' ? (
-              <Button className="min-h-11 sm:min-h-7" size="sm" variant="outline" onClick={() => window.location.reload()}>
-                <RefreshCw className="size-3.5" />
-                重新加载
-              </Button>
-            ) : null}
-            {documentState === 'error' ? (
-              <Button className="min-h-11 sm:min-h-7" size="sm" variant="outline" onClick={() => void saveDraft(workflowProject)}>
-                <RefreshCw className="size-3.5" />
-                重试保存
-              </Button>
-            ) : null}
-            <Button className="min-h-11 sm:min-h-7" size="sm" variant="outline" onClick={validateDraft} disabled={capabilityLoading || Boolean(capabilityError) || releaseState === 'validating' || releaseState === 'publishing'} title={capabilityLoading ? '正在加载运行能力目录' : capabilityError ? '运行能力目录不可用' : undefined}>
-              {capabilityLoading || releaseState === 'validating' ? <Loader2 className="size-3.5 animate-spin" /> : <CheckCircle2 className="size-3.5" />}
-              验证
-            </Button>
-            <Button className="min-h-11 sm:min-h-7" size="sm" onClick={publishDraft} disabled={releaseState !== 'validated'}>
-              {releaseState === 'publishing' ? <Loader2 className="size-3.5 animate-spin" /> : <Rocket className="size-3.5" />}
-              发布
-            </Button>
           </div>
-        </div>
+        ) : (
+          <Button className="absolute bottom-3 right-3 z-40 min-h-8 gap-1.5 rounded-md border bg-background/90 px-2.5 text-xs shadow-sm backdrop-blur-xl" size="sm" variant="outline" onClick={() => setLifecyclePanelOpen(true)} aria-expanded="false" aria-controls="workflow-lifecycle-panel" data-testid="workflow-lifecycle-toggle">
+            <ChevronUp className="size-3.5" />
+            状态
+          </Button>
+        )
       ) : null}
     </div>
   )

@@ -39,8 +39,10 @@ function resolveLabels(pathname: string): string[] {
   return match ? [ROUTE_LABELS[match]] : []
 }
 export function AppHeader({
+  onOpenAgent,
   onOpenCommand,
 }: {
+  onOpenAgent?: () => void
   onOpenCommand?: () => void
 }) {
   const pathname = usePathname()
@@ -89,19 +91,17 @@ export function AppHeader({
           variant="outline"
           size="sm"
           className="hidden gap-2 sm:flex"
-          nativeButton={false}
-          render={<Link href="/operations-agents" />}
+          onClick={onOpenAgent}
         >
           <Bot />
-          <span>自动化与智能体</span>
+          <span>Agent</span>
         </Button>
         <Button
           variant="ghost"
           size="icon"
           className="sm:hidden"
-          aria-label="打开自动化与智能体"
-          nativeButton={false}
-          render={<Link href="/operations-agents" />}
+          aria-label="打开全局 Agent"
+          onClick={onOpenAgent}
         >
           <Bot />
         </Button>
@@ -140,9 +140,9 @@ export function AppHeader({
                 <span className="block truncate text-xs">{accountLabel}</span>
               </DropdownMenuLabel>
             </DropdownMenuGroup>
-            <DropdownMenuItem onClick={() => router.push('/system')}>
+            <DropdownMenuItem onClick={() => router.push('/settings')}>
               <Settings />
-              系统设置
+              账户设置
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem onClick={handleSignOut}>

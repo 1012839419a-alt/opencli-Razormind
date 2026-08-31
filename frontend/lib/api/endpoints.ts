@@ -517,6 +517,8 @@ export const listRecords = (params?: {
   search?: string
   page?: number
   limit?: number
+  sort_by?: 'created_at' | 'updated_at' | 'status' | 'source_id' | 'workflow_id' | 'workflow_run_id'
+  sort_order?: 'asc' | 'desc'
 }) => apiClient.get<ApiResponse<CollectedRecord[]>>('/records', { params }).then((r) => r.data)
 
 export const getRecord = (id: string) =>

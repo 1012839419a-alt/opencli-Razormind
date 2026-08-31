@@ -36,6 +36,7 @@ import type { ProjectRecordGraphPreview, RecordGraphNode } from '@/lib/api/types
 import {
   RECORD_GRAPH_KIND_COLOR,
   RECORD_GRAPH_KIND_LABEL,
+  withoutRecordGraphNodeKinds,
 } from '@/lib/records/project-record-graph'
 import { cn } from '@/lib/utils'
 
@@ -86,23 +87,33 @@ export function ProjectGraphExplorer({
     ?? workflowsQuery.data?.[0]?.id
     ?? null
   const preview = graphQuery.data
-  const selectedNode = preview?.nodes.find((node) => node.id === selectedNodeId) ?? null
+  const isGalaxy = mode === 'galaxy'
+  const graphPreview = useMemo(() => {
+    if (!preview) return null
+    // A collection run is operational lineage, not an evidence relationship.
+    // Keep it in the API projection and operations/data surfaces, but do not
+    // put it in this 2D evidence graph.
+    return isGalaxy
+      ? preview
+      : withoutRecordGraphNodeKinds(preview, ['run'])
+  }, [isGalaxy, preview])
+  const selectedNode = graphPreview?.nodes.find((node) => node.id === selectedNodeId) ?? null
   const related = useMemo(
-    () => preview && selectedNodeId
-      ? preview.edges.filter((edge) => edge.source === selectedNodeId || edge.target === selectedNodeId)
+    () => graphPreview && selectedNodeId
+      ? graphPreview.edges.filter((edge) => edge.source === selectedNodeId || edge.target === selectedNodeId)
       : [],
-    [preview, selectedNodeId],
+    [graphPreview, selectedNodeId],
   )
   const searchResults = useMemo(() => {
     const term = search.trim().toLowerCase()
-    if (!term || !preview) return []
-    return preview.nodes
+    if (!term || !graphPreview) return []
+    return graphPreview.nodes
       .filter((node) => `${node.label} ${node.subtitle ?? ''} ${node.preview ?? ''}`
         .toLowerCase()
         .includes(term))
       .sort((left, right) => right.count - left.count)
       .slice(0, 12)
-  }, [preview, search])
+  }, [graphPreview, search])
 
   const context = workspaceId
     ? `?workspace=${workspaceId}${workflowId ? `&workflow=${workflowId}` : ''}`
@@ -114,7 +125,6 @@ export function ProjectGraphExplorer({
   const galaxyHref = `/studio/projects/${projectId}/galaxy${context}`
   const loading = projectsQuery.isLoading || workflowsQuery.isLoading || graphQuery.isLoading
   const error = projectsQuery.error || workflowsQuery.error || graphQuery.error
-  const isGalaxy = mode === 'galaxy'
 
   return (
     <PageContainer
@@ -124,7 +134,7 @@ export function ProjectGraphExplorer({
         : isGalaxy ? '项目 Galaxy 星图' : '项目证据关系'}
       description={isGalaxy
         ? '在三维空间探索项目、工作流、运行、来源、记录与实体之间的关系。'
-        : '以接近 Obsidian Graph View 的力导向手感探索双向证据关系。'}
+        : '只展示数据源、记录和实体之间的证据关系；采集运行保留在运行记录中。'}
       className="max-w-none"
       actions={(
         <Link
@@ -240,7 +250,7 @@ export function ProjectGraphExplorer({
               hint="确认项目已有可读取的工作流和运行记录。"
             />
           </div>
-        ) : !preview ? (
+        ) : !graphPreview ? (
           <EmptyState
             title="暂无项目关系图"
             description="项目运行产生记录后，系统会建立来源、运行、记录和实体之间的关系。"
@@ -253,14 +263,14 @@ export function ProjectGraphExplorer({
                 className="min-h-[44rem]"
                 fallback={(
                   <ProjectGraphFallback
-                    preview={preview}
+                    preview={graphPreview}
                     selectedNodeId={selectedNodeId}
                     onSelectNode={setSelectedNodeId}
                   />
                 )}
               >
                 <ProjectGalaxyForceGraph
-                  preview={preview}
+                  preview={graphPreview}
                   selectedNodeId={selectedNodeId}
                   onSelectNode={setSelectedNodeId}
                 />
@@ -272,7 +282,7 @@ export function ProjectGraphExplorer({
                 data-gpu-backend="canvas2d"
               >
                 <ProjectRelationshipForceGraph
-                  preview={preview}
+                  preview={graphPreview}
                   selectedNodeId={selectedNodeId}
                   onSelectNode={setSelectedNodeId}
                 />
