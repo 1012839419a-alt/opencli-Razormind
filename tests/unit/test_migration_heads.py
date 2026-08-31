@@ -1,3 +1,4 @@
+import re
 import sqlite3
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -14,6 +15,18 @@ def test_alembic_has_one_head():
     config.set_main_option("script_location", "backend/migrations")
 
     assert ScriptDirectory.from_config(config).get_heads() == ["q4r5s6t7u8v9"]
+
+
+def test_ci_downgrade_target_is_unambiguous():
+    workflow = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
+    target = re.search(r"alembic downgrade (\S+)", workflow)
+    assert target is not None
+
+    config = Config()
+    config.set_main_option("script_location", "backend/migrations")
+    script = ScriptDirectory.from_config(config)
+
+    assert script._downgrade_revs(target.group(1), tuple(script.get_heads()))
 
 
 def test_upgrade_head_creates_identity_and_operations_tables(monkeypatch):

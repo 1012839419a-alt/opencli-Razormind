@@ -357,3 +357,8 @@ def test_public_release_keeps_existing_security_and_packaging_guards() -> None:
     assert "packages: write" in release_workflow
     assert "id-token: write" not in release_workflow
     assert "Source Recovery Smoke" in workflow
+    ephemeral_secret = 'echo "SECRET_KEY=$(openssl rand -hex 32)" >> "$GITHUB_ENV"'
+    assert ephemeral_secret in workflow
+    assert ephemeral_secret in release_workflow
+    assert "ci-release-secret" not in workflow
+    assert "ci-release-secret" not in release_workflow
