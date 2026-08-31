@@ -1020,6 +1020,22 @@ def test_cancel_before_dispatch_overlay_relays_primary_database_only():
     ]
 
 
+def test_control_admin_can_reconcile_with_the_configured_receiver_authority():
+    overlay = yaml.load(
+        (ROOT / "docker-compose.non-bypass-failure.yml").read_text(encoding="utf-8"),
+        Loader=ComposeLoader,
+    )
+
+    expected = {
+        "CONTROLLED_RECEIVER_REGISTRY_JSON": "${CONTROLLED_RECEIVER_REGISTRY_JSON:-{}}",
+        "CONTROLLED_RECEIVER_CREDENTIALS_JSON": "${CONTROLLED_RECEIVER_CREDENTIALS_JSON:-{}}",
+        "CONTROLLED_RECEIVER_RECEIPT_KEYS_JSON": "${CONTROLLED_RECEIVER_RECEIPT_KEYS_JSON:-{}}",
+    }
+    assert expected.items() <= overlay["services"]["proof-admin-control"][
+        "environment"
+    ].items()
+
+
 def test_cancellation_runners_allow_long_public_driver():
     runner = (ROOT / "scripts/run_non_bypass_failure_matrix.py").read_text(
         encoding="utf-8"
