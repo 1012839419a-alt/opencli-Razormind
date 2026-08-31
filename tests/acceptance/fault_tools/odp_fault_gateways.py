@@ -5,6 +5,7 @@ They relay real protocol bytes.  Their process-local controls are deliberately
 not proof inputs: the matrix derives facts exclusively from authenticated Admin
 public APIs.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -29,11 +30,11 @@ GatewayMode = Literal[
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
+
 @dataclass
 class GatewayState:
     mode: GatewayMode
     armed: bool = False
-
 
 
 STATES = {
@@ -61,6 +62,11 @@ def _authenticated(token: str | None) -> None:
         raise HTTPException(401, "gateway credential denied")
 
 
+@app.get("/health")
+async def health() -> dict[str, str]:
+    return {"status": "ok"}
+
+
 def _commit_marker() -> Path:
     return Path(os.environ.get("COMMIT_MARKER_PATH", "/coordination/store-commit-ready"))
 
@@ -71,9 +77,9 @@ def _mark_commit_ready() -> None:
     path.write_text("ready", encoding="ascii")
 
 
-
 class PostgresCommitObserver:
     """Per-relay PostgreSQL frame observer; never changes forwarded bytes."""
+
     def __init__(self) -> None:
         self._frontend = bytearray()
         self._backend = bytearray()
@@ -134,6 +140,7 @@ class PostgresCommitObserver:
 def _redis_filter_enabled(state: GatewayState) -> bool:
     return state.armed and _commit_marker().exists()
 
+
 @app.post("/_gate/{name}/arm")
 async def arm(
     name: str,
@@ -143,6 +150,8 @@ async def arm(
     _authenticated(x_api_token)
     _state(name).armed = body.armed
     return {"armed": body.armed}
+
+
 @app.api_route("/{path:path}", methods=["POST", "PUT"])
 async def http_schema_mutator(path: str, request: Request) -> Response:
     """Forward the actual ingress request, changing only JSON schema_version."""
@@ -161,7 +170,8 @@ async def http_schema_mutator(path: str, request: Request) -> Response:
         event["schema_version"] = 999
         body = json.dumps(document, separators=(",", ":"), ensure_ascii=False).encode()
     headers = {
-        name: value for name, value in request.headers.items()
+        name: value
+        for name, value in request.headers.items()
         if name.lower() in {"authorization", "content-type", "x-api-token", "x-iii-bridge-token"}
     }
     async with httpx.AsyncClient() as client:
@@ -179,13 +189,15 @@ async def http_schema_mutator(path: str, request: Request) -> Response:
     )
 
 
-
-def _is_committed_xadd(chunk: bytes) -> bool:
-    # RESP may span reads; the stream token and command must occur in the same
-    # logical request as emitted by odp-store.  The TCP relay retains chunks
-    # until a complete RESP command is available.
-    upper = chunk.upper()
-    return b"XADD" in upper and b"ODP.RECORD.COMMITTED" in upper
+def _is_committed_xadd(command: bytes) -> bool:
+    """Recognize only the exact RESP XADD command and committed stream."""
+    parts = _resp_parts(command)
+    return (
+        parts is not None
+        and len(parts) >= 2
+        and parts[0].upper() == b"XADD"
+        and parts[1] == b"odp.record.committed"
+    )
 
 
 def _resp_parts(command: bytes) -> list[bytes] | None:
@@ -202,18 +214,18 @@ def _resp_parts(command: bytes) -> list[bytes] | None:
     cursor = count_end + 2
     parts: list[bytes] = []
     for _ in range(count):
-        if command[cursor:cursor + 1] != b"$":
+        if command[cursor : cursor + 1] != b"$":
             return None
         size_end = command.find(b"\r\n", cursor)
         if size_end < 0:
             return None
         try:
-            size = int(command[cursor + 1:size_end])
+            size = int(command[cursor + 1 : size_end])
         except ValueError:
             return None
         data_start = size_end + 2
         data_end = data_start + size
-        if command[data_end:data_end + 2] != b"\r\n":
+        if command[data_end : data_end + 2] != b"\r\n":
             return None
         parts.append(command[data_start:data_end])
         cursor = data_end + 2
@@ -221,10 +233,13 @@ def _resp_parts(command: bytes) -> list[bytes] | None:
 
 
 def _encode_resp(parts: list[bytes]) -> bytes:
-    return b"*" + str(len(parts)).encode() + b"\r\n" + b"".join(
-        b"$" + str(len(part)).encode() + b"\r\n" + part + b"\r\n"
-        for part in parts
+    return (
+        b"*"
+        + str(len(parts)).encode()
+        + b"\r\n"
+        + b"".join(b"$" + str(len(part)).encode() + b"\r\n" + part + b"\r\n" for part in parts)
     )
+
 
 def _poison_ingest_xadd(command: bytes) -> bytes:
     """Only poison the `event` payload on an actual ingest-stream XADD."""
@@ -248,15 +263,14 @@ def _poison_ingest_xadd(command: bytes) -> bytes:
         # PostgreSQL cannot persist this JSONB raw_data value, while the
         # record remains otherwise valid and is therefore retained in DLQ.
         event["raw_data"] = "\x00"
-        parts[index + 1] = json.dumps(
-            event, separators=(",", ":"), ensure_ascii=False
-        ).encode()
+        parts[index + 1] = json.dumps(event, separators=(",", ":"), ensure_ascii=False).encode()
         return _encode_resp(parts)
     return command
 
 
 class RespCommandBuffer:
     """Bounded RESP request framing sufficient for transparent command gating."""
+
     def __init__(self) -> None:
         self._buffer = bytearray()
 
@@ -282,7 +296,7 @@ class RespCommandBuffer:
                 continue
             complete = True
             for _ in range(count):
-                if len(self._buffer) <= cursor or self._buffer[cursor:cursor + 1] != b"$":
+                if len(self._buffer) <= cursor or self._buffer[cursor : cursor + 1] != b"$":
                     complete = False
                     break
                 size_end = self._buffer.find(b"\r\n", cursor)
@@ -290,7 +304,7 @@ class RespCommandBuffer:
                     complete = False
                     break
                 try:
-                    size = int(self._buffer[cursor + 1:size_end])
+                    size = int(self._buffer[cursor + 1 : size_end])
                 except ValueError:
                     complete = False
                     break
@@ -315,14 +329,13 @@ async def _copy(
 ) -> None:
     resp = (
         RespCommandBuffer()
-        if state.mode in {"ingest-redis-payload-mutator", "store-redis-committed-xadd"}
-        and outbound
+        if state.mode in {"ingest-redis-payload-mutator", "store-redis-committed-xadd"} and outbound
         else None
     )
     while data := await reader.read(65536):
         if observer:
             (observer.feed_frontend if outbound else observer.feed_backend)(data)
-        for chunk in (resp.feed(data) if resp else [data]):
+        for chunk in resp.feed(data) if resp else [data]:
             if state.armed and state.mode in {"ingest-redis-cut", "store-pg-cut"} and outbound:
                 writer.close()
                 await writer.wait_closed()
@@ -340,6 +353,8 @@ async def _copy(
             await writer.drain()
     writer.close()
     await writer.wait_closed()
+
+
 async def relay(
     client_reader: asyncio.StreamReader,
     client_writer: asyncio.StreamWriter,

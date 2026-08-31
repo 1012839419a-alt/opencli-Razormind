@@ -58,16 +58,16 @@ def _authenticate(request: Request) -> Principal:
             claims.get("proof_scope"),
             claims.get("exp"),
         )
+        expected_subject = {
+            "bundle-writer": "proof-bundle-writer",
+            "key-admin": "proof-key-admin",
+        }.get(role)
         if (
-            role not in {"bundle-writer", "key-admin"}
-            or not isinstance(role, str)
-            or len(role) > 64
+            expected_subject is None
             or not isinstance(scope, dict)
-            or not isinstance(expires, int)
+            or type(expires) is not int
             or expires <= int(time.time())
-            or not isinstance(claims.get("sub"), str)
-            or not claims["sub"]
-            or len(claims["sub"]) > 256
+            or claims.get("sub") != expected_subject
             or set(scope) != {"workspace", "project", "workflow", "run"}
             or any(
                 not isinstance(value, str) or not value or len(value) > 256
@@ -75,7 +75,7 @@ def _authenticate(request: Request) -> Principal:
             )
         ):
             raise ValueError("invalid authorization claims")
-        return Principal(claims["sub"], role, dict(scope))
+        return Principal(expected_subject, role, dict(scope))
     except Exception as exc:
         raise GovernanceDeniedError("credential is invalid", 401) from exc
 

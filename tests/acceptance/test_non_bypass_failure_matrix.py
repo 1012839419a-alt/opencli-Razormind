@@ -266,6 +266,26 @@ def test_mismatched_scenario_actuator_name_is_rejected(scenario: str, wrong_name
         harness.normalize_public_facts(facts)
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("scenario", "unknown-scenario"),
+        ("actuator.name", None),
+        ("delivery.attemptCount", True),
+        ("timing.startedAt", True),
+    ],
+)
+def test_contract_rejects_unknown_and_non_exact_public_values(field: str, value: object):
+    facts = public_facts("signed-zero")
+    target = facts
+    parts = field.split(".")
+    for part in parts[:-1]:
+        target = target[part]
+    target[parts[-1]] = value
+    with pytest.raises(RuntimeError):
+        harness.normalize_public_facts(facts)
+
+
 def test_timing_beyond_dispatch_deadline_is_rejected():
     facts = public_facts("signed-zero")
     facts["timing"]["completedAt"] = facts["timing"]["startedAt"] + 361
@@ -339,7 +359,7 @@ def test_overlay_has_no_host_ports_and_internal_fault_network():
         name
         for name, service in compose["services"].items()
         if any("proof-governance-keys" in mount for mount in service.get("volumes", []))
-    ] == ["proof-governance"]
+    ] == ["proof-governance-key-init", "proof-governance"]
     assert governance["healthcheck"]["test"] == [
         "CMD",
         "curl",
@@ -348,6 +368,26 @@ def test_overlay_has_no_host_ports_and_internal_fault_network():
     ]
     driver = compose["services"]["proof-driver"]
     assert driver["depends_on"]["proof-governance"]["condition"] == "service_healthy"
+    assert governance["depends_on"]["proof-governance-key-init"] == {
+        "condition": "service_completed_successfully"
+    }
+    assert compose["services"]["proof-governance-key-init"]["network_mode"] == "none"
+    for service, port in {
+        "proof-iii-actuator": 8000,
+        "proof-odp-http-gateway": 8040,
+        "proof-odp-ingest-redis-gateway": 8081,
+        "proof-odp-ingest-redis-mutator": 8084,
+        "proof-odp-store-pg-gateway": 8082,
+        "proof-odp-store-redis-gateway": 8083,
+    }.items():
+        assert compose["services"][service]["healthcheck"]["test"] == [
+            "CMD",
+            "curl",
+            "-fsS",
+            f"http://localhost:{port}/health",
+        ]
+        assert driver["depends_on"][service]["condition"] == "service_healthy"
+    assert "proof-delivery-proxy" not in driver["depends_on"]
     assert set(driver["environment"]) >= {
         "PROOF_BUNDLE_WRITER_JWT",
         "PROOF_KEY_ADMIN_JWT",
@@ -393,6 +433,7 @@ def test_governance_identities_are_opt_in_and_share_the_public_jwks(tmp_path):
         assert claims["aud"] == "proof-governance"
         assert claims["role"] == role
         assert claims["proof_scope"] == scope
+        assert claims["sub"] == f"proof-{role}"
 
 
 def test_callback_relay_routes_only_the_three_real_callback_paths(monkeypatch):
@@ -941,7 +982,7 @@ def test_receiver_address_tuple_is_deterministic_global_and_overrideable():
         receiver_network.network_address + 2
     )
     override = {
-        "PROOF_RECEIVER_IP": "12.34.56.1",
+        "PROOF_RECEIVER_IP": "12.34.56.2",
         "PROOF_RECEIVER_SUBNET": "12.34.56.0/24",
         "PROOF_RECEIVER_GATEWAY": "12.34.56.254",
     }
@@ -961,6 +1002,11 @@ def test_receiver_address_tuple_is_deterministic_global_and_overrideable():
             "PROOF_RECEIVER_IP": "11.1.1.1",
             "PROOF_RECEIVER_SUBNET": "11.1.1.0/24",
             "PROOF_RECEIVER_GATEWAY": "11.1.1.1",
+        },
+        {
+            "PROOF_RECEIVER_IP": "12.34.56.1",
+            "PROOF_RECEIVER_SUBNET": "12.34.56.0/24",
+            "PROOF_RECEIVER_GATEWAY": "12.34.56.254",
         },
     ):
         with pytest.raises(runner.FailureRunRejectedError):
@@ -1299,7 +1345,8 @@ def test_catalog_build_occurs_once_before_multiple_fresh_rows(monkeypatch, tmp_p
     monkeypatch.setattr(
         runner, "_facts_from_driver", lambda ledger, *_args: {"run": ledger.project}
     )
-    monkeypatch.setattr(runner, "_govern", lambda *_args: ({}, b"{}"))
+    monkeypatch.setattr(runner, "_govern", lambda *_args, **_kwargs: ({}, b"{}", {}, []))
+    monkeypatch.setattr(runner, "verify_public_artifacts", lambda *_args: None)
     monkeypatch.setattr(runner, "_cleanup", lambda *_args: None)
     runner.run_matrix(
         tmp_path,

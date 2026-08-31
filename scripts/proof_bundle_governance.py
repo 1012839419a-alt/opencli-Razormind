@@ -16,6 +16,8 @@ import re
 import tempfile
 import time
 import uuid
+from functools import wraps
+from threading import RLock
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -152,6 +154,15 @@ def _assert_redacted(value: Any, path: str = "bundle") -> None:
         raise GovernanceDeniedError(f"private material is forbidden at {path}", 422)
 
 
+def _locked(method: Callable[..., Any]) -> Callable[..., Any]:
+    @wraps(method)
+    def wrapped(self: "ProofBundleStore", *args: Any, **kwargs: Any) -> Any:
+        with self._lock:
+            return method(self, *args, **kwargs)
+
+    return wrapped
+
+
 class ProofBundleStore:
     """Append-only audit and immutable bundle store, scoped per scenario."""
 
@@ -168,6 +179,7 @@ class ProofBundleStore:
         os.chmod(self.root, 0o700)
         self.key_root = key_root
         self._now = now or (lambda: int(time.time()))
+        self._lock = RLock()
         self._key_private: dict[str, Ed25519PrivateKey] = {}
         self._keys: dict[str, SigningKey] = {}
         self._active_key: str | None = None
@@ -305,6 +317,7 @@ class ProofBundleStore:
             "keyId": self._audit_key_id,
             "fingerprint": self.trust_root_fingerprint,
             "algorithm": "Ed25519",
+            "publicKey": _b64(self._audit_public),
         }
 
     def _scope_hash(self, scope: Mapping[str, str]) -> str:
@@ -424,6 +437,7 @@ class ProofBundleStore:
             raise GovernanceDeniedError("active bundle key is unusable", 409)
         return key
 
+    @_locked
     def bootstrap_active(
         self,
         principal: Principal,
@@ -436,7 +450,11 @@ class ProofBundleStore:
         key_id, not_before, not_after = self._validate_key_window(
             principal, "key.bootstrap-active", key_id, not_before, not_after
         )
-        if self._active_key is not None or key_id in self._keys or not_before >= not_after:
+        if (
+            self._active_key is not None
+            or key_id in self._keys
+            or not (not_before <= self._now() < not_after)
+        ):
             self._deny(
                 principal,
                 "key.bootstrap-active",
@@ -450,6 +468,7 @@ class ProofBundleStore:
         self._append_audit(principal, "key.bootstrap-active")
         return key
 
+    @_locked
     def stage_next(
         self,
         principal: Principal,
@@ -471,6 +490,7 @@ class ProofBundleStore:
         self._append_audit(principal, "key.stage-next")
         return key
 
+    @_locked
     def promote(self, principal: Principal, *, key_id: str) -> SigningKey:
         self._require_role(principal, "key-admin", "key.promote")
         key_id = self._validate_key_id(principal, "key.promote", key_id)
@@ -486,6 +506,7 @@ class ProofBundleStore:
         self._append_audit(principal, "key.promote")
         return candidate
 
+    @_locked
     def retire(self, principal: Principal, *, key_id: str) -> SigningKey:
         self._require_role(principal, "key-admin", "key.retire")
         key_id = self._validate_key_id(principal, "key.retire", key_id)
@@ -500,6 +521,7 @@ class ProofBundleStore:
         self._append_audit(principal, "key.retire")
         return retired
 
+    @_locked
     def revoke(self, principal: Principal, *, key_id: str) -> SigningKey:
         self._require_role(principal, "key-admin", "key.revoke")
         key_id = self._validate_key_id(principal, "key.revoke", key_id)
@@ -522,6 +544,7 @@ class ProofBundleStore:
             raise GovernanceDeniedError("unknown bundle key", 409)
         return Ed25519PublicKey.from_public_bytes(_unb64(key.public_key))
 
+    @_locked
     def create(
         self,
         principal: Principal,
@@ -597,8 +620,7 @@ class ProofBundleStore:
         signature = _b64(self._key_private[key.key_id].sign(canonical(record)))
         target.mkdir(mode=0o700, parents=True)
         saved = {"record": record, "signature": signature}
-        (target / "record.json").write_bytes(canonical(saved))
-        os.chmod(target / "record.json", 0o600)
+        self._write_secret(target / "record.json", canonical(saved))
         self._append_audit(
             principal,
             "bundle.create",
@@ -607,6 +629,7 @@ class ProofBundleStore:
         )
         return saved
 
+    @_locked
     def bootstrap_for_scope(self, principal: Principal) -> SigningKey:
         """Create the service-selected initial key for one fresh scope."""
         now = self._now()
@@ -617,6 +640,7 @@ class ProofBundleStore:
             not_after=now + 86400,
         )
 
+    @_locked
     def certify(self, principal: Principal, *, payload: dict[str, Any]) -> dict[str, Any]:
         """Generate every certificate field inside the governance authority."""
         self._require_role(principal, "bundle-writer", "bundle.create")
@@ -695,8 +719,7 @@ class ProofBundleStore:
             )
         }
         tombstone["artifactId"] = artifact_id
-        (target / "tombstone.json").write_bytes(canonical(tombstone))
-        os.chmod(target / "tombstone.json", 0o600)
+        self._write_secret(target / "tombstone.json", canonical(tombstone))
         (target / "record.json").unlink(missing_ok=True)
         self._append_audit(
             principal,
@@ -704,6 +727,52 @@ class ProofBundleStore:
             artifact_id=artifact_id,
             content_hash=tombstone["contentHash"],
         )
+
+    def _validate_saved(
+        self, principal: Principal, artifact_id: str, saved: object
+    ) -> tuple[dict[str, Any], dict[str, Any], SigningKey]:
+        if not isinstance(saved, dict) or set(saved) != {"record", "signature"}:
+            raise GovernanceDeniedError("bundle bytes are invalid", 409)
+        record, signature = saved["record"], saved["signature"]
+        if not isinstance(record, dict) or set(record) != {"envelope", "payload"}:
+            raise GovernanceDeniedError("bundle bytes are invalid", 409)
+        envelope, payload = record["envelope"], record["payload"]
+        if (
+            not isinstance(envelope, dict)
+            or set(envelope) != ENVELOPE_FIELDS
+            or not isinstance(payload, dict)
+            or not isinstance(signature, str)
+        ):
+            raise GovernanceDeniedError("bundle bytes are invalid", 409)
+        try:
+            validate(payload, scenario=envelope["scenarioId"])
+            key = self._keys[envelope["keyId"]]
+            if (
+                envelope["governanceSchemaVersion"] != SCHEMA_VERSION
+                or envelope["sourceSchemaVersion"] != BUNDLE_SCHEMA
+                or envelope["artifactId"] != artifact_id
+                or envelope["scope"] != dict(principal.scope)
+                or envelope["run"] != principal.scope["run"]
+                or envelope["contentHash"] != digest(payload)
+                or envelope["signatureAlgorithm"] != "Ed25519"
+                or type(envelope["createdAt"]) is not int
+                or type(envelope["expiresAt"]) is not int
+                or key.revoked_at is not None
+                or not (key.not_before <= envelope["createdAt"] < key.not_after)
+                or envelope["expiresAt"] > key.not_after
+            ):
+                raise GovernanceDeniedError("bundle verification is invalid", 409)
+            self._key_public(key.key_id).verify(_unb64(signature), canonical(record))
+        except (
+            KeyError,
+            TypeError,
+            ValueError,
+            RuntimeError,
+            InvalidSignature,
+            GovernanceDeniedError,
+        ) as exc:
+            raise GovernanceDeniedError("bundle verification is invalid", 409) from exc
+        return record, envelope, key
 
     def _load(
         self, principal: Principal, artifact_id: str, *, action: str
@@ -720,12 +789,16 @@ class ProofBundleStore:
             self._deny(principal, action, "bundle was not found", 404)
         except (OSError, json.JSONDecodeError):
             self._deny(principal, action, "bundle bytes are invalid", 409)
-        envelope = saved.get("record", {}).get("envelope", {})
-        if not isinstance(envelope, dict) or envelope.get("expiresAt", 0) <= self._now():
+        try:
+            _, envelope, _ = self._validate_saved(principal, artifact_id, saved)
+        except GovernanceDeniedError as exc:
+            self._deny(principal, action, "bundle verification is invalid", exc.status_code)
+        if envelope["expiresAt"] <= self._now():
             self._expire(principal, target, artifact_id, saved)
             self._deny(principal, action, "bundle has expired", 410)
         return target, saved
 
+    @_locked
     def read(self, principal: Principal, *, artifact_id: str) -> dict[str, Any]:
         _, saved = self._load(principal, artifact_id, action="bundle.read")
         self._append_audit(
@@ -736,21 +809,10 @@ class ProofBundleStore:
         )
         return saved
 
+    @_locked
     def verify(self, principal: Principal, *, artifact_id: str) -> dict[str, Any]:
         _, saved = self._load(principal, artifact_id, action="bundle.verify")
-        record, signature = saved.get("record"), saved.get("signature")
-        try:
-            envelope = record["envelope"]
-            key = self._keys[envelope["keyId"]]
-            if (
-                key.revoked_at is not None
-                or not (key.not_before <= envelope["createdAt"] < key.not_after)
-                or envelope["expiresAt"] > key.not_after
-            ):
-                raise GovernanceDeniedError("bundle key lifecycle rejects verification", 409)
-            self._key_public(key.key_id).verify(_unb64(signature), canonical(record))
-        except (KeyError, TypeError, InvalidSignature, GovernanceDeniedError):
-            self._deny(principal, "bundle.verify", "bundle signature is invalid", 409)
+        _, envelope, key = self._validate_saved(principal, artifact_id, saved)
         self._append_audit(
             principal,
             "bundle.verify",
@@ -784,6 +846,7 @@ class ProofBundleStore:
     def _audit_public_key(self) -> Ed25519PublicKey:
         return Ed25519PublicKey.from_public_bytes(self._audit_public)
 
+    @_locked
     def read_audit(self, principal: Principal) -> list[dict[str, Any]]:
         self._require_role(principal, "bundle-writer", "audit.read")
         try:
@@ -793,10 +856,117 @@ class ProofBundleStore:
         self._append_audit(principal, "audit.read")
         return self._verify_audit_chain(principal.scope)
 
+    @_locked
     def read_trust_root(self, principal: Principal) -> dict[str, str]:
         self._require_role(principal, "bundle-writer", "trust-root.read")
         self._append_audit(principal, "trust-root.read")
         return self.trust_root()
+
+    @_locked
+    def public_metadata(self, principal: Principal) -> dict[str, Any]:
+        self._require_role(principal, "bundle-writer", "governance.public.read")
+        self._append_audit(principal, "governance.public.read")
+        active = self._keys.get(self._active_key) if self._active_key is not None else None
+        return {
+            "trustRoot": self.trust_root(),
+            "activeKey": asdict(active) if active is not None else None,
+            "keys": {key_id: asdict(key) for key_id, key in self._keys.items()},
+        }
+
+
+def verify_public_artifacts(saved: object, public: object, audit: object) -> None:
+    """Verify a retained bundle without service-private material."""
+    if not isinstance(public, dict) or set(public) != {"trustRoot", "activeKey", "keys"}:
+        raise GovernanceDeniedError("public governance metadata is invalid", 409)
+    trust, keys = public["trustRoot"], public["keys"]
+    active_key = public["activeKey"]
+    if active_key is not None and (
+        not isinstance(active_key, dict)
+        or set(active_key)
+        != {
+            "key_id",
+            "public_key",
+            "not_before",
+            "not_after",
+            "revoked_at",
+            "retired_at",
+        }
+        or keys.get(active_key["key_id"]) != active_key
+    ):
+        raise GovernanceDeniedError("public governance metadata is invalid", 409)
+    if not isinstance(trust, dict) or not isinstance(keys, dict):
+        raise GovernanceDeniedError("public governance metadata is invalid", 409)
+    try:
+        audit_public = _unb64(trust["publicKey"])
+        if (
+            trust["algorithm"] != "Ed25519"
+            or fingerprint(audit_public) != trust["fingerprint"]
+            or trust["keyId"] != f"audit-root-{trust['fingerprint'][:16]}"
+        ):
+            raise ValueError("invalid trust root")
+        if not isinstance(saved, dict) or set(saved) != {"record", "signature"}:
+            raise ValueError("invalid saved bundle")
+        record, signature = saved["record"], saved["signature"]
+        if not isinstance(record, dict) or set(record) != {"envelope", "payload"}:
+            raise ValueError("invalid bundle record")
+        envelope, payload = record["envelope"], record["payload"]
+        if not isinstance(envelope, dict) or set(envelope) != ENVELOPE_FIELDS:
+            raise ValueError("invalid envelope")
+        validate(payload, scenario=envelope["scenarioId"])
+        key_data = keys[envelope["keyId"]]
+        if not isinstance(key_data, dict) or set(key_data) != {
+            "key_id",
+            "public_key",
+            "not_before",
+            "not_after",
+            "revoked_at",
+            "retired_at",
+        }:
+            raise ValueError("invalid bundle key")
+        key = SigningKey(**key_data)
+        if (
+            key.key_id != envelope["keyId"]
+            or key.revoked_at is not None
+            or envelope["contentHash"] != digest(payload)
+            or not (key.not_before <= envelope["createdAt"] < key.not_after)
+            or envelope["expiresAt"] > key.not_after
+            or payload["governance"]["artifactId"] != envelope["artifactId"]
+            or payload["governance"]["contentHash"]
+            != content_hash(
+                {name: value for name, value in payload.items() if name != "governance"}
+            )
+            or payload["governance"]["keyId"] != envelope["keyId"]
+            or payload["governance"]["trustRootFingerprint"] != trust["fingerprint"]
+        ):
+            raise ValueError("bundle lifecycle is invalid")
+        Ed25519PublicKey.from_public_bytes(_unb64(key.public_key)).verify(
+            _unb64(signature), canonical(record)
+        )
+        if not isinstance(audit, list):
+            raise ValueError("invalid audit")
+        predecessor = "0" * 64
+        for item in audit:
+            if (
+                not isinstance(item, dict)
+                or set(item) != AUDIT_FIELDS
+                or item["previousHash"] != predecessor
+                or item["keyId"] != trust["keyId"]
+            ):
+                raise ValueError("audit continuity is invalid")
+            unsigned = {name: value for name, value in item.items() if name != "signature"}
+            Ed25519PublicKey.from_public_bytes(audit_public).verify(
+                _unb64(item["signature"]), canonical(unsigned)
+            )
+            predecessor = digest(item)
+        _assert_redacted({"saved": saved, "public": public, "audit": audit})
+    except (
+        KeyError,
+        TypeError,
+        ValueError,
+        InvalidSignature,
+        GovernanceDeniedError,
+    ) as exc:
+        raise GovernanceDeniedError("offline governance verification failed", 409) from exc
 
 
 def create_app(store: ProofBundleStore, authenticate: Callable[[Request], Principal]) -> FastAPI:
@@ -837,6 +1007,10 @@ def create_app(store: ProofBundleStore, authenticate: Callable[[Request], Princi
     @app.get("/v1/trust-root")
     def trust_root(actor: Principal = Depends(principal)) -> Any:
         return invoke(lambda: store.read_trust_root(actor))
+
+    @app.get("/v1/public")
+    def public_metadata(actor: Principal = Depends(principal)) -> Any:
+        return invoke(lambda: store.public_metadata(actor))
 
     @app.post("/v1/bundles")
     async def create_bundle(request: Request, actor: Principal = Depends(principal)) -> Any:

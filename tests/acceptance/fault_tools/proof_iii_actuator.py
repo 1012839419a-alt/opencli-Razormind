@@ -5,6 +5,7 @@ The actuator neither synthesizes callbacks nor writes a database.  Its response
 is deliberately not a certificate input: only the public Admin boundary may be
 normalized by the failure driver.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -19,6 +20,11 @@ from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+
+
+@app.get("/health")
+async def health() -> dict[str, str]:
+    return {"status": "ok"}
 
 
 class IngressRequest(BaseModel):
@@ -84,6 +90,7 @@ def _event(body: IngressRequest) -> dict[str, object]:
         "task_id": body.task_id,
         "trace_id": body.trace_id,
     }
+
 
 def _expected_key_set_sha256(event: dict[str, object]) -> str:
     return hashlib.sha256(

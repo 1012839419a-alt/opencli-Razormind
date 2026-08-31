@@ -3142,35 +3142,51 @@ def ingest_redis_store_loss(run: str) -> dict[str, Any]:
                     client, setup, source_id=source_id, site=site, command=command
                 )
                 command_id = submission["commandId"]
-                status = public_status(client, setup, command_id)
+                initial_status = public_status(client, setup, command_id)
+                if initial_status.get("commandId") != command_id:
+                    raise RuntimeError("initial public status did not bind the submitted command")
                 if gateway == "store-redis-committed-xadd":
                     deadline = time.monotonic() + 60
                     while not marker.exists() and time.monotonic() < deadline:
                         time.sleep(0.2)
                     if not marker.exists():
                         raise RuntimeError("store commit did not make notification loss eligible")
-                public_materialize(client, setup, command_id)
+                initial_materialization = public_materialize(client, setup, command_id)
+                if not isinstance(initial_materialization.get("reconciliationRevision"), int):
+                    raise RuntimeError("initial materialization did not expose a revision")
             finally:
                 _arm_gateway(client, gateway, False)
             recovered = public_recover(client, setup, command_id)
-            if not isinstance(recovered.get("reconciliationRevision"), int) or not recovered.get(
-                "materializationStatus"
+            if (
+                not isinstance(recovered.get("reconciliationRevision"), int)
+                or not recovered.get("materializationStatus")
+                or recovered["reconciliationRevision"]
+                < initial_materialization["reconciliationRevision"]
             ):
-                raise RuntimeError("public recovery did not expose outcome and revision")
+                raise RuntimeError("public recovery did not reconcile the initial public state")
             observations[gateway] = {
                 "submission": submission,
-                "status": status,
+                "initialStatus": initial_status,
+                "initialMaterialization": initial_materialization,
                 "materialization": recovered,
                 "commandId": command_id,
                 "attemptId": submission["attemptId"],
             }
     final = observations["store-redis-committed-xadd"]
-    hashes = {
-        f"{name}_status": _public_hash(value["status"]) for name, value in observations.items()
-    } | {
-        f"{name}_materialization": _public_hash(value["materialization"])
-        for name, value in observations.items()
-    }
+    hashes = (
+        {
+            f"{name}_initial_status": _public_hash(value["initialStatus"])
+            for name, value in observations.items()
+        }
+        | {
+            f"{name}_initial_materialization": _public_hash(value["initialMaterialization"])
+            for name, value in observations.items()
+        }
+        | {
+            f"{name}_materialization": _public_hash(value["materialization"])
+            for name, value in observations.items()
+        }
+    )
     final_status = final["materialization"]
     status = final_status.get("materializationStatus")
     normalized = (

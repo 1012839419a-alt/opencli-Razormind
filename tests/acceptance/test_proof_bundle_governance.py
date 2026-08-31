@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import contextlib
 import hashlib
+from concurrent.futures import ThreadPoolExecutor
 import importlib.util
 import json
 import os
@@ -90,11 +91,17 @@ def _authenticated_governance_client(tmp_path: Path, monkeypatch):
         serialization.NoEncryption(),
     )
 
-    def token(role: str, scope: dict[str, str], *, audience: str = "proof-governance") -> str:
+    def token(
+        role: str,
+        scope: dict[str, str],
+        *,
+        audience: str = "proof-governance",
+        subject: str | None = None,
+    ) -> str:
         now = int(time.time())
         return jwt.encode(
             {
-                "sub": f"proof-{role}",
+                "sub": subject or f"proof-{role}",
                 "iss": "http://proof-oidc",
                 "aud": audience,
                 "iat": now,
@@ -185,9 +192,18 @@ def _store(tmp_path: Path, clock: list[int]):
 
 
 def _envelope(store, writer, result, now: int, expires: int = 200) -> dict:
+    artifact_id = "artifact-1"
+    result["run"] = writer.scope["run"]
+    unsigned = {name: value for name, value in result.items() if name != "governance"}
+    result["governance"] = {
+        "artifactId": artifact_id,
+        "contentHash": module.content_hash(unsigned),
+        "keyId": "k1",
+        "trustRootFingerprint": store.trust_root_fingerprint,
+    }
     return {
         "governanceSchemaVersion": module.SCHEMA_VERSION,
-        "artifactId": "artifact-1",
+        "artifactId": artifact_id,
         "scenarioId": result["scenario"],
         "run": result["run"],
         "contentHash": module.digest(result),
@@ -232,6 +248,34 @@ def test_signed_immutable_bundle_and_audit_chain(tmp_path: Path):
             payload=changed,
             envelope=_envelope(store, writer, changed, 100),
         )
+
+
+def test_bootstrap_requires_a_currently_valid_active_key(tmp_path: Path):
+    clock = [100]
+    scope = {"workspace": "w", "project": "p", "workflow": "f", "run": "r"}
+    store = module.ProofBundleStore(tmp_path, now=lambda: clock[0])
+    admin = module.Principal("admin", "key-admin", scope)
+    with pytest.raises(module.GovernanceDeniedError):
+        store.bootstrap_active(admin, key_id="future", not_before=101, not_after=1000)
+    with pytest.raises(module.GovernanceDeniedError):
+        store.bootstrap_active(admin, key_id="expired", not_before=1, not_after=100)
+
+
+def test_public_artifacts_verify_offline_after_service_state_is_removed(tmp_path: Path):
+    clock = [100]
+    store, _admin, writer = _store(tmp_path, clock)
+    result = _result()
+    result["run"] = "r"
+    saved = store.create(
+        writer,
+        artifact_id="artifact-1",
+        payload=result,
+        envelope=_envelope(store, writer, result, 100),
+    )
+    public = store.public_metadata(writer)
+    audit = store.read_audit(writer)
+    module.verify_public_artifacts(saved, public, audit)
+    assert b"BEGIN PRIVATE KEY" not in json.dumps(public).encode()
 
 
 def test_writer_cannot_administer_keys_and_denial_is_audited(tmp_path: Path):
@@ -314,6 +358,28 @@ def test_key_namespace_survives_restart_without_private_artifact_bytes(tmp_path:
     assert restarted.read_audit(writer)[-1]["action"] == "audit.read"
 
 
+def test_concurrent_http_creates_preserve_a_continuous_audit_chain(tmp_path: Path, monkeypatch):
+    scope = {"workspace": "w", "project": "p", "workflow": "f", "run": "run-1"}
+    with _authenticated_governance_client(tmp_path, monkeypatch) as (client, token):
+        writer = {"Authorization": f"Bearer {token('bundle-writer', scope)}"}
+        admin = {"Authorization": f"Bearer {token('key-admin', scope)}"}
+        assert client.post("/v1/keys/bootstrap-active", headers=admin, json={}).status_code == 200
+
+        def create(index: int) -> int:
+            payload = _result()
+            payload["correlation"]["commandId"] = f"command-{index}"
+            return client.post("/v1/bundles", headers=writer, json={"payload": payload}).status_code
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            assert list(pool.map(create, range(16))) == [200] * 16
+        audit = client.get("/v1/audit", headers=writer)
+        assert audit.status_code == 200
+        previous = "0" * 64
+        for item in audit.json():
+            assert item["previousHash"] == previous
+            previous = module.digest(item)
+
+
 def test_audit_tampering_is_detected_before_audit_read_is_recorded(tmp_path: Path):
     clock = [100]
     store, _admin, writer = _store(tmp_path, clock)
@@ -368,6 +434,15 @@ def test_http_jwks_authentication_lifecycle_and_redacted_denials(tmp_path: Path,
     with _authenticated_governance_client(tmp_path, monkeypatch) as (client, token):
         writer = {"Authorization": f"Bearer {token('bundle-writer', scope)}"}
         admin = {"Authorization": f"Bearer {token('key-admin', scope)}"}
+        wrong_subject = client.get(
+            "/v1/trust-root",
+            headers={
+                "Authorization": (
+                    f"Bearer {token('bundle-writer', scope, subject='proof-key-admin')}"
+                )
+            },
+        )
+        assert wrong_subject.status_code == 401
 
         role_denial = client.post("/v1/keys/bootstrap-active", headers=writer, json={})
         assert role_denial.status_code == 403
@@ -448,6 +523,7 @@ def test_http_jwks_authentication_lifecycle_and_redacted_denials(tmp_path: Path,
         tamper = client.post(f"/v1/bundles/{artifact_id}/verify", headers=writer, json={})
         assert tamper.status_code == 409
         assert tamper.json() == {"detail": "request denied"}
+        assert client.get(f"/v1/bundles/{artifact_id}", headers=writer).status_code == 409
 
         before_invalid = b"".join(path.read_bytes() for path in tmp_path.rglob("audit.jsonl"))
         invalid = client.get("/v1/audit", headers={"Authorization": "Bearer definitely-not-a-jwt"})

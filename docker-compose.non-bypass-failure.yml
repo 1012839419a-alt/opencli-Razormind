@@ -23,6 +23,12 @@ services:
     depends_on:
       proof-admin-control: {condition: service_healthy}
       proof-governance: {condition: service_healthy}
+      proof-iii-actuator: {condition: service_healthy}
+      proof-odp-http-gateway: {condition: service_healthy}
+      proof-odp-ingest-redis-gateway: {condition: service_healthy}
+      proof-odp-ingest-redis-mutator: {condition: service_healthy}
+      proof-odp-store-pg-gateway: {condition: service_healthy}
+      proof-odp-store-redis-gateway: {condition: service_healthy}
     volumes:
       - ${PROOF_ARTIFACT_DIR:-./.artifacts/non-bypass-failures}:/proof-artifacts
   proof-admin-postgres:
@@ -198,6 +204,11 @@ services:
     networks: [proof-fault, proof-iii-worker]
     depends_on:
       proof-iii: {condition: service_started}
+    healthcheck:
+      test: [CMD, curl, -fsS, http://localhost:8000/health]
+      interval: 5s
+      timeout: 3s
+      retries: 20
 
   proof-odp-query-pg-gate:
     image: "opencli-proof-root:${PROOF_CATALOG_DIGEST:-unbound}"
@@ -219,6 +230,17 @@ services:
       timeout: 3s
       retries: 20
     labels: *failure-labels
+  proof-governance-key-init:
+    image: "opencli-proof-root:${PROOF_CATALOG_DIGEST:-unbound}"
+    entrypoint: [/bin/sh, -ec]
+    command:
+      - chown appuser:appuser /proof-governance-keys && chmod 0700 /proof-governance-keys
+    user: "0:0"
+    volumes:
+      - proof-governance-keys:/proof-governance-keys
+    network_mode: none
+    labels: *failure-labels
+
 
   proof-governance:
     image: "opencli-proof-root:${PROOF_CATALOG_DIGEST:-unbound}"
@@ -238,6 +260,7 @@ services:
     networks: [proof-control]
     depends_on:
       proof-oidc: {condition: service_healthy}
+      proof-governance-key-init: {condition: service_completed_successfully}
     healthcheck:
       test: [CMD, curl, -fsS, http://localhost:8000/health]
       interval: 5s
@@ -254,6 +277,11 @@ services:
       HTTP_UPSTREAM_URL: http://proof-odp-ingest:8040
     networks: [proof-odp, proof-fault]
     labels: *failure-labels
+    healthcheck:
+      test: [CMD, curl, -fsS, http://localhost:8040/health]
+      interval: 5s
+      timeout: 3s
+      retries: 20
   proof-odp-ingest-redis-gateway:
     image: "opencli-proof-root:${PROOF_CATALOG_DIGEST:-unbound}"
     build: {context: ., target: non-bypass-acceptance}
@@ -267,6 +295,11 @@ services:
       UPSTREAM_PORT: "6379"
     networks: [proof-odp, proof-fault]
     labels: *failure-labels
+    healthcheck:
+      test: [CMD, curl, -fsS, http://localhost:8081/health]
+      interval: 5s
+      timeout: 3s
+      retries: 20
   proof-odp-ingest-redis-mutator:
     image: "opencli-proof-root:${PROOF_CATALOG_DIGEST:-unbound}"
     build: {context: ., target: non-bypass-acceptance}
@@ -280,6 +313,11 @@ services:
       UPSTREAM_PORT: "6379"
     networks: [proof-odp, proof-fault]
     labels: *failure-labels
+    healthcheck:
+      test: [CMD, curl, -fsS, http://localhost:8084/health]
+      interval: 5s
+      timeout: 3s
+      retries: 20
   proof-odp-store-pg-gateway:
     image: "opencli-proof-root:${PROOF_CATALOG_DIGEST:-unbound}"
     build: {context: ., target: non-bypass-acceptance}
@@ -295,6 +333,11 @@ services:
       - ${PROOF_ARTIFACT_DIR:-./.artifacts/non-bypass-failures}/gateway-coordination:/coordination
     networks: [proof-odp, proof-fault]
     labels: *failure-labels
+    healthcheck:
+      test: [CMD, curl, -fsS, http://localhost:8082/health]
+      interval: 5s
+      timeout: 3s
+      retries: 20
   proof-odp-store-redis-gateway:
     image: "opencli-proof-root:${PROOF_CATALOG_DIGEST:-unbound}"
     build: {context: ., target: non-bypass-acceptance}
@@ -310,6 +353,11 @@ services:
       - ${PROOF_ARTIFACT_DIR:-./.artifacts/non-bypass-failures}/gateway-coordination:/coordination
     networks: [proof-odp, proof-fault]
     labels: *failure-labels
+    healthcheck:
+      test: [CMD, curl, -fsS, http://localhost:8083/health]
+      interval: 5s
+      timeout: 3s
+      retries: 20
   proof-odp-store:
     image: "opencli-proof-store:${PROOF_CATALOG_DIGEST:-unbound}"
     environment:

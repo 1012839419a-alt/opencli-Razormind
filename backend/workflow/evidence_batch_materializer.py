@@ -26,8 +26,8 @@ from backend.models.iii_collection import (
     IIICollectionIngressReceiptV1,
 )
 from backend.odp.query_client import (
-    OdpRecordKey,
     OdpQueryError,
+    OdpRecordKey,
     build_attempt_page_request,
     build_dlq_request,
     build_exact_request,
@@ -58,14 +58,19 @@ _MAX_RECORD_REFERENCES = 1000
 
 
 def _canonical_hash(value: dict[str, Any]) -> str:
-    return sha256(json.dumps(value, sort_keys=True, separators=(",", ":"), default=str).encode()).hexdigest()
+    return sha256(
+        json.dumps(value, sort_keys=True, separators=(",", ":"), default=str).encode()
+    ).hexdigest()
 
 
 def _batch_id(command: IIICollectionCommandV1, attempt: IIICollectionAttemptV1) -> str:
     return str(
         uuid5(
             NAMESPACE_URL,
-            f"opencli-admin/workflow/{command.workflow_id}/run/{command.run_id}/batch/{attempt.task_id}",
+            (
+                f"opencli-admin/workflow/{command.workflow_id}/run/{command.run_id}/"
+                f"batch/{attempt.task_id}"
+            ),
         )
     )
 
@@ -83,7 +88,11 @@ def _legacy_status(materialization_status: str) -> str:
 
 
 def _recovery_action(status: str) -> str:
-    return "none" if status in {"completed", "completed_empty", "partial", "failed_definitive"} else "reconcile_evidence_batch"
+    return (
+        "none"
+        if status in {"completed", "completed_empty", "partial", "failed_definitive"}
+        else "reconcile_evidence_batch"
+    )
 
 
 def _reference(value: dict[str, Any]) -> dict[str, Any]:
@@ -93,7 +102,6 @@ def _reference(value: dict[str, Any]) -> dict[str, Any]:
         "odp_record_id": value["odp_record_id"],
         "committed_at": value["committed_at"],
     }
-
 
 
 def _research_graph_manifest_ref(
@@ -154,6 +162,7 @@ def _research_graph_manifest_ref(
         excluded_item_keys=excluded_item_keys,
     )
 
+
 async def _read(
     db: AsyncSession,
     manifest: EvidenceBatchMaterializationManifestV1,
@@ -180,7 +189,9 @@ async def _read(
         item_count=manifest.item_count,
         record_count=int(manifest.counts.get("record_present", 0)),
         counts={name: int(manifest.counts.get(name, 0)) for name in _COUNT_NAMES},
-        record_references=[EvidenceBatchRecordReferenceV1(**value) for value in manifest.record_references],
+        record_references=[
+            EvidenceBatchRecordReferenceV1(**value) for value in manifest.record_references
+        ],
         blocker=None if status in _TERMINAL else manifest.finalization_reason,
         recovery_action=_recovery_action(status),
         query_fingerprint=manifest.query_fingerprint,
@@ -191,7 +202,15 @@ async def _read(
     )
 
 
-_COUNT_NAMES = ("expected", "record_present", "inserted", "duplicate_existing", "rejected", "dlq", "unknown")
+_COUNT_NAMES = (
+    "expected",
+    "record_present",
+    "inserted",
+    "duplicate_existing",
+    "rejected",
+    "dlq",
+    "unknown",
+)
 _TERMINAL = {"completed", "completed_empty", "partial", "failed_definitive"}
 
 
@@ -216,6 +235,7 @@ async def get_materialization(
         )
     ).scalar_one_or_none()
     return await _read(db, manifest) if manifest is not None else None
+
 
 def _scope_filters(scope: CollectionScope) -> tuple[Any, ...]:
     manifest = EvidenceBatchMaterializationManifestV1
@@ -466,13 +486,18 @@ def _same_terminal_inputs(
     manifest: EvidenceBatchMaterializationManifestV1,
     inputs: tuple[str, str, str, int, tuple[str, ...]] | None,
 ) -> bool:
-    return inputs is not None and manifest.materialization_status in _TERMINAL and (
-        manifest.report_id,
-        manifest.report_hash,
-        manifest.expected_key_set_hash,
-        manifest.item_count,
-        tuple(manifest.receipt_hashes),
-    ) == inputs
+    return (
+        inputs is not None
+        and manifest.materialization_status in _TERMINAL
+        and (
+            manifest.report_id,
+            manifest.report_hash,
+            manifest.expected_key_set_hash,
+            manifest.item_count,
+            tuple(manifest.receipt_hashes),
+        )
+        == inputs
+    )
 
 
 async def _reconcile(
@@ -516,6 +541,8 @@ async def _reconcile(
         return _outcome(common, "indeterminate", "signed_outcome_receipt_missing_or_conflicting")
 
     rejected_keys = {key for key, outcome in outcomes.items() if outcome == "rejected"}
+    duplicate_keys = {key for key, outcome in outcomes.items() if outcome == "duplicate"}
+    counts["duplicate_existing"] = len(duplicate_keys)
     exact_keys = [key for key in keys if key not in rejected_keys]
     present_keys: set[OdpRecordKey] = set()
     dlq_keys: set[OdpRecordKey] = set()
@@ -618,8 +645,6 @@ def _outcome(common: dict[str, Any], status: str, reason: str) -> dict[str, Any]
     if status in _TERMINAL:
         common["finalized_at"] = datetime.now(UTC)
     return common
-
-
 
 
 async def _latest_manifest(

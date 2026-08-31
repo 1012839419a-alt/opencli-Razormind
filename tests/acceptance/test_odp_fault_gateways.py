@@ -91,6 +91,18 @@ def test_resp_buffer_forwards_fragmented_commands_and_identifies_only_committed_
     assert not gateways._is_committed_xadd(b"*2\r\n$4\r\nXACK\r\n$3\r\nkey\r\n")
 
 
+def test_committed_xadd_requires_the_exact_resp_stream_argument():
+    assert gateways._is_committed_xadd(
+        gateways._encode_resp([b"XADD", b"odp.record.committed", b"*", b"event", b"one"])
+    )
+    assert not gateways._is_committed_xadd(
+        gateways._encode_resp([b"XADD", b"odp.record.committed-copy", b"*"])
+    )
+    assert not gateways._is_committed_xadd(
+        gateways._encode_resp([b"XADD", b"other", b"*", b"stream", b"odp.record.committed"])
+    )
+
+
 def test_ingest_resp_mutator_only_poisoned_real_ingest_event_payload():
     event = json.dumps(
         {
@@ -103,9 +115,7 @@ def test_ingest_resp_mutator_only_poisoned_real_ingest_event_payload():
         },
         separators=(",", ":"),
     ).encode()
-    command = gateways._encode_resp(
-        [b"XADD", b"odp.ingest.raw", b"*", b"event", event]
-    )
+    command = gateways._encode_resp([b"XADD", b"odp.ingest.raw", b"*", b"event", event])
 
     parts = gateways._resp_parts(gateways._poison_ingest_xadd(command))
     assert parts is not None
@@ -113,7 +123,6 @@ def test_ingest_resp_mutator_only_poisoned_real_ingest_event_payload():
     assert gateways._poison_ingest_xadd(
         gateways._encode_resp([b"XADD", b"other.stream", b"*", b"event", event])
     ) == gateways._encode_resp([b"XADD", b"other.stream", b"*", b"event", event])
-
 
 
 def _startup() -> bytes:
@@ -148,6 +157,7 @@ def test_store_redis_filter_requires_successful_commit_from_same_fragmented_rela
         first.feed_backend(ready[3:])
         assert marker.exists() and gateways._redis_filter_enabled(redis)
         assert not gateways._is_committed_xadd(b"*2\r\n$4\r\nXACK\r\n$3\r\nkey\r\n")
+
 
 def test_cut_modes_arm_only_after_explicit_control(monkeypatch):
     monkeypatch.setenv("API_AUTH_TOKEN", "control-token")

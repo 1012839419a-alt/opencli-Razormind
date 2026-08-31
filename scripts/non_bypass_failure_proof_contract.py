@@ -99,12 +99,14 @@ def validate(result: dict[str, Any], *, scenario: str | None = None) -> None:
         raise FailureProofRejectedError("schema version is not accepted")
     if scenario is not None and result["scenario"] != scenario:
         raise FailureProofRejectedError("scenario correlation changed")
-    _identifier(result["scenario"], "scenario")
+    scenario_name = _identifier(result["scenario"], "scenario")
+    if scenario_name not in ACTUATOR_BY_SCENARIO:
+        raise FailureProofRejectedError("scenario is not accepted")
     _identifier(result["run"], "run")
     _identifier(result["fault"], "fault")
     actuator = _object(result["actuator"], "actuator", {"name", "invocationHash"})
-    expected_actuator = ACTUATOR_BY_SCENARIO.get(result["scenario"])
-    if actuator["name"] != expected_actuator:
+    actuator_name = _identifier(actuator["name"], "actuator.name")
+    if actuator_name != ACTUATOR_BY_SCENARIO[scenario_name]:
         raise FailureProofRejectedError("scenario actuator is not authoritative")
     _hash(actuator["invocationHash"], "actuator.invocationHash")
     correlation = _object(
@@ -171,7 +173,7 @@ def validate(result: dict[str, Any], *, scenario: str | None = None) -> None:
     if materialization["manifestHash"] is not None:
         _hash(materialization["manifestHash"], "materialization.manifestHash")
     revision = materialization["reconciliationRevision"]
-    if revision is not None and (not isinstance(revision, int) or revision < 1):
+    if revision is not None and (type(revision) is not int or revision < 1):
         raise FailureProofRejectedError("materialization reconciliation revision is invalid")
     snapshot = materialization["pageSnapshotAsOf"]
     if snapshot is not None and not isinstance(snapshot, str):
@@ -184,7 +186,7 @@ def validate(result: dict[str, Any], *, scenario: str | None = None) -> None:
     if graph["pin"] is not None:
         _hash(graph["pin"], "graph.pin")
     sequence = graph["sequence"]
-    if sequence is not None and (not isinstance(sequence, int) or sequence < 0):
+    if sequence is not None and (type(sequence) is not int or sequence < 0):
         raise FailureProofRejectedError("graph sequence is invalid")
     if graph["readBlocker"] not in {"none", "stale_manifest", "retract", "forbidden"}:
         raise FailureProofRejectedError("graph read blocker is invalid")
@@ -206,7 +208,7 @@ def validate(result: dict[str, Any], *, scenario: str | None = None) -> None:
         raise FailureProofRejectedError("delivery state is invalid")
     if delivery["outcome"] not in {"none", "accepted", "rejected", "unknown"}:
         raise FailureProofRejectedError("delivery outcome is invalid")
-    if not isinstance(delivery["attemptCount"], int) or delivery["attemptCount"] < 0:
+    if type(delivery["attemptCount"]) is not int or delivery["attemptCount"] < 0:
         raise FailureProofRejectedError("delivery attempt count is invalid")
     if delivery["receiptHash"] is not None:
         _hash(delivery["receiptHash"], "delivery.receiptHash")
@@ -228,7 +230,7 @@ def validate(result: dict[str, Any], *, scenario: str | None = None) -> None:
         raise FailureProofRejectedError("redaction profile is missing")
     timing = _object(result["timing"], "timing", {"startedAt", "completedAt", "deadlineSeconds"})
     if (
-        not all(isinstance(timing[key], int) for key in timing)
+        not all(type(timing[key]) is int for key in timing)
         or timing["completedAt"] < timing["startedAt"]
         or not 0 < timing["deadlineSeconds"] <= 360
         or timing["completedAt"] - timing["startedAt"] > timing["deadlineSeconds"]

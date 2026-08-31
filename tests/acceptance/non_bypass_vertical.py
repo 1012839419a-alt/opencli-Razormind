@@ -3,17 +3,13 @@
 from __future__ import annotations
 
 import argparse
-import asyncio
 import json
 import os
 import time
-import uuid
 from typing import Any
 
 import httpx
 
-from backend.database import AsyncSessionLocal
-from backend.models.studio import StudioWorkspace
 
 BASE = "http://proof-admin:8000/api/v1"
 
@@ -27,11 +23,19 @@ def data(response: httpx.Response) -> dict[str, Any]:
     return value["data"]
 
 
-def post(client: httpx.Client, path: str, body: dict[str, Any], headers: dict[str, str] | None = None) -> dict[str, Any]:
+def post(
+    client: httpx.Client,
+    path: str,
+    body: dict[str, Any],
+    headers: dict[str, str] | None = None,
+) -> dict[str, Any]:
     return data(client.post(f"{BASE}{path}", json=body, headers=headers))
 
-
-def get(client: httpx.Client, path: str, headers: dict[str, str] | None = None) -> dict[str, Any]:
+def get(
+    client: httpx.Client,
+    path: str,
+    headers: dict[str, str] | None = None,
+) -> dict[str, Any]:
     return data(client.get(f"{BASE}{path}", headers=headers))
 def wait_for_materialization(
     client: httpx.Client,
@@ -44,11 +48,17 @@ def wait_for_materialization(
     last: dict[str, Any] | None = None
     last_status: dict[str, Any] | None = None
     while time.monotonic() < deadline:
-        response = client.post(f"{BASE}{route}/{command_id}/materialize", headers=headers)
+        response = client.post(
+            f"{BASE}{route}/{command_id}/materialize",
+            headers=headers,
+        )
         if response.status_code == 200:
             last = data(response)
             last_status = get(client, f"{route}/{command_id}", headers)
-            if last.get("materializationStatus") == "completed" and last.get("researchGraphManifestRef"):
+            if (
+                last.get("materializationStatus") == "completed"
+                and last.get("researchGraphManifestRef")
+            ):
                 return last
         time.sleep(1)
     raise RuntimeError(
@@ -65,11 +75,6 @@ def wait_for_materialization(
     )
 
 
-async def seed_studio_workspace(workspace_id: str, slug: str) -> None:
-    """The Studio workspace is bootstrap identity state, not a workflow fact."""
-    async with AsyncSessionLocal() as session:
-        session.add(StudioWorkspace(id=workspace_id, name="Non-bypass proof", slug=slug))
-        await session.commit()
 
 
 def graph() -> dict[str, Any]:
@@ -85,17 +90,56 @@ def graph() -> dict[str, Any]:
                 "capability": "fetch",
                 "adapter": "proof-opencli",
                 "params": {"limit": 1},
-                "sourceAnchor": {"kind": "url", "label": "Bilibili", "href": "https://www.bilibili.com/"},
+                "sourceAnchor": {
+                    "kind": "url",
+                    "label": "Bilibili",
+                    "href": "https://www.bilibili.com/",
+                },
             },
-            {"id": "normalize-proof", "kind": "agent", "capability": "normalize", "params": {"language": "en"}},
-            {"id": "proof-inbox", "kind": "inbox", "capability": "store", "params": {"queue": "proof"}},
+            {
+                "id": "normalize-proof",
+                "kind": "agent",
+                "capability": "normalize",
+                "params": {"language": "en"},
+            },
+            {
+                "id": "proof-inbox",
+                "kind": "inbox",
+                "capability": "store",
+                "params": {"queue": "proof"},
+            },
         ],
         "edges": [
-            {"id": "proof-source-normalize", "source": "opencli-source", "target": "normalize-proof", "sourcePort": "records", "targetPort": "records"},
-            {"id": "proof-normalize-inbox", "source": "normalize-proof", "target": "proof-inbox", "sourcePort": "records", "targetPort": "records"},
+            {
+                "id": "proof-source-normalize",
+                "source": "opencli-source",
+                "target": "normalize-proof",
+                "sourcePort": "records",
+                "targetPort": "records",
+            },
+            {
+                "id": "proof-normalize-inbox",
+                "source": "normalize-proof",
+                "target": "proof-inbox",
+                "sourcePort": "records",
+                "targetPort": "records",
+            },
         ],
-        "adapters": [{"id": "proof-opencli", "type": "source", "provider": "bilibili", "mode": "live", "config": {"command": "search"}}],
-        "agentPermissions": {"canFetchNetwork": True, "canSendNotifications": False, "canWriteInbox": True, "allowedDomains": ["bilibili.com"]},
+        "adapters": [
+            {
+                "id": "proof-opencli",
+                "type": "source",
+                "provider": "bilibili",
+                "mode": "live",
+                "config": {"command": "search"},
+            }
+        ],
+        "agentPermissions": {
+            "canFetchNetwork": True,
+            "canSendNotifications": False,
+            "canWriteInbox": True,
+            "allowedDomains": ["bilibili.com"],
+        },
     }
 
 
@@ -123,20 +167,37 @@ def main() -> int:
                 "display_name": subject,
                 "role": role,
             }, bootstrap)
-        asyncio.run(seed_studio_workspace(workspace_id, args.run))
         bootstrap_result = post(client, f"/workspaces/{workspace_id}/projects/bootstrap", {
             "project": {"name": "Non-bypass proof", "slug": args.run},
             "workflow": {"name": "Non-bypass proof", "graph": graph()},
         }, bootstrap)
         project = bootstrap_result["project"]
         workflow = bootstrap_result["primary_workflow"]
-        route = f"/workspaces/{workspace_id}/projects/{project['id']}/workflows/{workflow['id']}/runs"
-        validation = post(client, route.rsplit("/runs", 1)[0] + "/draft/validation-runs", {}, proposer)
+        route = (
+            f"/workspaces/{workspace_id}/projects/{project['id']}/"
+            f"workflows/{workflow['id']}/runs"
+        )
+        validation = post(
+            client,
+            route.rsplit("/runs", 1)[0] + "/draft/validation-runs",
+            {},
+            proposer,
+        )
         if not validation.get("valid"):
-            raise RuntimeError(f"workflow validation failed: {json.dumps(validation, sort_keys=True)}")
-        post(client, route.rsplit("/runs", 1)[0] + "/versions", {
-            "reason": "isolated proof", "expectedRevision": 1, "validationRunId": validation["runId"],
-        }, proposer)
+            raise RuntimeError(
+                "workflow validation failed: "
+                f"{json.dumps(validation, sort_keys=True)}"
+            )
+        post(
+            client,
+            route.rsplit("/runs", 1)[0] + "/versions",
+            {
+                "reason": "isolated proof",
+                "expectedRevision": 1,
+                "validationRunId": validation["runId"],
+            },
+            proposer,
+        )
         run = post(client, route, {
             "inputs": {}, "responseMode": "async", "user": "proof-proposer",
             "requestId": args.run, "idempotencyKey": args.run,
@@ -146,31 +207,61 @@ def main() -> int:
         submission = post(client, collection_route, {
             "version": "v1", "idempotencyKey": args.run, "nodeId": "opencli-source",
             "collection": {
-                "site": "bilibili", "command": "search", "args": {"keyword": "vertical-proof"},
-                "sourceBindingId": "proof-binding", "sourceBindingRevisionId": "proof-binding-v1", "sourceBindingRevisionNumber": 1,
+                "site": "bilibili",
+                "command": "search",
+                "args": {"keyword": "vertical-proof"},
+                "sourceBindingId": "proof-binding",
+                "sourceBindingRevisionId": "proof-binding-v1",
+                "sourceBindingRevisionNumber": 1,
             },
         }, proposer)
         command_id, attempt_id = submission["commandId"], submission["attemptId"]
-        materialization = wait_for_materialization(client, collection_route, command_id, attempt_id, proposer)
+        materialization = wait_for_materialization(
+            client,
+            collection_route,
+            command_id,
+            attempt_id,
+            proposer,
+        )
         manifest_ref = materialization["researchGraphManifestRef"]
+        claim_id = f"vertical-proof-{args.run}"
+        claim_hash = manifest_ref["manifestHash"]
         if manifest_ref.get("materializationStatus") != "completed":
             raise RuntimeError("only completed materialization can enter ResearchGraph")
         # The graph receives this exact scoped manifest reference. The proof
         # bundle below instead emits a deliberately narrower redacted DTO.
         graph_route = f"{route}/{run_id}/research-graph-v2"
         state = get(client, graph_route, proposer)
-        claim_id = f"claim-{args.run}"
-        claim_hash = __import__("hashlib").sha256(args.run.encode()).hexdigest()
-        proposed = post(client, graph_route + "/mutations", {
-            "idempotencyKey": f"{args.run}-propose", "action": "propose", "expectedSequence": state["sequence"],
-            "expectedRevision": state["researchRevisionId"], "nodeId": "opencli-source",
-            "claimId": claim_id, "claimContentHash": claim_hash, "manifestRefs": [manifest_ref],
-        }, proposer)
-        verified = post(client, graph_route + "/mutations", {
-            "idempotencyKey": f"{args.run}-verify", "action": "verify", "expectedSequence": proposed["sequence"],
-            "expectedRevision": proposed["researchRevisionId"], "nodeId": "opencli-source",
-            "claimId": claim_id, "claimContentHash": claim_hash, "manifestRefs": [manifest_ref],
-        }, reviewer)
+        proposed = post(
+            client,
+            graph_route + "/mutations",
+            {
+                "idempotencyKey": f"{args.run}-propose",
+                "action": "propose",
+                "expectedSequence": state["sequence"],
+                "expectedRevision": state["researchRevisionId"],
+                "nodeId": "opencli-source",
+                "claimId": claim_id,
+                "claimContentHash": claim_hash,
+                "manifestRefs": [manifest_ref],
+            },
+            proposer,
+        )
+        verified = post(
+            client,
+            graph_route + "/mutations",
+            {
+                "idempotencyKey": f"{args.run}-verify",
+                "action": "verify",
+                "expectedSequence": proposed["sequence"],
+                "expectedRevision": proposed["researchRevisionId"],
+                "nodeId": "opencli-source",
+                "claimId": claim_id,
+                "claimContentHash": claim_hash,
+                "manifestRefs": [manifest_ref],
+            },
+            reviewer,
+        )
         pinned = post(client, graph_route + "/mutations", {
             "idempotencyKey": f"{args.run}-pin",
             "action": "pin",
@@ -239,7 +330,10 @@ def main() -> int:
         print(json.dumps({
             "schemaVersion": "NonBypassHappyVerticalProofV1",
             "run": args.run,
-            "image": "iiidev/iii:0.19.4@sha256:14ed48b463d8a2e0d3583512acf106b3514f406c5e9965a5854710ff936e1e86",
+            "image": (
+                "iiidev/iii:0.19.4@sha256:"
+                "14ed48b463d8a2e0d3583512acf106b3514f406c5e9965a5854710ff936e1e86"
+            ),
             "topology": {
                 "fixtureDigest": os.environ["PROOF_FIXTURE_DIGEST"],
                 "iiiCliPath": "/opt/iii/iii",
@@ -290,7 +384,10 @@ def main() -> int:
                 "decisionHash": decision["decisionHash"],
                 "payloadHash": decision["payloadHash"],
                 "manifestSetHash": decision["manifestSetHash"],
-                "manifests": [{"manifestHash": item["manifestHash"]} for item in decision["manifests"]],
+                "manifests": [
+                    {"manifestHash": item["manifestHash"]}
+                    for item in decision["manifests"]
+                ],
             },
             "execution": {
                 "executionId": execution["executionId"],

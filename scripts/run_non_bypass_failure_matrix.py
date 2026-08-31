@@ -23,6 +23,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from scripts.non_bypass_failure_proof_contract import canonical
+from scripts.proof_bundle_governance import (
+    GovernanceDeniedError,
+    verify_public_artifacts,
+)
 
 from scripts.run_non_bypass_happy_vertical import (
     RunLedger as HappyRunLedger,
@@ -304,7 +308,8 @@ def _validate_receiver_address_values(values: Mapping[str, str]) -> None:
         or subnet.prefixlen != 24
         or not receiver_ip.is_global
         or receiver_ip not in subnet
-        or receiver_ip in {subnet.network_address, subnet.broadcast_address}
+        or receiver_ip
+        in {subnet.network_address, subnet.network_address + 1, subnet.broadcast_address}
         or gateway not in subnet
         or gateway in {subnet.network_address, subnet.broadcast_address}
         or gateway == receiver_ip
@@ -747,7 +752,9 @@ def _govern(
     base: Path,
     overlay: Path,
     result: dict[str, Any],
-) -> tuple[dict[str, Any], bytes]:
+    *,
+    deadline: float,
+) -> tuple[dict[str, Any], bytes, dict[str, Any], list[dict[str, Any]]]:
     """Delegate all key, envelope, signature, and audit authority in-network."""
     client = (
         "import json,os,sys,httpx\n"
@@ -759,22 +766,22 @@ def _govern(
         "  def call(method,path,headers,body=None):\n"
         "    response=http.request(method,base+path,headers=headers,json=body)\n"
         "    response.raise_for_status()\n"
-        "    return response\n"
+        "    return response.json()\n"
         "  call('POST','/keys/bootstrap-active',admin,{})\n"
-        "  trust=call('GET','/trust-root',writer).json()\n"
-        "  created_response=call('POST','/bundles',writer,{'payload':payload})\n"
-        "  created=created_response.json()\n"
+        "  public=call('GET','/public',writer)\n"
+        "  created=call('POST','/bundles',writer,{'payload':payload})\n"
         "  artifact=created['record']['envelope']['artifactId']\n"
-        "  if call('GET','/bundles/'+artifact,writer).json() != created:\n"
+        "  if call('GET','/bundles/'+artifact,writer) != created:\n"
         "    raise RuntimeError('governance read did not preserve the record')\n"
-        "  if call('POST','/bundles/'+artifact+'/verify',writer,{}).json().get('verified') is not True:\n"
+        "  if call('POST','/bundles/'+artifact+'/verify',writer,{}).get('verified') is not True:\n"
         "    raise RuntimeError('governance verification failed')\n"
-        "  if call('GET','/audit',writer).json()[-1].get('action') != 'audit.read':\n"
+        "  audit=call('GET','/audit',writer)\n"
+        "  if audit[-1].get('action') != 'audit.read':\n"
         "    raise RuntimeError('governance audit read failed')\n"
-        "  if trust.get('fingerprint') != created['record']['payload']['governance']['trustRootFingerprint']:\n"
-        "    raise RuntimeError('governance trust root mismatch')\n"
-        "print(created_response.text)\n"
+        "print(json.dumps({'saved':created,'public':public,'audit':audit},sort_keys=True,separators=(',',':')))\n"
     )
+    if deadline <= time.monotonic():
+        raise FailureRunRejectedError("scenario deadline expired before governance")
     stdout = _compose(
         ledger,
         env,
@@ -787,18 +794,21 @@ def _govern(
         "-c",
         client,
         input=canonical(result).decode("utf-8"),
-        timeout=60,
+        timeout=max(1, min(60, int(deadline - time.monotonic()))),
     )
     try:
-        saved = json.loads(stdout)
+        archived = json.loads(stdout)
+        saved, public, audit = archived["saved"], archived["public"], archived["audit"]
         envelope = saved["record"]["envelope"]
         if (
             saved["record"]["payload"]["scenario"] != ledger.scenario
             or envelope["run"] != result["run"]
             or not isinstance(saved["signature"], str)
+            or not isinstance(public, dict)
+            or not isinstance(audit, list)
         ):
             raise ValueError("governance service response is incomplete")
-        return saved, stdout.encode("utf-8")
+        return saved, canonical(saved), public, audit
     except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
         raise FailureRunRejectedError("in-network governance response is invalid") from exc
 
@@ -888,19 +898,22 @@ def run_matrix(
     overlay_file: Path,
     scenario: str | None = None,
 ) -> list[Path]:
+    matrix_started = time.monotonic()
     catalog = _build_catalog({**os.environ}, compose_file, overlay_file)
     results: list[Path] = []
     selected = (scenario,) if scenario else SCENARIO_ORDER
     for scenario in selected:
+        if time.monotonic() - matrix_started >= 7200:
+            raise FailureRunRejectedError("full matrix exceeded the 7200 second bound")
         run_id = f"nbf-{scenario}-{uuid.uuid4().hex[:12]}"
         ledger = ScenarioLedger(
             scenario,
             run_id,
             Path(tempfile.mkdtemp(prefix=f"{run_id}-")),
-            artifact_dir / scenario,
+            artifact_dir / scenario / run_id,
         )
         os.chmod(ledger.scratch, 0o700)
-        ledger.artifact.mkdir(mode=0o700, parents=True, exist_ok=True)
+        ledger.artifact.mkdir(mode=0o700, parents=True, exist_ok=False)
         base_ledger = HappyRunLedger(run_id, ledger.project, ledger.scratch, ledger.artifact)
         values = _make_secrets(base_ledger)
         values.update(_receiver_address_values(ledger.project))
@@ -926,9 +939,15 @@ def run_matrix(
             "COMPOSE_PROFILES": _scenario_compose_profiles(scenario),
             "PROOF_CATALOG_DIGEST": catalog["digest"],
         }
-        started = time.monotonic()
+        started, deadline = time.monotonic(), time.monotonic() + 360
+        saved: dict[str, Any] | None = None
+        public: dict[str, Any] | None = None
+        audit: list[dict[str, Any]] | None = None
+        path = ledger.artifact / "proof.json"
         try:
             _admit(ledger, env, compose_file, overlay_file, catalog)
+            if time.monotonic() >= deadline:
+                raise FailureRunRejectedError("scenario deadline expired during admission")
             _compose(
                 ledger,
                 env,
@@ -938,7 +957,7 @@ def run_matrix(
                 "--detach",
                 "--wait",
                 "--no-build",
-                timeout=120,
+                timeout=max(1, min(120, int(deadline - time.monotonic()))),
             )
             if scenario == "crash-after-ingest":
                 gather = _facts_from_crash_after_ingest
@@ -947,14 +966,29 @@ def run_matrix(
             else:
                 gather = _facts_from_driver
             result = gather(ledger, env, compose_file, overlay_file)
-            if time.monotonic() - started > 360:
-                raise FailureRunRejectedError("scenario exceeded the 360 second bound")
-            saved, saved_bytes = _govern(ledger, env, compose_file, overlay_file, result)
-            path = ledger.artifact / "proof.json"
+            if time.monotonic() >= deadline:
+                raise FailureRunRejectedError("scenario deadline expired before governance")
+            saved, saved_bytes, public, audit = _govern(
+                ledger, env, compose_file, overlay_file, result, deadline=deadline
+            )
+            if time.monotonic() >= deadline:
+                raise FailureRunRejectedError("scenario deadline expired during governance")
             path.write_bytes(saved_bytes)
-            results.append(path)
+            (ledger.artifact / "governance-public.json").write_bytes(canonical(public))
+            (ledger.artifact / "audit.json").write_bytes(canonical(audit))
         finally:
             _cleanup(ledger, env, compose_file, overlay_file)
+        if saved is None or public is None or audit is None:
+            raise FailureRunRejectedError("scenario issued no governed bundle")
+        try:
+            verify_public_artifacts(saved, public, audit)
+        except GovernanceDeniedError as exc:
+            raise FailureRunRejectedError("offline governance verification failed") from exc
+        if time.monotonic() >= deadline:
+            raise FailureRunRejectedError("scenario deadline expired before retention")
+        results.append(path)
+    if time.monotonic() - matrix_started >= 7200:
+        raise FailureRunRejectedError("full matrix exceeded the 7200 second bound")
     return results
 
 
