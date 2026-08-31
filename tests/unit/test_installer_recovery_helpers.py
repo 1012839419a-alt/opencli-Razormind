@@ -179,6 +179,7 @@ def test_powershell_helper_classifies_windows_and_quotes_output() -> None:
         rf"""
 $ErrorActionPreference = 'Stop'
 . '{helper}'
+$env:OS = 'Windows_NT'
 if (Test-OpenCliDockerBootPrerequisite) {{ throw 'Windows was misclassified as verified.' }}
 $output = (& {{
   Write-OpenCliRestartStatus `

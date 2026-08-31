@@ -521,7 +521,9 @@ async def test_turn_creation_rejects_non_coding_runtime_before_worktree(
         )
 
 
-async def test_server_configuration_reconciles_a_repository_mapping(db_session, monkeypatch):
+async def test_server_configuration_reconciles_a_repository_mapping(
+    db_session, monkeypatch, tmp_path
+):
     user = User(subject="configured-workbench-user")
     workspace = Workspace(name="Configured Workbench", slug="configured-workbench")
     db_session.add_all((user, workspace))
@@ -529,9 +531,9 @@ async def test_server_configuration_reconciles_a_repository_mapping(db_session, 
     configuration = WorkbenchRepositoryConfiguration(
         workspace_id=workspace.id,
         name="server-configured-repo",
-        repository_path="C:/repositories/admin",
+        repository_path=str(tmp_path / "repositories" / "admin"),
         base_ref="refs/heads/main",
-        worktree_root="C:/worktrees",
+        worktree_root=str(tmp_path / "worktrees"),
         execution_node_url="http://edge-1:19823",
         shared_filesystem_id="workspace-volume-1",
     )
