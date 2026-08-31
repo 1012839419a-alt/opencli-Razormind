@@ -188,6 +188,7 @@ async def _read(
         legacy_status=_legacy_status(status),
         item_count=manifest.item_count,
         record_count=int(manifest.counts.get("record_present", 0)),
+        manifest_hash=manifest.manifest_hash,
         counts={name: int(manifest.counts.get(name, 0)) for name in _COUNT_NAMES},
         record_references=[
             EvidenceBatchRecordReferenceV1(**value) for value in manifest.record_references
@@ -395,7 +396,12 @@ async def materialize_evidence_batch(
     )
     terminal_inputs = _terminal_inputs(report, receipts)
     latest = await _latest_manifest(db, command_id, attempt_id)
-    if not _force_reconcile and latest is not None and latest.materialization_status in _TERMINAL:
+    if (
+        not _force_reconcile
+        and latest is not None
+        and latest.materialization_status in _TERMINAL
+        and _same_terminal_inputs(latest, terminal_inputs)
+    ):
         return await _read(db, latest, report)
     facts = await _reconcile(command, attempt, report, receipts)
     latest = await _latest_manifest(db, command_id, attempt_id)

@@ -11,7 +11,7 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any
+from collections.abc import Callable
 
 import httpx
 
@@ -548,9 +548,9 @@ def crash_after_ingest(run: str) -> dict[str, Any]:
     )
 
 
-def _wait_coordination(run: str, name: str) -> None:
+def _wait_coordination(run: str, name: str, *, deadline: float | None = None) -> None:
     release = _coordination(f"{run}.{name}")
-    deadline = time.monotonic() + 90
+    deadline = time.monotonic() + 90 if deadline is None else deadline
     while not release.exists() and time.monotonic() < deadline:
         time.sleep(0.2)
     if not release.exists():
@@ -1842,6 +1842,16 @@ def _require_reconciled_delivery(
     return outcome, receipt_hash
 
 
+def _require_within_deadline(
+    deadline: float,
+    label: str,
+    *,
+    clock: Callable[[], float] = time.monotonic,
+) -> None:
+    if clock() > deadline:
+        raise RuntimeError(f"{label} exceeded its bounded deadline")
+
+
 def _reconcile_after_restart(
     client: httpx.Client,
     setup: dict[str, Any],
@@ -1849,8 +1859,8 @@ def _reconcile_after_restart(
     execution_id: str,
     *,
     label: str,
+    deadline: float,
 ) -> httpx.Response:
-    deadline = time.monotonic() + 30
     while True:
         response = client.post(
             f"{setup['primary']}{setup['route']}/{setup['runId']}/delivery-executions/"
@@ -2015,21 +2025,22 @@ def receiver_recovery(run: str) -> dict[str, Any]:
             hashes[f"{name}_authorization"] = _public_response_hash(response)
         if len({decision["decisionId"] for decision in decisions.values()}) != 3:
             raise RuntimeError("receiver proof requires three distinct authorizations")
-        delivery_deadline = time.monotonic() + 110
-
         executions: dict[str, dict[str, Any]] = {}
+
         for name, mode, attempts, transport, status in (
             ("mac", "corrupt_mac", 1, "http-4xx", 401),
             ("timeout", "withhold_response", 3, "transport-timeout", None),
             ("five_xx", "replace_with_503", 3, "http-5xx", 503),
         ):
             _set_delivery_proxy_mode(client, mode)
+            execution_deadline = time.monotonic() + 110
             response = client.post(
                 f"{setup['primary']}{setup['route']}/{setup['runId']}/delivery-executions",
                 json={"decisionId": decisions[name]["decisionId"]},
                 headers=reviewer,
             )
             _require_status(response, 201, f"{name} delivery execution")
+            _require_within_deadline(execution_deadline, f"{name} delivery execution")
             execution = _data(response)
             _require_blocked_delivery(
                 execution,
@@ -2040,8 +2051,13 @@ def receiver_recovery(run: str) -> dict[str, Any]:
             executions[name] = execution
             hashes[f"{name}_execution"] = _public_response_hash(response)
 
+        restart_reconciliation_deadline = time.monotonic() + 60
         _coordination(f"{run}.receiver-restart-ready").write_text("ready", encoding="utf-8")
-        _wait_coordination(run, "receiver-restarted")
+        _wait_coordination(
+            run,
+            "receiver-restarted",
+            deadline=restart_reconciliation_deadline,
+        )
 
         reconciled: dict[str, dict[str, Any]] = {}
         for name in ("timeout", "five_xx"):
@@ -2051,11 +2067,16 @@ def receiver_recovery(run: str) -> dict[str, Any]:
                 reviewer,
                 executions[name]["executionId"],
                 label=name,
+                deadline=restart_reconciliation_deadline,
             )
             reconciliation = _data(response)
             _require_reconciled_delivery(reconciliation, expected_attempts=3)
             reconciled[name] = reconciliation
             hashes[f"{name}_reconciliation"] = _public_response_hash(response)
+        _require_within_deadline(
+            restart_reconciliation_deadline,
+            "receiver restart and reconciliation",
+        )
 
         mac_status_response = client.get(
             f"{setup['primary']}{setup['route']}/{setup['runId']}/delivery-executions/"
@@ -2078,8 +2099,6 @@ def receiver_recovery(run: str) -> dict[str, Any]:
         final_status = _data(final_status_response)
         outcome, receipt_hash = _require_reconciled_delivery(final_status, expected_attempts=3)
         hashes["final_delivery_status"] = _public_response_hash(final_status_response)
-        if time.monotonic() > delivery_deadline:
-            raise RuntimeError("receiver delivery and reconciliation exceeded 110 seconds")
 
     return _failure_result(
         scenario="receiver-recovery",

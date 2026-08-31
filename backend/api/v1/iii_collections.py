@@ -19,13 +19,13 @@ from backend.schemas.iii_collection import (
     CollectorFinalExpectedKeyReportReadV1,
     CollectorFinalExpectedKeyReportV1,
     EvidenceBatchMaterializationReadV1,
-    StudioEvidenceBatchMaterializationListV1,
     IIICollectionLifecycleReadV1,
     IIICollectionLifecycleV1,
     IIICollectionSubmitReadV1,
     IIICollectionSubmitV1,
     ODPIngressOutcomeReceiptReadV1,
     ODPIngressOutcomeReceiptV1,
+    StudioEvidenceBatchMaterializationListV1,
     VerticalStatusV1,
 )
 from backend.security.identity import RequestIdentity, get_request_identity
@@ -106,6 +106,7 @@ async def _scoped_run(
         version,
     )
 
+
 async def _scoped_access(
     db: AsyncSession,
     *,
@@ -125,6 +126,34 @@ async def _scoped_access(
         workflow_id=workflow_id,
         run_id=run_id,
     )
+
+
+async def _scoped_materialization_read_access(
+    db: AsyncSession,
+    *,
+    workspace_id: str,
+    project_id: str,
+    workflow_id: str,
+    run_id: str,
+    identity: RequestIdentity,
+) -> tuple[CollectionScope, WorkflowRun, StudioWorkflowVersion]:
+    """Hide scoped materialization existence from non-members."""
+    try:
+        return await _scoped_access(
+            db,
+            workspace_id=workspace_id,
+            project_id=project_id,
+            workflow_id=workflow_id,
+            run_id=run_id,
+            identity=identity,
+            permission=WorkspacePermission.READ,
+        )
+    except HTTPException as exc:
+        if exc.status_code == status.HTTP_403_FORBIDDEN:
+            raise HTTPException(
+                status.HTTP_404_NOT_FOUND, "Evidence batch materialization not found"
+            ) from exc
+        raise
 
 
 @router.post(
@@ -289,14 +318,13 @@ async def get_iii_collection_materialization(
     db: AsyncSession = Depends(get_db),
     identity: RequestIdentity = Depends(get_request_identity),
 ) -> ApiResponse[EvidenceBatchMaterializationReadV1]:
-    scope, _, _ = await _scoped_access(
+    scope, _, _ = await _scoped_materialization_read_access(
         db,
         workspace_id=workspace_id,
         project_id=project_id,
         workflow_id=workflow_id,
         run_id=run_id,
         identity=identity,
-        permission=WorkspacePermission.READ,
     )
     materialization = await get_materialization(db, scope=scope, command_id=command_id)
     if materialization is None:
@@ -319,14 +347,13 @@ async def list_studio_evidence_batch_materializations(
     identity: RequestIdentity = Depends(get_request_identity),
 ) -> ApiResponse[StudioEvidenceBatchMaterializationListV1]:
     """Page latest redacted materialization summaries for one Studio run."""
-    scope, _, _ = await _scoped_access(
+    scope, _, _ = await _scoped_materialization_read_access(
         db,
         workspace_id=workspace_id,
         project_id=project_id,
         workflow_id=workflow_id,
         run_id=run_id,
         identity=identity,
-        permission=WorkspacePermission.READ,
     )
     evidence_batches, next_cursor = await list_materializations(
         db,
@@ -357,14 +384,13 @@ async def get_studio_evidence_batch_materialization(
     identity: RequestIdentity = Depends(get_request_identity),
 ) -> ApiResponse[EvidenceBatchMaterializationReadV1]:
     """Return one bounded, redacted latest evidence-batch detail projection."""
-    scope, _, _ = await _scoped_access(
+    scope, _, _ = await _scoped_materialization_read_access(
         db,
         workspace_id=workspace_id,
         project_id=project_id,
         workflow_id=workflow_id,
         run_id=run_id,
         identity=identity,
-        permission=WorkspacePermission.READ,
     )
     materialization = await get_materialization_by_batch(db, scope=scope, batch_id=batch_id)
     if materialization is None:
@@ -421,9 +447,7 @@ async def materialize_iii_collection(
         permission=WorkspacePermission.WORK_INBOX,
     )
     try:
-        materialization = await materialize_evidence_batch(
-            db, scope=scope, command_id=command_id
-        )
+        materialization = await materialize_evidence_batch(db, scope=scope, command_id=command_id)
     except IIICollectionNotFoundError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
     return ApiResponse.ok(materialization)
@@ -471,7 +495,9 @@ async def ingest_iii_collection_lifecycle(
     """Accept only validated, replay-safe lifecycle summaries from the III bridge."""
 
     configured_token = get_settings().iii_lifecycle_token
-    if not configured_token or not secrets.compare_digest(configured_token, x_iii_bridge_token or ""):
+    if not configured_token or not secrets.compare_digest(
+        configured_token, x_iii_bridge_token or ""
+    ):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid III bridge token")
     try:
         result = await ingest_lifecycle(db, event=body)
@@ -494,7 +520,9 @@ async def ingest_iii_collection_expected_key_report(
     """Append the bounded collector completion boundary through the III callback."""
 
     configured_token = get_settings().iii_lifecycle_token
-    if not configured_token or not secrets.compare_digest(configured_token, x_iii_bridge_token or ""):
+    if not configured_token or not secrets.compare_digest(
+        configured_token, x_iii_bridge_token or ""
+    ):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid III bridge token")
     try:
         result = await ingest_expected_key_report(db, report=body)
@@ -517,7 +545,9 @@ async def ingest_iii_collection_ingress_receipt(
     """Append only a bridge-authenticated, producer-signed ingress observation."""
 
     configured_token = get_settings().iii_lifecycle_token
-    if not configured_token or not secrets.compare_digest(configured_token, x_iii_bridge_token or ""):
+    if not configured_token or not secrets.compare_digest(
+        configured_token, x_iii_bridge_token or ""
+    ):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid III bridge token")
     try:
         result = await ingest_ingress_receipt(db, receipt=body)

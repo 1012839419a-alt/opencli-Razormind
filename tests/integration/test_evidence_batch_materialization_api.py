@@ -849,6 +849,7 @@ async def test_integrity_race_returns_matching_persisted_winner(client, db_sessi
         materialization_status="completed",
         batch_id="00000000-0000-0000-0000-000000000001",
         reconciliation_revision=1,
+        manifest_hash="0" * 64,
         item_count=report.item_count,
         counts={
             "expected": 1,
@@ -1296,8 +1297,9 @@ async def test_terminal_amendment_recover_keeps_pinned_completed_revision_immuta
         calls.clear()
         replayed = await client.post(f"{collection_route}/{command.id}/materialize")
         assert replayed.status_code == 200
-        assert calls == []
-        assert replayed.json()["data"]["reconciliationRevision"] == 1
+        assert calls == ["exact", "attempt_page"]
+        assert replayed.json()["data"]["reconciliationRevision"] == 2
+        assert replayed.json()["data"]["counts"]["duplicate_existing"] == 1
 
         current_identity = RequestIdentity(subject=proposer.subject)
         calls.clear()

@@ -871,8 +871,8 @@ def test_receiver_recovery_driver_uses_public_attempts_and_signed_reconciliation
         for value in (
             "def receiver_recovery(",
             "corrupt_mac",
-            "delivery_deadline = time.monotonic() + 110",
-            "replace_with_503",
+            "execution_deadline = time.monotonic() + 110",
+            "restart_reconciliation_deadline = time.monotonic() + 60",
             "receiver-restart-ready",
             "/reconcile",
             '"state": "settled"',
@@ -880,8 +880,20 @@ def test_receiver_recovery_driver_uses_public_attempts_and_signed_reconciliation
             "signed_{outcome}",
         )
     )
+    assert "receiver delivery and reconciliation exceeded 110 seconds" not in driver
     assert "AsyncSessionLocal" not in driver
+    assert "StudioWorkspace" not in driver
     assert "proof-controlled-receiver:8000" not in driver
+
+
+def test_receiver_deadlines_are_phase_local_and_deterministic():
+    driver = _failure_driver_module()
+    driver._require_within_deadline(110, "delivery", clock=lambda: 110)
+    driver._require_within_deadline(60, "restart and reconciliation", clock=lambda: 60)
+    with pytest.raises(RuntimeError, match="delivery exceeded"):
+        driver._require_within_deadline(110, "delivery", clock=lambda: 110.001)
+    with pytest.raises(RuntimeError, match="restart and reconciliation exceeded"):
+        driver._require_within_deadline(60, "restart and reconciliation", clock=lambda: 60.001)
 
 
 def test_receiver_recovery_overlay_isolates_real_receiver_behind_tls_proxy():
