@@ -491,14 +491,7 @@ def _quality(item: Mapping[str, Any], normalized: Mapping[str, Any]) -> float:
 
 def _has_unique_dedupe_evidence(item: Mapping[str, Any]) -> bool:
     dedupe = item.get("dedupe")
-    return (
-        isinstance(dedupe, Mapping)
-        and dedupe.get("status") == "unique"
-        and isinstance(dedupe.get("identity"), str)
-        and bool(dedupe["identity"])
-        and isinstance(dedupe.get("fingerprint"), str)
-        and bool(dedupe["fingerprint"])
-    )
+    return isinstance(dedupe, Mapping) and dedupe.get("status") == "unique"
 
 
 def _canonical_source_dedupe(

@@ -16,23 +16,30 @@ depends_on = None
 def upgrade() -> None:
     bind = op.get_bind()
     is_sqlite = bind.dialect.name == "sqlite"
+    tables = set(sa.inspect(bind).get_table_names())
+    if not tables.intersection({"automations", "operations_agent_runs"}):
+        return
 
     def has_column(table: str, column: str) -> bool:
+        if table not in tables:
+            return False
         return column in {
             item["name"] for item in sa.inspect(bind).get_columns(table)
         }
 
     def has_index(table: str, index: str) -> bool:
+        if table not in tables:
+            return False
         return index in {
             item["name"] for item in sa.inspect(bind).get_indexes(table)
         }
 
-    if not has_column("automations", "revision"):
+    if "automations" in tables and not has_column("automations", "revision"):
         op.add_column(
             "automations",
             sa.Column("revision", sa.Integer(), nullable=False, server_default="1"),
         )
-    if not has_column("automations", "operations_agent_id"):
+    if "automations" in tables and not has_column("automations", "operations_agent_id"):
         op.add_column(
             "automations",
             sa.Column(
@@ -51,12 +58,12 @@ def upgrade() -> None:
                 nullable=True,
             ),
         )
-    if not has_column("automations", "operations_agent_version"):
+    if "automations" in tables and not has_column("automations", "operations_agent_version"):
         op.add_column(
             "automations",
             sa.Column("operations_agent_version", sa.Integer(), nullable=True),
         )
-    if not has_index("automations", "ix_automations_operations_agent_id"):
+    if "automations" in tables and not has_index("automations", "ix_automations_operations_agent_id"):
         op.create_index(
             "ix_automations_operations_agent_id",
             "automations",
@@ -64,7 +71,8 @@ def upgrade() -> None:
         )
     # Previously enabled rows had no executable binding. Fail closed until an
     # operator explicitly pins a compatible published Agent version.
-    op.execute("UPDATE automations SET enabled = false WHERE operations_agent_id IS NULL")
+    if "automations" in tables:
+        op.execute("UPDATE automations SET enabled = false WHERE operations_agent_id IS NULL")
 
     run_columns = (
         (
@@ -93,9 +101,10 @@ def upgrade() -> None:
             sa.Column("schedule_timezone", sa.String(64), nullable=True),
         ),
     )
-    for name, column in run_columns:
-        if not has_column("operations_agent_runs", name):
-            op.add_column("operations_agent_runs", column)
+    if "operations_agent_runs" in tables:
+        for name, column in run_columns:
+            if not has_column("operations_agent_runs", name):
+                op.add_column("operations_agent_runs", column)
     if not has_index(
         "operations_agent_runs",
         "ix_operations_agent_runs_automation_id",

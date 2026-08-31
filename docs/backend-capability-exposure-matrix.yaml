@@ -1,6 +1,6 @@
 version: 1
 source: backend.main.app.openapi
-openapi_operation_count: 233
+openapi_operation_count: 248
 allowed_dispositions:
 - operator_ui
 - studio_binding
@@ -2335,6 +2335,141 @@ operations:
   decision: Start only published project workflows through the Studio runtime boundary.
   target_epic: Epic 8
   capability_id: studio.workflow
+- method: GET
+  path: /api/v1/nodes/install/agent-runtime.tar.gz
+  operation_id: get_agent_runtime_bundle_api_v1_nodes_install_agent_runtime_tar_gz_get
+  disposition: internal_only
+  frontend_route: null
+  wrapper: null
+  decision: Keep the agent runtime bundle download behind the installation boundary; do not expose it as a user capability.
+  target_epic: Internal
+  projection_reason: Package installation transport; intentionally not projected to a user-facing capability.
+- method: GET
+  path: /api/v1/workspaces/{workspace_id}/automations/starters/preview
+  operation_id: preview_automation_starters_api_v1_workspaces__workspace_id__automations_starters_preview_get
+  disposition: internal_only
+  frontend_route: null
+  wrapper: null
+  decision: Keep automation starter preview as an authenticated provisioning operation; do not project it as a standalone capability.
+  target_epic: Epic 8
+  projection_reason: Automation provisioning preview boundary; intentionally not projected to a user-facing capability.
+- method: GET
+  path: /api/v1/workspaces/{workspace_id}/operations-agents/teams
+  operation_id: list_operations_agent_teams_api_v1_workspaces__workspace_id__operations_agents_teams_get
+  disposition: internal_only
+  frontend_route: null
+  wrapper: null
+  decision: Keep Operations Agent team enumeration behind the governance API boundary.
+  target_epic: Epic 8
+  projection_reason: Internal governance lookup; intentionally not projected to a standalone capability.
+- method: GET
+  path: /api/v1/workspaces/{workspace_id}/projects/{project_id}/workflows/{workflow_id}/runs/{run_id}
+  operation_id: get_project_workflow_run_projection_api_v1_workspaces__workspace_id__projects__project_id__workflows__workflow_id__runs__run_id__get
+  disposition: internal_only
+  frontend_route: /studio
+  wrapper: null
+  decision: Keep project-scoped workflow run projection behind the Studio run boundary.
+  target_epic: Epic 8
+  projection_reason: Project-scoped compatibility route; intentionally not projected separately.
+- method: GET
+  path: /api/v1/workspaces/{workspace_id}/projects/{project_id}/workflows/{workflow_id}/runs/{run_id}/events
+  operation_id: list_project_workflow_run_events_api_v1_workspaces__workspace_id__projects__project_id__workflows__workflow_id__runs__run_id__events_get
+  disposition: internal_only
+  frontend_route: /studio
+  wrapper: null
+  decision: Keep project-scoped workflow run events behind the Studio run boundary.
+  target_epic: Epic 8
+  projection_reason: Project-scoped event stream compatibility route; intentionally not projected separately.
+- method: GET
+  path: /api/v1/workspaces/{workspace_id}/projects/{project_id}/workflows/{workflow_id}/runs/{run_id}/evidence-batches
+  operation_id: list_project_workflow_evidence_batches_api_v1_workspaces__workspace_id__projects__project_id__workflows__workflow_id__runs__run_id__evidence_batches_get
+  disposition: internal_only
+  frontend_route: /studio
+  wrapper: null
+  decision: Keep project-scoped EvidenceBatch listing behind the Studio run boundary.
+  target_epic: Epic 8
+  projection_reason: Project-scoped evidence compatibility route; intentionally not projected separately.
+- method: GET
+  path: /api/v1/workspaces/{workspace_id}/projects/{project_id}/workflows/{workflow_id}/runs/{run_id}/evidence-batches/{batch_id}
+  operation_id: get_project_workflow_evidence_batch_api_v1_workspaces__workspace_id__projects__project_id__workflows__workflow_id__runs__run_id__evidence_batches__batch_id__get
+  disposition: internal_only
+  frontend_route: /studio
+  wrapper: null
+  decision: Keep project-scoped EvidenceBatch detail behind the Studio run boundary.
+  target_epic: Epic 8
+  projection_reason: Project-scoped evidence compatibility route; intentionally not projected separately.
+- method: GET
+  path: /api/v1/workspaces/{workspace_id}/projects/{project_id}/workflows/{workflow_id}/runs/{run_id}/projection
+  operation_id: get_project_workflow_evidence_projection_api_v1_workspaces__workspace_id__projects__project_id__workflows__workflow_id__runs__run_id__projection_get
+  disposition: internal_only
+  frontend_route: /studio
+  wrapper: null
+  decision: Keep project-scoped evidence projection behind the Studio run boundary.
+  target_epic: Epic 8
+  projection_reason: Project-scoped evidence compatibility route; intentionally not projected separately.
+- method: POST
+  path: /api/v1/internal/automations/scheduler/tick
+  operation_id: automation_scheduler_tick_api_v1_internal_automations_scheduler_tick_post
+  disposition: internal_only
+  frontend_route: null
+  wrapper: null
+  decision: Keep scheduler ticks behind the internal automation service boundary.
+  target_epic: Internal
+  projection_reason: Internal scheduler transport; intentionally not projected to a user-facing capability.
+- method: POST
+  path: /api/v1/internal/collaboration/authorize
+  operation_id: authorize_collaboration_room_api_v1_internal_collaboration_authorize_post
+  disposition: internal_only
+  frontend_route: null
+  wrapper: null
+  decision: Keep collaboration room authorization behind the internal collaboration boundary.
+  target_epic: Internal
+  projection_reason: Internal collaboration authorization transport; intentionally not projected.
+- method: POST
+  path: /api/v1/internal/collaboration/snapshot
+  operation_id: snapshot_collaboration_draft_api_v1_internal_collaboration_snapshot_post
+  disposition: internal_only
+  frontend_route: null
+  wrapper: null
+  decision: Keep collaboration draft snapshots behind the internal collaboration boundary.
+  target_epic: Internal
+  projection_reason: Internal collaboration snapshot transport; intentionally not projected.
+- method: POST
+  path: /api/v1/internal/operations-agent-runs/{run_id}/dispatch
+  operation_id: dispatch_scheduled_agent_run_api_v1_internal_operations_agent_runs__run_id__dispatch_post
+  disposition: internal_only
+  frontend_route: null
+  wrapper: null
+  decision: Keep scheduled Operations Agent dispatch behind the internal worker boundary.
+  target_epic: Internal
+  projection_reason: Internal scheduler-to-worker transport; intentionally not projected.
+- method: POST
+  path: /api/v1/workspaces/{workspace_id}/automations/starters/install
+  operation_id: install_automation_starters_api_v1_workspaces__workspace_id__automations_starters_install_post
+  disposition: internal_only
+  frontend_route: null
+  wrapper: null
+  decision: Keep starter installation behind the authenticated automation provisioning boundary.
+  target_epic: Epic 8
+  projection_reason: Automation provisioning transport; intentionally not projected as a standalone capability.
+- method: POST
+  path: /api/v1/workspaces/{workspace_id}/automations/{automation_id}/runs
+  operation_id: start_automation_run_api_v1_workspaces__workspace_id__automations__automation_id__runs_post
+  disposition: internal_only
+  frontend_route: /operations-agents
+  wrapper: null
+  decision: Keep automation execution behind the Operations Agent governance boundary.
+  target_epic: Epic 8
+  projection_reason: Authenticated automation execution route; intentionally not projected separately.
+- method: POST
+  path: /api/v1/workspaces/{workspace_id}/projects/{project_id}/workflows/{workflow_id}/runs/{run_id}/downstream-replay
+  operation_id: replay_persisted_gaojixing_source_downstream_api_v1_workspaces__workspace_id__projects__project_id__workflows__workflow_id__runs__run_id__downstream_replay_post
+  disposition: internal_only
+  frontend_route: /studio
+  wrapper: null
+  decision: Keep persisted source replay behind the Studio run boundary and its evidence contract.
+  target_epic: Epic 8
+  projection_reason: Internal replay operation; intentionally not projected as a standalone capability.
 unreferenced_wrappers:
 - wrapper: getOperationsAgentVersion
   operation_id: get_agent_version_api_v1_workspaces__workspace_id__operations_agents__agent_id__versions__version_number__get

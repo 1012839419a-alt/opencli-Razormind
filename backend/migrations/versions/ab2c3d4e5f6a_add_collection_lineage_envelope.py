@@ -14,16 +14,22 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "collected_records",
-        sa.Column("lineage", sa.JSON(), nullable=True),
-    )
-    op.add_column(
-        "notification_logs",
-        sa.Column("lineage", sa.JSON(), nullable=True),
-    )
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    for table in ("collected_records", "notification_logs"):
+        if table not in inspector.get_table_names():
+            continue
+        columns = {item["name"] for item in inspector.get_columns(table)}
+        if "lineage" not in columns:
+            op.add_column(table, sa.Column("lineage", sa.JSON(), nullable=True))
 
 
 def downgrade() -> None:
-    op.drop_column("notification_logs", "lineage")
-    op.drop_column("collected_records", "lineage")
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    for table in ("notification_logs", "collected_records"):
+        if table not in inspector.get_table_names():
+            continue
+        columns = {item["name"] for item in inspector.get_columns(table)}
+        if "lineage" in columns:
+            op.drop_column(table, "lineage")

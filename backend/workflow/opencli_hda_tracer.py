@@ -709,6 +709,7 @@ async def start_workflow_run(
                     "runId": run_id,
                     "nodeId": node.id,
                     "sourceId": body.input.sourceId or body.input.source,
+                    "requestId": body.trigger.requestId,
                     "runtimeInputEnvelope": envelope,
                 },
             )
