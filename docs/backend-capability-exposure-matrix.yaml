@@ -2451,7 +2451,24 @@ operations:
   decision: Resume only the scoped published Gaojixing run after operator verification.
   target_epic: Gaojixing collection
   capability_id: studio.workflow
-  projection_reason: Compatibility authentication transport; intentionally not projected to the capability catalog.
+- method: POST
+  path: /api/v1/auth/login
+  operation_id: local_login_api_v1_auth_login_post
+  disposition: internal_only
+  frontend_route: /login
+  wrapper: null
+  decision: Keep local administrator authentication behind the login boundary; do not project credentials into the capability catalog.
+  target_epic: Epic 8
+  projection_reason: Local administrator authentication boundary; intentionally not projected to a user-facing capability.
+- method: POST
+  path: /api/v1/auth/password
+  operation_id: change_local_password_api_v1_auth_password_post
+  disposition: internal_only
+  frontend_route: /system
+  wrapper: null
+  decision: Keep local administrator password rotation behind the authenticated settings boundary; do not project credentials into the capability catalog.
+  target_epic: Epic 8
+  projection_reason: Local administrator credential rotation boundary; intentionally not projected to a user-facing capability.
 unreferenced_wrappers:
 - wrapper: getOperationsAgentVersion
   operation_id: get_agent_version_api_v1_workspaces__workspace_id__operations_agents__agent_id__versions__version_number__get
