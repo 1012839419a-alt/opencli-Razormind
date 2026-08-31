@@ -862,6 +862,20 @@ _DOUBAO_EXTRACTION_EXPRESSION = r'''(() => {
     root = root.parentElement;
   }
   root = root || answerNode;
+  let actionRoot = answerNode;
+  for (let depth = 0; actionRoot && depth < 10; depth += 1) {
+    const hasFinalAction = actionRoot.querySelector(
+      'button[aria-label*="朗读"], button[aria-label*="复制"]'
+    );
+    const hasGeneratingAction = Array.from(
+      actionRoot.querySelectorAll('button, [role="button"]')
+    ).some((node) => /停止生成|停止回答|停止思考|生成中/.test(
+      compact(node.getAttribute('aria-label') || node.textContent)
+    ));
+    if (hasFinalAction || hasGeneratingAction) break;
+    actionRoot = actionRoot.parentElement;
+  }
+  actionRoot = actionRoot || root;
   const suggested_keywords = root ? Array.from(root.querySelectorAll('.suggest-list-item-title'))
     .map((node) => compact(node.innerText || node.textContent))
     .filter((value, index, values) => value && values.indexOf(value) === index)
@@ -875,12 +889,12 @@ _DOUBAO_EXTRACTION_EXPRESSION = r'''(() => {
     ) : [];
   const rootText = compact(root?.innerText || root?.textContent);
   const summary = rootText.match(/搜索\s*(\d+)\s*个关键词，参考\s*(\d+)\s*篇资料/);
-  const is_generating = Boolean(root && Array.from(
-    root.querySelectorAll('button, [role="button"]')
+  const is_generating = Boolean(actionRoot && Array.from(
+    actionRoot.querySelectorAll('button, [role="button"]')
   ).some((node) => /停止生成|停止回答|停止思考|生成中/.test(
     compact(node.getAttribute('aria-label') || node.textContent)
   )));
-  const has_final_actions = Boolean(root && root.querySelector(
+  const has_final_actions = Boolean(actionRoot && actionRoot.querySelector(
     'button[aria-label*="朗读"], button[aria-label*="复制"]'
   ));
   const answer = String(answerNode?.innerText || answerNode?.textContent || '').trim();

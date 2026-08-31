@@ -31,6 +31,8 @@ def test_doubao_capture_rejects_timestamp_chrome_and_targets_real_result_nodes()
     assert _has_answer_content("今天 08:05") is False
     assert ".md-box-root" in _DOUBAO_EXTRACTION_EXPRESSION
     assert ".suggest-list-item-title" in _DOUBAO_EXTRACTION_EXPRESSION
+    assert "let actionRoot = answerNode;" in _DOUBAO_EXTRACTION_EXPRESSION
+    assert "actionRoot.querySelector" in _DOUBAO_EXTRACTION_EXPRESSION
     assert "/推荐|继续问|猜你想问|相关问题|关键词/i" not in _DOUBAO_EXTRACTION_EXPRESSION
 
 
