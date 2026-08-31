@@ -1,4 +1,5 @@
 """Container entry point for the internal proof-governance HTTP service."""
+
 from __future__ import annotations
 
 import os
@@ -21,9 +22,7 @@ from scripts.proof_bundle_governance import (
 def _jwks() -> dict[str, Any]:
     try:
         response = httpx.get(
-            os.environ.get(
-                "PROOF_GOVERNANCE_JWKS_URL", "http://proof-oidc/jwks.json"
-            ),
+            os.environ.get("PROOF_GOVERNANCE_JWKS_URL", "http://proof-oidc/jwks.json"),
             timeout=2,
             trust_env=False,
         )
@@ -46,9 +45,7 @@ def _authenticate(request: Request) -> Principal:
         if header.get("alg") != "RS256":
             raise ValueError("invalid token algorithm")
         jwks = _jwks()
-        key = next(
-            item for item in jwks["keys"] if item.get("kid") == header.get("kid")
-        )
+        key = next(item for item in jwks["keys"] if item.get("kid") == header.get("kid"))
         claims: dict[str, Any] = jwt.decode(
             token,
             key,
@@ -83,11 +80,16 @@ def _authenticate(request: Request) -> Principal:
         raise GovernanceDeniedError("credential is invalid", 401) from exc
 
 
-def build_app(root: Path) -> Any:
-    return create_app(ProofBundleStore(root), _authenticate)
+def build_app(root: Path, *, key_root: Path | None = None) -> Any:
+    return create_app(ProofBundleStore(root, key_root=key_root), _authenticate)
 
 
 store = ProofBundleStore(
-    Path(os.environ.get("PROOF_GOVERNANCE_ROOT", "/tmp/proof-governance"))
+    Path(os.environ.get("PROOF_GOVERNANCE_ROOT", "/tmp/proof-governance")),
+    key_root=(
+        Path(os.environ["PROOF_GOVERNANCE_KEY_ROOT"])
+        if "PROOF_GOVERNANCE_KEY_ROOT" in os.environ
+        else None
+    ),
 )
 app = create_app(store, _authenticate)

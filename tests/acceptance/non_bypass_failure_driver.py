@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """In-network public-API driver for the first #37 failure scenario."""
+
 from __future__ import annotations
 
 import argparse
@@ -15,6 +16,7 @@ from typing import Any
 import httpx
 
 from tests.acceptance.non_bypass_vertical import graph as _base_graph
+from scripts.non_bypass_failure_proof_contract import ACTUATOR_BY_SCENARIO
 
 
 def _data(response: httpx.Response) -> dict[str, Any]:
@@ -59,7 +61,6 @@ def _post_published_run(
         time.sleep(0.5)
 
 
-
 def _graph() -> dict[str, Any]:
     return _base_graph()
 
@@ -85,12 +86,13 @@ def _failure_result(
     delivery: dict[str, Any] | None = None,
     mutation_status: str = "none",
 ) -> dict[str, Any]:
+    emitted_at = int(time.time())
     return {
         "scenario": scenario,
         "run": run,
         "fault": fault,
         "actuator": {
-            "name": "proof-iii-actuator",
+            "name": ACTUATOR_BY_SCENARIO[scenario],
             "invocationHash": hashlib.sha256(command_id.encode()).hexdigest(),
         },
         "correlation": {
@@ -117,7 +119,11 @@ def _failure_result(
             "reconciliation": "none",
         },
         "redactionProfile": "failure-v1",
-        "timing": {"startedAt": 0, "completedAt": 1, "deadlineSeconds": 360},
+        "timing": {
+            "startedAt": emitted_at,
+            "completedAt": emitted_at,
+            "deadlineSeconds": 360,
+        },
         "governanceReference": {
             "artifactId": "pending",
             "keyId": "pending",
@@ -134,34 +140,75 @@ def admin_crash(run: str, scenario: str = "admin-crash") -> dict[str, Any]:
     primary = "http://proof-admin:8000/api/v1"
     control = "http://proof-admin-control:8000/api/v1"
     with httpx.Client(timeout=60) as client:
-        workspace = _post(client, primary, "/platform/workspaces", {"name": "Failure proof",
-        "slug": run, "first_admin_subject": "bootstrap-admin",
-        "first_admin_email": "bootstrap@proof.invalid",
-        "first_admin_display_name": "Proof bootstrap"},
-        bootstrap)
+        workspace = _post(
+            client,
+            primary,
+            "/platform/workspaces",
+            {
+                "name": "Failure proof",
+                "slug": run,
+                "first_admin_subject": "bootstrap-admin",
+                "first_admin_email": "bootstrap@proof.invalid",
+                "first_admin_display_name": "Proof bootstrap",
+            },
+            bootstrap,
+        )
         workspace_id = workspace["id"]
-        _post(client, primary, f"/workspaces/{workspace_id}/members", {"subject": "proof-proposer",
-        "email": "proof-proposer@proof.invalid", "display_name": "proof-proposer",
-        "role": "operator"},
-        bootstrap)
-        boot = _post(client, primary, f"/workspaces/{workspace_id}/projects/bootstrap",
-        {"project": {"name": "Failure proof", "slug": run}, "workflow": {"name": "Failure proof",
-        "graph": _graph()}}, bootstrap)
+        _post(
+            client,
+            primary,
+            f"/workspaces/{workspace_id}/members",
+            {
+                "subject": "proof-proposer",
+                "email": "proof-proposer@proof.invalid",
+                "display_name": "proof-proposer",
+                "role": "operator",
+            },
+            bootstrap,
+        )
+        boot = _post(
+            client,
+            primary,
+            f"/workspaces/{workspace_id}/projects/bootstrap",
+            {
+                "project": {"name": "Failure proof", "slug": run},
+                "workflow": {"name": "Failure proof", "graph": _graph()},
+            },
+            bootstrap,
+        )
         project, workflow = boot["project"], boot["primary_workflow"]
         route = (
-            f"/workspaces/{workspace_id}/projects/{project['id']}/"
-            f"workflows/{workflow['id']}/runs"
+            f"/workspaces/{workspace_id}/projects/{project['id']}/workflows/{workflow['id']}/runs"
         )
-        validation = _post(client, primary, route.rsplit("/runs", 1)[0] + "/draft/validation-runs",
-        {}, proposer)
+        validation = _post(
+            client, primary, route.rsplit("/runs", 1)[0] + "/draft/validation-runs", {}, proposer
+        )
         if not validation.get("valid"):
             raise RuntimeError("public workflow validation failed")
-        _post(client, primary, route.rsplit("/runs", 1)[0] + "/versions",
-        {"reason": "failure proof", "expectedRevision": 1, "validationRunId": validation["runId"]},
-        proposer)
-        workflow_run = _post_published_run(client, primary, route, {"inputs": {},
-        "responseMode": "async", "user": "proof-proposer", "requestId": run, "idempotencyKey": run},
-        proposer)
+        _post(
+            client,
+            primary,
+            route.rsplit("/runs", 1)[0] + "/versions",
+            {
+                "reason": "failure proof",
+                "expectedRevision": 1,
+                "validationRunId": validation["runId"],
+            },
+            proposer,
+        )
+        workflow_run = _post_published_run(
+            client,
+            primary,
+            route,
+            {
+                "inputs": {},
+                "responseMode": "async",
+                "user": "proof-proposer",
+                "requestId": run,
+                "idempotencyKey": run,
+            },
+            proposer,
+        )
         run_id = workflow_run["runId"]
         collections = f"{route}/{run_id}/iii-collections"
         if scenario == "no-report":
@@ -173,15 +220,34 @@ def admin_crash(run: str, scenario: str = "admin-crash") -> dict[str, Any]:
                 time.sleep(0.2)
             if not release.exists():
                 raise RuntimeError("orchestrator did not arm report-drop gate")
-        submission = _post(client, primary, collections, {"version": "v1", "idempotencyKey": run,
-        "nodeId": "opencli-source", "collection": {"site": "bilibili", "command": "search",
-        "args": {"keyword": "vertical-proof"}, "sourceBindingId": "proof-binding",
-        "sourceBindingRevisionId": "proof-binding-v1", "sourceBindingRevisionNumber": 1}}, proposer)
+        submission = _post(
+            client,
+            primary,
+            collections,
+            {
+                "version": "v1",
+                "idempotencyKey": run,
+                "nodeId": "opencli-source",
+                "collection": {
+                    "site": "bilibili",
+                    "command": "search",
+                    "args": {"keyword": "vertical-proof"},
+                    "sourceBindingId": "proof-binding",
+                    "sourceBindingRevisionId": "proof-binding-v1",
+                    "sourceBindingRevisionNumber": 1,
+                },
+            },
+            proposer,
+        )
         command_id, attempt_id = submission["commandId"], submission["attemptId"]
         if scenario == "admin-crash":
             signal = _coordination(f"{run}.submitted")
-            signal.write_text(json.dumps({"commandId": command_id, "attemptId": attempt_id,
-            "route": collections}), encoding="utf-8")
+            signal.write_text(
+                json.dumps(
+                    {"commandId": command_id, "attemptId": attempt_id, "route": collections}
+                ),
+                encoding="utf-8",
+            )
             release = _coordination(f"{run}.resume")
             deadline = time.monotonic() + 90
             while not release.exists() and time.monotonic() < deadline:
@@ -192,8 +258,13 @@ def admin_crash(run: str, scenario: str = "admin-crash") -> dict[str, Any]:
             deadline = time.monotonic() + 30
             while True:
                 try:
-                    _post(client, control, f"{collections}/{command_id}/resume",
-                    {"idempotencyKey": run}, proposer)
+                    _post(
+                        client,
+                        control,
+                        f"{collections}/{command_id}/resume",
+                        {"idempotencyKey": run},
+                        proposer,
+                    )
                     break
                 except httpx.ConnectError:
                     if time.monotonic() >= deadline:
@@ -210,13 +281,18 @@ def admin_crash(run: str, scenario: str = "admin-crash") -> dict[str, Any]:
                 time.sleep(0.5)
         materialization: dict[str, Any] | None = None
         if scenario in {"no-report", "signed-zero"}:
-            materialization = _post(client, primary, f"{collections}/{command_id}/materialize", {},
-            proposer)
+            materialization = _post(
+                client, primary, f"{collections}/{command_id}/materialize", {}, proposer
+            )
             batch_id = materialization["batchId"]
             deadline = time.monotonic() + 60
             while time.monotonic() < deadline:
-                materialization = _get(client, primary,
-                f"{route}/{run_id}/evidence-batches/v1/{batch_id}/status", proposer)
+                materialization = _get(
+                    client,
+                    primary,
+                    f"{route}/{run_id}/evidence-batches/v1/{batch_id}/status",
+                    proposer,
+                )
                 if (
                     scenario != "signed-zero"
                     or materialization.get("materializationStatus") == "completed_empty"
@@ -233,9 +309,7 @@ def admin_crash(run: str, scenario: str = "admin-crash") -> dict[str, Any]:
             materialization is None
             or materialization.get("materializationStatus") != "indeterminate"
         ):
-            raise RuntimeError(
-                "scoped materialization did not expose indeterminate missing report"
-            )
+            raise RuntimeError("scoped materialization did not expose indeterminate missing report")
         return _failure_result(
             scenario="no-report",
             run=run,
@@ -311,6 +385,8 @@ def admin_crash(run: str, scenario: str = "admin-crash") -> dict[str, Any]:
             "pageSnapshotAsOf": None,
         },
     )
+
+
 def crash_after_ingest(run: str) -> dict[str, Any]:
     """Prove report loss only after a public ingress receipt is observable."""
     fleet = {"X-API-Token": os.environ["API_AUTH_TOKEN"]}
@@ -318,51 +394,113 @@ def crash_after_ingest(run: str) -> dict[str, Any]:
     proposer = {**fleet, "Authorization": f"Bearer {os.environ['PROOF_PROPOSER_JWT']}"}
     primary = "http://proof-admin:8000/api/v1"
     with httpx.Client(timeout=60) as client:
-        workspace = _post(client, primary, "/platform/workspaces", {"name": "Crash after ingest",
-        "slug": run, "first_admin_subject": "bootstrap-admin",
-        "first_admin_email": "bootstrap@proof.invalid",
-        "first_admin_display_name": "Proof bootstrap"},
-        bootstrap)
+        workspace = _post(
+            client,
+            primary,
+            "/platform/workspaces",
+            {
+                "name": "Crash after ingest",
+                "slug": run,
+                "first_admin_subject": "bootstrap-admin",
+                "first_admin_email": "bootstrap@proof.invalid",
+                "first_admin_display_name": "Proof bootstrap",
+            },
+            bootstrap,
+        )
         workspace_id = workspace["id"]
-        _post(client, primary, f"/workspaces/{workspace_id}/members", {"subject": "proof-proposer",
-        "email": "proof-proposer@proof.invalid", "display_name": "proof-proposer",
-        "role": "operator"},
-        bootstrap)
-        boot = _post(client, primary, f"/workspaces/{workspace_id}/projects/bootstrap",
-        {"project": {"name": "Crash after ingest", "slug": run},
-        "workflow": {"name": "Crash after ingest",
-        "graph": _graph()}}, bootstrap)
+        _post(
+            client,
+            primary,
+            f"/workspaces/{workspace_id}/members",
+            {
+                "subject": "proof-proposer",
+                "email": "proof-proposer@proof.invalid",
+                "display_name": "proof-proposer",
+                "role": "operator",
+            },
+            bootstrap,
+        )
+        boot = _post(
+            client,
+            primary,
+            f"/workspaces/{workspace_id}/projects/bootstrap",
+            {
+                "project": {"name": "Crash after ingest", "slug": run},
+                "workflow": {"name": "Crash after ingest", "graph": _graph()},
+            },
+            bootstrap,
+        )
         route = (
             f"/workspaces/{workspace_id}/projects/{boot['project']['id']}/"
             f"workflows/{boot['primary_workflow']['id']}/runs"
         )
-        validation = _post(client, primary, route.rsplit("/runs", 1)[0] + "/draft/validation-runs",
-        {}, proposer)
+        validation = _post(
+            client, primary, route.rsplit("/runs", 1)[0] + "/draft/validation-runs", {}, proposer
+        )
         if not validation.get("valid"):
             raise RuntimeError("public workflow validation failed")
-        _post(client, primary, route.rsplit("/runs", 1)[0] + "/versions",
-        {"reason": "crash after ingest", "expectedRevision": 1,
-        "validationRunId": validation["runId"]},
-        proposer)
-        workflow_run = _post_published_run(client, primary, route, {"inputs": {},
-        "responseMode": "async", "user": "proof-proposer", "requestId": run, "idempotencyKey": run},
-        proposer)
+        _post(
+            client,
+            primary,
+            route.rsplit("/runs", 1)[0] + "/versions",
+            {
+                "reason": "crash after ingest",
+                "expectedRevision": 1,
+                "validationRunId": validation["runId"],
+            },
+            proposer,
+        )
+        workflow_run = _post_published_run(
+            client,
+            primary,
+            route,
+            {
+                "inputs": {},
+                "responseMode": "async",
+                "user": "proof-proposer",
+                "requestId": run,
+                "idempotencyKey": run,
+            },
+            proposer,
+        )
         collections = f"{route}/{workflow_run['runId']}/iii-collections"
-        _coordination(f"{run}.arm-report-hold").write_text(json.dumps({"route": collections}),
-        encoding="utf-8")
+        _coordination(f"{run}.arm-report-hold").write_text(
+            json.dumps({"route": collections}), encoding="utf-8"
+        )
         _wait_coordination(run, "report-hold-armed")
-        submission = _post(client, primary, collections, {"version": "v1", "idempotencyKey": run,
-        "nodeId": "opencli-source", "collection": {"site": "bilibili", "command": "search",
-        "args": {"keyword": "vertical-proof"}, "sourceBindingId": "proof-binding",
-        "sourceBindingRevisionId": "proof-binding-v1", "sourceBindingRevisionNumber": 1}}, proposer)
+        submission = _post(
+            client,
+            primary,
+            collections,
+            {
+                "version": "v1",
+                "idempotencyKey": run,
+                "nodeId": "opencli-source",
+                "collection": {
+                    "site": "bilibili",
+                    "command": "search",
+                    "args": {"keyword": "vertical-proof"},
+                    "sourceBindingId": "proof-binding",
+                    "sourceBindingRevisionId": "proof-binding-v1",
+                    "sourceBindingRevisionNumber": 1,
+                },
+            },
+            proposer,
+        )
         command_id, attempt_id = submission["commandId"], submission["attemptId"]
         deadline = time.monotonic() + 60
         status: dict[str, Any] = {}
         receipt_hash = None
         while time.monotonic() < deadline:
             status = _get(client, primary, f"{collections}/{command_id}", proposer)
-            receipt_hash = next((item.get("hash") for item in status.get("evidenceReferences",
-            []) if item.get("kind") == "ingress_receipt" and item.get("hash")), None)
+            receipt_hash = next(
+                (
+                    item.get("hash")
+                    for item in status.get("evidenceReferences", [])
+                    if item.get("kind") == "ingress_receipt" and item.get("hash")
+                ),
+                None,
+            )
             if receipt_hash:
                 break
             time.sleep(0.5)
@@ -372,11 +510,15 @@ def crash_after_ingest(run: str) -> dict[str, Any]:
             json.dumps({"receiptHash": receipt_hash}), encoding="utf-8"
         )
         _wait_coordination(run, "collector-stopped")
-        materialized = _post(client, primary, f"{collections}/{command_id}/materialize", {},
-        proposer)
-        materialization = _get(client, primary,
-        f"{route}/{workflow_run['runId']}/evidence-batches/v1/{materialized['batchId']}/status",
-        proposer)
+        materialized = _post(
+            client, primary, f"{collections}/{command_id}/materialize", {}, proposer
+        )
+        materialization = _get(
+            client,
+            primary,
+            f"{route}/{workflow_run['runId']}/evidence-batches/v1/{materialized['batchId']}/status",
+            proposer,
+        )
     if materialization.get("materializationStatus") != "indeterminate":
         raise RuntimeError("public materialization was not indeterminate after collector stop")
     return _failure_result(
@@ -421,48 +563,104 @@ def iii_unreachable(run: str) -> dict[str, Any]:
     proposer = {**fleet, "Authorization": f"Bearer {os.environ['PROOF_PROPOSER_JWT']}"}
     primary = "http://proof-admin:8000/api/v1"
     with httpx.Client(timeout=60) as client:
-        workspace = _post(client, primary, "/platform/workspaces", {"name": "III unreachable",
-        "slug": run, "first_admin_subject": "bootstrap-admin",
-        "first_admin_email": "bootstrap@proof.invalid",
-        "first_admin_display_name": "Proof bootstrap"},
-        bootstrap)
+        workspace = _post(
+            client,
+            primary,
+            "/platform/workspaces",
+            {
+                "name": "III unreachable",
+                "slug": run,
+                "first_admin_subject": "bootstrap-admin",
+                "first_admin_email": "bootstrap@proof.invalid",
+                "first_admin_display_name": "Proof bootstrap",
+            },
+            bootstrap,
+        )
         workspace_id = workspace["id"]
-        _post(client, primary, f"/workspaces/{workspace_id}/members", {"subject": "proof-proposer",
-        "email": "proof-proposer@proof.invalid", "display_name": "proof-proposer",
-        "role": "operator"},
-        bootstrap)
-        boot = _post(client, primary, f"/workspaces/{workspace_id}/projects/bootstrap",
-        {"project": {"name": "III unreachable", "slug": run},
-        "workflow": {"name": "III unreachable",
-        "graph": _graph()}}, bootstrap)
+        _post(
+            client,
+            primary,
+            f"/workspaces/{workspace_id}/members",
+            {
+                "subject": "proof-proposer",
+                "email": "proof-proposer@proof.invalid",
+                "display_name": "proof-proposer",
+                "role": "operator",
+            },
+            bootstrap,
+        )
+        boot = _post(
+            client,
+            primary,
+            f"/workspaces/{workspace_id}/projects/bootstrap",
+            {
+                "project": {"name": "III unreachable", "slug": run},
+                "workflow": {"name": "III unreachable", "graph": _graph()},
+            },
+            bootstrap,
+        )
         route = (
             f"/workspaces/{workspace_id}/projects/{boot['project']['id']}/"
             f"workflows/{boot['primary_workflow']['id']}/runs"
         )
-        validation = _post(client, primary, route.rsplit("/runs", 1)[0] + "/draft/validation-runs",
-        {}, proposer)
+        validation = _post(
+            client, primary, route.rsplit("/runs", 1)[0] + "/draft/validation-runs", {}, proposer
+        )
         if not validation.get("valid"):
             raise RuntimeError("public workflow validation failed")
-        _post(client, primary, route.rsplit("/runs", 1)[0] + "/versions",
-        {"reason": "III unreachable", "expectedRevision": 1,
-        "validationRunId": validation["runId"]},
-        proposer)
-        workflow_run = _post_published_run(client, primary, route, {"inputs": {},
-        "responseMode": "async", "user": "proof-proposer", "requestId": run, "idempotencyKey": run},
-        proposer)
+        _post(
+            client,
+            primary,
+            route.rsplit("/runs", 1)[0] + "/versions",
+            {
+                "reason": "III unreachable",
+                "expectedRevision": 1,
+                "validationRunId": validation["runId"],
+            },
+            proposer,
+        )
+        workflow_run = _post_published_run(
+            client,
+            primary,
+            route,
+            {
+                "inputs": {},
+                "responseMode": "async",
+                "user": "proof-proposer",
+                "requestId": run,
+                "idempotencyKey": run,
+            },
+            proposer,
+        )
         collections = f"{route}/{workflow_run['runId']}/iii-collections"
-        _coordination(f"{run}.iii-ready").write_text(json.dumps({"route": collections}),
-        encoding="utf-8")
+        _coordination(f"{run}.iii-ready").write_text(
+            json.dumps({"route": collections}), encoding="utf-8"
+        )
         release = _coordination(f"{run}.iii-release")
         deadline = time.monotonic() + 60
         while not release.exists() and time.monotonic() < deadline:
             time.sleep(0.2)
         if not release.exists():
             raise RuntimeError("orchestrator did not arm the real III path gate")
-        submission = _post(client, primary, collections, {"version": "v1", "idempotencyKey": run,
-        "nodeId": "opencli-source", "collection": {"site": "bilibili", "command": "search",
-        "args": {"keyword": "vertical-proof"}, "sourceBindingId": "proof-binding",
-        "sourceBindingRevisionId": "proof-binding-v1", "sourceBindingRevisionNumber": 1}}, proposer)
+        submission = _post(
+            client,
+            primary,
+            collections,
+            {
+                "version": "v1",
+                "idempotencyKey": run,
+                "nodeId": "opencli-source",
+                "collection": {
+                    "site": "bilibili",
+                    "command": "search",
+                    "args": {"keyword": "vertical-proof"},
+                    "sourceBindingId": "proof-binding",
+                    "sourceBindingRevisionId": "proof-binding-v1",
+                    "sourceBindingRevisionNumber": 1,
+                },
+            },
+            proposer,
+        )
         command_id, attempt_id = submission["commandId"], submission["attemptId"]
         deadline = time.monotonic() + 30
         status: dict[str, Any] = {}
@@ -504,10 +702,19 @@ def public_setup(client: httpx.Client, run: str) -> dict[str, Any]:
     bootstrap = {**fleet, "Authorization": f"Bearer {os.environ['BOOTSTRAP_ADMIN_TOKEN']}"}
     proposer = {**fleet, "Authorization": f"Bearer {os.environ['PROOF_PROPOSER_JWT']}"}
     primary = "http://proof-admin:8000/api/v1"
-    workspace = _post(client, primary, "/platform/workspaces", {"name": "ODP loss proof",
-    "slug": run, "first_admin_subject": "bootstrap-admin",
-    "first_admin_email": "bootstrap@proof.invalid", "first_admin_display_name": "Proof bootstrap"},
-    bootstrap)
+    workspace = _post(
+        client,
+        primary,
+        "/platform/workspaces",
+        {
+            "name": "ODP loss proof",
+            "slug": run,
+            "first_admin_subject": "bootstrap-admin",
+            "first_admin_email": "bootstrap@proof.invalid",
+            "first_admin_display_name": "Proof bootstrap",
+        },
+        bootstrap,
+    )
     workspace_id = workspace["id"]
     proposer_member = _post(
         client,
@@ -521,15 +728,23 @@ def public_setup(client: httpx.Client, run: str) -> dict[str, Any]:
         },
         bootstrap,
     )
-    boot = _post(client, primary, f"/workspaces/{workspace_id}/projects/bootstrap",
-    {"project": {"name": "ODP loss proof", "slug": run}, "workflow": {"name": "ODP loss proof",
-    "graph": _graph()}}, bootstrap)
+    boot = _post(
+        client,
+        primary,
+        f"/workspaces/{workspace_id}/projects/bootstrap",
+        {
+            "project": {"name": "ODP loss proof", "slug": run},
+            "workflow": {"name": "ODP loss proof", "graph": _graph()},
+        },
+        bootstrap,
+    )
     route = (
         f"/workspaces/{workspace_id}/projects/{boot['project']['id']}/"
         f"workflows/{boot['primary_workflow']['id']}/runs"
     )
-    validation = _post(client, primary, route.rsplit("/runs", 1)[0] + "/draft/validation-runs", {},
-    proposer)
+    validation = _post(
+        client, primary, route.rsplit("/runs", 1)[0] + "/draft/validation-runs", {}, proposer
+    )
     if not validation.get("valid"):
         raise RuntimeError("public workflow validation failed")
     published_version = _post(
@@ -539,9 +754,19 @@ def public_setup(client: httpx.Client, run: str) -> dict[str, Any]:
         {"reason": "ODP loss proof", "expectedRevision": 1, "validationRunId": validation["runId"]},
         proposer,
     )
-    workflow_run = _post_published_run(client, primary, route, {"inputs": {},
-    "responseMode": "async", "user": "proof-proposer", "requestId": run, "idempotencyKey": run},
-    proposer)
+    workflow_run = _post_published_run(
+        client,
+        primary,
+        route,
+        {
+            "inputs": {},
+            "responseMode": "async",
+            "user": "proof-proposer",
+            "requestId": run,
+            "idempotencyKey": run,
+        },
+        proposer,
+    )
     return {
         "primary": primary,
         "proposer": proposer,
@@ -627,14 +852,23 @@ def public_status(client: httpx.Client, setup: dict[str, Any], command_id: str) 
     return _get(client, setup["primary"], f"{setup['collections']}/{command_id}", setup["proposer"])
 
 
-def public_materialize(client: httpx.Client, setup: dict[str, Any], command_id: str, *,
-recover: bool = False) -> dict[str, Any]:
+def public_materialize(
+    client: httpx.Client, setup: dict[str, Any], command_id: str, *, recover: bool = False
+) -> dict[str, Any]:
     action = "recover" if recover else "materialize"
-    batch = _post(client, setup["primary"], f"{setup['collections']}/{command_id}/{action}", {},
-    setup["proposer"])
-    return _get(client, setup["primary"],
-    f"{setup['route']}/{setup['runId']}/evidence-batches/v1/{batch['batchId']}/status",
-    setup["proposer"])
+    batch = _post(
+        client,
+        setup["primary"],
+        f"{setup['collections']}/{command_id}/{action}",
+        {},
+        setup["proposer"],
+    )
+    return _get(
+        client,
+        setup["primary"],
+        f"{setup['route']}/{setup['runId']}/evidence-batches/v1/{batch['batchId']}/status",
+        setup["proposer"],
+    )
 
 
 def public_recover(client: httpx.Client, setup: dict[str, Any], command_id: str) -> dict[str, Any]:
@@ -649,8 +883,11 @@ def _arm_gateway(client: httpx.Client, name: str, armed: bool) -> None:
         "store-pg-cut": "http://proof-odp-store-pg-gateway:8082",
         "store-redis-committed-xadd": "http://proof-odp-store-redis-gateway:8083",
     }
-    response = client.post(f"{controls[name]}/_gate/{name}/arm", json={"armed": armed},
-    headers={"X-API-Token": os.environ["API_AUTH_TOKEN"]})
+    response = client.post(
+        f"{controls[name]}/_gate/{name}/arm",
+        json={"armed": armed},
+        headers={"X-API-Token": os.environ["API_AUTH_TOKEN"]},
+    )
     if response.status_code != 200:
         raise RuntimeError(f"authenticated gateway arm failed: {response.status_code}")
 
@@ -742,9 +979,12 @@ def _actuate_correlated_ingress(
     if response.status_code != 200:
         raise RuntimeError(f"real III actor invocation failed: {response.status_code}")
 
+
 def _public_hash(value: dict[str, Any]) -> str:
-    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",",
-    ":")).encode()).hexdigest()
+    return hashlib.sha256(
+        json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
 
 def _public_response_hash(response: httpx.Response) -> str:
     return hashlib.sha256(response.content).hexdigest()
@@ -753,8 +993,7 @@ def _public_response_hash(response: httpx.Response) -> str:
 def _require_status(response: httpx.Response, expected: int, label: str) -> None:
     if response.status_code != expected:
         raise RuntimeError(
-            f"{label} returned {response.status_code}, expected {expected}: "
-            f"{response.text[:300]}"
+            f"{label} returned {response.status_code}, expected {expected}: {response.text[:300]}"
         )
 
 
@@ -777,6 +1016,7 @@ def _wait_for_ingress_receipt(
         "authenticated public status never exposed an ingress-receipt reference: "
         + json.dumps(last, sort_keys=True)
     )
+
 
 def _ingress_receipt_hashes(status: dict[str, Any]) -> set[str]:
     return {
@@ -929,9 +1169,7 @@ def graph_stale_auth_cas_retract(run: str) -> dict[str, Any]:
             raise RuntimeError("authenticated materialization lacked a completed graph manifest")
 
         graph_route = f"{setup['route']}/{setup['runId']}/research-graph-v2"
-        initial_response = client.get(
-            setup["primary"] + graph_route, headers=setup["proposer"]
-        )
+        initial_response = client.get(setup["primary"] + graph_route, headers=setup["proposer"])
         initial = _data(initial_response)
         hashes["graph_initial_read"] = _public_response_hash(initial_response)
         claim_id = f"graph-stale-auth-cas-retract-{run}"
@@ -992,9 +1230,7 @@ def graph_stale_auth_cas_retract(run: str) -> dict[str, Any]:
         if not isinstance(pinned_fold, dict) or pinned_fold.get("blocked"):
             raise RuntimeError("reviewer pin was not publicly readable")
 
-        pinned_read_response = client.get(
-            setup["primary"] + graph_route, headers=reviewer
-        )
+        pinned_read_response = client.get(setup["primary"] + graph_route, headers=reviewer)
         pinned_read = _data(pinned_read_response)
         hashes["graph_pinned_read"] = _public_response_hash(pinned_read_response)
         if pinned_read.get("pinnedFold") != pinned_fold:
@@ -1007,17 +1243,13 @@ def graph_stale_auth_cas_retract(run: str) -> dict[str, Any]:
             headers=setup["bootstrap"],
         )
         _require_status(downgrade_response, 200, "proposer capability downgrade")
-        hashes["proposer_capability_downgrade"] = _public_response_hash(
-            downgrade_response
-        )
+        hashes["proposer_capability_downgrade"] = _public_response_hash(downgrade_response)
 
         denied_before_response = client.get(
             setup["primary"] + graph_route, headers=setup["proposer"]
         )
         denied_before = _data(denied_before_response)
-        hashes["graph_before_wrong_capability"] = _public_response_hash(
-            denied_before_response
-        )
+        hashes["graph_before_wrong_capability"] = _public_response_hash(denied_before_response)
         if denied_before != pinned_read:
             raise RuntimeError("capability downgrade mutated the graph")
 
@@ -1061,9 +1293,7 @@ def graph_stale_auth_cas_retract(run: str) -> dict[str, Any]:
             setup["primary"] + graph_route, headers=setup["proposer"]
         )
         denied_after = _data(denied_after_response)
-        hashes["graph_after_wrong_capability"] = _public_response_hash(
-            denied_after_response
-        )
+        hashes["graph_after_wrong_capability"] = _public_response_hash(denied_after_response)
         if denied_before_response.content != denied_after_response.content:
             raise RuntimeError("403 graph mutation attempts changed authenticated graph bytes")
         if denied_after != denied_before:
@@ -1096,13 +1326,9 @@ def graph_stale_auth_cas_retract(run: str) -> dict[str, Any]:
         if stale_after != stale_before:
             raise RuntimeError("409 stale-CAS graph mutation changed public graph data")
 
-        mismatch_before_response = client.get(
-            setup["primary"] + graph_route, headers=reviewer
-        )
+        mismatch_before_response = client.get(setup["primary"] + graph_route, headers=reviewer)
         mismatch_before = _data(mismatch_before_response)
-        hashes["graph_before_pinned_mismatch"] = _public_response_hash(
-            mismatch_before_response
-        )
+        hashes["graph_before_pinned_mismatch"] = _public_response_hash(mismatch_before_response)
         mismatch_response = client.get(
             setup["primary"] + graph_route,
             params={
@@ -1113,22 +1339,16 @@ def graph_stale_auth_cas_retract(run: str) -> dict[str, Any]:
             headers=reviewer,
         )
         mismatch = _data(mismatch_response)
-        hashes["graph_pinned_reference_mismatch_read"] = _public_response_hash(
-            mismatch_response
-        )
+        hashes["graph_pinned_reference_mismatch_read"] = _public_response_hash(mismatch_response)
         if (
             mismatch.get("blocker") != "pinned_reference_mismatch"
             or mismatch.get("recoveryAction") != "re_review"
             or mismatch.get("pinnedFold", {}).get("blocked") is not True
         ):
             raise RuntimeError("mismatched pin did not return the required blocked read")
-        mismatch_after_response = client.get(
-            setup["primary"] + graph_route, headers=reviewer
-        )
+        mismatch_after_response = client.get(setup["primary"] + graph_route, headers=reviewer)
         mismatch_after = _data(mismatch_after_response)
-        hashes["graph_after_pinned_mismatch"] = _public_response_hash(
-            mismatch_after_response
-        )
+        hashes["graph_after_pinned_mismatch"] = _public_response_hash(mismatch_after_response)
         if mismatch_before_response.content != mismatch_after_response.content:
             raise RuntimeError("pinned-reference mismatch mutated graph bytes")
         if mismatch_after != mismatch_before:
@@ -1156,24 +1376,14 @@ def graph_stale_auth_cas_retract(run: str) -> dict[str, Any]:
 
         final_one_response = client.get(setup["primary"] + graph_route, headers=reviewer)
         final_one = _data(final_one_response)
-        hashes["graph_final_authenticated_read_one"] = _public_response_hash(
-            final_one_response
-        )
-        final_two_response = client.get(
-            setup["primary"] + graph_route, headers=setup["proposer"]
-        )
+        hashes["graph_final_authenticated_read_one"] = _public_response_hash(final_one_response)
+        final_two_response = client.get(setup["primary"] + graph_route, headers=setup["proposer"])
         final_two = _data(final_two_response)
-        hashes["graph_final_authenticated_read_two"] = _public_response_hash(
-            final_two_response
-        )
+        hashes["graph_final_authenticated_read_two"] = _public_response_hash(final_two_response)
         if final_one_response.content != final_two_response.content:
             raise RuntimeError("authenticated final graph reads were not byte-equivalent")
         final_claim = next(
-            (
-                claim
-                for claim in final_one.get("claims", [])
-                if claim.get("claimId") == claim_id
-            ),
+            (claim for claim in final_one.get("claims", []) if claim.get("claimId") == claim_id),
             None,
         )
         if (
@@ -1252,9 +1462,7 @@ def amendment_decision_conflict(run: str) -> dict[str, Any]:
             command="search",
         )
         hashes["submission"] = _public_hash(submission)
-        expected_report = _wait_for_expected_key_report(
-            client, setup, submission["commandId"]
-        )
+        expected_report = _wait_for_expected_key_report(client, setup, submission["commandId"])
         hashes["expected_key_report_read"] = _public_hash(expected_report)
         receipt_status, accepted_receipt = _wait_for_ingress_receipt(
             client, setup, submission["commandId"]
@@ -1411,9 +1619,7 @@ def amendment_decision_conflict(run: str) -> dict[str, Any]:
                 "authenticated recover did not append terminal N+1 for the exact key"
             )
 
-        graph_stale_response = client.get(
-            setup["primary"] + graph_route, headers=reviewer
-        )
+        graph_stale_response = client.get(setup["primary"] + graph_route, headers=reviewer)
         graph_stale = _data(graph_stale_response)
         hashes["graph_stale_manifest_read"] = _public_response_hash(graph_stale_response)
         if (
@@ -1432,12 +1638,8 @@ def amendment_decision_conflict(run: str) -> dict[str, Any]:
             },
             headers=reviewer,
         )
-        _require_status(
-            old_pin_conflict_response, 409, "old blocked-pin authorization"
-        )
-        hashes["old_blocked_pin_conflict"] = _public_response_hash(
-            old_pin_conflict_response
-        )
+        _require_status(old_pin_conflict_response, 409, "old blocked-pin authorization")
+        hashes["old_blocked_pin_conflict"] = _public_response_hash(old_pin_conflict_response)
 
         supersede_response = client.post(
             setup["primary"] + graph_route + "/mutations",
@@ -1455,9 +1657,7 @@ def amendment_decision_conflict(run: str) -> dict[str, Any]:
         )
         _require_status(supersede_response, 201, "N+1 manifest supersession")
         superseded = _data(supersede_response)
-        hashes["graph_supersede_n_plus_one"] = _public_response_hash(
-            supersede_response
-        )
+        hashes["graph_supersede_n_plus_one"] = _public_response_hash(supersede_response)
 
         second_review_response = client.post(
             setup["primary"] + graph_route + "/mutations",
@@ -1475,9 +1675,7 @@ def amendment_decision_conflict(run: str) -> dict[str, Any]:
         )
         _require_status(second_review_response, 201, "second independent verification")
         second_review = _data(second_review_response)
-        hashes["graph_verify_n_plus_one"] = _public_response_hash(
-            second_review_response
-        )
+        hashes["graph_verify_n_plus_one"] = _public_response_hash(second_review_response)
 
         pin_n_plus_one_response = client.post(
             setup["primary"] + graph_route + "/mutations",
@@ -1493,16 +1691,12 @@ def amendment_decision_conflict(run: str) -> dict[str, Any]:
         )
         _require_status(pin_n_plus_one_response, 201, "N+1 manifest pin")
         pin_n_plus_one = _data(pin_n_plus_one_response)
-        hashes["graph_pin_n_plus_one"] = _public_response_hash(
-            pin_n_plus_one_response
-        )
+        hashes["graph_pin_n_plus_one"] = _public_response_hash(pin_n_plus_one_response)
         new_pin = pin_n_plus_one.get("pinnedFold")
         if not isinstance(new_pin, dict) or new_pin.get("blocked"):
             raise RuntimeError("N+1 did not produce a fresh public graph pin")
 
-        graph_new_response = client.get(
-            setup["primary"] + graph_route, headers=setup["proposer"]
-        )
+        graph_new_response = client.get(setup["primary"] + graph_route, headers=setup["proposer"])
         graph_new = _data(graph_new_response)
         hashes["graph_new_pinned_read"] = _public_response_hash(graph_new_response)
         if (
@@ -1547,9 +1741,7 @@ def amendment_decision_conflict(run: str) -> dict[str, Any]:
         )
         _require_status(revised_target_response, 201, "delivery target revision")
         revised_target = _data(revised_target_response)
-        hashes["revised_delivery_target"] = _public_response_hash(
-            revised_target_response
-        )
+        hashes["revised_delivery_target"] = _public_response_hash(revised_target_response)
         if revised_target["revision"] != target["revision"] + 1:
             raise RuntimeError("new delivery target revision was not created")
 
@@ -1558,12 +1750,8 @@ def amendment_decision_conflict(run: str) -> dict[str, Any]:
             json=new_decision_body,
             headers=setup["proposer"],
         )
-        _require_status(
-            replay_conflict_response, 409, "changed delivery decision replay"
-        )
-        hashes["changed_decision_replay_conflict"] = _public_response_hash(
-            replay_conflict_response
-        )
+        _require_status(replay_conflict_response, 409, "changed delivery decision replay")
+        hashes["changed_decision_replay_conflict"] = _public_response_hash(replay_conflict_response)
 
     return _failure_result(
         scenario="amendment-decision-conflict",
@@ -1888,9 +2076,7 @@ def receiver_recovery(run: str) -> dict[str, Any]:
             headers=reviewer,
         )
         final_status = _data(final_status_response)
-        outcome, receipt_hash = _require_reconciled_delivery(
-            final_status, expected_attempts=3
-        )
+        outcome, receipt_hash = _require_reconciled_delivery(final_status, expected_attempts=3)
         hashes["final_delivery_status"] = _public_response_hash(final_status_response)
         if time.monotonic() > delivery_deadline:
             raise RuntimeError("receiver delivery and reconciliation exceeded 110 seconds")
@@ -2135,9 +2321,7 @@ def cancel_before_dispatch(run: str) -> dict[str, Any]:
             primary_response = primary_future.result(timeout=30)
             _require_status(primary_response, 201, "primary cancellation completion")
             primary_result = _data(primary_response)
-            _require_empty_delivery_evidence(
-                primary_result, state="cancelled", outcome="unknown"
-            )
+            _require_empty_delivery_evidence(primary_result, state="cancelled", outcome="unknown")
             hashes["primary_result"] = _public_response_hash(primary_response)
 
             final_list_response = client.get(
@@ -2148,9 +2332,7 @@ def cancel_before_dispatch(run: str) -> dict[str, Any]:
             final_items = final_list.get("items")
             if not isinstance(final_items, list) or len(final_items) != 1:
                 raise RuntimeError("control Admin did not retain one cancelled execution")
-            _require_empty_delivery_evidence(
-                final_items[0], state="cancelled", outcome="unknown"
-            )
+            _require_empty_delivery_evidence(final_items[0], state="cancelled", outcome="unknown")
             hashes["control_final_list"] = _public_response_hash(final_list_response)
             final_read_response = client.get(
                 control + f"{setup['route']}/{setup['runId']}/delivery-executions/"
@@ -2233,15 +2415,14 @@ def _read_public_execution_for_decision(
     )
     _require_status(response, 200, f"{label} execution list")
     items = _data(response).get("items")
-    matches = [
-        item
-        for item in items
-        if isinstance(item, dict) and item.get("decisionId") == decision_id
-    ] if isinstance(items, list) else []
+    matches = (
+        [item for item in items if isinstance(item, dict) and item.get("decisionId") == decision_id]
+        if isinstance(items, list)
+        else []
+    )
     if len(matches) != 1:
         raise RuntimeError(f"{label} public execution lookup was not unique: {items}")
     return response, matches[0]
-
 
 
 def _require_pending_in_flight_delivery(execution: dict[str, Any]) -> None:
@@ -2294,7 +2475,9 @@ def _require_cancelled_unknown_after_drop(execution: dict[str, Any]) -> None:
         or len(attempts) != 1
         or execution.get("reconciliations") != []
     ):
-        raise RuntimeError(f"dropped response did not leave cancelled unknown delivery: {execution}")
+        raise RuntimeError(
+            f"dropped response did not leave cancelled unknown delivery: {execution}"
+        )
     attempt = attempts[0]
     if (
         attempt.get("transport") != "http-5xx"
@@ -2303,7 +2486,9 @@ def _require_cancelled_unknown_after_drop(execution: dict[str, Any]) -> None:
         or attempt.get("protocol") != "unknown"
         or attempt.get("outcome") != "unknown"
     ):
-        raise RuntimeError(f"drop branch did not record a real dropped response attempt: {execution}")
+        raise RuntimeError(
+            f"drop branch did not record a real dropped response attempt: {execution}"
+        )
 
 
 def cancel_in_flight(run: str) -> dict[str, Any]:
@@ -2341,13 +2526,9 @@ def cancel_in_flight(run: str) -> dict[str, Any]:
             command="search",
         )
         hashes["submission"] = _public_hash(submission)
-        expected_report = _wait_for_expected_key_report(
-            client, setup, submission["commandId"]
-        )
+        expected_report = _wait_for_expected_key_report(client, setup, submission["commandId"])
         hashes["expected_key_report"] = _public_hash(expected_report)
-        _, ingress_receipt = _wait_for_ingress_receipt(
-            client, setup, submission["commandId"]
-        )
+        _, ingress_receipt = _wait_for_ingress_receipt(client, setup, submission["commandId"])
         hashes["signed_ingress_receipt"] = ingress_receipt
         materialization = _wait_for_materialization(
             client, setup, submission["commandId"], predicate=_completed_exact
@@ -2399,9 +2580,7 @@ def cancel_in_flight(run: str) -> dict[str, Any]:
             },
             headers=reviewer,
         )
-        _require_status(
-            verified_response, 201, "in-flight cancellation graph verification"
-        )
+        _require_status(verified_response, 201, "in-flight cancellation graph verification")
         verified = _data(verified_response)
         hashes["graph_verify"] = _public_response_hash(verified_response)
         pinned_response = client.post(
@@ -2421,9 +2600,7 @@ def cancel_in_flight(run: str) -> dict[str, Any]:
         if not isinstance(pinned, dict) or pinned.get("blocked"):
             raise RuntimeError("in-flight cancellation requires an eligible graph pin")
         hashes["graph_pin"] = _public_response_hash(pinned_response)
-        graph_final_response = client.get(
-            setup["primary"] + graph_route, headers=reviewer
-        )
+        graph_final_response = client.get(setup["primary"] + graph_route, headers=reviewer)
         graph_final = _data(graph_final_response)
         hashes["graph_final"] = _public_response_hash(graph_final_response)
         if graph_final.get("pinnedFold") != pinned:
@@ -2457,13 +2634,9 @@ def cancel_in_flight(run: str) -> dict[str, Any]:
                 },
                 headers=reviewer,
             )
-            _require_status(
-                decision_response, 201, f"{branch} in-flight delivery authorization"
-            )
+            _require_status(decision_response, 201, f"{branch} in-flight delivery authorization")
             decisions[branch] = _data(decision_response)
-            hashes[f"{branch}_authorization"] = _public_response_hash(
-                decision_response
-            )
+            hashes[f"{branch}_authorization"] = _public_response_hash(decision_response)
         if (
             decisions["release"]["decisionId"] == decisions["drop"]["decisionId"]
             or decisions["release"]["operationId"] == decisions["drop"]["operationId"]
@@ -2497,9 +2670,7 @@ def cancel_in_flight(run: str) -> dict[str, Any]:
                 )
             )
             _require_pending_in_flight_delivery(release_intermediate)
-            hashes["release_intermediate"] = _public_response_hash(
-                release_intermediate_response
-            )
+            hashes["release_intermediate"] = _public_response_hash(release_intermediate_response)
             release_cancel_response = client.post(
                 control
                 + f"{setup['route']}/{setup['runId']}/delivery-executions/"
@@ -2517,9 +2688,7 @@ def cancel_in_flight(run: str) -> dict[str, Any]:
             )
             release_result = _data(release_execution_response)
             release_outcome, _ = _require_signed_direct_delivery(release_result)
-            hashes["release_execution_result"] = _public_response_hash(
-                release_execution_response
-            )
+            hashes["release_execution_result"] = _public_response_hash(release_execution_response)
             release_final_response = client.get(
                 control
                 + f"{setup['route']}/{setup['runId']}/delivery-executions/"
@@ -2546,9 +2715,7 @@ def cancel_in_flight(run: str) -> dict[str, Any]:
         drop_executor = ThreadPoolExecutor(max_workers=1)
         drop_future = None
         try:
-            drop_future = drop_executor.submit(
-                execute_primary, decisions["drop"]["decisionId"]
-            )
+            drop_future = drop_executor.submit(execute_primary, decisions["drop"]["decisionId"])
             _wait_delivery_response_held(client)
             drop_intermediate_response, drop_intermediate = _read_public_execution_for_decision(
                 client,
@@ -2572,14 +2739,10 @@ def cancel_in_flight(run: str) -> dict[str, Any]:
             hashes["drop_cancel"] = _public_response_hash(drop_cancel_response)
             _set_delivery_proxy_mode(client, "drop_valid_response")
             drop_execution_response = drop_future.result(timeout=30)
-            _require_status(
-                drop_execution_response, 201, "drop original execution completion"
-            )
+            _require_status(drop_execution_response, 201, "drop original execution completion")
             drop_result = _data(drop_execution_response)
             _require_cancelled_unknown_after_drop(drop_result)
-            hashes["drop_execution_result"] = _public_response_hash(
-                drop_execution_response
-            )
+            hashes["drop_execution_result"] = _public_response_hash(drop_execution_response)
             _set_delivery_proxy_mode(client, "pass_through")
             drop_reconciliation_response = client.post(
                 control
@@ -2588,16 +2751,12 @@ def cancel_in_flight(run: str) -> dict[str, Any]:
                 json={},
                 headers=reviewer,
             )
-            _require_status(
-                drop_reconciliation_response, 200, "drop Admin reconciliation"
-            )
+            _require_status(drop_reconciliation_response, 200, "drop Admin reconciliation")
             drop_reconciliation = _data(drop_reconciliation_response)
             drop_outcome, drop_receipt_hash = _require_reconciled_delivery(
                 drop_reconciliation, expected_attempts=1
             )
-            hashes["drop_reconciliation"] = _public_response_hash(
-                drop_reconciliation_response
-            )
+            hashes["drop_reconciliation"] = _public_response_hash(drop_reconciliation_response)
             drop_final_response = client.get(
                 control
                 + f"{setup['route']}/{setup['runId']}/delivery-executions/"
@@ -2609,10 +2768,7 @@ def cancel_in_flight(run: str) -> dict[str, Any]:
             final_drop_outcome, final_drop_receipt_hash = _require_reconciled_delivery(
                 drop_final, expected_attempts=1
             )
-            if (
-                final_drop_outcome != drop_outcome
-                or final_drop_receipt_hash != drop_receipt_hash
-            ):
+            if final_drop_outcome != drop_outcome or final_drop_receipt_hash != drop_receipt_hash:
                 raise RuntimeError("drop final status diverged from signed reconciliation")
             hashes["drop_final"] = _public_response_hash(drop_final_response)
         finally:
@@ -2689,11 +2845,13 @@ def duplicate_dlq(run: str) -> dict[str, Any]:
             command="issues",
             idempotency_key="same-admin-replay",
         )
-        if (
-            replay.get("created") is not False
-            or any(replay.get(name) != first.get(name) for name in ("commandId", "attemptId", "payloadSha256"))
+        if replay.get("created") is not False or any(
+            replay.get(name) != first.get(name)
+            for name in ("commandId", "attemptId", "payloadSha256")
         ):
-            raise RuntimeError("identical authenticated replay minted a different collection intent")
+            raise RuntimeError(
+                "identical authenticated replay minted a different collection intent"
+            )
         first_status, first_receipt = _wait_for_ingress_receipt(
             client, first_setup, first["commandId"]
         )
@@ -2747,9 +2905,7 @@ def duplicate_dlq(run: str) -> dict[str, Any]:
                 command="posts",
                 idempotency_key="retained-dlq",
             )
-            dlq_status, dlq_receipt = _wait_for_ingress_receipt(
-                client, dlq_setup, dlq["commandId"]
-            )
+            dlq_status, dlq_receipt = _wait_for_ingress_receipt(client, dlq_setup, dlq["commandId"])
         finally:
             _arm_gateway(client, "ingest-redis-payload-mutator", False)
         retained_dlq = _wait_for_materialization(
@@ -2807,27 +2963,20 @@ def duplicate_dlq(run: str) -> dict[str, Any]:
                 "unknown_retention_materialization": _public_hash(unknown_retention),
             }
         )
-
-    return {
-        "scenario": "duplicate-dlq",
-        "run": run,
-        "fault": "duplicate-ingress-retained-dlq-unknown-retention",
-        "actuator": {
-            "name": "proof-iii-actuator",
-            "invocationHash": hashlib.sha256(duplicate["commandId"].encode()).hexdigest(),
-        },
-        "correlation": {
-            "commandId": duplicate["commandId"],
-            "attemptId": duplicate["attemptId"],
-            "workflowRunId": duplicate_setup["runId"],
-            "hashes": hashes,
-        },
-        "collection": {
+    return _failure_result(
+        scenario="duplicate-dlq",
+        run=run,
+        fault="duplicate-ingress-retained-dlq-unknown-retention",
+        command_id=duplicate["commandId"],
+        attempt_id=duplicate["attemptId"],
+        workflow_run_id=duplicate_setup["runId"],
+        hashes=hashes,
+        collection={
             "blockingStage": "duplicate",
             "recoveryAction": "recover",
             "sideEffectUncertainty": True,
         },
-        "materialization": {
+        materialization={
             "status": "indeterminate",
             "blocker": "unknown_retention",
             "recoveryAction": "recover",
@@ -2835,30 +2984,13 @@ def duplicate_dlq(run: str) -> dict[str, Any]:
             "reconciliationRevision": unknown_retention["reconciliationRevision"],
             "pageSnapshotAsOf": unknown_retention.get("pageSnapshotAsOf"),
         },
-        "graph": {"pin": None, "sequence": None, "readBlocker": "none", "mutationStatus": "none"},
-        "delivery": {
-            "state": "none",
-            "outcome": "none",
-            "attemptCount": 0,
-            "receiptHash": None,
-            "reconciliation": "none",
-        },
-        "redactionProfile": "failure-v1",
-        "timing": {"startedAt": 0, "completedAt": 1, "deadlineSeconds": 360},
-        "governanceReference": {
-            "artifactId": "pending",
-            "keyId": "pending",
-            "trustRootFingerprint": "pending",
-        },
-        "authority": "authenticated-scoped-public-api",
-    }
+    )
 
 
 def _storage_loss_source_id(run: str, index: int, source: str) -> str:
     """Keep public source-binding identifiers within the API's 36-byte bound."""
     run_digest = hashlib.sha256(run.encode()).hexdigest()[:16]
     return f"loss-{index}-{source[:8]}-{run_digest}"
-
 
 
 def _completed_hundred_exact(value: dict[str, Any]) -> bool:
@@ -2913,6 +3045,7 @@ def query_page_race(run: str) -> dict[str, Any]:
 
             _arm_query_page_gate(client, True)
             page_gate_armed = True
+
             def materialize() -> dict[str, Any]:
                 with httpx.Client(timeout=60) as materialize_client:
                     return public_materialize(materialize_client, setup, submission["commandId"])
@@ -3005,8 +3138,9 @@ def ingest_redis_store_loss(run: str) -> dict[str, Any]:
                 time.sleep(1)
             _arm_gateway(client, gateway, True)
             try:
-                submission = public_submit(client, setup, source_id=source_id, site=site,
-                command=command)
+                submission = public_submit(
+                    client, setup, source_id=source_id, site=site, command=command
+                )
                 command_id = submission["commandId"]
                 status = public_status(client, setup, command_id)
                 if gateway == "store-redis-committed-xadd":
@@ -3019,46 +3153,68 @@ def ingest_redis_store_loss(run: str) -> dict[str, Any]:
             finally:
                 _arm_gateway(client, gateway, False)
             recovered = public_recover(client, setup, command_id)
-            if not isinstance(recovered.get("reconciliationRevision"),
-            int) or not recovered.get("materializationStatus"):
+            if not isinstance(recovered.get("reconciliationRevision"), int) or not recovered.get(
+                "materializationStatus"
+            ):
                 raise RuntimeError("public recovery did not expose outcome and revision")
-            observations[gateway] = {"submission": submission, "status": status,
-            "materialization": recovered, "commandId": command_id,
-            "attemptId": submission["attemptId"]}
+            observations[gateway] = {
+                "submission": submission,
+                "status": status,
+                "materialization": recovered,
+                "commandId": command_id,
+                "attemptId": submission["attemptId"],
+            }
     final = observations["store-redis-committed-xadd"]
     hashes = {
-        f"{name}_status": _public_hash(value["status"])
-        for name, value in observations.items()
+        f"{name}_status": _public_hash(value["status"]) for name, value in observations.items()
     } | {
         f"{name}_materialization": _public_hash(value["materialization"])
         for name, value in observations.items()
     }
     final_status = final["materialization"]
     status = final_status.get("materializationStatus")
-    normalized = status if status in {"indeterminate", "completed_empty", "rejected", "unknown",
-    "completed"} else "unknown"
-    return {"scenario": "ingest-redis-store-loss", "run": run,
-    "fault": "ingest-redis-store-notification-loss", "actuator": {"name": "proof-iii-actuator",
-    "invocationHash": hashlib.sha256(final["commandId"].encode()).hexdigest()},
-    "correlation": {"commandId": final["commandId"], "attemptId": final["attemptId"],
-    "workflowRunId": setup["runId"], "hashes": hashes},
-    "collection": {"blockingStage": "ingress_unknown", "recoveryAction": "recover",
-    "sideEffectUncertainty": True}, "materialization": {"status": normalized, "blocker": "none",
-    "recoveryAction": "recover", "manifestHash": None,
-    "reconciliationRevision": final_status["reconciliationRevision"],
-    "pageSnapshotAsOf": final_status.get("pageSnapshotAsOf")}, "graph": {"pin": None,
-    "sequence": None,
-    "readBlocker": "none", "mutationStatus": "none"}, "delivery": {"state": "none",
-    "outcome": "none",
-    "attemptCount": 0, "receiptHash": None, "reconciliation": "none"},
-    "redactionProfile": "failure-v1", "timing": {"startedAt": 0, "completedAt": 1,
-    "deadlineSeconds": 360}, "governanceReference": {"artifactId": "pending", "keyId": "pending",
-    "trustRootFingerprint": "pending"}, "authority": "authenticated-scoped-public-api"}
+    normalized = (
+        status
+        if status
+        in {
+            "indeterminate",
+            "completed_empty",
+            "rejected",
+            "unknown",
+            "completed",
+        }
+        else "unknown"
+    )
+    return _failure_result(
+        scenario="ingest-redis-store-loss",
+        run=run,
+        fault="ingest-redis-store-notification-loss",
+        command_id=final["commandId"],
+        attempt_id=final["attemptId"],
+        workflow_run_id=setup["runId"],
+        hashes=hashes,
+        collection={
+            "blockingStage": "ingress_unknown",
+            "recoveryAction": "recover",
+            "sideEffectUncertainty": True,
+        },
+        materialization={
+            "status": normalized,
+            "blocker": "none",
+            "recoveryAction": "recover",
+            "manifestHash": None,
+            "reconciliationRevision": final_status["reconciliationRevision"],
+            "pageSnapshotAsOf": final_status.get("pageSnapshotAsOf"),
+        },
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--scenario", required=True)
     parser.add_argument("--run", required=True)
     args = parser.parse_args()
+    started_at = int(time.time())
     if args.scenario in {"admin-crash", "no-report", "signed-zero"}:
         result = admin_crash(args.run, args.scenario)
     elif args.scenario == "iii-unreachable":
@@ -3083,6 +3239,14 @@ def main() -> int:
         result = cancel_in_flight(args.run)
     else:
         raise RuntimeError("scenario driver is not implemented")
+    completed_at = int(time.time())
+    if completed_at - started_at > 360:
+        raise RuntimeError("scenario dispatch exceeded the 360 second bound")
+    result["timing"] = {
+        "startedAt": started_at,
+        "completedAt": completed_at,
+        "deadlineSeconds": 360,
+    }
     print(json.dumps(result, sort_keys=True))
     return 0
 

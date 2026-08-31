@@ -5,6 +5,7 @@ The runner is deliberately unable to mint a result from Compose state, actuator
 responses, or gate state. A scenario is signed only after the in-network driver
 has written an authenticated scoped-public-API fact document.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -39,8 +40,7 @@ ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / "tests/acceptance/fixtures/opencli-failure-proof"
 FIXTURE_DIGEST = ROOT / "tests/acceptance/fixtures/opencli-failure-proof.sha256"
 PINNED_III = (
-    "iiidev/iii:0.19.4@sha256:"
-    "14ed48b463d8a2e0d3583512acf106b3514f406c5e9965a5854710ff936e1e86"
+    "iiidev/iii:0.19.4@sha256:14ed48b463d8a2e0d3583512acf106b3514f406c5e9965a5854710ff936e1e86"
 )
 
 
@@ -98,7 +98,6 @@ def _fixture_digest() -> str:
     return actual
 
 
-
 CATALOG_NAMES = ("root", "collector", "bridge", "ingest", "store", "query")
 
 
@@ -146,9 +145,7 @@ def _catalog_digest(base: Path, overlay: Path) -> str:
             else sorted(
                 path
                 for path in input_path.rglob("*")
-                if path.is_file()
-                and "__pycache__" not in path.parts
-                and path.suffix != ".pyc"
+                if path.is_file() and "__pycache__" not in path.parts and path.suffix != ".pyc"
             )
         )
         for path in files:
@@ -164,7 +161,9 @@ def _catalog_images(digest: str) -> dict[str, str]:
 
 
 def _catalog_build_commands(
-    images: dict[str, str], *, root_cache_bust: str | None = None,
+    images: dict[str, str],
+    *,
+    root_cache_bust: str | None = None,
 ) -> tuple[tuple[str, list[str]], ...]:
     def build(image: str, dockerfile: str, context: str, *extra: str) -> list[str]:
         return [
@@ -185,7 +184,10 @@ def _catalog_build_commands(
         root_extra.extend(["--build-arg", f"PROOF_CATALOG_DIGEST={root_cache_bust}"])
     return (
         ("root", build(images["root"], "Dockerfile", ".", *root_extra)),
-        ("collector", build(images["collector"], "iii/workers/collector-opencli/Dockerfile", "iii")),
+        (
+            "collector",
+            build(images["collector"], "iii/workers/collector-opencli/Dockerfile", "iii"),
+        ),
         ("bridge", build(images["bridge"], "iii/workers/odp-ingest-bridge/Dockerfile", "iii")),
         ("ingest", build(images["ingest"], "odp-rs/Dockerfile.ingest", "odp-rs")),
         ("store", build(images["store"], "odp-rs/Dockerfile.store", "odp-rs")),
@@ -202,7 +204,9 @@ def _remaining(deadline: float) -> int:
 
 def _inspect_images(images: list[str], env: dict[str, str], *, timeout: int) -> dict[str, str]:
     result = {
-        image: _run(["docker", "image", "inspect", "--format", "{{.Id}}", image], env=env, timeout=timeout).strip()
+        image: _run(
+            ["docker", "image", "inspect", "--format", "{{.Id}}", image], env=env, timeout=timeout
+        ).strip()
         for image in images
     }
     if any(not image_id.startswith("sha256:") for image_id in result.values()):
@@ -221,9 +225,7 @@ def _build_catalog(env: dict[str, str], base: Path, overlay: Path) -> dict[str, 
     builder_env = {**env, "PROOF_CATALOG_DIGEST": digest}
     for _name, command in _catalog_build_commands(images, root_cache_bust=digest):
         _run(command, env=builder_env, timeout=_remaining(deadline))
-    catalog_ledger = ScenarioLedger(
-        "catalog", f"nbf-catalog-{digest[:12]}", ROOT, ROOT
-    )
+    catalog_ledger = ScenarioLedger("catalog", f"nbf-catalog-{digest[:12]}", ROOT, ROOT)
     catalog_env = {
         **builder_env,
         **_receiver_address_values(catalog_ledger.project, builder_env),
@@ -243,7 +245,13 @@ def _build_catalog(env: dict[str, str], base: Path, overlay: Path) -> dict[str, 
     if not set(images.values()) <= set(configured):
         raise FailureRunRejectedError("overlay does not resolve to the complete catalog")
     image_ids = _inspect_images(configured, builder_env, timeout=_remaining(deadline))
-    return {"digest": digest, "images": images, "imageIds": image_ids, "fixtureDigest": _fixture_digest()}
+    return {
+        "digest": digest,
+        "images": images,
+        "imageIds": image_ids,
+        "fixtureDigest": _fixture_digest(),
+    }
+
 
 def _compose(
     ledger: ScenarioLedger,
@@ -277,10 +285,7 @@ def _receiver_address_values(
         "PROOF_RECEIVER_GATEWAY": f"11.{digest[0]}.{digest[1]}.254",
     }
     overrides = os.environ if environment is None else environment
-    values = {
-        name: overrides.get(name, default)
-        for name, default in defaults.items()
-    }
+    values = {name: overrides.get(name, default) for name, default in defaults.items()}
     _validate_receiver_address_values(values)
     return values
 
@@ -349,15 +354,27 @@ def _configure_failure_receiver(ledger: ScenarioLedger, values: dict[str, str]) 
     )
     _run(
         [
-            "openssl", "x509", "-req", "-days", "1",
-            "-in", str(ledger.scratch / "receiver.csr"),
-            "-CA", str(ledger.scratch / "ca.pem"),
-            "-CAkey", str(ledger.scratch / "ca-key.pem"),
-            "-CAcreateserial", "-extfile", str(ledger.scratch / "receiver.ext"),
-            "-out", str(ledger.scratch / "receiver-cert.pem"),
+            "openssl",
+            "x509",
+            "-req",
+            "-days",
+            "1",
+            "-in",
+            str(ledger.scratch / "receiver.csr"),
+            "-CA",
+            str(ledger.scratch / "ca.pem"),
+            "-CAkey",
+            str(ledger.scratch / "ca-key.pem"),
+            "-CAcreateserial",
+            "-extfile",
+            str(ledger.scratch / "receiver.ext"),
+            "-out",
+            str(ledger.scratch / "receiver-cert.pem"),
         ],
         env={**os.environ},
     )
+
+
 def _admit(
     ledger: ScenarioLedger,
     env: dict[str, str],
@@ -388,6 +405,7 @@ def _admit(
     (ledger.artifact / "admission.json").write_bytes(canonical(report))
     return report
 
+
 def _facts_from_crash_after_ingest(
     ledger: ScenarioLedger,
     env: dict[str, str],
@@ -395,10 +413,23 @@ def _facts_from_crash_after_ingest(
     overlay: Path,
 ) -> dict[str, Any]:
     command = [
-        "docker", "compose", "-p", ledger.project, "-f", str(base),
-        "-f", str(overlay), "exec", "-T", "proof-driver", "python",
+        "docker",
+        "compose",
+        "-p",
+        ledger.project,
+        "-f",
+        str(base),
+        "-f",
+        str(overlay),
+        "exec",
+        "-T",
+        "proof-driver",
+        "python",
         "tests/acceptance/non_bypass_failure_driver.py",
-        "--scenario", ledger.scenario, "--run", ledger.project,
+        "--scenario",
+        ledger.scenario,
+        "--run",
+        ledger.project,
     ]
     process = subprocess.Popen(
         command,
@@ -423,10 +454,25 @@ def _facts_from_crash_after_ingest(
 
     wait_for("arm-report-hold")
     _compose(
-        ledger, env, base, overlay, "exec", "-T", "proof-driver", "curl", "-fsS",
-        "-X", "POST", "-H", f"X-API-Token: {env['API_AUTH_TOKEN']}",
-        "-H", "Content-Type: application/json", "-d", '{"mode":"hold"}',
-        "http://proof-relay:8080/_gate/report", timeout=30,
+        ledger,
+        env,
+        base,
+        overlay,
+        "exec",
+        "-T",
+        "proof-driver",
+        "curl",
+        "-fsS",
+        "-X",
+        "POST",
+        "-H",
+        f"X-API-Token: {env['API_AUTH_TOKEN']}",
+        "-H",
+        "Content-Type: application/json",
+        "-d",
+        '{"mode":"hold"}',
+        "http://proof-relay:8080/_gate/report",
+        timeout=30,
     )
     (ledger.artifact / "coordination" / f"{ledger.project}.report-hold-armed").write_text(
         "armed", encoding="utf-8"
@@ -452,14 +498,31 @@ def _facts_from_receiver_recovery(
 ) -> dict[str, Any]:
     """Restart only the delivery boundary after all faulted sends are durable."""
     command = [
-        "docker", "compose", "-p", ledger.project, "-f", str(base),
-        "-f", str(overlay), "exec", "-T", "proof-driver", "python",
+        "docker",
+        "compose",
+        "-p",
+        ledger.project,
+        "-f",
+        str(base),
+        "-f",
+        str(overlay),
+        "exec",
+        "-T",
+        "proof-driver",
+        "python",
         "tests/acceptance/non_bypass_failure_driver.py",
-        "--scenario", ledger.scenario, "--run", ledger.project,
+        "--scenario",
+        ledger.scenario,
+        "--run",
+        ledger.project,
     ]
     process = subprocess.Popen(
-        command, cwd=ROOT, env=env, text=True,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        command,
+        cwd=ROOT,
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
     )
     signal = ledger.artifact / "coordination" / f"{ledger.project}.receiver-restart-ready"
     deadline = time.monotonic() + 180
@@ -472,16 +535,32 @@ def _facts_from_receiver_recovery(
             stderr.strip() or stdout.strip() or "receiver recovery driver missed restart signal"
         )
     _compose(
-        ledger, env, base, overlay, "restart",
-        "proof-delivery-proxy", "proof-controlled-receiver", timeout=60,
+        ledger,
+        env,
+        base,
+        overlay,
+        "restart",
+        "proof-delivery-proxy",
+        "proof-controlled-receiver",
+        timeout=60,
     )
     readiness_deadline = time.monotonic() + 30
     while True:
         try:
             _compose(
-                ledger, env, base, overlay, "exec", "-T", "proof-driver",
-                "curl", "-fsS", "--cacert", "/run/proof/ca.pem",
-                "https://proof-delivery-proxy:8000/health", timeout=10,
+                ledger,
+                env,
+                base,
+                overlay,
+                "exec",
+                "-T",
+                "proof-driver",
+                "curl",
+                "-fsS",
+                "--cacert",
+                "/run/proof/ca.pem",
+                "https://proof-delivery-proxy:8000/health",
+                timeout=10,
             )
             break
         except FailureRunRejectedError:
@@ -524,18 +603,33 @@ def _facts_from_driver(
         "cancel-in-flight",
     }
     if ledger.scenario not in supported:
-        raise FailureRunRejectedError(
-            f"in-network driver is not implemented for {ledger.scenario}"
-        )
+        raise FailureRunRejectedError(f"in-network driver is not implemented for {ledger.scenario}")
     command = [
-        "docker", "compose", "-p", ledger.project, "-f", str(base),
-        "-f", str(overlay), "exec", "-T", "proof-driver", "python",
+        "docker",
+        "compose",
+        "-p",
+        ledger.project,
+        "-f",
+        str(base),
+        "-f",
+        str(overlay),
+        "exec",
+        "-T",
+        "proof-driver",
+        "python",
         "tests/acceptance/non_bypass_failure_driver.py",
-        "--scenario", ledger.scenario, "--run", ledger.project,
+        "--scenario",
+        ledger.scenario,
+        "--run",
+        ledger.project,
     ]
     process = subprocess.Popen(
-        command, cwd=ROOT, env=env, text=True,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        command,
+        cwd=ROOT,
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
     )
     if ledger.scenario in {
         "ingest-redis-store-loss",
@@ -555,37 +649,8 @@ def _facts_from_driver(
     if ledger.scenario == "signed-zero":
         stdout, stderr = process.communicate(timeout=120)
         if process.returncode:
-            diagnostic = _compose(
-                ledger, env, base, overlay, "exec", "-T", "proof-driver",
-                "curl", "-fsS", "-H", f"X-API-Token: {env['API_AUTH_TOKEN']}",
-                "http://proof-relay:8080/_gate/report-diagnostics", timeout=30,
-            )
-            collector_log = _compose(
-                ledger, env, base, overlay, "logs", "--tail", "80",
-                "proof-collector", timeout=30,
-            )
-            hash_program = (
-                "import hashlib,os; "
-                "v=os.environ.get(os.environ['PROOF_HASH_KEY'],''); "
-                "print(f'{os.environ[\"PROOF_HASH_KEY\"]}:len={len(v)}:"
-                "sha256={hashlib.sha256(v.encode()).hexdigest()}')"
-            )
-            collector_token = _compose(
-                ledger, env, base, overlay, "exec", "-T", "-e",
-                "PROOF_HASH_KEY=ADMIN_III_LIFECYCLE_TOKEN", "proof-collector",
-                "python", "-c", hash_program, timeout=30,
-            )
-            admin_token = _compose(
-                ledger, env, base, overlay, "exec", "-T", "-e",
-                "PROOF_HASH_KEY=III_LIFECYCLE_TOKEN", "proof-admin",
-                "python", "-c", hash_program, timeout=30,
-            )
             raise FailureRunRejectedError(
-                (stderr.strip() or stdout.strip() or "signed-zero driver failed")
-                + f"; relay report diagnostic: {diagnostic}; "
-                f"collector diagnostic: {collector_log}"
-                + f"; collector token: {collector_token.strip()}; "
-                f"admin token: {admin_token.strip()}"
+                stderr.strip() or stdout.strip() or "signed-zero driver failed"
             )
         return normalize_public_facts(json.loads(stdout))
     signal_name = "iii-ready" if ledger.scenario == "iii-unreachable" else "submitted"
@@ -603,28 +668,61 @@ def _facts_from_driver(
     if ledger.scenario == "admin-crash":
         _compose(ledger, env, base, overlay, "kill", "proof-admin", timeout=30)
         _compose(
-            ledger, env, base, overlay, "exec", "-T", "proof-driver", "curl",
-            "-fsS", "-X", "POST", "-H", f"X-API-Token: {env['API_AUTH_TOKEN']}",
-            "-H", "Content-Type: application/json", "-d", '{"upstream":"control"}',
-            "http://proof-relay:8080/_gate/callback-upstream", timeout=30,
+            ledger,
+            env,
+            base,
+            overlay,
+            "exec",
+            "-T",
+            "proof-driver",
+            "curl",
+            "-fsS",
+            "-X",
+            "POST",
+            "-H",
+            f"X-API-Token: {env['API_AUTH_TOKEN']}",
+            "-H",
+            "Content-Type: application/json",
+            "-d",
+            '{"upstream":"control"}',
+            "http://proof-relay:8080/_gate/callback-upstream",
+            timeout=30,
         )
         release_name = "resume"
     elif ledger.scenario == "no-report":
         _compose(
-            ledger, env, base, overlay, "exec", "-T", "proof-driver", "curl",
-            "-fsS", "-X", "POST", "-H", f"X-API-Token: {env['API_AUTH_TOKEN']}",
-            "-H", "Content-Type: application/json", "-d", '{"mode":"drop"}',
-            "http://proof-relay:8080/_gate/report", timeout=30,
+            ledger,
+            env,
+            base,
+            overlay,
+            "exec",
+            "-T",
+            "proof-driver",
+            "curl",
+            "-fsS",
+            "-X",
+            "POST",
+            "-H",
+            f"X-API-Token: {env['API_AUTH_TOKEN']}",
+            "-H",
+            "Content-Type: application/json",
+            "-d",
+            '{"mode":"drop"}',
+            "http://proof-relay:8080/_gate/report",
+            timeout=30,
         )
         release_name = "resume"
     else:
         _run(
             [
-                "docker", "network", "disconnect",
+                "docker",
+                "network",
+                "disconnect",
                 f"{ledger.project}_proof-iii-admin",
                 f"{ledger.project}-proof-admin-1",
             ],
-            env=env, timeout=30,
+            env=env,
+            timeout=30,
         )
         release_name = "iii-release"
     (ledger.artifact / "coordination" / f"{ledger.project}.{release_name}").write_text(
@@ -702,9 +800,7 @@ def _govern(
             raise ValueError("governance service response is incomplete")
         return saved, stdout.encode("utf-8")
     except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
-        raise FailureRunRejectedError(
-            "in-network governance response is invalid"
-        ) from exc
+        raise FailureRunRejectedError("in-network governance response is invalid") from exc
 
 
 def _cleanup_command(
@@ -751,15 +847,9 @@ def _remove_unused_project_networks(
             env,
             deadline=deadline,
         )
-        if (
-            inspected is None
-            or inspected.returncode
-            or inspected.stdout.strip() != "0"
-        ):
+        if inspected is None or inspected.returncode or inspected.stdout.strip() != "0":
             continue
-        deleted = _cleanup_command(
-            ["docker", "network", "rm", network_id], env, deadline=deadline
-        )
+        deleted = _cleanup_command(["docker", "network", "rm", network_id], env, deadline=deadline)
         if deleted is not None and not deleted.returncode:
             removed.append(network_id)
     return removed
@@ -811,9 +901,7 @@ def run_matrix(
         )
         os.chmod(ledger.scratch, 0o700)
         ledger.artifact.mkdir(mode=0o700, parents=True, exist_ok=True)
-        base_ledger = HappyRunLedger(
-            run_id, ledger.project, ledger.scratch, ledger.artifact
-        )
+        base_ledger = HappyRunLedger(run_id, ledger.project, ledger.scratch, ledger.artifact)
         values = _make_secrets(base_ledger)
         values.update(_receiver_address_values(ledger.project))
         _configure_failure_receiver(ledger, values)
@@ -842,8 +930,15 @@ def run_matrix(
         try:
             _admit(ledger, env, compose_file, overlay_file, catalog)
             _compose(
-                ledger, env, compose_file, overlay_file,
-                "up", "--detach", "--wait", "--no-build", timeout=120,
+                ledger,
+                env,
+                compose_file,
+                overlay_file,
+                "up",
+                "--detach",
+                "--wait",
+                "--no-build",
+                timeout=120,
             )
             if scenario == "crash-after-ingest":
                 gather = _facts_from_crash_after_ingest
@@ -854,9 +949,7 @@ def run_matrix(
             result = gather(ledger, env, compose_file, overlay_file)
             if time.monotonic() - started > 360:
                 raise FailureRunRejectedError("scenario exceeded the 360 second bound")
-            saved, saved_bytes = _govern(
-                ledger, env, compose_file, overlay_file, result
-            )
+            saved, saved_bytes = _govern(ledger, env, compose_file, overlay_file, result)
             path = ledger.artifact / "proof.json"
             path.write_bytes(saved_bytes)
             results.append(path)
@@ -868,11 +961,13 @@ def run_matrix(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--compose-file", type=Path,
+        "--compose-file",
+        type=Path,
         default=ROOT / "docker-compose.non-bypass-acceptance.yml",
     )
     parser.add_argument(
-        "--overlay-file", type=Path,
+        "--overlay-file",
+        type=Path,
         default=ROOT / "docker-compose.non-bypass-failure.yml",
     )
     parser.add_argument("--artifact-dir", type=Path, required=True)

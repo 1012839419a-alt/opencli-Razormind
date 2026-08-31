@@ -185,17 +185,6 @@ services:
       retries: 20
     labels: *failure-labels
 
-  proof-fault-gateway:
-    image: "opencli-proof-root:${PROOF_CATALOG_DIGEST:-unbound}"
-    build:
-      context: .
-      target: non-bypass-acceptance
-    command: [uvicorn, tests.acceptance.fault_tools.semantic_gateway:app, --host, 0.0.0.0, --port, "8000"]
-    environment:
-      PROOF_SCENARIO: ${PROOF_SCENARIO:-unbound}
-    networks: [proof-fault]
-    labels: *failure-labels
-
   proof-iii-actuator:
     image: "opencli-proof-root:${PROOF_CATALOG_DIGEST:-unbound}"
     build:
@@ -239,11 +228,13 @@ services:
     command: [uvicorn, scripts.proof_bundle_governance_http:app, --host, 0.0.0.0, --port, "8000"]
     environment:
       PROOF_GOVERNANCE_ROOT: /proof-artifacts/governance
+      PROOF_GOVERNANCE_KEY_ROOT: /proof-governance-keys
       PROOF_GOVERNANCE_JWKS_URL: http://proof-oidc/jwks.json
       PROOF_GOVERNANCE_ISSUER: http://proof-oidc
       PROOF_GOVERNANCE_AUDIENCE: proof-governance
     volumes:
       - ${PROOF_ARTIFACT_DIR:-./.artifacts/non-bypass-failures}:/proof-artifacts
+      - proof-governance-keys:/proof-governance-keys
     networks: [proof-control]
     depends_on:
       proof-oidc: {condition: service_healthy}
@@ -324,6 +315,10 @@ services:
     environment:
       ODP_REDIS_URL: redis://proof-odp-store-redis-gateway:6379/2
       ODP_DATABASE_URL: postgresql://proof:proof@proof-odp-store-pg-gateway:5432/proof_odp
+
+volumes:
+  proof-governance-keys:
+    labels: *failure-labels
 
 networks:
   proof-fault:

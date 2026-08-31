@@ -40,6 +40,15 @@ def _hash(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
 
 
+def _assert_driver_dispatch(capsys, handler: str) -> None:
+    result = json.loads(capsys.readouterr().out)
+    assert result["handler"] == handler
+    assert result["run"] == "r1"
+    timing = result["timing"]
+    assert timing["startedAt"] <= timing["completedAt"]
+    assert timing["completedAt"] - timing["startedAt"] <= timing["deadlineSeconds"] == 360
+
+
 def public_facts(scenario: str) -> dict:
     collection = {
         "blockingStage": "bridge_unavailable",
@@ -199,7 +208,11 @@ def public_facts(scenario: str) -> dict:
         "run": f"run-{scenario}",
         "fault": scenario,
         "actuator": {
-            "name": "proof-iii-actuator",
+            "name": (
+                "proof-iii-actuator"
+                if scenario in {"query-page-race", "amendment-decision-conflict"}
+                else "proof-public-driver"
+            ),
             "invocationHash": _hash(f"actor-{scenario}"),
         },
         "correlation": {
@@ -239,6 +252,27 @@ def test_every_matrix_row_normalizes_only_authenticated_public_facts(scenario: s
     }
 
 
+@pytest.mark.parametrize(
+    ("scenario", "wrong_name"),
+    [
+        ("admin-crash", "proof-iii-actuator"),
+        ("query-page-race", "proof-public-driver"),
+    ],
+)
+def test_mismatched_scenario_actuator_name_is_rejected(scenario: str, wrong_name: str):
+    facts = public_facts(scenario)
+    facts["actuator"]["name"] = wrong_name
+    with pytest.raises(RuntimeError, match="scenario actuator"):
+        harness.normalize_public_facts(facts)
+
+
+def test_timing_beyond_dispatch_deadline_is_rejected():
+    facts = public_facts("signed-zero")
+    facts["timing"]["completedAt"] = facts["timing"]["startedAt"] + 361
+    with pytest.raises(RuntimeError, match="timing"):
+        harness.normalize_public_facts(facts)
+
+
 def test_internal_control_state_and_terminal_page_inference_are_rejected():
     facts = public_facts("query-page-race")
     facts["gateState"] = "released"
@@ -254,8 +288,8 @@ def test_internal_control_state_and_terminal_page_inference_are_rejected():
 def test_fixture_is_pinned_and_has_only_one_zero_and_hundred_operations():
     fixture = ROOT / "tests/acceptance/fixtures/opencli-failure-proof"
     recorded = (
-        ROOT / "tests/acceptance/fixtures/opencli-failure-proof.sha256"
-    ).read_text().split()[0]
+        (ROOT / "tests/acceptance/fixtures/opencli-failure-proof.sha256").read_text().split()[0]
+    )
     assert hashlib.sha256(fixture.read_bytes()).hexdigest() == recorded
     assert (
         "hundred" in fixture.read_text()
@@ -272,13 +306,14 @@ def test_overlay_has_no_host_ports_and_internal_fault_network():
     assert compose["networks"]["proof-fault"]["internal"] is True
     assert all("ports" not in service for service in compose["services"].values())
     assert {
-        "proof-fault-gateway",
         "proof-iii-actuator",
         "proof-odp-query-pg-gate",
         "proof-governance",
         "proof-admin-control",
         "proof-odp-ingest-redis-mutator",
     } <= set(compose["services"])
+    assert "proof-fault-gateway" not in compose["services"]
+    assert not (ROOT / "tests/acceptance/fault_tools/semantic_gateway.py").exists()
     assert compose["services"]["proof-odp-ingest"]["environment"]["ODP_REDIS_URL"].startswith(
         "redis://proof-odp-ingest-redis-mutator:"
     )
@@ -291,6 +326,20 @@ def test_overlay_has_no_host_ports_and_internal_fault_network():
     assert governance["networks"] == ["proof-control"]
     assert governance["depends_on"]["proof-oidc"]["condition"] == "service_healthy"
     assert governance["environment"]["PROOF_GOVERNANCE_ROOT"] == "/proof-artifacts/governance"
+    assert governance["environment"]["PROOF_GOVERNANCE_KEY_ROOT"] == "/proof-governance-keys"
+    assert governance["volumes"] == [
+        "${PROOF_ARTIFACT_DIR:-./.artifacts/non-bypass-failures}:/proof-artifacts",
+        "proof-governance-keys:/proof-governance-keys",
+    ]
+    assert compose["volumes"]["proof-governance-keys"]["labels"] == {
+        "com.opencli.proof.release": "failure-recovery",
+        "com.opencli.proof.scenario": "${PROOF_SCENARIO:-unbound}",
+    }
+    assert [
+        name
+        for name, service in compose["services"].items()
+        if any("proof-governance-keys" in mount for mount in service.get("volumes", []))
+    ] == ["proof-governance"]
     assert governance["healthcheck"]["test"] == [
         "CMD",
         "curl",
@@ -312,6 +361,9 @@ def test_failure_runner_has_no_local_governance_authority():
     assert "Ed25519PrivateKey" not in source
     assert "http://proof-governance:8000/v1" in source
 
+    assert "report-diagnostics" not in source
+    assert "PROOF_HASH_KEY" not in source
+
 
 def test_governance_identities_are_opt_in_and_share_the_public_jwks(tmp_path):
     runner = _runner_module()
@@ -322,7 +374,12 @@ def test_governance_identities_are_opt_in_and_share_the_public_jwks(tmp_path):
     assert "PROOF_BUNDLE_WRITER_JWT" not in default
     assert "PROOF_KEY_ADMIN_JWT" not in default
 
-    scope = {"workspace": "failure", "project": "project", "workflow": "failure-matrix", "run": "run"}
+    scope = {
+        "workspace": "failure",
+        "project": "project",
+        "workflow": "failure-matrix",
+        "run": "run",
+    }
     governed: dict[str, str] = {}
     runner._make_identities(ledger, governed, governance_scope=scope)
     jwks = json.loads((ledger.scratch / "jwks.json").read_text())
@@ -337,6 +394,7 @@ def test_governance_identities_are_opt_in_and_share_the_public_jwks(tmp_path):
         assert claims["role"] == role
         assert claims["proof_scope"] == scope
 
+
 def test_callback_relay_routes_only_the_three_real_callback_paths(monkeypatch):
     relay_path = ROOT / "tests/acceptance/fault_tools/callback_relay.py"
     relay_spec = importlib.util.spec_from_file_location("callback_relay", relay_path)
@@ -349,6 +407,7 @@ def test_callback_relay_routes_only_the_three_real_callback_paths(monkeypatch):
     def proxied(url: str, **kwargs):
         calls.append(url)
         import httpx
+
         assert kwargs["headers"] == {
             "authorization": "Bearer collector-fleet-token",
             "x-iii-bridge-token": "collector-bridge-token",
@@ -394,7 +453,9 @@ def test_receipt_gate_counts_the_real_held_callback(monkeypatch):
     )
     with TestClient(relay.app) as client:
         headers = {"X-API-Token": "gate-token"}
-        assert client.post("/_gate/receipt", json={"mode": "hold"}, headers=headers).status_code == 200
+        assert (
+            client.post("/_gate/receipt", json={"mode": "hold"}, headers=headers).status_code == 200
+        )
         with ThreadPoolExecutor(max_workers=1) as executor:
             callback = executor.submit(
                 client.post,
@@ -407,8 +468,12 @@ def test_receipt_gate_counts_the_real_held_callback(monkeypatch):
                 if held["count"] == 1:
                     break
             assert held == {"count": 1}
-            assert client.post("/_gate/receipt", json={"mode": "forward"}, headers=headers).status_code == 200
+            assert (
+                client.post("/_gate/receipt", json={"mode": "forward"}, headers=headers).status_code
+                == 200
+            )
             assert callback.result(timeout=2).status_code == 202
+
 
 @pytest.mark.parametrize("scenario", ["admin-crash", "no-report"])
 def test_failure_driver_main_prints_its_fact_document(monkeypatch, capsys, scenario):
@@ -420,6 +485,8 @@ def test_failure_driver_main_prints_its_fact_document(monkeypatch, capsys, scena
     driver = importlib.util.module_from_spec(driver_spec)
     sys.modules[driver_spec.name] = driver
     driver_spec.loader.exec_module(driver)
+    clock = iter((100, 103))
+    monkeypatch.setattr(driver.time, "time", lambda: next(clock))
     monkeypatch.setattr(
         driver,
         "admin_crash",
@@ -427,15 +494,18 @@ def test_failure_driver_main_prints_its_fact_document(monkeypatch, capsys, scena
     )
     monkeypatch.setattr(sys, "argv", ["driver", "--scenario", scenario, "--run", "r1"])
     assert driver.main() == 0
-    assert __import__("json").loads(capsys.readouterr().out) == {"run": "r1", "scenario": scenario}
+    assert __import__("json").loads(capsys.readouterr().out) == {
+        "run": "r1",
+        "scenario": scenario,
+        "timing": {"startedAt": 100, "completedAt": 103, "deadlineSeconds": 360},
+    }
 
 
 def test_failure_runner_writes_selected_release_before_waiting():
     source = (ROOT / "scripts/run_non_bypass_failure_matrix.py").read_text(encoding="utf-8")
-    gate_section = source[source.index('signal_name = "iii-ready"'):]
+    gate_section = source[source.index('signal_name = "iii-ready"') :]
     release = 'f"{ledger.project}.{release_name}").write_text'
     assert gate_section.index(release) < gate_section.index("process.communicate(timeout=120)")
-
 
 
 def test_published_run_retries_only_the_documented_visibility_409(monkeypatch):
@@ -447,10 +517,12 @@ def test_published_run_retries_only_the_documented_visibility_409(monkeypatch):
     driver_spec.loader.exec_module(driver)
     import httpx
 
-    responses = iter([
-        httpx.Response(409, text="Workflow must be published before API execution"),
-        httpx.Response(200, json={"data": {"runId": "run-1"}}),
-    ])
+    responses = iter(
+        [
+            httpx.Response(409, text="Workflow must be published before API execution"),
+            httpx.Response(200, json={"data": {"runId": "run-1"}}),
+        ]
+    )
 
     class Client:
         def post(self, *_args, **_kwargs):
@@ -472,8 +544,7 @@ def test_crash_after_ingest_uses_isolated_two_phase_orchestration():
     runner = (ROOT / "scripts/run_non_bypass_failure_matrix.py").read_text(encoding="utf-8")
     assert "def crash_after_ingest(" in driver
     assert all(
-        name in driver
-        for name in ("arm-report-hold", "ingress-observed", "collector-stopped")
+        name in driver for name in ("arm-report-hold", "ingress-observed", "collector-stopped")
     )
     assert "def _facts_from_crash_after_ingest(" in runner
     assert '"stop", "proof-collector"' in runner
@@ -483,8 +554,10 @@ def test_crash_after_ingest_uses_isolated_two_phase_orchestration():
 @pytest.mark.parametrize(
     ("scenario", "handler"),
     [
-        ("admin-crash", "admin_crash"), ("no-report", "admin_crash"),
-        ("signed-zero", "admin_crash"), ("iii-unreachable", "iii_unreachable"),
+        ("admin-crash", "admin_crash"),
+        ("no-report", "admin_crash"),
+        ("signed-zero", "admin_crash"),
+        ("iii-unreachable", "iii_unreachable"),
         ("crash-after-ingest", "crash_after_ingest"),
         ("ingest-redis-store-loss", "ingest_redis_store_loss"),
     ],
@@ -615,7 +688,6 @@ def test_duplicate_dlq_row_binds_replay_duplicate_and_retention_public_outcomes(
     assert '"duplicate-dlq"' in runner
 
 
-
 def test_query_page_race_uses_real_iii_and_scoped_public_reconciliation_only():
     driver = (ROOT / "tests/acceptance/non_bypass_failure_driver.py").read_text(encoding="utf-8")
     runner = (ROOT / "scripts/run_non_bypass_failure_matrix.py").read_text(encoding="utf-8")
@@ -650,9 +722,9 @@ def test_query_page_race_uses_real_iii_and_scoped_public_reconciliation_only():
     assert compose["services"]["proof-iii-actuator"]["environment"]["PROOF_III_URL"] == (
         "ws://proof-iii:49134"
     )
-    assert compose["services"]["proof-odp-query"]["environment"]["ODP_QUERY_DATABASE_URL"].startswith(
-        "postgresql://proof:proof@proof-odp-query-pg-gate:"
-    )
+    assert compose["services"]["proof-odp-query"]["environment"][
+        "ODP_QUERY_DATABASE_URL"
+    ].startswith("postgresql://proof:proof@proof-odp-query-pg-gate:")
 
 
 def test_failure_driver_dispatches_query_page_race(monkeypatch, capsys):
@@ -660,23 +732,15 @@ def test_failure_driver_dispatches_query_page_race(monkeypatch, capsys):
     monkeypatch.setattr(
         driver, "query_page_race", lambda run: {"handler": "query_page_race", "run": run}
     )
-    monkeypatch.setattr(
-        sys, "argv", ["driver", "--scenario", "query-page-race", "--run", "r1"]
-    )
+    monkeypatch.setattr(sys, "argv", ["driver", "--scenario", "query-page-race", "--run", "r1"])
 
     assert driver.main() == 0
-    assert __import__("json").loads(capsys.readouterr().out) == {
-        "handler": "query_page_race",
-        "run": "r1",
-    }
+    _assert_driver_dispatch(capsys, "query_page_race")
+
 
 def test_graph_stale_auth_cas_retract_uses_public_graph_boundaries():
-    driver = (ROOT / "tests/acceptance/non_bypass_failure_driver.py").read_text(
-        encoding="utf-8"
-    )
-    runner = (ROOT / "scripts/run_non_bypass_failure_matrix.py").read_text(
-        encoding="utf-8"
-    )
+    driver = (ROOT / "tests/acceptance/non_bypass_failure_driver.py").read_text(encoding="utf-8")
+    runner = (ROOT / "scripts/run_non_bypass_failure_matrix.py").read_text(encoding="utf-8")
 
     assert all(
         name in driver
@@ -712,19 +776,12 @@ def test_failure_driver_dispatches_graph_stale_auth_cas_retract(monkeypatch, cap
     )
 
     assert driver.main() == 0
-    assert __import__("json").loads(capsys.readouterr().out) == {
-        "handler": "graph-stale-auth-cas-retract",
-        "run": "r1",
-    }
+    _assert_driver_dispatch(capsys, "graph-stale-auth-cas-retract")
 
 
 def test_amendment_decision_conflict_uses_public_duplicate_recovery_and_bindings():
-    driver = (ROOT / "tests/acceptance/non_bypass_failure_driver.py").read_text(
-        encoding="utf-8"
-    )
-    runner = (ROOT / "scripts/run_non_bypass_failure_matrix.py").read_text(
-        encoding="utf-8"
-    )
+    driver = (ROOT / "tests/acceptance/non_bypass_failure_driver.py").read_text(encoding="utf-8")
+    runner = (ROOT / "scripts/run_non_bypass_failure_matrix.py").read_text(encoding="utf-8")
 
     assert all(
         name in driver
@@ -762,16 +819,11 @@ def test_failure_driver_dispatches_amendment_decision_conflict(monkeypatch, caps
     )
 
     assert driver.main() == 0
-    assert __import__("json").loads(capsys.readouterr().out) == {
-        "handler": "amendment-decision-conflict",
-        "run": "r1",
-    }
+    _assert_driver_dispatch(capsys, "amendment-decision-conflict")
 
 
 def test_receiver_recovery_driver_uses_public_attempts_and_signed_reconciliation():
-    driver = (ROOT / "tests/acceptance/non_bypass_failure_driver.py").read_text(
-        encoding="utf-8"
-    )
+    driver = (ROOT / "tests/acceptance/non_bypass_failure_driver.py").read_text(encoding="utf-8")
 
     assert all(
         value in driver
@@ -826,6 +878,8 @@ def test_receiver_recovery_overlay_isolates_real_receiver_behind_tls_proxy():
     assert base["services"]["proof-controlled-receiver"]["networks"] == {
         "proof-receiver": {"ipv4_address": "8.8.8.8"}
     }
+
+
 def test_receiver_profile_routes_only_receiver_dependent_scenarios():
     runner = _runner_module()
     overlay = yaml.load(
@@ -848,6 +902,8 @@ def test_receiver_profile_routes_only_receiver_dependent_scenarios():
     assert runner._scenario_compose_profiles("receiver-recovery") == "receiver"
     assert runner._scenario_compose_profiles("cancel-in-flight") == "receiver"
     assert runner._scenario_compose_profiles("cancel-before-dispatch") == ""
+
+
 def test_driver_waits_for_healthy_control_admin_before_public_boundary():
     overlay = yaml.load(
         (ROOT / "docker-compose.non-bypass-failure.yml").read_text(encoding="utf-8"),
@@ -864,10 +920,6 @@ def test_driver_waits_for_healthy_control_admin_before_public_boundary():
         "-fsS",
         "http://localhost:8000/health",
     ]
-
-
-
-
 
 
 def test_receiver_address_tuple_is_deterministic_global_and_overrideable():
@@ -915,15 +967,12 @@ def test_receiver_address_tuple_is_deterministic_global_and_overrideable():
             runner._receiver_address_values("invalid-project", invalid)
 
 
-
 def test_cancel_before_uses_no_receiver_profile_but_configures_authorization_tuple(
     monkeypatch, tmp_path
 ):
     runner = _runner_module()
     assert runner._scenario_compose_profiles("cancel-before-dispatch") == ""
-    ledger = runner.ScenarioLedger(
-        "cancel-before-dispatch", "nbf-cancel-a1b2", tmp_path, tmp_path
-    )
+    ledger = runner.ScenarioLedger("cancel-before-dispatch", "nbf-cancel-a1b2", tmp_path, tmp_path)
     values = {
         **runner._receiver_address_values(ledger.project),
         "CONTROLLED_RECEIVER_CREDENTIALS_JSON": json.dumps({"credential": "secret"}),
@@ -934,14 +983,10 @@ def test_cancel_before_uses_no_receiver_profile_but_configures_authorization_tup
 
     runner._configure_failure_receiver(ledger, values)
 
-    registry = json.loads(values["CONTROLLED_RECEIVER_REGISTRY_JSON"])[
-        "receiver-channel-proof"
-    ]
+    registry = json.loads(values["CONTROLLED_RECEIVER_REGISTRY_JSON"])["receiver-channel-proof"]
     assert registry["url"].startswith(f"https://{values['PROOF_RECEIVER_IP']}:")
     assert registry["allowedNetworks"] == [values["PROOF_RECEIVER_SUBNET"]]
-    assert f"IP:{values['PROOF_RECEIVER_IP']}" in (
-        tmp_path / "receiver.ext"
-    ).read_text()
+    assert f"IP:{values['PROOF_RECEIVER_IP']}" in (tmp_path / "receiver.ext").read_text()
     overlay = yaml.load(
         (ROOT / "docker-compose.non-bypass-failure.yml").read_text(encoding="utf-8"),
         Loader=ComposeLoader,
@@ -959,7 +1004,6 @@ def test_cancel_before_uses_no_receiver_profile_but_configures_authorization_tup
     }
 
 
-
 def test_catalog_digest_is_address_independent_but_catalog_config_has_a_tuple(
     monkeypatch,
 ):
@@ -970,8 +1014,10 @@ def test_catalog_digest_is_address_independent_but_catalog_config_has_a_tuple(
     monkeypatch.setattr(
         runner,
         "_compose",
-        lambda _ledger, env, *_args, **_kwargs: configured_envs.append(env)
-        or "\n".join(["pinned", *runner._catalog_images("a" * 64).values()]),
+        lambda _ledger, env, *_args, **_kwargs: (
+            configured_envs.append(env)
+            or "\n".join(["pinned", *runner._catalog_images("a" * 64).values()])
+        ),
     )
     monkeypatch.setattr(
         runner,
@@ -989,25 +1035,25 @@ def test_catalog_digest_is_address_independent_but_catalog_config_has_a_tuple(
 
     assert catalog["digest"] == "a" * 64
     catalog_env = configured_envs[0]
-    receiver_values = runner._receiver_address_values(
-        "nbf-catalog-" + "a" * 12, {}
-    )
+    receiver_values = runner._receiver_address_values("nbf-catalog-" + "a" * 12, {})
     assert {name: catalog_env[name] for name in receiver_values} == receiver_values
     assert catalog_env["PROOF_CATALOG_DIGEST"] == "a" * 64
 
     assert catalog_env["COMPOSE_PROFILES"] == "receiver"
 
+
 def test_receiver_recovery_runner_restarts_only_delivery_boundary():
-    runner = (ROOT / "scripts/run_non_bypass_failure_matrix.py").read_text(
-        encoding="utf-8"
-    )
+    runner = (ROOT / "scripts/run_non_bypass_failure_matrix.py").read_text(encoding="utf-8")
 
     assert '"receiver-recovery"' in runner
     assert "def _facts_from_receiver_recovery(" in runner
-    assert '"restart",\n        "proof-delivery-proxy", "proof-controlled-receiver"' in runner
-    assert "proof-receiver-postgres" not in runner.split(
-        "def _facts_from_receiver_recovery(", 1
-    )[1].split("def _facts_from_driver(", 1)[0]
+    recovery = runner.split("def _facts_from_receiver_recovery(", 1)[1].split(
+        "def _facts_from_driver(", 1
+    )[0]
+    assert '"restart"' in recovery
+    assert '"proof-delivery-proxy"' in recovery
+    assert '"proof-controlled-receiver"' in recovery
+    assert "proof-receiver-postgres" not in recovery
 
 
 def test_failure_driver_dispatches_receiver_recovery(monkeypatch, capsys):
@@ -1015,21 +1061,14 @@ def test_failure_driver_dispatches_receiver_recovery(monkeypatch, capsys):
     monkeypatch.setattr(
         driver, "receiver_recovery", lambda run: {"handler": "receiver-recovery", "run": run}
     )
-    monkeypatch.setattr(
-        sys, "argv", ["driver", "--scenario", "receiver-recovery", "--run", "r1"]
-    )
+    monkeypatch.setattr(sys, "argv", ["driver", "--scenario", "receiver-recovery", "--run", "r1"])
 
     assert driver.main() == 0
-    assert __import__("json").loads(capsys.readouterr().out) == {
-        "handler": "receiver-recovery",
-        "run": "r1",
-    }
+    _assert_driver_dispatch(capsys, "receiver-recovery")
 
 
 def test_cancel_before_dispatch_uses_locked_database_boundary_and_public_cancel_only():
-    driver = (ROOT / "tests/acceptance/non_bypass_failure_driver.py").read_text(
-        encoding="utf-8"
-    )
+    driver = (ROOT / "tests/acceptance/non_bypass_failure_driver.py").read_text(encoding="utf-8")
 
     assert all(
         value in driver
@@ -1086,15 +1125,11 @@ def test_control_admin_can_reconcile_with_the_configured_receiver_authority():
         "CONTROLLED_RECEIVER_CREDENTIALS_JSON": "${CONTROLLED_RECEIVER_CREDENTIALS_JSON:-{}}",
         "CONTROLLED_RECEIVER_RECEIPT_KEYS_JSON": "${CONTROLLED_RECEIVER_RECEIPT_KEYS_JSON:-{}}",
     }
-    assert expected.items() <= overlay["services"]["proof-admin-control"][
-        "environment"
-    ].items()
+    assert expected.items() <= overlay["services"]["proof-admin-control"]["environment"].items()
 
 
 def test_cancellation_runners_allow_long_public_driver():
-    runner = (ROOT / "scripts/run_non_bypass_failure_matrix.py").read_text(
-        encoding="utf-8"
-    )
+    runner = (ROOT / "scripts/run_non_bypass_failure_matrix.py").read_text(encoding="utf-8")
     section = runner.split("def _facts_from_driver(", 1)[1].split(
         'if ledger.scenario == "signed-zero"', 1
     )[0]
@@ -1116,16 +1151,11 @@ def test_failure_driver_dispatches_cancel_before_dispatch(monkeypatch, capsys):
     )
 
     assert driver.main() == 0
-    assert __import__("json").loads(capsys.readouterr().out) == {
-        "handler": "cancel-before-dispatch",
-        "run": "r1",
-    }
+    _assert_driver_dispatch(capsys, "cancel-before-dispatch")
 
 
 def test_cancel_in_flight_uses_two_public_operations_and_signed_reconciliation_only():
-    driver = (ROOT / "tests/acceptance/non_bypass_failure_driver.py").read_text(
-        encoding="utf-8"
-    )
+    driver = (ROOT / "tests/acceptance/non_bypass_failure_driver.py").read_text(encoding="utf-8")
     proxy = (ROOT / "tests/acceptance/fault_tools/proof_delivery_proxy.py").read_text(
         encoding="utf-8"
     )
@@ -1159,9 +1189,7 @@ def test_cancel_in_flight_uses_two_public_operations_and_signed_reconciliation_o
             '"reconciliation": f"signed_{drop_outcome}"',
         )
     )
-    section = driver.split("def cancel_in_flight(", 1)[1].split(
-        "def duplicate_dlq(", 1
-    )[0]
+    section = driver.split("def cancel_in_flight(", 1)[1].split("def duplicate_dlq(", 1)[0]
     assert "responseHeld" not in section.split("return _failure_result(", 1)[1]
     assert "lateEffectAbsenceClaim" not in section
 
@@ -1173,20 +1201,13 @@ def test_failure_driver_dispatches_cancel_in_flight(monkeypatch, capsys):
         "cancel_in_flight",
         lambda run: {"handler": "cancel-in-flight", "run": run},
     )
-    monkeypatch.setattr(
-        sys, "argv", ["driver", "--scenario", "cancel-in-flight", "--run", "r1"]
-    )
+    monkeypatch.setattr(sys, "argv", ["driver", "--scenario", "cancel-in-flight", "--run", "r1"])
 
     assert driver.main() == 0
-    assert __import__("json").loads(capsys.readouterr().out) == {
-        "handler": "cancel-in-flight",
-        "run": "r1",
-    }
+    _assert_driver_dispatch(capsys, "cancel-in-flight")
 
 
-def test_runner_removes_only_unused_networks_from_its_own_failure_project(
-    monkeypatch, tmp_path
-):
+def test_runner_removes_only_unused_networks_from_its_own_failure_project(monkeypatch, tmp_path):
     runner = _runner_module()
     calls: list[list[str]] = []
 
@@ -1210,9 +1231,9 @@ def test_runner_removes_only_unused_networks_from_its_own_failure_project(
     monkeypatch.setattr(runner.subprocess, "run", docker)
     ledger = runner.ScenarioLedger("cancel-in-flight", "nbf-own-run", tmp_path, tmp_path)
 
-    assert runner._remove_unused_project_networks(
-        ledger, {}, deadline=time.monotonic() + 10
-    ) == ["unused"]
+    assert runner._remove_unused_project_networks(ledger, {}, deadline=time.monotonic() + 10) == [
+        "unused"
+    ]
     assert ["docker", "network", "rm", "in-use"] not in calls
 
 
@@ -1225,9 +1246,7 @@ def test_runner_never_removes_non_failure_project_networks(monkeypatch, tmp_path
     )
     ledger = runner.ScenarioLedger("cancel-in-flight", "geo-xi", tmp_path, tmp_path)
 
-    assert runner._remove_unused_project_networks(
-        ledger, {}, deadline=time.monotonic() + 10
-    ) == []
+    assert runner._remove_unused_project_networks(ledger, {}, deadline=time.monotonic() + 10) == []
 
 
 def _runner_module():
@@ -1238,6 +1257,7 @@ def _runner_module():
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
+
 
 def _failure_driver_module():
     path = ROOT / "tests/acceptance/non_bypass_failure_driver.py"
@@ -1260,43 +1280,74 @@ def test_catalog_build_occurs_once_before_multiple_fresh_rows(monkeypatch, tmp_p
     runner = _runner_module()
     calls: list[str] = []
     monkeypatch.setattr(runner, "SCENARIO_ORDER", ("first", "second"))
-    monkeypatch.setattr(runner, "_build_catalog", lambda *_args: calls.append("build") or {"digest": "catalog", "fixtureDigest": "fixture", "imageIds": {}})
+    monkeypatch.setattr(
+        runner,
+        "_build_catalog",
+        lambda *_args: (
+            calls.append("build")
+            or {"digest": "catalog", "fixtureDigest": "fixture", "imageIds": {}}
+        ),
+    )
     monkeypatch.setattr(runner, "_make_secrets", lambda _ledger: {})
     monkeypatch.setattr(runner, "_make_identities", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(runner, "_configure_failure_receiver", lambda *_args: None)
     monkeypatch.setattr(runner, "_fixture_digest", lambda: "fixture")
-    monkeypatch.setattr(runner, "_admit", lambda ledger, *_args: calls.append(f"admit:{ledger.scenario}") or {})
+    monkeypatch.setattr(
+        runner, "_admit", lambda ledger, *_args: calls.append(f"admit:{ledger.scenario}") or {}
+    )
     monkeypatch.setattr(runner, "_compose", lambda *_args, **_kwargs: "")
-    monkeypatch.setattr(runner, "_facts_from_driver", lambda ledger, *_args: {"run": ledger.project})
+    monkeypatch.setattr(
+        runner, "_facts_from_driver", lambda ledger, *_args: {"run": ledger.project}
+    )
     monkeypatch.setattr(runner, "_govern", lambda *_args: ({}, b"{}"))
     monkeypatch.setattr(runner, "_cleanup", lambda *_args: None)
-    runner.run_matrix(tmp_path, compose_file=ROOT / "docker-compose.non-bypass-acceptance.yml", overlay_file=ROOT / "docker-compose.non-bypass-failure.yml")
+    runner.run_matrix(
+        tmp_path,
+        compose_file=ROOT / "docker-compose.non-bypass-acceptance.yml",
+        overlay_file=ROOT / "docker-compose.non-bypass-failure.yml",
+    )
     assert calls == ["build", "admit:first", "admit:second"]
+
 
 def test_catalog_uses_buildx_loaded_images_not_legacy_builder():
     runner = _runner_module()
     commands = runner._catalog_build_commands(
-        {
-            name: f"opencli-proof-{name}:catalog"
-            for name in runner.CATALOG_NAMES
-        },
+        {name: f"opencli-proof-{name}:catalog" for name in runner.CATALOG_NAMES},
         root_cache_bust="catalog",
     )
     assert len(commands) == 6
     assert all(command[:4] == ["docker", "buildx", "build", "--load"] for _, command in commands)
     root_command = dict(commands)["root"]
-    assert ("--build-arg", "PROOF_CATALOG_DIGEST=catalog") in zip(
-        root_command, root_command[1:]
-    )
+    assert ("--build-arg", "PROOF_CATALOG_DIGEST=catalog") in zip(root_command, root_command[1:])
 
 
 def test_per_row_admission_only_configs_and_inspects_prebuilt_catalog(monkeypatch, tmp_path):
     runner = _runner_module()
     ledger = runner.ScenarioLedger("first", "project", tmp_path, tmp_path)
     compose_calls: list[tuple[str, ...]] = []
-    monkeypatch.setattr(runner, "_compose", lambda _ledger, _env, _base, _overlay, *args, **_kwargs: compose_calls.append(args) or "pinned\nroot")
-    monkeypatch.setattr(runner, "_inspect_images", lambda *_args, **_kwargs: {"pinned": "sha256:pinned", "root": "sha256:root"})
+    monkeypatch.setattr(
+        runner,
+        "_compose",
+        lambda _ledger, _env, _base, _overlay, *args, **_kwargs: (
+            compose_calls.append(args) or "pinned\nroot"
+        ),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_inspect_images",
+        lambda *_args, **_kwargs: {"pinned": "sha256:pinned", "root": "sha256:root"},
+    )
     monkeypatch.setattr(runner, "_fixture_digest", lambda: "fixture")
     monkeypatch.setattr(runner, "PINNED_III", "pinned")
-    runner._admit(ledger, {}, ROOT / "docker-compose.non-bypass-acceptance.yml", ROOT / "docker-compose.non-bypass-failure.yml", {"fixtureDigest": "fixture", "digest": "catalog", "imageIds": {"pinned": "sha256:pinned", "root": "sha256:root"}})
+    runner._admit(
+        ledger,
+        {},
+        ROOT / "docker-compose.non-bypass-acceptance.yml",
+        ROOT / "docker-compose.non-bypass-failure.yml",
+        {
+            "fixtureDigest": "fixture",
+            "digest": "catalog",
+            "imageIds": {"pinned": "sha256:pinned", "root": "sha256:root"},
+        },
+    )
     assert compose_calls == [("config", "--quiet"), ("config", "--images")]

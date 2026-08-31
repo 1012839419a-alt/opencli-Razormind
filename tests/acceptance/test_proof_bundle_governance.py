@@ -5,6 +5,7 @@ import contextlib
 import hashlib
 import importlib.util
 import json
+import os
 import sys
 import threading
 import time
@@ -25,10 +26,13 @@ module = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = module
 spec.loader.exec_module(module)
 
+
 def _base64url_integer(value: int) -> str:
-    return base64.urlsafe_b64encode(
-        value.to_bytes((value.bit_length() + 7) // 8, "big")
-    ).rstrip(b"=").decode("ascii")
+    return (
+        base64.urlsafe_b64encode(value.to_bytes((value.bit_length() + 7) // 8, "big"))
+        .rstrip(b"=")
+        .decode("ascii")
+    )
 
 
 @contextlib.contextmanager
@@ -121,7 +125,7 @@ def _result() -> dict:
         "run": "run-1",
         "fault": "disconnect",
         "actuator": {
-            "name": "proof-iii-actuator",
+            "name": "proof-public-driver",
             "invocationHash": _hash("actuator"),
         },
         "correlation": {
@@ -269,6 +273,47 @@ def test_tamper_and_expiry_fail_closed_without_certificate(tmp_path: Path):
     assert "signature" not in json.dumps(tombstone)
 
 
+def test_key_namespace_survives_restart_without_private_artifact_bytes(tmp_path: Path):
+    clock = [100]
+    artifact_root, key_root = tmp_path / "artifacts", tmp_path / "keys"
+    scope = {"workspace": "w", "project": "p", "workflow": "f", "run": "r"}
+    admin = module.Principal("admin", "key-admin", scope)
+    writer = module.Principal("writer", "bundle-writer", scope)
+    store = module.ProofBundleStore(artifact_root, key_root=key_root, now=lambda: clock[0])
+    first = store.bootstrap_active(admin, key_id="k1", not_before=1, not_after=1000)
+    result = _result()
+    result["run"] = "r"
+    store.create(
+        writer,
+        artifact_id="artifact-1",
+        payload=result,
+        envelope=_envelope(store, writer, result, 100),
+    )
+    store.stage_next(admin, key_id="k2", not_before=100, not_after=1000)
+    store.promote(admin, key_id="k2")
+    store.retire(admin, key_id="k1")
+    store.revoke(admin, key_id="k2")
+
+    restarted = module.ProofBundleStore(artifact_root, key_root=key_root, now=lambda: clock[0])
+    assert restarted.trust_root_fingerprint == store.trust_root_fingerprint
+    assert restarted.verify(writer, artifact_id="artifact-1")["keyId"] == first.key_id
+    assert restarted._active_key is None
+    assert restarted._keys["k1"].retired_at == 100
+    assert restarted._keys["k2"].revoked_at == 100
+    assert not list(artifact_root.rglob("*.private"))
+    assert not any(
+        b"BEGIN PRIVATE KEY" in path.read_bytes()
+        for path in artifact_root.rglob("*")
+        if path.is_file()
+    )
+    if os.name != "nt":
+        assert (key_root / "audit-root.private").stat().st_mode & 0o777 == 0o600
+        assert (key_root / "lifecycle.json").stat().st_mode & 0o777 == 0o600
+        assert (key_root / "bundle-keys" / "k1.private").stat().st_mode & 0o777 == 0o600
+    assert not (key_root / "bundle-keys" / "k2.private").exists()
+    assert restarted.read_audit(writer)[-1]["action"] == "audit.read"
+
+
 def test_audit_tampering_is_detected_before_audit_read_is_recorded(tmp_path: Path):
     clock = [100]
     store, _admin, writer = _store(tmp_path, clock)
@@ -315,14 +360,10 @@ def test_no_port_http_surface_exposes_only_authenticated_governance(tmp_path: Pa
     response = client.post("/v1/bundles", json={"payload": result})
     assert response.status_code == 200
     artifact_id = response.json()["record"]["envelope"]["artifactId"]
-    assert client.post(f"/v1/bundles/{artifact_id}/verify", json={}).json()[
-        "verified"
-    ] is True
+    assert client.post(f"/v1/bundles/{artifact_id}/verify", json={}).json()["verified"] is True
 
 
-def test_http_jwks_authentication_lifecycle_and_redacted_denials(
-    tmp_path: Path, monkeypatch
-):
+def test_http_jwks_authentication_lifecycle_and_redacted_denials(tmp_path: Path, monkeypatch):
     scope = {"workspace": "w", "project": "p", "workflow": "f", "run": "run-1"}
     with _authenticated_governance_client(tmp_path, monkeypatch) as (client, token):
         writer = {"Authorization": f"Bearer {token('bundle-writer', scope)}"}
@@ -374,17 +415,22 @@ def test_http_jwks_authentication_lifecycle_and_redacted_denials(
             json={"key_id": "next-key", "not_before": now - 1, "not_after": now + 300},
         )
         assert staged.status_code == 200
-        assert client.post(
-            "/v1/keys/promote", headers=admin, json={"key_id": "next-key"}
-        ).status_code == 200
-        assert client.post(
-            "/v1/keys/retire",
-            headers=admin,
-            json={"key_id": saved["record"]["envelope"]["keyId"]},
-        ).status_code == 200
-        assert client.post(
-            "/v1/keys/revoke", headers=admin, json={"key_id": "next-key"}
-        ).status_code == 200
+        assert (
+            client.post("/v1/keys/promote", headers=admin, json={"key_id": "next-key"}).status_code
+            == 200
+        )
+        assert (
+            client.post(
+                "/v1/keys/retire",
+                headers=admin,
+                json={"key_id": saved["record"]["envelope"]["keyId"]},
+            ).status_code
+            == 200
+        )
+        assert (
+            client.post("/v1/keys/revoke", headers=admin, json={"key_id": "next-key"}).status_code
+            == 200
+        )
 
         mismatched_scope = dict(scope, run="different-run")
         scope_denial = client.post(
@@ -403,12 +449,8 @@ def test_http_jwks_authentication_lifecycle_and_redacted_denials(
         assert tamper.status_code == 409
         assert tamper.json() == {"detail": "request denied"}
 
-        before_invalid = b"".join(
-            path.read_bytes() for path in tmp_path.rglob("audit.jsonl")
-        )
-        invalid = client.get(
-            "/v1/audit", headers={"Authorization": "Bearer definitely-not-a-jwt"}
-        )
+        before_invalid = b"".join(path.read_bytes() for path in tmp_path.rglob("audit.jsonl"))
+        invalid = client.get("/v1/audit", headers={"Authorization": "Bearer definitely-not-a-jwt"})
         assert invalid.status_code == 401
         assert invalid.json() == {"detail": "authentication denied"}
         after_invalid = b"".join(path.read_bytes() for path in tmp_path.rglob("audit.jsonl"))

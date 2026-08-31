@@ -4,6 +4,7 @@
 Only the fixed III callback routes are proxied. Switch state is gate control,
 never a proof input; callers obtain evidence from scoped Admin reads.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -14,11 +15,13 @@ import httpx
 from fastapi import FastAPI, Header, HTTPException, Request, Response
 from pydantic import BaseModel
 
-CALLBACKS = frozenset({
-    "/api/v1/iii-collections/lifecycle",
-    "/api/v1/iii-collections/expected-key-reports",
-    "/api/v1/iii-collections/ingress-receipts",
-})
+CALLBACKS = frozenset(
+    {
+        "/api/v1/iii-collections/lifecycle",
+        "/api/v1/iii-collections/expected-key-reports",
+        "/api/v1/iii-collections/ingress-receipts",
+    }
+)
 UPSTREAMS = {
     "primary": os.environ.get("PROOF_PRIMARY_ADMIN", "http://proof-admin:8000"),
     "control": os.environ.get("PROOF_CONTROL_ADMIN", "http://proof-admin-control:8000"),
@@ -29,7 +32,6 @@ report_release = asyncio.Event()
 receipt_mode: Literal["forward", "hold"] = "forward"
 receipt_release = asyncio.Event()
 receipt_held_count = 0
-report_diagnostic: dict[str, str | int] = {"status": "not-called"}
 report_release.set()
 receipt_release.set()
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
@@ -37,8 +39,6 @@ app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
 class Switch(BaseModel):
     upstream: Literal["primary", "control"]
-
-
 
 
 class ReportMode(BaseModel):
@@ -58,6 +58,7 @@ async def set_report_mode(
     else:
         report_release.set()
     return {"status": "updated"}
+
 
 class ReceiptMode(BaseModel):
     mode: Literal["forward", "hold"]
@@ -84,15 +85,6 @@ async def receipt_held(x_api_token: str | None = Header(default=None)) -> dict[s
     if x_api_token != os.environ.get("API_AUTH_TOKEN"):
         raise HTTPException(401, "gate credential denied")
     return {"count": receipt_held_count}
-
-
-@app.get("/_gate/report-diagnostics")
-async def get_report_diagnostics(
-    x_api_token: str | None = Header(default=None),
-) -> dict[str, str | int]:
-    if x_api_token != os.environ.get("API_AUTH_TOKEN"):
-        raise HTTPException(401, "gate credential denied")
-    return dict(report_diagnostic)
 
 
 @app.post("/_gate/callback-upstream")
@@ -141,9 +133,6 @@ async def callback(path: str, request: Request) -> Response:
     }
     try:
         response = httpx.post(UPSTREAMS[active] + route, content=body, headers=headers, timeout=30)
-        if route == "/api/v1/iii-collections/expected-key-reports":
-            report_diagnostic.clear()
-            report_diagnostic.update(status=response.status_code, body=response.text[:512])
     except httpx.HTTPError as exc:
         raise HTTPException(502, "selected callback upstream is unavailable") from exc
     return Response(

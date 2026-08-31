@@ -5,6 +5,7 @@ This module is intentionally a release-harness service, not an Admin API.  It
 keeps signing material outside the artifact store and exposes only public
 fingerprints and signed redacted metadata through its HTTP adapter.
 """
+
 from __future__ import annotations
 
 import base64
@@ -37,7 +38,9 @@ _SECRET = re.compile(
     r"(?:bearer|token|secret|password|credential|private|transport|receiver.*key)",
     re.I,
 )
-_RAW_LOCATION = re.compile(r"^(?:https?|file)://|(?:^|[\\/])(?:tmp|var|proof-artifacts)(?:[\\/]|$)", re.I)
+_RAW_LOCATION = re.compile(
+    r"^(?:https?|file)://|(?:^|[\\/])(?:tmp|var|proof-artifacts)(?:[\\/]|$)", re.I
+)
 _KEY_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 ENVELOPE_FIELDS = frozenset(
     {
@@ -102,9 +105,9 @@ class SigningKey:
 
 
 def canonical(value: Any) -> bytes:
-    return json.dumps(
-        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False
-    ).encode("utf-8")
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode(
+        "utf-8"
+    )
 
 
 def digest(value: Any) -> str:
@@ -144,9 +147,7 @@ def _assert_redacted(value: Any, path: str = "bundle") -> None:
         for index, child in enumerate(value):
             _assert_redacted(child, f"{path}[{index}]")
     elif isinstance(value, str) and (
-        "-----BEGIN" in value
-        or value.lower().startswith("bearer ")
-        or _RAW_LOCATION.search(value)
+        "-----BEGIN" in value or value.lower().startswith("bearer ") or _RAW_LOCATION.search(value)
     ):
         raise GovernanceDeniedError(f"private material is forbidden at {path}", 422)
 
@@ -158,19 +159,142 @@ class ProofBundleStore:
         self,
         root: Path,
         *,
+        key_root: Path | None = None,
         audit_private_key: Ed25519PrivateKey | None = None,
         now: Callable[[], int] | None = None,
     ) -> None:
         self.root = root
         self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
         os.chmod(self.root, 0o700)
+        self.key_root = key_root
         self._now = now or (lambda: int(time.time()))
-        self._audit_private = audit_private_key or Ed25519PrivateKey.generate()
-        self._audit_public = _public_bytes(self._audit_private)
-        self._audit_key_id = f"audit-root-{fingerprint(self._audit_public)[:16]}"
         self._key_private: dict[str, Ed25519PrivateKey] = {}
         self._keys: dict[str, SigningKey] = {}
         self._active_key: str | None = None
+        if key_root is None:
+            self._audit_private = audit_private_key or Ed25519PrivateKey.generate()
+        else:
+            self.key_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+            os.chmod(self.key_root, 0o700)
+            self._audit_private = self._load_audit_private(audit_private_key)
+            self._load_lifecycle()
+        self._audit_public = _public_bytes(self._audit_private)
+        self._audit_key_id = f"audit-root-{fingerprint(self._audit_public)[:16]}"
+
+    def _secret_path(self, name: str) -> Path:
+        if self.key_root is None:
+            raise RuntimeError("governance key namespace is not configured")
+        return self.key_root / name
+
+    def _write_secret(self, path: Path, value: bytes) -> None:
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(path.parent, 0o700)
+        with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as handle:
+            handle.write(value)
+            temporary = Path(handle.name)
+        os.replace(temporary, path)
+        os.chmod(path, 0o600)
+
+    def _load_audit_private(self, supplied: Ed25519PrivateKey | None) -> Ed25519PrivateKey:
+        path = self._secret_path("audit-root.private")
+        if path.exists():
+            try:
+                private = Ed25519PrivateKey.from_private_bytes(path.read_bytes())
+            except (OSError, ValueError) as exc:
+                raise RuntimeError("governance audit root is unreadable") from exc
+            if supplied is not None and _public_bytes(private) != _public_bytes(supplied):
+                raise RuntimeError("governance audit root does not match supplied key")
+            return private
+        private = supplied or Ed25519PrivateKey.generate()
+        self._write_secret(
+            path,
+            private.private_bytes(
+                serialization.Encoding.Raw,
+                serialization.PrivateFormat.Raw,
+                serialization.NoEncryption(),
+            ),
+        )
+        return private
+
+    def _lifecycle_path(self) -> Path:
+        return self._secret_path("lifecycle.json")
+
+    def _bundle_key_path(self, key_id: str) -> Path:
+        return self._secret_path("bundle-keys") / f"{key_id}.private"
+
+    def _load_lifecycle(self) -> None:
+        path = self._lifecycle_path()
+        if not path.exists():
+            return
+        try:
+            state = json.loads(path.read_text("utf-8"))
+            keys = state["keys"]
+            active_key = state["activeKey"]
+            if (
+                set(state) != {"activeKey", "keys"}
+                or not isinstance(keys, dict)
+                or active_key is not None
+                and not isinstance(active_key, str)
+            ):
+                raise ValueError("invalid lifecycle envelope")
+            loaded: dict[str, SigningKey] = {}
+            for key_id, value in keys.items():
+                if not isinstance(key_id, str) or not _KEY_ID.fullmatch(key_id):
+                    raise ValueError("invalid lifecycle key identity")
+                if not isinstance(value, dict) or set(value) != {
+                    "key_id",
+                    "public_key",
+                    "not_before",
+                    "not_after",
+                    "revoked_at",
+                    "retired_at",
+                }:
+                    raise ValueError("invalid lifecycle key")
+                key = SigningKey(**value)
+                if key.key_id != key_id:
+                    raise ValueError("lifecycle key identity mismatch")
+                loaded[key_id] = key
+                if key.revoked_at is None:
+                    private = Ed25519PrivateKey.from_private_bytes(
+                        self._bundle_key_path(key_id).read_bytes()
+                    )
+                    if _b64(_public_bytes(private)) != key.public_key:
+                        raise ValueError("lifecycle private key does not match public key")
+                    self._key_private[key_id] = private
+            if active_key is not None and active_key not in loaded:
+                raise ValueError("lifecycle active key is unknown")
+        except (KeyError, OSError, TypeError, ValueError) as exc:
+            raise RuntimeError("governance key lifecycle is unreadable") from exc
+        self._keys, self._active_key = loaded, active_key
+
+    def _persist_lifecycle(self) -> None:
+        if self.key_root is None:
+            return
+        for key_id, key in self._keys.items():
+            path = self._bundle_key_path(key_id)
+            if key.revoked_at is not None:
+                path.unlink(missing_ok=True)
+                continue
+            private = self._key_private.get(key_id)
+            if private is None:
+                raise RuntimeError("governance private key is unavailable")
+            self._write_secret(
+                path,
+                private.private_bytes(
+                    serialization.Encoding.Raw,
+                    serialization.PrivateFormat.Raw,
+                    serialization.NoEncryption(),
+                ),
+            )
+        self._write_secret(
+            self._lifecycle_path(),
+            canonical(
+                {
+                    "activeKey": self._active_key,
+                    "keys": {key_id: asdict(key) for key_id, key in self._keys.items()},
+                }
+            ),
+        )
 
     @property
     def trust_root_fingerprint(self) -> str:
@@ -227,9 +351,14 @@ class ProofBundleStore:
         previous = self._records(principal.scope)
         predecessor = digest(previous[-1]) if previous else "0" * 64
         unsigned = {
-            "auditSchemaVersion": SCHEMA_VERSION, "id": uuid.uuid4().hex, "at": self._now(),
-            "actor": principal.subject, "action": action, "artifactId": artifact_id,
-            "contentHash": content_hash, "scopeHash": self._scope_hash(principal.scope),
+            "auditSchemaVersion": SCHEMA_VERSION,
+            "id": uuid.uuid4().hex,
+            "at": self._now(),
+            "actor": principal.subject,
+            "action": action,
+            "artifactId": artifact_id,
+            "contentHash": content_hash,
+            "scopeHash": self._scope_hash(principal.scope),
             "outcome": outcome,
             "reason": reason,
             "previousHash": predecessor,
@@ -256,9 +385,8 @@ class ProofBundleStore:
     def _require_role(self, principal: Principal, role: str, action: str) -> None:
         if principal.role != role:
             self._deny(principal, action, "role is not authorized")
-    def _validate_key_id(
-        self, principal: Principal, action: str, key_id: object
-    ) -> str:
+
+    def _validate_key_id(self, principal: Principal, action: str, key_id: object) -> str:
         if not isinstance(key_id, str) or not _KEY_ID.fullmatch(key_id):
             self._deny(principal, action, "key identity is invalid", 422)
         return key_id
@@ -281,7 +409,6 @@ class ProofBundleStore:
         ):
             self._deny(principal, action, "key window is invalid", 422)
         return valid_key_id, not_before, not_after
-
 
     def _bundle_dir(self, scope: Mapping[str, str], artifact_id: str) -> Path:
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", artifact_id):
@@ -319,6 +446,7 @@ class ProofBundleStore:
         private = Ed25519PrivateKey.generate()
         key = SigningKey(key_id, _b64(_public_bytes(private)), not_before, not_after)
         self._keys[key_id], self._key_private[key_id], self._active_key = key, private, key_id
+        self._persist_lifecycle()
         self._append_audit(principal, "key.bootstrap-active")
         return key
 
@@ -339,6 +467,7 @@ class ProofBundleStore:
         private = Ed25519PrivateKey.generate()
         key = SigningKey(key_id, _b64(_public_bytes(private)), not_before, not_after)
         self._keys[key_id], self._key_private[key_id] = key, private
+        self._persist_lifecycle()
         self._append_audit(principal, "key.stage-next")
         return key
 
@@ -353,6 +482,7 @@ class ProofBundleStore:
         ):
             self._deny(principal, "key.promote", "staged key is not active-eligible", 409)
         self._active_key = key_id
+        self._persist_lifecycle()
         self._append_audit(principal, "key.promote")
         return candidate
 
@@ -366,6 +496,7 @@ class ProofBundleStore:
         self._keys[key_id] = retired
         if self._active_key == key_id:
             self._active_key = None
+        self._persist_lifecycle()
         self._append_audit(principal, "key.retire")
         return retired
 
@@ -381,6 +512,7 @@ class ProofBundleStore:
         self._key_private.pop(key_id, None)
         if self._active_key == key_id:
             self._active_key = None
+        self._persist_lifecycle()
         self._append_audit(principal, "key.revoke")
         return revoked
 
@@ -474,6 +606,7 @@ class ProofBundleStore:
             content_hash=content_hash,
         )
         return saved
+
     def bootstrap_for_scope(self, principal: Principal) -> SigningKey:
         """Create the service-selected initial key for one fresh scope."""
         now = self._now()
@@ -495,9 +628,10 @@ class ProofBundleStore:
         except (GovernanceDeniedError, TypeError, ValueError) as exc:
             self._deny(principal, "bundle.create", "bundle payload is invalid", 422)
             raise AssertionError("unreachable") from exc
-        if result.get("schemaVersion") != BUNDLE_SCHEMA or result.get("run") != principal.scope[
-            "run"
-        ]:
+        if (
+            result.get("schemaVersion") != BUNDLE_SCHEMA
+            or result.get("run") != principal.scope["run"]
+        ):
             self._deny(principal, "bundle.create", "bundle scope is invalid", 422)
         if not isinstance(result.get("scenario"), str) or not result["scenario"]:
             self._deny(principal, "bundle.create", "bundle payload is invalid", 422)
@@ -541,7 +675,6 @@ class ProofBundleStore:
             payload=result,
             envelope=envelope,
         )
-
 
     def _expire(
         self,
@@ -642,9 +775,7 @@ class ProofBundleStore:
                 raise GovernanceDeniedError("audit continuity is invalid", 409)
             unsigned = {key: value for key, value in record.items() if key != "signature"}
             try:
-                self._audit_public_key().verify(
-                    _unb64(record["signature"]), canonical(unsigned)
-                )
+                self._audit_public_key().verify(_unb64(record["signature"]), canonical(unsigned))
             except (InvalidSignature, GovernanceDeniedError) as exc:
                 raise GovernanceDeniedError("audit signature is invalid", 409) from exc
             predecessor = digest(record)
@@ -661,7 +792,6 @@ class ProofBundleStore:
             self._deny(principal, "audit.read", str(exc), exc.status_code)
         self._append_audit(principal, "audit.read")
         return self._verify_audit_chain(principal.scope)
-
 
     def read_trust_root(self, principal: Principal) -> dict[str, str]:
         self._require_role(principal, "bundle-writer", "trust-root.read")
@@ -710,9 +840,7 @@ def create_app(store: ProofBundleStore, authenticate: Callable[[Request], Princi
 
     @app.post("/v1/bundles")
     async def create_bundle(request: Request, actor: Principal = Depends(principal)) -> Any:
-        value = await body(
-            request, actor, action="bundle.create", fields=frozenset({"payload"})
-        )
+        value = await body(request, actor, action="bundle.create", fields=frozenset({"payload"}))
         return invoke(lambda: store.certify(actor, payload=value["payload"]))
 
     @app.get("/v1/bundles/{artifact_id}")
@@ -731,9 +859,7 @@ def create_app(store: ProofBundleStore, authenticate: Callable[[Request], Princi
         return invoke(lambda: store.read_audit(actor))
 
     @app.post("/v1/keys/bootstrap-active")
-    async def bootstrap_key(
-        request: Request, actor: Principal = Depends(principal)
-    ) -> Any:
+    async def bootstrap_key(request: Request, actor: Principal = Depends(principal)) -> Any:
         await body(request, actor, action="key.bootstrap-active", fields=frozenset())
         return invoke(lambda: asdict(store.bootstrap_for_scope(actor)))
 
@@ -749,13 +875,10 @@ def create_app(store: ProofBundleStore, authenticate: Callable[[Request], Princi
         "retire": "retire",
         "revoke": "revoke",
     }
+
     def key_operation(route: str, fields: frozenset[str]) -> Callable[..., Any]:
-        async def endpoint(
-            request: Request, actor: Principal = Depends(principal)
-        ) -> Any:
-            value = await body(
-                request, actor, action=f"key.{route}", fields=fields
-            )
+        async def endpoint(request: Request, actor: Principal = Depends(principal)) -> Any:
+            value = await body(request, actor, action=f"key.{route}", fields=fields)
             method = getattr(store, key_methods[route])
             return invoke(lambda: asdict(method(actor, **value)))
 
