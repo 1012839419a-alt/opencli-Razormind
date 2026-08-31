@@ -24,6 +24,8 @@ _GATE_PORT = int(os.environ.get("GATE_PORT", "5432"))
 _COORDINATION_ROOT = Path(os.environ.get("PROOF_ARTIFACT_DIR", "/proof-artifacts")) / "coordination"
 
 
+
+
 def _normalized_sql(sql: bytes) -> bytes:
     return b" ".join(sql.lower().split())
 
@@ -227,30 +229,6 @@ class ConnectionFlow:
             self.stage = "await_locked_read"
 
 
-class RelayConnections:
-    """Discard pre-arm primary pool sockets so one fresh connection owns the fence."""
-
-    def __init__(self) -> None:
-        self._writers: set[asyncio.StreamWriter] = set()
-
-    def add(self, writer: asyncio.StreamWriter) -> None:
-        self._writers.add(writer)
-
-    def discard(self, writer: asyncio.StreamWriter) -> None:
-        self._writers.discard(writer)
-
-    async def close_all(self) -> None:
-        writers = tuple(self._writers)
-        for writer in writers:
-            writer.close()
-        if writers:
-            await asyncio.gather(
-                *(writer.wait_closed() for writer in writers),
-                return_exceptions=True,
-            )
-
-
-_connections = RelayConnections()
 
 
 class CancellationGate:
@@ -278,7 +256,6 @@ class CancellationGate:
             self._commit_completed = False
             signal = _COORDINATION_ROOT / f"{run}.cancel-before-dispatch-held"
             signal.unlink(missing_ok=True)
-        await _connections.close_all()
 
     async def should_hold(self, flow: ConnectionFlow, frame: FrontendFrame) -> bool:
         flow.should_hold(frame)
@@ -372,7 +349,6 @@ async def _handle_client(
     upstream_writer: asyncio.StreamWriter | None = None
     backend_task: asyncio.Task[None] | None = None
     try:
-        _connections.add(client_writer)
         upstream_reader, upstream_writer = await asyncio.open_connection(_TARGET_HOST, _TARGET_PORT)
         flow = ConnectionFlow()
         backend_frames = BackendFrames()
@@ -391,7 +367,6 @@ async def _handle_client(
     except (ConnectionError, ValueError):
         pass
     finally:
-        _connections.discard(client_writer)
         if upstream_writer is not None:
             upstream_writer.close()
             await upstream_writer.wait_closed()
