@@ -246,6 +246,7 @@ async def test_capture_agent_mode_dispatches_native_runtime_and_maps_browser_evi
             "result": {
                 "text": (
                     '{"status":"completed","answer":"answer",'
+                    '"answer_complete":true,"conversation_deleted":true,'
                     '"data":[{"point":"value"}],'
                     '"links":[{"url":"https://example.test/source"}],'
                     '"conversation_url":"https://www.doubao.com/chat/123",'
@@ -323,7 +324,9 @@ async def test_capture_agent_mode_can_dispatch_bbx_on_the_same_vnc_agent(monkeyp
             "result": {
                 "text": (
                     '{"status":"completed","answer":"answer",'
-                    '"data":[],"links":[],"conversation_url":"https://www.doubao.com/chat/123",'
+                    '"answer_complete":true,"conversation_deleted":true,'
+                    '"data":[],"links":[{"url":"https://example.test/source"}],'
+                    '"conversation_url":"https://www.doubao.com/chat/123",'
                     '"session_share_data":{"url":"https://www.doubao.com/chat/123"},'
                     '"suggested_keywords":["follow-up"]}'
                 )
@@ -354,6 +357,48 @@ async def test_capture_agent_mode_can_dispatch_bbx_on_the_same_vnc_agent(monkeyp
     assert captured["task"]["required_capabilities"] == ["browser", "tool_events"]
     assert captured["task"]["permissions"]["tool_scope"] == ["bbx.browser"]
     assert result.items[0]["provenance"] == "agent:bbx:browser:bbx"
+    assert result.items[0]["conversation_deleted"] is True
+    assert result.items[0]["answer_complete"] is True
+    assert result.items[0]["citations"] == [{"url": "https://example.test/source"}]
+
+
+@pytest.mark.asyncio
+async def test_agent_capture_fails_closed_when_conversation_cleanup_is_unconfirmed(
+    monkeypatch,
+):
+    package = build_question_package(
+        node_params={"question": "q"}, adapter_config={}, runtime_payload={}
+    )
+
+    async def fake_select(_session, _adapter_config):
+        return "http://agent-1:19823", "bbx"
+
+    async def fake_send(_agent_url, _task, _on_event, timeout):
+        assert timeout >= 30
+        return {
+            "type": "done",
+            "result": {
+                "text": (
+                    '{"status":"completed","answer":"完整回答",'
+                    '"answer_complete":true,"conversation_deleted":false,'
+                    '"links":[],"suggested_keywords":[]}'
+                )
+            },
+        }
+
+    monkeypatch.setattr(runtime, "_select_local_agent", fake_select)
+    monkeypatch.setattr("backend.ws_agent_manager.send_agent_task", fake_send)
+
+    result = await runtime._capture_live_doubao_via_agent(
+        package=package,
+        adapter_config={},
+        session=None,
+        workflow_id="workflow",
+        run_id="run",
+    )
+
+    assert result.success is False
+    assert result.error_type == "doubao_conversation_cleanup_failed"
 
 
 def test_capture_mapping_keeps_package_and_independent_evidence():
@@ -481,6 +526,161 @@ async def test_hda_live_source_branch_maps_capture_output(monkeypatch):
     assert raw["gaojixing"]["evidence"]["packageDigest"] == raw["packageDigest"]
     assert item["lineage"][0]["artifact"] == "gaojixing.capture"
     assert [event[1] for event in emitter.events] == ["partial", "completed"]
+
+
+@pytest.mark.asyncio
+async def test_hda_live_source_preserves_feishu_identity_and_business_number(monkeypatch):
+    node = SimpleNamespace(
+        id="gaojixing-source",
+        kind="source",
+        adapter=None,
+        depends_on=["feishu-keywords"],
+        params={"question": "{{keyword}}", "sourceGroup": "gaojixing"},
+        runtime={
+            "binding": {
+                "binding_id": "workflow.source.fetch",
+                "input": {
+                    "channelType": "doubao_research",
+                    "liveMode": "live",
+                    "adapterConfig": {"capabilityId": GAOJIXING_CAPABILITY_ID},
+                },
+            }
+        },
+    )
+    body = SimpleNamespace(
+        input=SimpleNamespace(payload={}),
+        project=SimpleNamespace(
+            id="workflow",
+            agentPermissions=SimpleNamespace(canFetchNetwork=True),
+        ),
+    )
+    emitter = _Emitter()
+    outputs = {
+        "feishu-keywords": [
+            {
+                "raw": {
+                    "id": "feishu:source:rec-23",
+                    "source_row_id": "rec-23",
+                    "source_number": "23",
+                    "keyword": "宝宝DHA",
+                    "source": "feishu_table",
+                    "source_group": "feishu-keywords",
+                    "fields": {"编号": "23", "推荐追问": "宝宝DHA"},
+                    "feishu": {"record_id": "rec-23", "table_id": "sheet-1"},
+                },
+                "lineage": [{"nodeId": "feishu-keywords", "index": 22}],
+            }
+        ]
+    }
+
+    async def fake_capture(**kwargs):
+        assert kwargs["package"].question == "宝宝DHA"
+        return ChannelResult.ok(
+            [
+                {
+                    "content": "完整回答",
+                    "answer_complete": True,
+                    "conversation_deleted": True,
+                    "citations": [{"url": "https://example.test/source"}],
+                    "conversation_url": "https://www.doubao.com/chat/123",
+                }
+            ]
+        )
+
+    monkeypatch.setattr("backend.workflow.opencli_hda_tracer.capture_live_doubao", fake_capture)
+    await _execute_gaojixing_source(
+        node,
+        body=body,
+        run_id="run",
+        workflow_id="workflow",
+        trace_id="trace",
+        outputs_by_node=outputs,
+        emitter=emitter,
+        session=None,
+    )
+
+    item = outputs["gaojixing-source"][0]
+    raw = item["raw"]
+    assert raw["source_row_id"] == "rec-23"
+    assert raw["source_number"] == "23"
+    assert raw["source_fields"] == {"编号": "23", "推荐追问": "宝宝DHA"}
+    assert raw["source_record"]["table_id"] == "sheet-1"
+    assert raw["dedupe"] == {
+        "type": "source-identity",
+        "field": "source_row_id",
+        "value": "rec-23",
+        "status": "unique",
+    }
+    assert item["lineage"][-1]["sourceRowId"] == "rec-23"
+    assert item["lineage"][-1]["sourceNumber"] == "23"
+
+
+@pytest.mark.asyncio
+async def test_hda_live_source_keeps_completed_prefix_when_later_capture_fails(monkeypatch):
+    node = SimpleNamespace(
+        id="gaojixing-source",
+        kind="source",
+        adapter=None,
+        depends_on=["feishu-keywords"],
+        params={"question": "{{keyword}}", "sourceGroup": "gaojixing"},
+        runtime={
+            "binding": {
+                "input": {
+                    "channelType": "doubao_research",
+                    "liveMode": "live",
+                    "adapterConfig": {"capabilityId": GAOJIXING_CAPABILITY_ID},
+                }
+            }
+        },
+    )
+    body = SimpleNamespace(
+        input=SimpleNamespace(payload={}),
+        project=SimpleNamespace(
+            id="workflow",
+            agentPermissions=SimpleNamespace(canFetchNetwork=True),
+        ),
+    )
+    emitter = _Emitter()
+    outputs = {
+        "feishu-keywords": [
+            {"raw": {"source_row_id": "rec-1", "keyword": "问题一"}, "lineage": []},
+            {"raw": {"source_row_id": "rec-2", "keyword": "问题二"}, "lineage": []},
+        ]
+    }
+    calls = 0
+
+    async def fake_capture(**kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            return ChannelResult.fail("agent disconnected", error_type="AgentDisconnected")
+        return ChannelResult.ok(
+            [
+                {
+                    "content": "完整回答",
+                    "answer_complete": True,
+                    "conversation_deleted": True,
+                    "citations": [],
+                    "conversation_url": "https://www.doubao.com/chat/1",
+                }
+            ]
+        )
+
+    monkeypatch.setattr("backend.workflow.opencli_hda_tracer.capture_live_doubao", fake_capture)
+    await _execute_gaojixing_source(
+        node,
+        body=body,
+        run_id="run",
+        workflow_id="workflow",
+        trace_id="trace",
+        outputs_by_node=outputs,
+        emitter=emitter,
+        session=None,
+    )
+
+    assert len(outputs["gaojixing-source"]) == 1
+    assert outputs["gaojixing-source"][0]["raw"]["source_row_id"] == "rec-1"
+    assert [event[1] for event in emitter.events][-2:] == ["partial", "failed"]
 
 
 @pytest.mark.asyncio

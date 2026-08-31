@@ -249,7 +249,12 @@ async def _capture_live_doubao_via_agent(
     }
     if isinstance(chrome, bool):
         config["chrome"] = chrome
-    for key in ("settle_seconds",):
+    for key in (
+        "settle_seconds",
+        "response_timeout_seconds",
+        "suggested_wait_seconds",
+        "stable_observations",
+    ):
         if key in adapter_config:
             config[key] = adapter_config[key]
 
@@ -263,11 +268,13 @@ async def _capture_live_doubao_via_agent(
         "If a CAPTCHA or human verification appears, do not bypass it: return the "
         "blocked JSON below immediately. Do not invent URLs or data. Return ONLY one "
         "JSON object, with no Markdown fence or commentary, using this shape: "
-        '{"status":"completed","answer":"...","data":[],"links":[],'
+        '{"status":"completed","answer":"...","answer_complete":true,'
+        '"conversation_deleted":true,"data":[],"links":[],'
         '"conversation_url":"https://www.doubao.com/chat/<id>",'
         '"session_share_data":[],"suggested_keywords":[]}. '
         'For a verification wall use {"status":"blocked","error_type":"captcha_challenge",'
-        '"message":"human verification is required","answer":"","data":[],"links":[],'
+        '"message":"human verification is required","answer":"",'
+        '"answer_complete":false,"conversation_deleted":false,"data":[],"links":[],'
         '"conversation_url":"","session_share_data":[],"suggested_keywords":[]}. '
         "The conversation_url must be the actual current Doubao chat URL, if visible. "
         "links must contain only observed source URLs. suggested_keywords must contain "
@@ -300,7 +307,9 @@ async def _capture_live_doubao_via_agent(
             "answer",
             "links",
             "conversation_url",
-            "suggested_keywords",
+        "suggested_keywords",
+        "answer_complete",
+        "conversation_deleted",
         ],
     }
 
@@ -376,12 +385,28 @@ async def _capture_live_doubao_via_agent(
             agent_url=agent_url,
             agent_runtime=runtime,
         )
+    if response_data.get("answer_complete") is not True:
+        return _agent_failure(
+            "Local Agent did not confirm that the Doubao answer was complete",
+            "doubao_response_incomplete",
+            agent_url=agent_url,
+            agent_runtime=runtime,
+        )
+    if response_data.get("conversation_deleted") is not True:
+        return _agent_failure(
+            "Doubao conversation deletion was not confirmed; collection stopped",
+            "doubao_conversation_cleanup_failed",
+            agent_url=agent_url,
+            agent_runtime=runtime,
+        )
 
     conversation_url = _conversation_url_from_response(response_data)
     share_data = structured.get("session_share_data")
     if not share_data and conversation_url:
         share_data = {"url": conversation_url, "type": "conversation"}
-    citations = _citations(text)
+    citations = [
+        item for item in _citations(answer) if _is_external_evidence_url(item.get("url"))
+    ]
     links = _normalize_links(structured.get("links"))
     if links:
         citations = _merge_links(citations, links)
@@ -393,12 +418,16 @@ async def _capture_live_doubao_via_agent(
         "question": package.question,
         "conversation_url": conversation_url,
         "answer": answer,
+        "answer_complete": True,
+        "conversation_deleted": True,
         "data": structured.get("data", []),
         "links": normalized_links,
         "response_data": response_data,
         "raw_answer": text,
         "session_share_data": share_data or [],
         "suggested_keywords": structured.get("suggested_keywords", []),
+        "search_keyword_count": response_data.get("search_keyword_count"),
+        "reference_count": response_data.get("reference_count"),
         "citations": citations,
         "citation_count": len(citations),
         "citation_capture": "agent_browser_observation",
@@ -515,9 +544,13 @@ def _normalize_links(value: Any) -> list[dict[str, Any]]:
     for item in value:
         if isinstance(item, dict):
             url = _string(item.get("url") or item.get("href"))
-            if url:
+            if url and _is_external_evidence_url(url):
                 links.append({**item, "url": url})
-        elif isinstance(item, str) and item.strip().startswith(("http://", "https://")):
+        elif (
+            isinstance(item, str)
+            and item.strip().startswith(("http://", "https://"))
+            and _is_external_evidence_url(item.strip())
+        ):
             links.append({"url": item.strip()})
     return _merge_links([], links)
 
@@ -527,11 +560,22 @@ def _merge_links(first: list[dict[str, Any]], second: list[dict[str, Any]]) -> l
     seen: set[str] = set()
     for item in [*first, *second]:
         url = _string(item.get("url"))
-        if not url or url in seen:
+        if not url or not _is_external_evidence_url(url) or url in seen:
             continue
         seen.add(url)
         merged.append(item)
     return merged
+
+
+def _is_external_evidence_url(value: Any) -> bool:
+    url = _string(value)
+    if not url or not url.startswith(("http://", "https://")):
+        return False
+    host_and_path = url.split("://", 1)[-1].casefold()
+    return not (
+        host_and_path.startswith("doubao.com/")
+        or host_and_path.startswith("www.doubao.com/")
+    )
 
 
 def _urls_in_value(value: Any) -> list[str]:

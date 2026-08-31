@@ -3326,7 +3326,6 @@ async def _execute_gaojixing_source(
 ) -> None:
     """Run live Gaojixing once for every upstream keyword item."""
     del trace_id
-    binding_input = _binding_input(node)
     adapter_config = _gaojixing_adapter_config(node)
     source_group = _source_group(node, node.id)
     upstream_items = _upstream_outputs(node, outputs_by_node) or [None]
@@ -3368,10 +3367,20 @@ async def _execute_gaojixing_source(
                 source="gaojixing_readiness",
                 details=readiness_details,
             )
+            _emit_gaojixing_source_partial(
+                node,
+                workflow_id=workflow_id,
+                run_id=run_id,
+                mapped_items=mapped_items,
+                evidences=evidences,
+                packages=packages,
+                outputs_by_node=outputs_by_node,
+                emitter=emitter,
+                message="Live Gaojixing answers captured before readiness failure",
+            )
             emitter.emit(
                 node, "blocked", message=exc.message, block_reason=reason, details=reason.details
             )
-            outputs_by_node[node.id] = []
             return
         if not result.success:
             code = result.error_type or "gaojixing_capture_failed"
@@ -3386,10 +3395,20 @@ async def _execute_gaojixing_source(
                     "packageDigest": package.digest,
                 },
             )
+            _emit_gaojixing_source_partial(
+                node,
+                workflow_id=workflow_id,
+                run_id=run_id,
+                mapped_items=mapped_items,
+                evidences=evidences,
+                packages=packages,
+                outputs_by_node=outputs_by_node,
+                emitter=emitter,
+                message="Live Gaojixing answers captured before source failure",
+            )
             emitter.emit(
                 node, "failed", message=reason.message, block_reason=reason, details=reason.details
             )
-            outputs_by_node[node.id] = []
             return
 
         raw_item = next(
@@ -3407,10 +3426,20 @@ async def _execute_gaojixing_source(
                 source="gaojixing_evidence",
                 details={"nodeId": node.id, "index": index, "packageDigest": package.digest},
             )
+            _emit_gaojixing_source_partial(
+                node,
+                workflow_id=workflow_id,
+                run_id=run_id,
+                mapped_items=mapped_items,
+                evidences=evidences,
+                packages=packages,
+                outputs_by_node=outputs_by_node,
+                emitter=emitter,
+                message="Live Gaojixing answers captured before answer failure",
+            )
             emitter.emit(
                 node, "failed", message=reason.message, block_reason=reason, details=reason.details
             )
-            outputs_by_node[node.id] = []
             return
 
         artifact_id = _stable_id(
@@ -3425,6 +3454,24 @@ async def _execute_gaojixing_source(
             artifact_id=artifact_id,
             provenance=_read_string(raw_item.get("provenance")) or "opencli:doubao",
         )
+        source_record = _gaojixing_source_record(upstream)
+        source_row_id = _read_string(source_record.get("record_id"))
+        source_number = _read_string(source_record.get("number"))
+        source_fields = _read_dict(source_record.get("fields"))
+        if source_record:
+            mapped["source_record"] = source_record
+        if source_row_id:
+            mapped["source_row_id"] = source_row_id
+            mapped["dedupe"] = {
+                "type": "source-identity",
+                "field": "source_row_id",
+                "value": source_row_id,
+                "status": "unique",
+            }
+        if source_number:
+            mapped["source_number"] = source_number
+        if source_fields:
+            mapped["source_fields"] = source_fields
         lineage = [
             *(_read_dict_list(upstream.get("lineage")) if upstream else []),
             {
@@ -3438,34 +3485,92 @@ async def _execute_gaojixing_source(
                 "mode": "live",
                 "provenance": mapped["gaojixing"]["provenance"],
                 "index": index,
+                "sourceRowId": source_row_id,
+                "sourceNumber": source_number,
             },
         ]
         mapped_items.append({"raw": mapped, "lineage": lineage})
         evidences.append(mapped["gaojixing"]["evidence"])
         packages.append(package.to_dict())
 
+    _emit_gaojixing_source_partial(
+        node,
+        workflow_id=workflow_id,
+        run_id=run_id,
+        mapped_items=mapped_items,
+        evidences=evidences,
+        packages=packages,
+        outputs_by_node=outputs_by_node,
+        emitter=emitter,
+        message="Live Gaojixing answer and evidence captured",
+    )
+    emitter.emit(node, "completed", message="Live Gaojixing source completed")
+
+
+def _emit_gaojixing_source_partial(
+    node: CompiledWorkflowNode,
+    *,
+    workflow_id: str,
+    run_id: str,
+    mapped_items: list[dict[str, Any]],
+    evidences: list[dict[str, Any]],
+    packages: list[dict[str, Any]],
+    outputs_by_node: dict[str, list[dict[str, Any]]],
+    emitter: Any,
+    message: str,
+) -> None:
+    """Keep the successful prefix when a later source item fails closed."""
     outputs_by_node[node.id] = mapped_items
+    if not mapped_items:
+        return
     batch = _node_batch_reference(workflow_id, run_id, node, item_count=len(mapped_items))
     emitter.emit(
         node,
         "partial",
-        message="Live Gaojixing answer and evidence captured",
+        message=message,
         batch=batch,
         details={
             "bindingId": SOURCE_FETCH_BINDING_ID,
             "channelType": GAOJIXING_CHANNEL_TYPE,
-            "capabilityId": mapped["gaojixing"]["capabilityId"],
+            "capabilityId": mapped_items[0]["raw"]["gaojixing"]["capabilityId"],
             "mode": "live",
-            "provenance": mapped_items[0]["raw"]["gaojixing"]["provenance"]
-            if mapped_items
-            else "opencli:doubao",
+            "provenance": mapped_items[0]["raw"]["gaojixing"]["provenance"],
             "packages": packages,
             "artifacts": [item["raw"]["gaojixing"]["artifactId"] for item in mapped_items],
             "evidence": evidences,
             "lineage": _lineage_pointer(node),
         },
     )
-    emitter.emit(node, "completed", message="Live Gaojixing source completed")
+
+
+def _gaojixing_source_record(upstream: dict[str, Any] | None) -> dict[str, Any]:
+    if upstream is None:
+        return {}
+    raw = _read_dict(upstream.get("raw"))
+    feishu = _read_dict(raw.get("feishu"))
+    fields = _read_dict(raw.get("fields"))
+    number = _read_string(raw.get("source_number")) or _read_string(feishu.get("number"))
+    if not number:
+        for key in ("编号", "序号", "No.", "NO", "ID", "id"):
+            number = _read_string(fields.get(key))
+            if number:
+                break
+    record_id = _read_string(raw.get("source_row_id")) or _read_string(
+        feishu.get("record_id")
+    )
+    if not raw and not record_id:
+        return {}
+    return {
+        "id": _read_string(raw.get("id")),
+        "provider": _read_string(raw.get("source")) or "feishu_table",
+        "source_group": _read_string(raw.get("source_group"))
+        or _read_string(raw.get("sourceGroup")),
+        "record_id": record_id,
+        "number": number,
+        "keyword": _read_string(raw.get("keyword")) or _read_string(raw.get("title")),
+        "table_id": _read_string(feishu.get("table_id")),
+        "fields": fields,
+    }
 
 
 def _gaojixing_question_for_upstream(

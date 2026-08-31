@@ -44,6 +44,24 @@ def _text(value: Any) -> str:
     return ""
 
 
+def _business_number(fields: dict[str, Any], config: dict[str, Any]) -> str:
+    """Read the configured business number without tying it to one sheet schema."""
+    configured = _text(config.get("number_field"))
+    candidates = [configured] if configured else []
+    candidates.extend(["编号", "序号", "No.", "NO", "no", "ID", "id"])
+    for key in candidates:
+        if key and key in fields:
+            value = _text(fields.get(key))
+            if value:
+                return value
+    folded = {str(key).casefold(): value for key, value in fields.items()}
+    for key in candidates:
+        value = _text(folded.get(key.casefold())) if key else ""
+        if value:
+            return value
+    return ""
+
+
 def _positive_int(value: Any, default: int, maximum: int) -> int:
     try:
         parsed = int(value)
@@ -205,10 +223,12 @@ class FeishuTableChannel(AbstractChannel):
             row_id = _text(record.get("record_id")) or _text(record.get("id"))
             if not row_id:
                 continue
+            source_number = _business_number(fields, config)
             items.append(
                 {
                     "id": f"feishu:{ctx.source_id or 'source'}:{row_id}",
                     "source_row_id": row_id,
+                    "source_number": source_number,
                     "keyword": keyword,
                     "title": keyword,
                     "content": keyword,
@@ -218,6 +238,7 @@ class FeishuTableChannel(AbstractChannel):
                     "sourceGroup": source_group,
                     "feishu": {
                         "record_id": row_id,
+                        "number": source_number,
                         "app_token": config["app_token"],
                         "table_id": config["table_id"],
                     },
@@ -400,10 +421,12 @@ class FeishuTableChannel(AbstractChannel):
             row_id = _text(record.get("record_id")) or _text(record.get("id"))
             if not row_id:
                 continue
+            source_number = _business_number(fields, config)
             items.append(
                 {
                     "id": f"feishu:{ctx.source_id or 'source'}:{row_id}",
                     "source_row_id": row_id,
+                    "source_number": source_number,
                     "keyword": keyword,
                     "title": keyword,
                     "content": keyword,
@@ -413,6 +436,7 @@ class FeishuTableChannel(AbstractChannel):
                     "sourceGroup": source_group,
                     "feishu": {
                         "record_id": row_id,
+                        "number": source_number,
                         "app_token": config["app_token"],
                         "table_id": config["table_id"],
                     },
@@ -520,10 +544,12 @@ class FeishuTableChannel(AbstractChannel):
             row_id = _text(record.get("record_id")) or _text(record.get("id"))
             if not row_id:
                 continue
+            source_number = _business_number(fields, config)
             items.append(
                 {
                     "id": f"feishu:{ctx.source_id or 'source'}:{row_id}",
                     "source_row_id": row_id,
+                    "source_number": source_number,
                     "keyword": keyword,
                     "title": keyword,
                     "content": keyword,
@@ -533,6 +559,7 @@ class FeishuTableChannel(AbstractChannel):
                     "sourceGroup": source_group,
                     "feishu": {
                         "record_id": row_id,
+                        "number": source_number,
                         "app_token": config["app_token"],
                         "table_id": config["table_id"],
                     },

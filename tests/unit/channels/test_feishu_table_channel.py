@@ -110,3 +110,24 @@ def test_cli_matrix_response_becomes_record_rows():
         {"record_id": "rec-1", "fields": {"序号": "1", "关键词": "高吉星"}},
         {"record_id": "rec-2", "fields": {"序号": "2", "关键词": "DHA"}},
     ]
+
+
+@pytest.mark.asyncio
+async def test_cli_rows_preserve_business_number_for_downstream_resume():
+    result = await FeishuTableChannel()._rows_to_result(
+        FetchContext(
+            config=_config(number_field="序号"),
+            params={},
+            source_id="source-1",
+        ),
+        [
+            {
+                "record_id": "rec-23",
+                "fields": {"序号": "23", "关键词": "宝宝DHA", "状态": "待采集"},
+            }
+        ],
+    )
+
+    assert result[0]["source_row_id"] == "rec-23"
+    assert result[0]["source_number"] == "23"
+    assert result[0]["feishu"]["number"] == "23"
