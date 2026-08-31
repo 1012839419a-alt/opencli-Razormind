@@ -1031,6 +1031,7 @@ def test_control_admin_can_reconcile_with_the_configured_receiver_authority():
     )
 
     expected = {
+        "SSL_CERT_FILE": "/run/proof/ca.pem",
         "CONTROLLED_RECEIVER_REGISTRY_JSON": "${CONTROLLED_RECEIVER_REGISTRY_JSON:-{}}",
         "CONTROLLED_RECEIVER_CREDENTIALS_JSON": "${CONTROLLED_RECEIVER_CREDENTIALS_JSON:-{}}",
         "CONTROLLED_RECEIVER_RECEIPT_KEYS_JSON": "${CONTROLLED_RECEIVER_RECEIPT_KEYS_JSON:-{}}",
