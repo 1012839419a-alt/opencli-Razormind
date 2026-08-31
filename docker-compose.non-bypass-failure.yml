@@ -113,6 +113,8 @@ services:
       API_AUTH_TOKEN: ${API_AUTH_TOKEN:-runtime-secret-required}
       PROOF_RECEIVER_BACKEND_URL: https://proof-controlled-receiver:8000
       SSL_CERT_FILE: /run/proof/ca.pem
+      CONTROLLED_RECEIVER_REGISTRY_JSON: ${CONTROLLED_RECEIVER_REGISTRY_JSON:-{}}
+      CONTROLLED_RECEIVER_RECEIPT_KEYS_JSON: ${CONTROLLED_RECEIVER_RECEIPT_KEYS_JSON:-{}}
     volumes:
       - ${PROOF_SECRETS_DIR:-./.artifacts/non-bypass-secrets}:/run/proof:ro
     networks:

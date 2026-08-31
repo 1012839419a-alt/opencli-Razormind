@@ -2202,6 +2202,466 @@ def cancel_before_dispatch(run: str) -> dict[str, Any]:
     )
 
 
+def _wait_delivery_response_held(client: httpx.Client) -> None:
+    deadline = time.monotonic() + 30
+    headers = {"X-API-Token": os.environ["API_AUTH_TOKEN"]}
+    while time.monotonic() < deadline:
+        response = client.get(
+            "https://proof-delivery-proxy:8000/_gate/delivery/status",
+            headers=headers,
+        )
+        _require_status(response, 200, "delivery response gate status")
+        value = response.json()
+        if isinstance(value, dict) and value.get("responseHeld") is True:
+            return
+        time.sleep(0.1)
+    raise RuntimeError("delivery proxy did not hold a valid signed receiver response")
+
+
+def _read_public_execution_for_decision(
+    client: httpx.Client,
+    control: str,
+    setup: dict[str, Any],
+    reviewer: dict[str, str],
+    decision_id: str,
+    *,
+    label: str,
+) -> tuple[httpx.Response, dict[str, Any]]:
+    response = client.get(
+        control + f"{setup['route']}/{setup['runId']}/delivery-executions",
+        headers=reviewer,
+    )
+    _require_status(response, 200, f"{label} execution list")
+    items = _data(response).get("items")
+    matches = [
+        item
+        for item in items
+        if isinstance(item, dict) and item.get("decisionId") == decision_id
+    ] if isinstance(items, list) else []
+    if len(matches) != 1:
+        raise RuntimeError(f"{label} public execution lookup was not unique: {items}")
+    return response, matches[0]
+
+
+
+def _require_pending_in_flight_delivery(execution: dict[str, Any]) -> None:
+    if (
+        execution.get("state") != "in-flight"
+        or execution.get("outcome") is not None
+        or execution.get("attemptCount") != 0
+        or execution.get("attempts") != []
+        or execution.get("reconciliations") != []
+    ):
+        raise RuntimeError(
+            f"public cancellation did not retain pending unknown delivery: {execution}"
+        )
+
+
+def _require_signed_direct_delivery(execution: dict[str, Any]) -> tuple[str, str]:
+    outcome = execution.get("outcome")
+    attempts = execution.get("attempts")
+    if (
+        execution.get("state") != "completed"
+        or outcome not in {"accepted", "rejected"}
+        or execution.get("attemptCount") != 1
+        or not isinstance(attempts, list)
+        or len(attempts) != 1
+        or execution.get("reconciliations") != []
+    ):
+        raise RuntimeError(f"original signed response did not settle delivery: {execution}")
+    attempt = attempts[0]
+    receipt_hash = attempt.get("receiptHash")
+    if (
+        attempt.get("transport") != "http-success"
+        or attempt.get("httpStatus") != 200
+        or attempt.get("receipt") != "verified"
+        or attempt.get("protocol") != "v2"
+        or attempt.get("outcome") != outcome
+        or not isinstance(receipt_hash, str)
+        or len(receipt_hash) != 64
+    ):
+        raise RuntimeError(f"direct receiver signature evidence drifted: {execution}")
+    return outcome, receipt_hash
+
+
+def _require_cancelled_unknown_after_drop(execution: dict[str, Any]) -> None:
+    attempts = execution.get("attempts")
+    if (
+        execution.get("state") != "cancelled"
+        or execution.get("outcome") != "unknown"
+        or execution.get("attemptCount") != 1
+        or not isinstance(attempts, list)
+        or len(attempts) != 1
+        or execution.get("reconciliations") != []
+    ):
+        raise RuntimeError(f"dropped response did not leave cancelled unknown delivery: {execution}")
+    attempt = attempts[0]
+    if (
+        attempt.get("transport") != "http-5xx"
+        or attempt.get("httpStatus") != 503
+        or attempt.get("receipt") != "invalid-or-missing"
+        or attempt.get("protocol") != "unknown"
+        or attempt.get("outcome") != "unknown"
+    ):
+        raise RuntimeError(f"drop branch did not record a real dropped response attempt: {execution}")
+
+
+def cancel_in_flight(run: str) -> dict[str, Any]:
+    """Exercise release and dropped-response cancellation across two real operations."""
+    stable_source_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"proof-cancel-flight/{run}"))
+    keyword = f"cancel-flight-{hashlib.sha256(run.encode()).hexdigest()[:16]}"
+    hashes: dict[str, str] = {}
+    with httpx.Client(timeout=120) as client:
+        setup = public_setup(client, run)
+        control = "http://proof-admin-control:8000/api/v1"
+        reviewer = {
+            "X-API-Token": os.environ["API_AUTH_TOKEN"],
+            "Authorization": f"Bearer {os.environ['PROOF_REVIEWER_JWT']}",
+        }
+        reviewer_member_response = client.post(
+            f"{setup['primary']}/workspaces/{setup['workspaceId']}/members",
+            json={
+                "subject": "proof-reviewer",
+                "email": "proof-reviewer@proof.invalid",
+                "display_name": "proof-reviewer",
+                "role": "maintainer",
+            },
+            headers=setup["bootstrap"],
+        )
+        _require_status(reviewer_member_response, 201, "in-flight cancellation reviewer")
+        if _data(reviewer_member_response).get("role") != "maintainer":
+            raise RuntimeError("in-flight cancellation reviewer lacks approval capability")
+        hashes["reviewer_membership"] = _public_response_hash(reviewer_member_response)
+        submission = public_submit(
+            client,
+            setup,
+            source_id=keyword,
+            stable_odp_source_id=stable_source_id,
+            site="bilibili",
+            command="search",
+        )
+        hashes["submission"] = _public_hash(submission)
+        expected_report = _wait_for_expected_key_report(
+            client, setup, submission["commandId"]
+        )
+        hashes["expected_key_report"] = _public_hash(expected_report)
+        _, ingress_receipt = _wait_for_ingress_receipt(
+            client, setup, submission["commandId"]
+        )
+        hashes["signed_ingress_receipt"] = ingress_receipt
+        materialization = _wait_for_materialization(
+            client, setup, submission["commandId"], predicate=_completed_exact
+        )
+        hashes["materialization"] = _public_hash(materialization)
+        manifest = materialization.get("researchGraphManifestRef")
+        if (
+            not isinstance(manifest, dict)
+            or manifest.get("materializationStatus") != "completed"
+            or not isinstance(manifest.get("manifestHash"), str)
+        ):
+            raise RuntimeError("in-flight cancellation proof lacks an eligible manifest")
+
+        graph_route = f"{setup['route']}/{setup['runId']}/research-graph-v2"
+        graph_initial_response = client.get(
+            setup["primary"] + graph_route, headers=setup["proposer"]
+        )
+        graph_initial = _data(graph_initial_response)
+        hashes["graph_before_pin"] = _public_response_hash(graph_initial_response)
+        claim_id = f"cancel-in-flight-{run}"
+        proposed_response = client.post(
+            setup["primary"] + graph_route + "/mutations",
+            json={
+                "idempotencyKey": f"{run}-cancel-flight-propose",
+                "action": "propose",
+                "expectedSequence": graph_initial["sequence"],
+                "expectedRevision": graph_initial["researchRevisionId"],
+                "nodeId": "opencli-source",
+                "claimId": claim_id,
+                "claimContentHash": manifest["manifestHash"],
+                "manifestRefs": [manifest],
+            },
+            headers=setup["proposer"],
+        )
+        _require_status(proposed_response, 201, "in-flight cancellation graph proposal")
+        proposed = _data(proposed_response)
+        hashes["graph_propose"] = _public_response_hash(proposed_response)
+        verified_response = client.post(
+            setup["primary"] + graph_route + "/mutations",
+            json={
+                "idempotencyKey": f"{run}-cancel-flight-verify",
+                "action": "verify",
+                "expectedSequence": proposed["sequence"],
+                "expectedRevision": proposed["researchRevisionId"],
+                "nodeId": "opencli-source",
+                "claimId": claim_id,
+                "claimContentHash": manifest["manifestHash"],
+                "manifestRefs": [manifest],
+            },
+            headers=reviewer,
+        )
+        _require_status(
+            verified_response, 201, "in-flight cancellation graph verification"
+        )
+        verified = _data(verified_response)
+        hashes["graph_verify"] = _public_response_hash(verified_response)
+        pinned_response = client.post(
+            setup["primary"] + graph_route + "/mutations",
+            json={
+                "idempotencyKey": f"{run}-cancel-flight-pin",
+                "action": "pin",
+                "expectedSequence": verified["sequence"],
+                "expectedRevision": verified["researchRevisionId"],
+                "nodeId": "opencli-source",
+                "manifestRefs": [manifest],
+            },
+            headers=reviewer,
+        )
+        _require_status(pinned_response, 201, "in-flight cancellation graph pin")
+        pinned = _data(pinned_response).get("pinnedFold")
+        if not isinstance(pinned, dict) or pinned.get("blocked"):
+            raise RuntimeError("in-flight cancellation requires an eligible graph pin")
+        hashes["graph_pin"] = _public_response_hash(pinned_response)
+        graph_final_response = client.get(
+            setup["primary"] + graph_route, headers=reviewer
+        )
+        graph_final = _data(graph_final_response)
+        hashes["graph_final"] = _public_response_hash(graph_final_response)
+        if graph_final.get("pinnedFold") != pinned:
+            raise RuntimeError("in-flight cancellation public graph pin drifted")
+
+        target_response = client.post(
+            f"{setup['primary']}{setup['route']}/{setup['runId']}/delivery-targets",
+            json={
+                "receiverIdentity": "controlled-receiver-proof",
+                "endpointIdentity": "receiver-channel-proof",
+                "credentialReference": "credential-reference-proof",
+            },
+            headers=reviewer,
+        )
+        _require_status(target_response, 201, "in-flight cancellation delivery target")
+        target = _data(target_response)
+        hashes["delivery_target"] = _public_response_hash(target_response)
+
+        decisions: dict[str, dict[str, Any]] = {}
+        for branch in ("release", "drop"):
+            decision_response = client.post(
+                f"{setup['primary']}{setup['route']}/{setup['runId']}/delivery-authorizations",
+                json={
+                    "version": "v1",
+                    "operationId": f"{run}-cancel-in-flight-{branch}",
+                    "idempotencyKey": f"{run}-cancel-in-flight-{branch}-decision",
+                    "nodeId": "opencli-source",
+                    "targetId": target["targetId"],
+                    "pinnedReference": _pinned_reference(pinned),
+                    "selectedClaimIds": [claim_id],
+                },
+                headers=reviewer,
+            )
+            _require_status(
+                decision_response, 201, f"{branch} in-flight delivery authorization"
+            )
+            decisions[branch] = _data(decision_response)
+            hashes[f"{branch}_authorization"] = _public_response_hash(
+                decision_response
+            )
+        if (
+            decisions["release"]["decisionId"] == decisions["drop"]["decisionId"]
+            or decisions["release"]["operationId"] == decisions["drop"]["operationId"]
+        ):
+            raise RuntimeError("release and drop cancellation branches are not independent")
+
+        def execute_primary(decision_id: str) -> httpx.Response:
+            with httpx.Client(timeout=120) as primary_client:
+                return primary_client.post(
+                    f"{setup['primary']}{setup['route']}/{setup['runId']}/delivery-executions",
+                    json={"decisionId": decision_id},
+                    headers=reviewer,
+                )
+
+        _set_delivery_proxy_mode(client, "hold_valid_response")
+        release_executor = ThreadPoolExecutor(max_workers=1)
+        release_future = None
+        try:
+            release_future = release_executor.submit(
+                execute_primary, decisions["release"]["decisionId"]
+            )
+            _wait_delivery_response_held(client)
+            release_intermediate_response, release_intermediate = (
+                _read_public_execution_for_decision(
+                    client,
+                    control,
+                    setup,
+                    reviewer,
+                    decisions["release"]["decisionId"],
+                    label="release intermediate",
+                )
+            )
+            _require_pending_in_flight_delivery(release_intermediate)
+            hashes["release_intermediate"] = _public_response_hash(
+                release_intermediate_response
+            )
+            release_cancel_response = client.post(
+                control
+                + f"{setup['route']}/{setup['runId']}/delivery-executions/"
+                + f"{release_intermediate['executionId']}/cancel",
+                json={},
+                headers=reviewer,
+            )
+            _require_status(release_cancel_response, 200, "release public cancellation")
+            _require_pending_in_flight_delivery(_data(release_cancel_response))
+            hashes["release_cancel"] = _public_response_hash(release_cancel_response)
+            _set_delivery_proxy_mode(client, "release_valid_response")
+            release_execution_response = release_future.result(timeout=30)
+            _require_status(
+                release_execution_response, 201, "release original execution completion"
+            )
+            release_result = _data(release_execution_response)
+            release_outcome, _ = _require_signed_direct_delivery(release_result)
+            hashes["release_execution_result"] = _public_response_hash(
+                release_execution_response
+            )
+            release_final_response = client.get(
+                control
+                + f"{setup['route']}/{setup['runId']}/delivery-executions/"
+                + f"{release_intermediate['executionId']}",
+                headers=reviewer,
+            )
+            _require_status(release_final_response, 200, "release final public read")
+            release_final = _data(release_final_response)
+            final_outcome, _ = _require_signed_direct_delivery(release_final)
+            if final_outcome != release_outcome:
+                raise RuntimeError("release final read diverged from original signed response")
+            hashes["release_final"] = _public_response_hash(release_final_response)
+        finally:
+            if release_future is not None and not release_future.done():
+                client.post(
+                    "https://proof-delivery-proxy:8000/_gate/delivery",
+                    json={"mode": "drop_valid_response"},
+                    headers={"X-API-Token": os.environ["API_AUTH_TOKEN"]},
+                )
+            release_executor.shutdown(wait=True)
+            _set_delivery_proxy_mode(client, "pass_through")
+
+        _set_delivery_proxy_mode(client, "hold_valid_response")
+        drop_executor = ThreadPoolExecutor(max_workers=1)
+        drop_future = None
+        try:
+            drop_future = drop_executor.submit(
+                execute_primary, decisions["drop"]["decisionId"]
+            )
+            _wait_delivery_response_held(client)
+            drop_intermediate_response, drop_intermediate = _read_public_execution_for_decision(
+                client,
+                control,
+                setup,
+                reviewer,
+                decisions["drop"]["decisionId"],
+                label="drop intermediate",
+            )
+            _require_pending_in_flight_delivery(drop_intermediate)
+            hashes["drop_intermediate"] = _public_response_hash(drop_intermediate_response)
+            drop_cancel_response = client.post(
+                control
+                + f"{setup['route']}/{setup['runId']}/delivery-executions/"
+                + f"{drop_intermediate['executionId']}/cancel",
+                json={},
+                headers=reviewer,
+            )
+            _require_status(drop_cancel_response, 200, "drop public cancellation")
+            _require_pending_in_flight_delivery(_data(drop_cancel_response))
+            hashes["drop_cancel"] = _public_response_hash(drop_cancel_response)
+            _set_delivery_proxy_mode(client, "drop_valid_response")
+            drop_execution_response = drop_future.result(timeout=30)
+            _require_status(
+                drop_execution_response, 201, "drop original execution completion"
+            )
+            drop_result = _data(drop_execution_response)
+            _require_cancelled_unknown_after_drop(drop_result)
+            hashes["drop_execution_result"] = _public_response_hash(
+                drop_execution_response
+            )
+            _set_delivery_proxy_mode(client, "pass_through")
+            drop_reconciliation_response = client.post(
+                control
+                + f"{setup['route']}/{setup['runId']}/delivery-executions/"
+                + f"{drop_intermediate['executionId']}/reconcile",
+                json={},
+                headers=reviewer,
+            )
+            _require_status(
+                drop_reconciliation_response, 200, "drop Admin reconciliation"
+            )
+            drop_reconciliation = _data(drop_reconciliation_response)
+            drop_outcome, drop_receipt_hash = _require_reconciled_delivery(
+                drop_reconciliation, expected_attempts=1
+            )
+            hashes["drop_reconciliation"] = _public_response_hash(
+                drop_reconciliation_response
+            )
+            drop_final_response = client.get(
+                control
+                + f"{setup['route']}/{setup['runId']}/delivery-executions/"
+                + f"{drop_intermediate['executionId']}",
+                headers=reviewer,
+            )
+            _require_status(drop_final_response, 200, "drop final public read")
+            drop_final = _data(drop_final_response)
+            final_drop_outcome, final_drop_receipt_hash = _require_reconciled_delivery(
+                drop_final, expected_attempts=1
+            )
+            if (
+                final_drop_outcome != drop_outcome
+                or final_drop_receipt_hash != drop_receipt_hash
+            ):
+                raise RuntimeError("drop final status diverged from signed reconciliation")
+            hashes["drop_final"] = _public_response_hash(drop_final_response)
+        finally:
+            if drop_future is not None and not drop_future.done():
+                client.post(
+                    "https://proof-delivery-proxy:8000/_gate/delivery",
+                    json={"mode": "drop_valid_response"},
+                    headers={"X-API-Token": os.environ["API_AUTH_TOKEN"]},
+                )
+            drop_executor.shutdown(wait=True)
+            _set_delivery_proxy_mode(client, "pass_through")
+
+    return _failure_result(
+        scenario="cancel-in-flight",
+        run=run,
+        fault="signed-response-release-and-dropped-response-reconciliation",
+        command_id=submission["commandId"],
+        attempt_id=submission["attemptId"],
+        workflow_run_id=setup["runId"],
+        hashes=hashes,
+        collection={
+            "blockingStage": "none",
+            "recoveryAction": "recover",
+            "sideEffectUncertainty": False,
+        },
+        materialization={
+            "status": "completed",
+            "blocker": "none",
+            "recoveryAction": "recover",
+            "manifestHash": manifest["manifestHash"],
+            "reconciliationRevision": materialization["reconciliationRevision"],
+            "pageSnapshotAsOf": materialization.get("pageSnapshotAsOf"),
+        },
+        graph={
+            "pin": _public_hash(pinned),
+            "sequence": graph_final["sequence"],
+            "readBlocker": "none",
+            "mutationStatus": "none",
+        },
+        delivery={
+            "state": "settled",
+            "outcome": drop_outcome,
+            "attemptCount": 1,
+            "receiptHash": drop_receipt_hash,
+            "reconciliation": f"signed_{drop_outcome}",
+        },
+    )
+
+
 def duplicate_dlq(run: str) -> dict[str, Any]:
     """Prove replay, duplicate ingress, durable DLQ, and unknown retention publicly."""
     stable_source_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"proof-duplicate/{run}"))
@@ -2619,6 +3079,8 @@ def main() -> int:
         result = receiver_recovery(args.run)
     elif args.scenario == "cancel-before-dispatch":
         result = cancel_before_dispatch(args.run)
+    elif args.scenario == "cancel-in-flight":
+        result = cancel_in_flight(args.run)
     else:
         raise RuntimeError("scenario driver is not implemented")
     print(json.dumps(result, sort_keys=True))

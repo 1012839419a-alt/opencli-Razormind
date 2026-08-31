@@ -1020,7 +1020,7 @@ def test_cancel_before_dispatch_overlay_relays_primary_database_only():
     ]
 
 
-def test_cancel_before_dispatch_runner_allows_long_public_driver():
+def test_cancellation_runners_allow_long_public_driver():
     runner = (ROOT / "scripts/run_non_bypass_failure_matrix.py").read_text(
         encoding="utf-8"
     )
@@ -1029,6 +1029,7 @@ def test_cancel_before_dispatch_runner_allows_long_public_driver():
     )[0]
 
     assert '"cancel-before-dispatch"' in section
+    assert '"cancel-in-flight"' in section
     assert "process.communicate(timeout=360)" in section
 
 
@@ -1046,6 +1047,68 @@ def test_failure_driver_dispatches_cancel_before_dispatch(monkeypatch, capsys):
     assert driver.main() == 0
     assert __import__("json").loads(capsys.readouterr().out) == {
         "handler": "cancel-before-dispatch",
+        "run": "r1",
+    }
+
+
+def test_cancel_in_flight_uses_two_public_operations_and_signed_reconciliation_only():
+    driver = (ROOT / "tests/acceptance/non_bypass_failure_driver.py").read_text(
+        encoding="utf-8"
+    )
+    proxy = (ROOT / "tests/acceptance/fault_tools/proof_delivery_proxy.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert all(
+        value in proxy
+        for value in (
+            "HOLD_VALID_RESPONSE",
+            "RELEASE_VALID_RESPONSE",
+            "DROP_VALID_RESPONSE",
+            '"/_gate/delivery/status"',
+            '"responseHeld"',
+            "verify_receipt",
+        )
+    )
+    assert all(
+        value in driver
+        for value in (
+            "def cancel_in_flight(",
+            '"hold_valid_response"',
+            '"release_valid_response"',
+            '"drop_valid_response"',
+            '"pass_through"',
+            "release_cancel",
+            "drop_cancel",
+            "release_final",
+            "drop_final",
+            "drop_reconciliation",
+            "responseHeld",
+            '"attemptCount": 1',
+            '"reconciliation": f"signed_{drop_outcome}"',
+        )
+    )
+    section = driver.split("def cancel_in_flight(", 1)[1].split(
+        "def duplicate_dlq(", 1
+    )[0]
+    assert "responseHeld" not in section.split("return _failure_result(", 1)[1]
+    assert "lateEffectAbsenceClaim" not in section
+
+
+def test_failure_driver_dispatches_cancel_in_flight(monkeypatch, capsys):
+    driver = _failure_driver_module()
+    monkeypatch.setattr(
+        driver,
+        "cancel_in_flight",
+        lambda run: {"handler": "cancel-in-flight", "run": run},
+    )
+    monkeypatch.setattr(
+        sys, "argv", ["driver", "--scenario", "cancel-in-flight", "--run", "r1"]
+    )
+
+    assert driver.main() == 0
+    assert __import__("json").loads(capsys.readouterr().out) == {
+        "handler": "cancel-in-flight",
         "run": "r1",
     }
 
