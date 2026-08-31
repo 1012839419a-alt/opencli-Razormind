@@ -1134,6 +1134,52 @@ def test_failure_driver_dispatches_cancel_in_flight(monkeypatch, capsys):
     }
 
 
+def test_runner_removes_only_unused_networks_from_its_own_failure_project(
+    monkeypatch, tmp_path
+):
+    runner = _runner_module()
+    calls: list[list[str]] = []
+
+    class Result:
+        def __init__(self, stdout: str = "", returncode: int = 0):
+            self.stdout = stdout
+            self.returncode = returncode
+
+    def docker(command, **_kwargs):
+        calls.append(command)
+        if command[:3] == ["docker", "network", "ls"]:
+            assert command[-1] == "label=com.docker.compose.project=nbf-own-run"
+            return Result("unused\nin-use\n")
+        if command[:3] == ["docker", "network", "inspect"]:
+            return Result("0\n" if command[3] == "unused" else "2\n")
+        if command[:3] == ["docker", "network", "rm"]:
+            assert command[3] == "unused"
+            return Result()
+        raise AssertionError(command)
+
+    monkeypatch.setattr(runner.subprocess, "run", docker)
+    ledger = runner.ScenarioLedger("cancel-in-flight", "nbf-own-run", tmp_path, tmp_path)
+
+    assert runner._remove_unused_project_networks(
+        ledger, {}, deadline=time.monotonic() + 10
+    ) == ["unused"]
+    assert ["docker", "network", "rm", "in-use"] not in calls
+
+
+def test_runner_never_removes_non_failure_project_networks(monkeypatch, tmp_path):
+    runner = _runner_module()
+    monkeypatch.setattr(
+        runner.subprocess,
+        "run",
+        lambda *_args, **_kwargs: pytest.fail("Docker must not be called"),
+    )
+    ledger = runner.ScenarioLedger("cancel-in-flight", "geo-xi", tmp_path, tmp_path)
+
+    assert runner._remove_unused_project_networks(
+        ledger, {}, deadline=time.monotonic() + 10
+    ) == []
+
+
 def _runner_module():
     path = ROOT / "scripts/run_non_bypass_failure_matrix.py"
     spec = importlib.util.spec_from_file_location("failure_runner_catalog", path)

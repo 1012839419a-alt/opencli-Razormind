@@ -697,17 +697,86 @@ def _govern(ledger: ScenarioLedger, result: dict[str, Any], now: int) -> dict[st
     return saved
 
 
+def _cleanup_command(
+    command: list[str], env: Mapping[str, str], *, deadline: float
+) -> subprocess.CompletedProcess[str] | None:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        return None
+    try:
+        return subprocess.run(
+            command,
+            cwd=ROOT,
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=remaining,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
+def _remove_unused_project_networks(
+    ledger: ScenarioLedger, env: Mapping[str, str], *, deadline: float
+) -> list[str]:
+    """Delete only zero-endpoint networks owned by this failure-row project."""
+    if not ledger.project.startswith("nbf-"):
+        return []
+    project_label = f"com.docker.compose.project={ledger.project}"
+    listed = _cleanup_command(
+        ["docker", "network", "ls", "--quiet", "--filter", f"label={project_label}"],
+        env,
+        deadline=deadline,
+    )
+    if listed is None or listed.returncode:
+        return []
+    removed: list[str] = []
+    for network_id in listed.stdout.splitlines():
+        network_id = network_id.strip()
+        if not network_id:
+            continue
+        inspected = _cleanup_command(
+            ["docker", "network", "inspect", network_id, "--format", "{{len .Containers}}"],
+            env,
+            deadline=deadline,
+        )
+        if (
+            inspected is None
+            or inspected.returncode
+            or inspected.stdout.strip() != "0"
+        ):
+            continue
+        deleted = _cleanup_command(
+            ["docker", "network", "rm", network_id], env, deadline=deadline
+        )
+        if deleted is not None and not deleted.returncode:
+            removed.append(network_id)
+    return removed
+
+
 def _cleanup(
     ledger: ScenarioLedger,
     env: dict[str, str],
     base: Path,
     overlay: Path,
 ) -> None:
+    deadline = time.monotonic() + 60
     try:
-        _compose(
-            ledger, env, base, overlay, "down", "--volumes",
-            "--remove-orphans", timeout=60,
-        )
+        try:
+            _compose(
+                ledger,
+                env,
+                base,
+                overlay,
+                "down",
+                "--volumes",
+                "--remove-orphans",
+                timeout=min(45, max(1, deadline - time.monotonic())),
+            )
+        except FailureRunRejectedError:
+            pass
+        _remove_unused_project_networks(ledger, env, deadline=deadline)
     finally:
         shutil.rmtree(ledger.scratch, ignore_errors=True)
 
