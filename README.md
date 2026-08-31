@@ -26,7 +26,7 @@ opencli-Razormind 是一个开源、自托管的研究与情报管线。它把�
 
 图中的网站变化监控项目已发布不可变 `v1`，并完成了基于该发布版本的真实运行与 Trace 记录。
 
-当前公开版本 **v0.4.0** 已打通：
+当前公开版本 **v0.4.1** 已打通：
 
 **登录采集账号 → 创建研究项目 → 编排工作流 → 执行与追踪 → 查看记录和证据 → 定时运行 / 对外交付**
 
@@ -37,13 +37,13 @@ opencli-Razormind 是一个开源、自托管的研究与情报管线。它把�
 Linux / macOS：
 
 ~~~bash
-curl -fsSL https://raw.githubusercontent.com/2233admin/opencli-Razormind/v0.4.0/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/2233admin/opencli-Razormind/v0.4.1/scripts/install.sh | sh
 ~~~
 
 Windows PowerShell：
 
 ~~~powershell
-Invoke-WebRequest https://raw.githubusercontent.com/2233admin/opencli-Razormind/v0.4.0/scripts/install.ps1 -OutFile install.ps1
+Invoke-WebRequest https://raw.githubusercontent.com/2233admin/opencli-Razormind/v0.4.1/scripts/install.ps1 -OutFile install.ps1
 .\install.ps1
 ~~~
 
@@ -55,12 +55,13 @@ Invoke-WebRequest https://raw.githubusercontent.com/2233admin/opencli-Razormind/
 | API 文档 | http://localhost:8031/docs | REST API 与集成调试 |
 | 内置浏览器 | http://localhost:6080 | 扫码或登录需要账号的平台 |
 
-安装完成后，终端会打印：
+安装完成后可以直接使用本地管理员账号登录：
 
-- `BOOTSTRAP_ADMIN_TOKEN`：首次进入管理界面使用；
-- `API_AUTH_TOKEN`：Fleet、Agent、API 和 MCP 访问使用。
+- 用户名：`admin`
+- 密码：`admin`
+- 登录后可在「账户设置」修改密码
 
-两者同时保存在安装目录的 `.env`。不要公开 noVNC、令牌或浏览器调试端口；远程部署建议使用 HTTPS、反向代理或 SSH 隧道。
+`API_AUTH_TOKEN` 仅由 Fleet、Agent、API 和 MCP 传输使用，自动保存在安装目录的 `.env`，不需要填入管理界面。不要公开 API 令牌、noVNC 或浏览器调试端口；远程部署建议使用 HTTPS、反向代理或 SSH 隧道。
 
 ## 正常的研究流程
 
@@ -167,7 +168,7 @@ flowchart LR
 
 ## 从源码开发
 
-前置要求：Python 3.13+、Node.js 26.3.1（见 `.nvmrc`）、uv、pnpm。
+前置要求：Python 3.13+、Node.js 26.5.1（见 `.nvmrc`）、uv、pnpm。
 
 ~~~bash
 git clone https://github.com/2233admin/opencli-Razormind.git
@@ -204,13 +205,13 @@ docker compose -f docker-compose.yml -f docker-compose.build.yml up --build -d
 
 ## 发布镜像
 
-v0.4.0 同时发布 `linux/amd64` 和 `linux/arm64`：
+v0.4.1 同时发布 `linux/amd64` 和 `linux/arm64`：
 
-- `ghcr.io/2233admin/opencli-admin-api:0.4.0`
-- `ghcr.io/2233admin/opencli-admin-frontend:0.4.0`
-- `ghcr.io/2233admin/opencli-admin-chrome:0.4.0`
-- `ghcr.io/2233admin/opencli-admin-agent:0.4.0`
-- `ghcr.io/2233admin/opencli-admin-agent:0.4.0-chrome`
+- `ghcr.io/2233admin/opencli-admin-api:0.4.1`
+- `ghcr.io/2233admin/opencli-admin-frontend:0.4.1`
+- `ghcr.io/2233admin/opencli-admin-chrome:0.4.1`
+- `ghcr.io/2233admin/opencli-admin-agent:0.4.1`
+- `ghcr.io/2233admin/opencli-admin-agent:0.4.1-chrome`
 
 查看 [最新 Release](https://github.com/2233admin/opencli-Razormind/releases/latest)。
 

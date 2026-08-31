@@ -1,6 +1,6 @@
 param(
-    [string]$Version = $(if ($env:OPENCLI_ADMIN_VERSION) { $env:OPENCLI_ADMIN_VERSION } else { "0.4.0" }),
-    [string]$Repository = $(if ($env:OPENCLI_ADMIN_REPOSITORY) { $env:OPENCLI_ADMIN_REPOSITORY } else { "2233admin/opencli-admin" }),
+    [string]$Version = $(if ($env:OPENCLI_ADMIN_VERSION) { $env:OPENCLI_ADMIN_VERSION } else { "0.4.1" }),
+    [string]$Repository = $(if ($env:OPENCLI_ADMIN_REPOSITORY) { $env:OPENCLI_ADMIN_REPOSITORY } else { "2233admin/opencli-Razormind" }),
     [string]$InstallDir = $(if ($env:OPENCLI_ADMIN_DIR) { $env:OPENCLI_ADMIN_DIR } else { Join-Path (Get-Location) "opencli-admin" })
 )
 
@@ -79,9 +79,7 @@ function Set-EnvValue([string]$Key, [string]$Value) {
 }
 
 $apiToken = New-HexSecret 32
-$bootstrapToken = New-HexSecret 32
 Set-EnvValue "API_AUTH_TOKEN" $apiToken
-Set-EnvValue "BOOTSTRAP_ADMIN_TOKEN" $bootstrapToken
 Set-EnvValue "SECRET_KEY" (New-HexSecret 32)
 Set-EnvValue "CREDENTIAL_ENCRYPTION_KEY" (New-FernetKey)
 
@@ -115,6 +113,6 @@ try {
 Write-Host ""
 Write-Host "OpenCLI Admin $Version is ready."
 Write-Host "URL: http://localhost:$frontendPort"
-Write-Host "BOOTSTRAP_ADMIN_TOKEN: $bootstrapToken"
+Write-Host "Local login: admin / admin (change it later in Account Settings)"
 Write-Host "API_AUTH_TOKEN: $apiToken"
-Write-Host "Use BOOTSTRAP_ADMIN_TOKEN in the first login field and API_AUTH_TOKEN in the optional fleet field. Both are stored in $envPath"
+Write-Host "API_AUTH_TOKEN is generated for Fleet/Agent/API transport and stored in $envPath"

@@ -2,9 +2,8 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 
-import { getCurrentIdentity } from '@/lib/api/endpoints'
+import { changeLocalPassword, getCurrentIdentity, loginWithPassword } from '@/lib/api/endpoints'
 import { AUTH_REQUIRED_EVENT } from '@/lib/api/auth-events'
-import { setApiAuthToken } from '@/lib/api/auth-token'
 import { getOidcManager, isOidcConfigured, oidcReturnTo, sanitizeReturnTo } from '@/lib/auth/oidc'
 import {
   clearIdentityToken,
@@ -22,10 +21,11 @@ type AuthContextValue = {
   identity: AuthIdentity | null
   oidcEnabled: boolean
   developmentLoginEnabled: boolean
-  signInWithOidc: (returnTo?: string, fleetToken?: string) => Promise<void>
+  signInWithOidc: (returnTo?: string) => Promise<void>
+  signInWithPassword: (username: string, password: string) => Promise<boolean>
+  changePassword: (currentPassword: string, newPassword: string) => Promise<void>
   completeOidcSignIn: () => Promise<string>
-  signInWithBootstrap: (identityToken: string, fleetToken?: string) => Promise<void>
-  enterDevelopmentMode: (fleetToken?: string) => void
+  enterDevelopmentMode: () => void
   signOut: () => Promise<void>
 }
 
@@ -135,11 +135,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return () => window.removeEventListener(AUTH_REQUIRED_EVENT, onAuthRequired)
   }, [becomeAnonymous, developmentLoginEnabled])
 
-  const signInWithOidc = useCallback(async (returnTo = '/studio', fleetToken?: string) => {
+  const signInWithOidc = useCallback(async (returnTo = '/studio') => {
     const manager = getOidcManager()
     if (!manager) throw new Error('OIDC 登录尚未配置')
-    if (fleetToken !== undefined) setApiAuthToken(fleetToken)
     await manager.signinRedirect({ state: { returnTo: sanitizeReturnTo(returnTo) } })
+  }, [])
+
+  const signInWithPassword = useCallback(
+    async (username: string, password: string) => {
+      const result = await loginWithPassword(username, password)
+      await acceptIdentityToken(result.access_token)
+      persistBootstrapIdentityToken(result.access_token)
+      return result.using_default_password
+    },
+    [acceptIdentityToken],
+  )
+
+  const changePassword = useCallback(async (currentPassword: string, newPassword: string) => {
+    await changeLocalPassword(currentPassword, newPassword)
   }, [])
 
   const completeOidcSignIn = useCallback(async () => {
@@ -151,28 +164,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return oidcReturnTo(user)
   }, [acceptIdentityToken])
 
-  const signInWithBootstrap = useCallback(
-    async (identityToken: string, fleetToken?: string) => {
-      const trimmed = identityToken.trim()
-      if (!trimmed) throw new Error('请输入管理员身份令牌')
-      if (fleetToken !== undefined) setApiAuthToken(fleetToken)
-      await acceptIdentityToken(trimmed)
-      persistBootstrapIdentityToken(trimmed)
-    },
-    [acceptIdentityToken],
-  )
-
-  const enterDevelopmentMode = useCallback(
-    (fleetToken?: string) => {
-      if (!developmentLoginEnabled) throw new Error('本地开发模式不可用')
-      if (fleetToken !== undefined) setApiAuthToken(fleetToken)
-      clearIdentityToken()
-      setDevelopmentSession(true)
-      setIdentity(DEVELOPMENT_IDENTITY)
-      setStatus('authenticated')
-    },
-    [developmentLoginEnabled],
-  )
+  const enterDevelopmentMode = useCallback(() => {
+    if (!developmentLoginEnabled) throw new Error('本地开发模式不可用')
+    clearIdentityToken()
+    setDevelopmentSession(true)
+    setIdentity(DEVELOPMENT_IDENTITY)
+    setStatus('authenticated')
+  }, [developmentLoginEnabled])
 
   const signOut = useCallback(async () => {
     const manager = getOidcManager()
@@ -193,19 +191,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       oidcEnabled,
       developmentLoginEnabled,
       signInWithOidc,
+      signInWithPassword,
+      changePassword,
       completeOidcSignIn,
-      signInWithBootstrap,
       enterDevelopmentMode,
       signOut,
     }),
     [
+      changePassword,
       completeOidcSignIn,
       developmentLoginEnabled,
       enterDevelopmentMode,
       identity,
       oidcEnabled,
-      signInWithBootstrap,
       signInWithOidc,
+      signInWithPassword,
       signOut,
       status,
     ],

@@ -228,7 +228,7 @@ def create_app() -> FastAPI:
             "`/api/v1/workflows/demand-draft`, validate with `/api/v1/workflows/compile`, "
             "then review before publishing or running."
         ),
-        version="0.4.0",
+        version="0.4.1",
         docs_url="/docs",
         redoc_url="/redoc",
         openapi_url="/openapi.json",

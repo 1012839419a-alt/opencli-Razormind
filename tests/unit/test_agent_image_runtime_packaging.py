@@ -16,11 +16,14 @@ def test_public_images_package_opencli_without_a_private_checkout():
     agent_image = (ROOT / "agent" / "Dockerfile").read_text(encoding="utf-8")
 
     for dockerfile in (main_image, agent_image):
-        assert "ARG OPENCLI_VERSION=1.8.5" in dockerfile
-        assert "npm install -g @jackwener/opencli@${OPENCLI_VERSION}" in dockerfile
+        assert "ARG OPENCLI_VERSION=1.8.6" in dockerfile
+        assert "@jackwener/opencli@${OPENCLI_VERSION}" in dockerfile
         assert "node /tmp/patch-opencli.js" in dockerfile
         assert "2233admin/OhMyOpenCLI" not in dockerfile
         assert "git clone ${OHMYOPENCLI_REPO}" not in dockerfile
+
+    assert "ARG PI_VERSION=0.83.0" in agent_image
+    assert "@earendil-works/pi-coding-agent@${PI_VERSION}" in agent_image
 
 
 def test_native_adapter_pack_install_requires_an_explicit_repository():
