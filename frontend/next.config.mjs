@@ -9,15 +9,11 @@ const BACKEND_URL = process.env.BACKEND_URL ?? "http://127.0.0.1:8031"
 const OIDC_TOKEN_ENDPOINT = process.env.OIDC_TOKEN_ENDPOINT
 const OIDC_JWKS_URL = process.env.OIDC_JWKS_URL
 const FRONTEND_ROOT = path.dirname(fileURLToPath(import.meta.url))
-const VIEW_TRANSITIONS_ENABLED = process.env.NEXT_PUBLIC_ENABLE_VIEW_TRANSITIONS !== 'false'
 
 const nextConfig = {
   output: "standalone",
   allowedDevOrigins: ['127.0.0.1'],
   distDir: process.env.OPENCLI_NEXT_DIST_DIR ?? '.next',
-  experimental: {
-    viewTransition: VIEW_TRANSITIONS_ENABLED,
-  },
   turbopack: {
     root: FRONTEND_ROOT,
   },

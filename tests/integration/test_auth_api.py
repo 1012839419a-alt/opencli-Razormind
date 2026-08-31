@@ -6,6 +6,8 @@ the middleware reads ``get_settings().api_auth_token`` per request, so the
 change is visible immediately and undone automatically after each test.
 """
 
+import secrets
+
 import pytest
 
 from backend.config import get_settings
@@ -15,6 +17,7 @@ from backend.security.identity import (
     get_request_identity,
     identity_dependency,
 )
+from backend.security.local_auth import DEFAULT_LOCAL_ADMIN_PASSWORD_HASH
 
 TOKEN = "fleet-test-token"
 
@@ -150,3 +153,67 @@ async def test_health_exempt_and_leaks_nothing(client, auth_enabled):
     response = await client.get("/health")
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+
+
+@pytest.mark.asyncio
+async def test_local_admin_login_uses_simple_credentials(client, auth_enabled):
+    response = await client.post(
+        "/api/v1/auth/login",
+        json={"username": "admin", "password": "admin"},
+    )
+    assert response.status_code == 200
+    payload = response.json()["data"]
+    assert payload["token_type"] == "bearer"
+    assert payload["using_default_password"] is True
+
+    identity = await client.get(
+        "/api/v1/auth/me",
+        headers={"Authorization": f"Bearer {payload['access_token']}"},
+    )
+    assert identity.status_code == 200
+    assert identity.json()["data"]["auth_method"] == "local"
+
+
+@pytest.mark.asyncio
+async def test_local_admin_login_rejects_wrong_password(client, auth_disabled):
+    wrong_password = f"wrong-{secrets.token_hex(8)}"
+    response = await client.post(
+        "/api/v1/auth/login",
+        json={"username": "admin", "password": wrong_password},
+    )
+    assert response.status_code == 401
+
+
+
+@pytest.mark.asyncio
+async def test_local_admin_can_change_password(client, auth_disabled, monkeypatch, tmp_path):
+    new_password = f"local-{secrets.token_hex(8)}"
+    monkeypatch.setenv("ENV_FILE_PATH", str(tmp_path / ".env"))
+    monkeypatch.setenv("LOCAL_ADMIN_PASSWORD_HASH", DEFAULT_LOCAL_ADMIN_PASSWORD_HASH)
+    get_settings.cache_clear()
+    try:
+        login = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "admin", "password": "admin"},
+        )
+        token = login.json()["data"]["access_token"]
+        changed = await client.post(
+            "/api/v1/auth/password",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"current_password": "admin", "new_password": new_password},
+        )
+        assert changed.status_code == 200
+        assert (
+            await client.post(
+                "/api/v1/auth/login",
+                json={"username": "admin", "password": "admin"},
+            )
+        ).status_code == 401
+        assert (
+            await client.post(
+                "/api/v1/auth/login",
+                json={"username": "admin", "password": new_password},
+            )
+        ).status_code == 200
+    finally:
+        get_settings.cache_clear()

@@ -14,20 +14,15 @@ test('login keeps the liquid, terminal, and pixel theme switcher', async () => {
   assert.match(login, /<Dither/)
 })
 
-test('login keeps local setup, recovery, OIDC, development, and reduced-motion paths', async () => {
-  const [login, localAdmin] = await Promise.all([
-    read('app/login/page.tsx'),
-    read('components/auth/local-admin-access.tsx'),
-  ])
+test('login uses local credentials and keeps the reduced-motion fallback', async () => {
+  const login = await read('app/login/page.tsx')
 
-  assert.match(login, /signInWithOidc/)
+  assert.match(login, /signInWithPassword/)
   assert.match(login, /enterDevelopmentMode/)
   assert.match(login, /prefers-reduced-motion: reduce/)
-  assert.match(localAdmin, /setupLocalAdmin/)
-  assert.match(localAdmin, /signInWithLocal/)
-  assert.match(localAdmin, /signInWithBootstrap/)
-  assert.match(localAdmin, /localAdminStatus/)
-  assert.match(localAdmin, /refreshLocalAdminStatus/)
+  assert.doesNotMatch(login, /signInWithBootstrap/)
+  assert.doesNotMatch(login, /管理员身份令牌/)
+  assert.doesNotMatch(login, /Fleet API 令牌/)
 })
 
 test('auth defaults return to the project list instead of a contextless workflow', async () => {

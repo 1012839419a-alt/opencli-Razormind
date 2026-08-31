@@ -47,6 +47,7 @@ from backend.workflow.swarm_simulation import (
     SWARM_SIMULATION_EXECUTOR,
     SWARM_SIMULATION_TOOL_CAPABILITY_ID,
 )
+from backend.workflow.wigolo_tool_nodes import wigolo_tool_capabilities
 
 WORKFLOW_TOOL_PACKAGE = "opencli-admin"
 WORKFLOW_TOOL_PACKAGE_VERSION = "0.1.0"
@@ -494,6 +495,7 @@ def _tool_capabilities() -> list[WorkflowToolCapability]:
         ),
         *[_native_intelligence_tool(action) for action in NATIVE_INTELLIGENCE_ACTIONS],
         *kats_tool_capabilities(),
+        *wigolo_tool_capabilities(),
     ]
 
 

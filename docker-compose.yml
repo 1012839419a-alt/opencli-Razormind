@@ -1,6 +1,6 @@
 # Shared backend config (DRY)
 x-backend-common: &backend-common
-  image: ${DOCKER_REGISTRY:-ghcr.io/}${DOCKER_IMAGE_NAMESPACE:-2233admin}/opencli-admin-api:${IMAGE_TAG:-0.4.0}
+  image: ${DOCKER_REGISTRY:-ghcr.io/}${DOCKER_IMAGE_NAMESPACE:-2233admin}/opencli-admin-api:${IMAGE_TAG:-0.4.1}
   env_file:
     - path: .env
       required: false
@@ -144,27 +144,18 @@ services:
   # ── Backend API ───────────────────────────────────────────────────────────
   api:
     <<: *backend-common
-    image: ${DOCKER_REGISTRY:-ghcr.io/}${DOCKER_IMAGE_NAMESPACE:-2233admin}/opencli-admin-api:${IMAGE_TAG:-0.4.0}
     # Run as root so the API can manage Docker containers (agent pool) via
     # the mounted socket. Acceptable for a self-hosted admin panel.
     user: root
     environment:
       DATABASE_URL: ${DATABASE_URL:-sqlite+aiosqlite:////data/opencli_admin.db}
-      TASK_EXECUTOR: ${TASK_EXECUTOR:-local}
-      OPENCLI_RUNTIME_REVISION: ${OPENCLI_RUNTIME_REVISION:-unidentified}
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/1
       REDIS_URL: redis://redis:6379/0
       DEBUG: ${DEBUG:-false}
       SECRET_KEY: ${SECRET_KEY:-change-me-in-production}
       API_AUTH_TOKEN: ${API_AUTH_TOKEN:?Set API_AUTH_TOKEN in .env or run scripts/install.sh}
-      BOOTSTRAP_ADMIN_TOKEN: ${BOOTSTRAP_ADMIN_TOKEN:?Set BOOTSTRAP_ADMIN_TOKEN in .env or run scripts/install.sh}
-      # 高吉星任务：CapSolver 打码 key（可选，无则验证码走人工流程）
-      CAPSOLVER_API_KEY: ${CAPSOLVER_API_KEY:-}
-      # VLM 自动解验证码（本地 Ollama；api 容器经 host.docker.internal 访问宿主）
-      OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
-      VLM_MODEL: ${VLM_MODEL:-qwen2.5vl:7b}
-      CAPTCHA_VLM_AUTO: ${CAPTCHA_VLM_AUTO:-0}
+      BOOTSTRAP_ADMIN_TOKEN: ${BOOTSTRAP_ADMIN_TOKEN:-}
       OPENCLI_MCP_ALLOWED_HOSTS: ${OPENCLI_MCP_ALLOWED_HOSTS:-}
       OPENCLI_MCP_ALLOWED_ORIGINS: ${OPENCLI_MCP_ALLOWED_ORIGINS:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
@@ -181,7 +172,7 @@ services:
       PUBLIC_URL: ${PUBLIC_URL:-}
       # Passed to the agent pool manager so it can name containers/networks correctly
       COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-opencli-admin}
-      CHROME_IMAGE: ${DOCKER_REGISTRY:-ghcr.io/}${DOCKER_IMAGE_NAMESPACE:-2233admin}/opencli-admin-chrome:${IMAGE_TAG:-0.4.0}
+      CHROME_IMAGE: ${DOCKER_REGISTRY:-ghcr.io/}${DOCKER_IMAGE_NAMESPACE:-2233admin}/opencli-admin-chrome:${IMAGE_TAG:-0.4.1}
       NOVNC_BASE_PORT: ${NOVNC_BASE_PORT:-6080}
       # NAS + III: cron 由 III schedule-bootstrap 驱动，API 不再跑内置 scheduler
       COLLECTION_ORCHESTRATOR: ${COLLECTION_ORCHESTRATOR:-admin}
@@ -197,12 +188,6 @@ services:
       - db_data:/data
       # Docker socket: lets the API start/stop agent pool containers
       - /var/run/docker.sock:/var/run/docker.sock
-      # 高吉星任务：验证码看门狗（CDP 轮询 doubao captcha，出现时写 /tmp/CAPTCHA_ALERT + 激活 tab）
-      - ./chrome-extra/captcha_alert.py:/opt/captcha_alert.py:ro
-      # 高吉星任务：油猴脚本分发（deploy_userscripts.py 读取 .user.js 并导入各 agent Tampermonkey）
-      - ./chrome-extra/scripts:/opt/scripts:ro
-      - ./chrome-extra/deploy_userscripts.py:/opt/deploy_userscripts.py:ro
-    entrypoint: ["/bin/sh", "-c", "nohup python3 -u /opt/captcha_alert.py >/tmp/captcha_alert.log 2>&1 & exec uvicorn backend.main:app --host 0.0.0.0 --port 8000 --access-log --log-level info"]
     ports:
       - "${API_PORT:-8031}:8000"
     networks:
@@ -222,10 +207,9 @@ services:
 
   # ── Next.js operator console ─────────────────────────────────────────────
   frontend:
-    image: ${DOCKER_REGISTRY:-ghcr.io/}${DOCKER_IMAGE_NAMESPACE:-2233admin}/opencli-admin-frontend:${IMAGE_TAG:-0.4.0}
+    image: ${DOCKER_REGISTRY:-ghcr.io/}${DOCKER_IMAGE_NAMESPACE:-2233admin}/opencli-admin-frontend:${IMAGE_TAG:-0.4.1}
     environment:
       BACKEND_URL: http://api:8000
-      OPENCLI_RUNTIME_REVISION: ${OPENCLI_RUNTIME_REVISION:-unidentified}
     ports:
       - "${FRONTEND_PORT:-3010}:3010"
     depends_on:
@@ -247,7 +231,6 @@ services:
   worker:
     profiles: ["celery"]
     <<: *backend-common
-    image: ${DOCKER_REGISTRY:-ghcr.io/}${DOCKER_IMAGE_NAMESPACE:-2233admin}/opencli-admin-api:${IMAGE_TAG:-0.4.0}
     command: celery -A backend.worker.celery_app worker --loglevel=info --concurrency=4
     environment:
       DATABASE_URL: ${DATABASE_URL:-sqlite+aiosqlite:////data/opencli_admin.db}
@@ -255,7 +238,6 @@ services:
       CELERY_RESULT_BACKEND: redis://redis:6379/1
       REDIS_URL: redis://redis:6379/0
       RUN_MIGRATIONS: "false"
-      OPENCLI_RUNTIME_REVISION: ${OPENCLI_RUNTIME_REVISION:-unidentified}
       SECRET_KEY: ${SECRET_KEY:-change-me-in-production}
       API_AUTH_TOKEN: ${API_AUTH_TOKEN:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
@@ -328,17 +310,11 @@ services:
   # ── Built-in interactive browser ─────────────────────────────────────────
   # noVNC is loopback-only by default; use an SSH tunnel for remote servers.
   agent-1:
-    image: ${DOCKER_REGISTRY:-ghcr.io/}${DOCKER_IMAGE_NAMESPACE:-2233admin}/opencli-admin-chrome:${IMAGE_TAG:-0.4.0}
-    entrypoint: ["/bin/bash", "/entrypoint.sh"]
+    image: ${DOCKER_REGISTRY:-ghcr.io/}${DOCKER_IMAGE_NAMESPACE:-2233admin}/opencli-admin-chrome:${IMAGE_TAG:-0.4.1}
     environment:
       CHROME_HOSTNAME: agent-1
     volumes:
       - agent_profile_1:/home/chrome/.config/chromium
-      # 高吉星任务：覆盖 entrypoint 加载 Tampermonkey（油猴打底）+ 扩展目录
-      - ./chrome-extra/entrypoint.sh:/entrypoint.sh:ro
-      - ./chrome-extra/tampermonkey:/home/chrome/tampermonkey:ro
-      # 高吉星任务：油猴脚本源（.user.js），entrypoint 启动时自动导入 Tampermonkey
-      - ./chrome-extra/scripts:/home/chrome/scripts:ro
     ports:
       - "127.0.0.1:${NOVNC_PORT:-6080}:6080"
     healthcheck:
@@ -360,13 +336,13 @@ services:
   #     -e CENTRAL_API_URL=http://<center-ip>:8031 \
   #     -e AGENT_REGISTER=ws \
   #     -p 19823:19823 \
-  #     ghcr.io/2233admin/opencli-admin-agent:0.4.0
+  #     ghcr.io/2233admin/opencli-admin-agent:0.4.1
   #
   # Or start the bundled agent profile (local network):
   #   docker compose --profile agent up agent
   agent:
     profiles: ["agent"]
-    image: ${DOCKER_REGISTRY:-ghcr.io/}${DOCKER_IMAGE_NAMESPACE:-2233admin}/opencli-admin-agent:${IMAGE_TAG:-0.4.0}${CHROME_SUFFIX:-}
+    image: ${DOCKER_REGISTRY:-ghcr.io/}${DOCKER_IMAGE_NAMESPACE:-2233admin}/opencli-admin-agent:${IMAGE_TAG:-0.4.1}${CHROME_SUFFIX:-}
     environment:
       CENTRAL_API_URL: ${CENTRAL_API_URL:-}
       AGENT_ADVERTISE_URL: ${AGENT_ADVERTISE_URL:-}

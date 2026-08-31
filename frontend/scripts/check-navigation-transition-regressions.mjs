@@ -12,7 +12,7 @@ test('Next View Transition integration is enabled and stays locally opt-in', asy
     read('components/motion/app-route-transition.tsx'),
   ])
 
-  assert.match(config, /viewTransition:\s*VIEW_TRANSITIONS_ENABLED/)
+  assert.doesNotMatch(config, /viewTransition/)
   assert.match(localTransition, /<ViewTransition name=\{name\}>/)
   assert.doesNotMatch(shell, /<ViewTransition\b/)
   assert.doesNotMatch(routeTransition, /<ViewTransition\b/)
@@ -157,7 +157,7 @@ test('SSGOI boundary is pathname-keyed, interruptible, and reduced-motion safe',
   assert.match(transition, /key=\{pathname\}/)
   assert.match(transition, /data-ssgoi-transition=\{pathname\}/)
   assert.match(transition, /className="[^"]*h-full[^"]*min-h-full[^"]*"/)
-  assert.match(transition, /axis\(\{ paths: APP_ROUTES, type: 'x', variant: 'snappy' \}\)/)
+  assert.match(transition, /ordered: APP_ROUTES, transition: axis\(\{ type: 'x', variant: 'snappy' \}\)/)
   assert.match(transition, /prefersReducedMotion \? STATIC_CONFIG : MOTION_CONFIG/)
 })
 

@@ -2,41 +2,30 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 
-import {
-  getCurrentIdentity,
-  getLocalAuthStatus,
-  loginLocalAdmin,
-  setupLocalAdmin as createLocalAdmin,
-} from '@/lib/api/endpoints'
+import { changeLocalPassword, getCurrentIdentity, loginWithPassword } from '@/lib/api/endpoints'
 import { AUTH_REQUIRED_EVENT } from '@/lib/api/auth-events'
-import { setApiAuthToken } from '@/lib/api/auth-token'
 import { getOidcManager, isOidcConfigured, oidcReturnTo, sanitizeReturnTo } from '@/lib/auth/oidc'
 import {
   clearIdentityToken,
-  getPersistedIdentityToken,
+  getBootstrapIdentityToken,
   hasDevelopmentSession,
   isDevelopmentLoginAllowed,
-  persistIdentityToken,
+  persistBootstrapIdentityToken,
   setDevelopmentSession,
   setRuntimeIdentityToken,
 } from '@/lib/auth/session'
 import type { AuthIdentity, AuthStatus } from '@/lib/auth/types'
 
-type LocalAdminStatus = 'loading' | 'configured' | 'unconfigured' | 'unavailable'
-
 type AuthContextValue = {
   status: AuthStatus
   identity: AuthIdentity | null
   oidcEnabled: boolean
-  localAdminStatus: LocalAdminStatus
   developmentLoginEnabled: boolean
-  signInWithOidc: (returnTo?: string, fleetToken?: string) => Promise<void>
+  signInWithOidc: (returnTo?: string) => Promise<void>
+  signInWithPassword: (username: string, password: string) => Promise<boolean>
+  changePassword: (currentPassword: string, newPassword: string) => Promise<void>
   completeOidcSignIn: () => Promise<string>
-  signInWithBootstrap: (identityToken: string, fleetToken?: string) => Promise<void>
-  signInWithLocal: (password: string) => Promise<void>
-  setupLocalAdmin: (bootstrapToken: string, password: string) => Promise<void>
-  refreshLocalAdminStatus: () => Promise<void>
-  enterDevelopmentMode: (fleetToken?: string) => void
+  enterDevelopmentMode: () => void
   signOut: () => Promise<void>
 }
 
@@ -55,7 +44,6 @@ const DEVELOPMENT_IDENTITY: AuthIdentity = {
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [status, setStatus] = useState<AuthStatus>('loading')
   const [identity, setIdentity] = useState<AuthIdentity | null>(null)
-  const [localAdminStatus, setLocalAdminStatus] = useState<LocalAdminStatus>('loading')
   const oidcEnabled = isOidcConfigured()
   const developmentLoginEnabled = isDevelopmentLoginAllowed()
 
@@ -92,9 +80,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           return
         }
 
-        const persistedToken = getPersistedIdentityToken()
-        if (persistedToken) {
-          await acceptIdentityToken(persistedToken)
+        const bootstrapToken = getBootstrapIdentityToken()
+        if (bootstrapToken) {
+          await acceptIdentityToken(bootstrapToken)
           return
         }
 
@@ -118,20 +106,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       active = false
     }
   }, [acceptIdentityToken, developmentLoginEnabled])
-
-  const refreshLocalAdminStatus = useCallback(async () => {
-    setLocalAdminStatus('loading')
-    try {
-      const { configured } = await getLocalAuthStatus()
-      setLocalAdminStatus(configured ? 'configured' : 'unconfigured')
-    } catch {
-      setLocalAdminStatus('unavailable')
-    }
-  }, [])
-
-  useEffect(() => {
-    void refreshLocalAdminStatus()
-  }, [refreshLocalAdminStatus])
 
   useEffect(() => {
     const manager = getOidcManager()
@@ -161,11 +135,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return () => window.removeEventListener(AUTH_REQUIRED_EVENT, onAuthRequired)
   }, [becomeAnonymous, developmentLoginEnabled])
 
-  const signInWithOidc = useCallback(async (returnTo = '/studio', fleetToken?: string) => {
+  const signInWithOidc = useCallback(async (returnTo = '/studio') => {
     const manager = getOidcManager()
     if (!manager) throw new Error('OIDC 登录尚未配置')
-    if (fleetToken !== undefined) setApiAuthToken(fleetToken)
     await manager.signinRedirect({ state: { returnTo: sanitizeReturnTo(returnTo) } })
+  }, [])
+
+  const signInWithPassword = useCallback(
+    async (username: string, password: string) => {
+      const result = await loginWithPassword(username, password)
+      await acceptIdentityToken(result.access_token)
+      persistBootstrapIdentityToken(result.access_token)
+      return result.using_default_password
+    },
+    [acceptIdentityToken],
+  )
+
+  const changePassword = useCallback(async (currentPassword: string, newPassword: string) => {
+    await changeLocalPassword(currentPassword, newPassword)
   }, [])
 
   const completeOidcSignIn = useCallback(async () => {
@@ -177,47 +164,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return oidcReturnTo(user)
   }, [acceptIdentityToken])
 
-  const signInWithBootstrap = useCallback(
-    async (identityToken: string, fleetToken?: string) => {
-      const trimmed = identityToken.trim()
-      if (!trimmed) throw new Error('请输入管理员身份令牌')
-      if (fleetToken !== undefined) setApiAuthToken(fleetToken)
-      await acceptIdentityToken(trimmed)
-      persistIdentityToken(trimmed)
-    },
-    [acceptIdentityToken],
-  )
-
-  const signInWithLocal = useCallback(
-    async (password: string) => {
-      const token = await loginLocalAdmin(password)
-      await acceptIdentityToken(token)
-      persistIdentityToken(token)
-    },
-    [acceptIdentityToken],
-  )
-
-  const setupLocalAdmin = useCallback(
-    async (bootstrapToken: string, password: string) => {
-      const token = await createLocalAdmin(bootstrapToken.trim(), password)
-      setLocalAdminStatus('configured')
-      await acceptIdentityToken(token)
-      persistIdentityToken(token)
-    },
-    [acceptIdentityToken],
-  )
-
-  const enterDevelopmentMode = useCallback(
-    (fleetToken?: string) => {
-      if (!developmentLoginEnabled) throw new Error('本地开发模式不可用')
-      if (fleetToken !== undefined) setApiAuthToken(fleetToken)
-      clearIdentityToken()
-      setDevelopmentSession(true)
-      setIdentity(DEVELOPMENT_IDENTITY)
-      setStatus('authenticated')
-    },
-    [developmentLoginEnabled],
-  )
+  const enterDevelopmentMode = useCallback(() => {
+    if (!developmentLoginEnabled) throw new Error('本地开发模式不可用')
+    clearIdentityToken()
+    setDevelopmentSession(true)
+    setIdentity(DEVELOPMENT_IDENTITY)
+    setStatus('authenticated')
+  }, [developmentLoginEnabled])
 
   const signOut = useCallback(async () => {
     const manager = getOidcManager()
@@ -236,31 +189,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       status,
       identity,
       oidcEnabled,
-      localAdminStatus,
       developmentLoginEnabled,
       signInWithOidc,
+      signInWithPassword,
+      changePassword,
       completeOidcSignIn,
-      signInWithBootstrap,
-      signInWithLocal,
-      setupLocalAdmin,
-      refreshLocalAdminStatus,
       enterDevelopmentMode,
       signOut,
     }),
     [
+      changePassword,
       completeOidcSignIn,
       developmentLoginEnabled,
       enterDevelopmentMode,
       identity,
-      localAdminStatus,
       oidcEnabled,
-      signInWithBootstrap,
-      signInWithLocal,
       signInWithOidc,
+      signInWithPassword,
       signOut,
       status,
-      setupLocalAdmin,
-      refreshLocalAdminStatus,
     ],
   )
 

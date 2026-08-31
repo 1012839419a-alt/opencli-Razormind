@@ -481,9 +481,30 @@ export interface EdgeNodeEvent {
 }
 
 export interface SystemConfig {
+  app_name: string
+  app_env: string
+  debug: boolean
   collection_mode: 'local' | 'agent'
+  collection_orchestrator: 'admin' | 'iii'
   task_executor: 'local' | 'celery'
+  local_max_concurrent_pipelines: number
+  opencli_timeout: number
+  default_timezone: string
+  public_url: string
+  fleet_network_provider: 'lan' | 'netbird' | 'wireguard' | 'ssh' | 'custom'
+  netbird_mode: 'off' | 'host' | 'docker'
+  opencli_cdp_endpoint: string
+  agent_pool_endpoints: string[]
+  llm_request_timeout_seconds: number
+  llm_max_concurrency: number
+  control_mode: 'advisory' | 'automatic'
+  control_kill_switch: boolean
   image_tag: string
+  database_kind: string
+  api_auth_configured: boolean
+  oidc_configured: boolean
+  smtp_configured: boolean
+  credential_encryption_configured: boolean
 }
 
 export interface NodeStats {

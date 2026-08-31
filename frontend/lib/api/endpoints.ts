@@ -10,10 +10,6 @@ import type {
   FeedProviderInput,
   FeedProviderWorkflowNode,
   FeedProviderWorkflowNodeInput,
-  DeliveryConnection,
-  DeliveryConnectionInput,
-  FeishuBitableProbeInput,
-  FeishuBitableProbeResult,
   ModelDefaultCandidate,
   ModelDefaultRead,
   ModelProvider,
@@ -96,21 +92,24 @@ export const resetWorkspaceSettings = () =>
 export const getCurrentIdentity = () =>
   apiClient.get<ApiResponse<AuthIdentity>>('/auth/me').then((r) => r.data.data)
 
-export const getLocalAuthStatus = () =>
-  apiClient.get<ApiResponse<{ configured: boolean }>>('/auth/local/status').then((r) => r.data.data)
-
-export const loginLocalAdmin = (password: string) =>
+export const loginWithPassword = (username: string, password: string) =>
   apiClient
-    .post<ApiResponse<{ access_token: string }>>('/auth/local/login', { password })
-    .then((r) => r.data.data.access_token)
+    .post<
+      ApiResponse<{
+        access_token: string
+        token_type: 'bearer'
+        using_default_password: boolean
+      }>
+    >('/auth/login', { username, password })
+    .then((r) => r.data.data)
 
-export const setupLocalAdmin = (bootstrapToken: string, password: string) =>
+export const changeLocalPassword = (currentPassword: string, newPassword: string) =>
   apiClient
-    .post<ApiResponse<{ access_token: string }>>('/auth/local/setup', {
-      bootstrap_token: bootstrapToken,
-      password,
+    .post<ApiResponse<{ message: string }>>('/auth/password', {
+      current_password: currentPassword,
+      new_password: newPassword,
     })
-    .then((r) => r.data.data.access_token)
+    .then((r) => r.data.data)
 
 export const listMyWorkspaces = () =>
   apiClient.get<ApiResponse<WorkspaceSummary[]>>('/workspaces').then((r) => r.data.data)
@@ -675,28 +674,6 @@ export const buildFeedProviderWorkflowNode = (
     )
     .then((r) => r.data.data)
 
-// ── Reusable delivery connections ───────────────────────────────────────────
-export const listDeliveryConnections = () =>
-  apiClient.get<ApiResponse<DeliveryConnection[]>>('/delivery-connections').then((r) => r.data)
-
-export const createDeliveryConnection = (data: DeliveryConnectionInput) =>
-  apiClient
-    .post<ApiResponse<DeliveryConnection>>('/delivery-connections', data)
-    .then((r) => r.data.data)
-
-export const updateDeliveryConnection = (id: string, data: DeliveryConnectionInput) =>
-  apiClient
-    .patch<ApiResponse<DeliveryConnection>>(`/delivery-connections/${id}`, data)
-    .then((r) => r.data.data)
-
-export const deleteDeliveryConnection = (id: string) =>
-  apiClient.delete<ApiResponse<null>>(`/delivery-connections/${id}`).then((r) => r.data)
-
-export const probeFeishuBitable = (id: string, data: FeishuBitableProbeInput) =>
-  apiClient
-    .post<ApiResponse<FeishuBitableProbeResult>>(`/delivery-connections/${id}/probe`, data)
-    .then((r) => r.data.data)
-
 // ── Model defaults (model-provider runtime — role-based failover candidate lists) ───────────────
 // A role can be entirely absent from the list on a fresh install — that's a
 // legitimate "no candidates configured yet" state, not an error.
@@ -759,8 +736,11 @@ export const getHealth = () =>
 
 export const getSystemConfig = () =>
   apiClient.get<ApiResponse<SystemConfig>>('/system/config').then((r) => r.data.data)
+type SystemConfigPatch = Partial<Omit<SystemConfig, 'agent_pool_endpoints'>> & {
+  agent_pool_endpoints?: string
+}
 
-export const updateSystemConfig = (data: Partial<SystemConfig>) =>
+export const updateSystemConfig = (data: SystemConfigPatch) =>
   apiClient.patch<ApiResponse<SystemConfig>>('/system/config', data).then((r) => r.data.data)
 
 export const getWsAgentStatus = () =>
