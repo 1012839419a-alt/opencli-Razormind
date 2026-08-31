@@ -12,7 +12,6 @@ from fastapi import HTTPException, Request, status
 from jose import JWTError, jwt
 
 from backend.config import get_settings
-from backend.security.local_auth import is_local_session
 
 
 @dataclass(frozen=True)
@@ -159,13 +158,6 @@ def identity_dependency(
                 name="Bootstrap Admin",
                 is_platform_admin=True,
                 auth_method="bootstrap",
-            )
-        if is_local_session(token):
-            return RequestIdentity(
-                subject="local-admin",
-                name="Local Administrator",
-                is_platform_admin=True,
-                auth_method="local",
             )
         return await oidc.verify(token)
 

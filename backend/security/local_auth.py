@@ -1,136 +1,106 @@
-"""Local single-admin authentication for self-hosted first-run deployments."""
+"""Local-first administrator password and session helpers."""
 
 from __future__ import annotations
 
 import base64
 import hashlib
 import hmac
+import os
+import re
 import secrets
-import time
-from collections import defaultdict, deque
 from datetime import UTC, datetime, timedelta
-from threading import Lock
+from pathlib import Path
 
-from fastapi import HTTPException, status
-from jose import JWTError, jwt
-
-from backend.config import get_settings
-
-_ALGORITHM = "HS256"
-_SUBJECT = "local-admin"
-_SCRYPT_N = 2**14
-_SCRYPT_R = 8
-_SCRYPT_P = 1
-
-
-class LoginAttemptLimiter:
-    """Small per-process guard against rapid password guessing."""
-
-    def __init__(
-        self, max_attempts: int = 10, window_seconds: int = 60, max_clients: int = 1024
-    ) -> None:
-        self.max_attempts = max_attempts
-        self.window_seconds = window_seconds
-        self.max_clients = max_clients
-        self._attempts: dict[str, deque[float]] = defaultdict(deque)
-        self._lock = Lock()
-
-    def check(self, client_id: str) -> None:
-        now = time.monotonic()
-        with self._lock:
-            attempts = self._attempts.get(client_id)
-            if not attempts:
-                return
-            while attempts and now - attempts[0] >= self.window_seconds:
-                attempts.popleft()
-            if not attempts:
-                self._attempts.pop(client_id, None)
-                return
-            if len(attempts) >= self.max_attempts:
-                retry_after = max(1, int(self.window_seconds - (now - attempts[0])))
-                raise HTTPException(
-                    status.HTTP_429_TOO_MANY_REQUESTS,
-                    "Too many authentication attempts",
-                    headers={"Retry-After": str(retry_after)},
-                )
-
-    def record_failure(self, client_id: str) -> None:
-        with self._lock:
-            if client_id not in self._attempts and len(self._attempts) >= self.max_clients:
-                self._attempts.pop(next(iter(self._attempts)))
-            self._attempts[client_id].append(time.monotonic())
-
-    def reset(self, client_id: str) -> None:
-        with self._lock:
-            self._attempts.pop(client_id, None)
-
-
-login_attempt_limiter = LoginAttemptLimiter()
-
-
-def validate_password(password: str) -> str:
-    if len(password) < 12:
-        raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_ENTITY,
-            "Password must be at least 12 characters",
-        )
-    if len(password) > 256:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Password is too long")
-    return password
+from jose import jwt
 
 
 def hash_password(password: str) -> str:
-    encoded = validate_password(password).encode("utf-8")
     salt = secrets.token_bytes(16)
-    digest = hashlib.scrypt(
-        encoded, salt=salt, n=_SCRYPT_N, r=_SCRYPT_R, p=_SCRYPT_P, dklen=32
-    )
-    return "$".join(
-        (
-            "scrypt",
-            str(_SCRYPT_N),
-            str(_SCRYPT_R),
-            str(_SCRYPT_P),
-            base64.urlsafe_b64encode(salt).decode("ascii"),
-            base64.urlsafe_b64encode(digest).decode("ascii"),
-        )
-    )
+    n, r, p = 16384, 8, 1
+    digest = hashlib.scrypt(password.encode("utf-8"), salt=salt, n=n, r=r, p=p)
+    encode = base64.urlsafe_b64encode
+    return f"scrypt${n}${r}${p}${encode(salt).decode()}${encode(digest).decode()}"
+
+DEFAULT_LOCAL_ADMIN_PASSWORD_HASH = hash_password("admin")
 
 
-def verify_password(password: str, password_hash: str) -> bool:
+def verify_password(password: str, encoded: str) -> bool:
     try:
-        scheme, n, r, p, salt, expected = password_hash.split("$", 5)
-        if scheme != "scrypt" or (int(n), int(r), int(p)) != (
-            _SCRYPT_N,
-            _SCRYPT_R,
-            _SCRYPT_P,
-        ):
+        scheme, n, r, p, salt_text, digest_text = encoded.split("$", 5)
+        if scheme != "scrypt":
             return False
-        digest = hashlib.scrypt(
+        salt = base64.urlsafe_b64decode(salt_text.encode("ascii"))
+        expected = base64.urlsafe_b64decode(digest_text.encode("ascii"))
+        actual = hashlib.scrypt(
             password.encode("utf-8"),
-            salt=base64.urlsafe_b64decode(salt),
-            n=_SCRYPT_N,
-            r=_SCRYPT_R,
-            p=_SCRYPT_P,
-            dklen=32,
+            salt=salt,
+            n=int(n),
+            r=int(r),
+            p=int(p),
+            maxmem=64 * 1024 * 1024,
         )
-    except (ValueError, TypeError):
+        return hmac.compare_digest(actual, expected)
+    except (ValueError, TypeError, UnicodeError):
         return False
-    return hmac.compare_digest(base64.urlsafe_b64encode(digest).decode("ascii"), expected)
 
 
-def issue_session() -> str:
+def issue_local_token(username: str, secret_key: str) -> str:
     now = datetime.now(UTC)
     return jwt.encode(
-        {"sub": _SUBJECT, "typ": "local-admin", "iat": now, "exp": now + timedelta(hours=12)},
-        get_settings().secret_key,
-        algorithm=_ALGORITHM,
+        {
+            "sub": "local-admin",
+            "name": "本地管理员",
+            "username": username,
+            "is_platform_admin": True,
+            "auth_method": "local",
+            "iat": now,
+            "exp": now + timedelta(days=30),
+        },
+        secret_key,
+        algorithm="HS256",
     )
 
 
-def is_local_session(token: str) -> bool:
+def load_password_hash(path: str, fallback: str) -> str:
+    """Load a persisted password hash, falling back to configured settings."""
+
     try:
-        claims = jwt.decode(token, get_settings().secret_key, algorithms=[_ALGORITHM])
-    except JWTError:
-        return False
-    return claims.get("sub") == _SUBJECT and claims.get("typ") == "local-admin"
+        persisted = Path(path).read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeError):
+        return fallback
+    return persisted or fallback
+
+
+def persist_password_hash(password_hash: str) -> None:
+    """Persist the local password in the deployment and current process."""
+
+    os.environ["LOCAL_ADMIN_PASSWORD_HASH"] = password_hash
+    durable_path = os.environ.get("LOCAL_ADMIN_PASSWORD_HASH_FILE")
+    if durable_path is None and Path("/data").is_dir():
+        durable_path = "/data/local_admin_password_hash"
+    if durable_path:
+        durable_file = Path(durable_path)
+        durable_file.parent.mkdir(parents=True, exist_ok=True)
+        durable_file.write_text(password_hash + "\n", encoding="utf-8")
+
+    path = os.environ.get("ENV_FILE_PATH")
+    if not path:
+        for candidate in (Path("/app/.env"), Path(__file__).resolve().parents[2] / ".env"):
+            if candidate.exists():
+                path = str(candidate)
+                break
+        else:
+            path = str(Path(__file__).resolve().parents[2] / ".env")
+
+    env_path = Path(path)
+    try:
+        content = env_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        content = ""
+    new_line = f"LOCAL_ADMIN_PASSWORD_HASH={password_hash}"
+    pattern = r"^LOCAL_ADMIN_PASSWORD_HASH=.*$"
+    if re.search(pattern, content, re.MULTILINE):
+        content = re.sub(pattern, new_line, content, flags=re.MULTILINE)
+    else:
+        content = content.rstrip("\n") + f"\n{new_line}\n"
+    env_path.write_text(content, encoding="utf-8")
