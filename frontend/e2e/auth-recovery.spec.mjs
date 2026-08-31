@@ -12,6 +12,33 @@ const identity = {
   auth_method: 'bootstrap',
 }
 
+const systemConfig = {
+  app_name: 'OpenCLI Admin',
+  app_env: 'test',
+  debug: false,
+  collection_mode: 'local',
+  collection_orchestrator: 'admin',
+  task_executor: 'local',
+  local_max_concurrent_pipelines: 2,
+  opencli_timeout: 300,
+  default_timezone: 'Asia/Shanghai',
+  public_url: 'http://127.0.0.1:3000',
+  fleet_network_provider: 'lan',
+  netbird_mode: 'off',
+  opencli_cdp_endpoint: 'http://127.0.0.1:9222',
+  agent_pool_endpoints: [],
+  llm_request_timeout_seconds: 60,
+  llm_max_concurrency: 2,
+  control_mode: 'advisory',
+  control_kill_switch: false,
+  image_tag: '0.4.1',
+  database_kind: 'sqlite',
+  api_auth_configured: true,
+  oidc_configured: false,
+  smtp_configured: false,
+  credential_encryption_configured: true,
+}
+
 const response = (data) => ({
   contentType: 'application/json',
   body: JSON.stringify({ success: true, data }),
@@ -28,9 +55,7 @@ async function fulfillSystemApi(route, counters = {}) {
   const path = new URL(route.request().url()).pathname
   if (path.endsWith('/system/config')) {
     counters.systemConfig = (counters.systemConfig ?? 0) + 1
-    await route.fulfill(
-      response({ collection_mode: 'local', task_executor: 'local', image_tag: '0.4.1' }),
-    )
+    await route.fulfill(response(systemConfig))
     return
   }
   if (path.endsWith('/workers/chrome-pool')) {
@@ -71,7 +96,7 @@ test('mounted auth recovery retains the token and returns to the requested route
 
   await page.goto('/system')
   await expect(page.getByText('API 服务正在恢复')).toBeVisible()
-  await expect(page.getByRole('heading', { name: '系统与运维' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '系统设置' })).toBeVisible()
   expect(identityCalls).toBe(2)
   await expect
     .poll(() => page.evaluate((key) => sessionStorage.getItem(key), TOKEN_KEY))

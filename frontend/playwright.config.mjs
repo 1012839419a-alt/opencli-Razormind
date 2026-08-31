@@ -9,7 +9,12 @@ export default defineConfig({
     browserName: "chromium",
   },
   webServer: {
-    command: `pnpm start --hostname 127.0.0.1 --port ${port}`,
+    command: "node scripts/start-standalone.mjs",
+    env: {
+      ...process.env,
+      HOSTNAME: "127.0.0.1",
+      PORT: port,
+    },
     reuseExistingServer: !process.env.CI,
     timeout: 30_000,
   },

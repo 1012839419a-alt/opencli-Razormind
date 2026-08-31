@@ -7,6 +7,7 @@ import { toast } from 'sonner'
 import { useAuth } from '@/components/auth/auth-provider'
 import { BACKEND_HINT, ErrorState, LoadingState } from '@/components/shell/data-states'
 import { PageContainer } from '@/components/shell/page-container'
+import { RestartApiCard } from '@/components/system/restart-api-card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -146,6 +147,8 @@ export default function SystemSettingsPage() {
             </form>
           </CardContent>
         </Card>
+
+        <RestartApiCard />
       </div>
     </PageContainer>
   )
