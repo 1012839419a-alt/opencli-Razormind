@@ -20,10 +20,10 @@ FROM ${REGISTRY}python:3.13-slim AS runtime
 
 WORKDIR /app
 
-# Runtime system deps (psycopg2 needs libpq, opencli needs Node.js 22+)
+# Runtime system deps (psycopg2 needs libpq, opencli needs Node.js 26+)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq5 curl ca-certificates git \
-    && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && curl -fsSL https://deb.nodesource.com/setup_26.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 

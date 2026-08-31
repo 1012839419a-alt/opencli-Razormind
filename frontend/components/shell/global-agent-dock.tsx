@@ -3,17 +3,17 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { Bot, Check, Loader2, Send, ShieldCheck, X } from 'lucide-react'
 import { usePathname } from 'next/navigation'
-import { FormEvent, KeyboardEvent, useState } from 'react'
+import { FormEvent, KeyboardEvent, useEffect, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import {
-  Sheet,
-  SheetContent,
-  SheetDescription,
-  SheetHeader,
-  SheetTitle,
-} from '@/components/ui/sheet'
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import { Textarea } from '@/components/ui/textarea'
 import { apiClient } from '@/lib/api/client'
 import type { ApiResponse } from '@/lib/api/types'
@@ -43,9 +43,11 @@ type AgentReply = {
 export function GlobalAgentDock({
   open,
   onOpenChange,
+  initialPrompt = '',
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
+  initialPrompt?: string
 }) {
   const pathname = usePathname()
   const queryClient = useQueryClient()
@@ -55,6 +57,11 @@ export function GlobalAgentDock({
   const [error, setError] = useState<string | null>(null)
   const [sending, setSending] = useState(false)
   const [confirming, setConfirming] = useState(false)
+  useEffect(() => {
+    if (open && initialPrompt) {
+      setInput(initialPrompt)
+    }
+  }, [initialPrompt, open])
 
   async function sendMessage(event?: FormEvent) {
     event?.preventDefault()
@@ -136,18 +143,21 @@ export function GlobalAgentDock({
   }
 
   return (
-    <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent className="w-full gap-0 sm:max-w-md" aria-label="全局 Agent">
-        <SheetHeader className="border-b">
-          <SheetTitle className="flex items-center gap-2">
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent
+        className="fixed bottom-4 right-4 top-auto left-auto flex h-[min(680px,calc(100vh-2rem))] w-[min(420px,calc(100vw-2rem))] max-w-none translate-x-0 translate-y-0 flex-col gap-0 overflow-hidden p-0 shadow-2xl"
+        aria-label="全局 Agent"
+      >
+        <DialogHeader className="border-b px-4 py-3">
+          <DialogTitle className="flex items-center gap-2">
             <Bot className="size-4 text-primary" aria-hidden />
             全局 Agent
-          </SheetTitle>
-          <SheetDescription>
+          </DialogTitle>
+          <DialogDescription>
             当前上下文：{ROUTE_LABELS[pathname] ?? pathname}。读取可直接执行，写入操作先生成确认提案。
             未明确指定 Workspace 时，仅在后端能解析出唯一授权范围时允许确认写操作。
-          </SheetDescription>
-        </SheetHeader>
+          </DialogDescription>
+        </DialogHeader>
 
         <ScrollArea className="min-h-0 flex-1">
           <div className="space-y-3 p-4" aria-live="polite">
@@ -238,7 +248,7 @@ export function GlobalAgentDock({
             </Button>
           </div>
         </form>
-      </SheetContent>
-    </Sheet>
+      </DialogContent>
+    </Dialog>
   )
 }

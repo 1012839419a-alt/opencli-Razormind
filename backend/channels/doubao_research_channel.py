@@ -7,7 +7,14 @@ from typing import Any
 
 import httpx
 
-from backend.channels.base import AbstractChannel, Capabilities, ChannelResult
+from backend.channels.base import (
+    AbstractChannel,
+    Capabilities,
+    ChannelFetchError,
+    ChannelResult,
+    FetchContext,
+    FetchResult,
+)
 from backend.channels.registry import register_channel
 
 _URL_RE = re.compile(r"https?://[^\s<>\]\[\](){}\"']+", re.IGNORECASE)
@@ -18,6 +25,14 @@ _CAPTCHA_MARKERS = (
     "blocked the request",
     "人机验证",
     "验证码",
+)
+_TRANSIENT_CDP_MARKERS = (
+    "CDP connection is not open",
+    "Inspected target navigated or closed",
+    "Execution context was destroyed",
+    "Target closed",
+    "Session closed",
+    "cloneNode",
 )
 
 
@@ -65,6 +80,12 @@ def _conversation_url(stdout: str) -> str:
 def _is_captcha_block(stderr: str, stdout: str) -> bool:
     text = f"{stderr} {stdout}".lower()
     return any(marker in text for marker in _CAPTCHA_MARKERS)
+
+
+def _is_transient_cdp_fault(stderr: str, stdout: str) -> bool:
+    """Return whether OpenCLI hit a retryable browser/CDP race."""
+    text = f"{stderr} {stdout}"
+    return any(marker in text for marker in _TRANSIENT_CDP_MARKERS)
 
 
 def _structured_response(text: str) -> dict[str, Any]:
@@ -236,7 +257,12 @@ class DoubaoResearchChannel(AbstractChannel):
             )
 
         if returncode:
-            error_type = "captcha_challenge" if _is_captcha_block(stderr, stdout) else None
+            if _is_captcha_block(stderr, stdout):
+                error_type = "captcha_challenge"
+            elif _is_transient_cdp_fault(stderr, stdout):
+                error_type = "ConnectionError"
+            else:
+                error_type = None
             return ChannelResult.fail(
                 f"opencli doubao ask exited with code {returncode}: {stderr[:500]}",
                 error_type=error_type,
@@ -306,6 +332,35 @@ class DoubaoResearchChannel(AbstractChannel):
             ],
             citation_count=len(citations),
             citation_capture="answer_url_extraction" if extract_citations else "disabled",
+        )
+
+    async def fetch(self, ctx: FetchContext) -> FetchResult:
+        """Run the subprocess collector with bounded retry for transient failures."""
+        import asyncio
+
+        from backend.pipeline.error_taxonomy import is_retryable
+
+        max_retries = int(ctx.config.get("max_retries", 3))
+        base_delay = float(ctx.config.get("retry_base_delay", 2.0))
+        last: ChannelResult | None = None
+        for attempt in range(max_retries + 1):
+            result = await self.collect(ctx.config, ctx.params)
+            if result.success:
+                return FetchResult(items=result.items, metadata=result.metadata)
+            if result.error_type == "captcha_challenge" or not is_retryable(
+                result.error_type
+            ):
+                raise ChannelFetchError(
+                    result.error or "doubao collect failed",
+                    error_type=result.error_type,
+                )
+            last = result
+            if attempt < max_retries:
+                await asyncio.sleep(base_delay * (2**attempt))
+        assert last is not None
+        raise ChannelFetchError(
+            last.error or "doubao collect failed",
+            error_type=last.error_type,
         )
 
     async def validate_config(self, config: dict[str, Any]) -> list[str]:

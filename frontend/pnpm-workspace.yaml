@@ -5,3 +5,7 @@ allowBuilds:
   msw: false
   sharp: true
   unrs-resolver: true
+
+minimumReleaseAgeExclude:
+  - '@ssgoi/core@7.0.1'
+  - '@ssgoi/react@7.0.1'

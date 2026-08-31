@@ -1,5 +1,6 @@
 import pytest
 
+from backend.channels.base import ChannelFetchError, ChannelResult, FetchContext
 from backend.channels.doubao_research_channel import (
     DoubaoResearchChannel,
     _citations,
@@ -234,3 +235,103 @@ async def test_doubao_command_uses_host_bridge_when_configured(monkeypatch):
     result = await _run_doubao_command(["opencli", "doubao", "status"])
 
     assert result == (0, "logged_in: true", "")
+
+
+def _ctx(**config) -> FetchContext:
+    merged = {"question": "x", "max_retries": 3, "retry_base_delay": 0.001}
+    merged.update(config)
+    return FetchContext(config=merged, params={})
+
+
+async def test_fetch_retries_transient_then_succeeds(monkeypatch):
+    channel = DoubaoResearchChannel()
+    results = [
+        ChannelResult.fail("CDP connection is not open", error_type="ConnectionError"),
+        ChannelResult.fail("CDP connection is not open", error_type="ConnectionError"),
+        ChannelResult.ok([{"title": "回答"}]),
+    ]
+    calls: list[int] = []
+
+    async def fake_collect(config, parameters):
+        calls.append(1)
+        return results.pop(0)
+
+    monkeypatch.setattr(channel, "collect", fake_collect)
+    out = await channel.fetch(_ctx())
+
+    assert out.items == [{"title": "回答"}]
+    assert len(calls) == 3
+
+
+async def test_fetch_gives_up_after_max_retries(monkeypatch):
+    channel = DoubaoResearchChannel()
+    calls: list[int] = []
+
+    async def fake_collect(config, parameters):
+        calls.append(1)
+        return ChannelResult.fail("CDP connection is not open", error_type="ConnectionError")
+
+    monkeypatch.setattr(channel, "collect", fake_collect)
+
+    with pytest.raises(ChannelFetchError) as error:
+        await channel.fetch(_ctx(max_retries=3))
+
+    assert error.value.error_type == "ConnectionError"
+    assert len(calls) == 4
+
+
+@pytest.mark.parametrize(
+    ("error_type", "message"),
+    [("captcha_challenge", "verification challenge"), ("ValueError", "bad config")],
+)
+async def test_fetch_does_not_retry_non_transient_errors(
+    monkeypatch, error_type, message
+):
+    channel = DoubaoResearchChannel()
+    calls: list[int] = []
+
+    async def fake_collect(config, parameters):
+        calls.append(1)
+        return ChannelResult.fail(message, error_type=error_type)
+
+    monkeypatch.setattr(channel, "collect", fake_collect)
+
+    with pytest.raises(ChannelFetchError) as error:
+        await channel.fetch(_ctx())
+
+    assert error.value.error_type == error_type
+    assert len(calls) == 1
+
+
+async def test_fetch_success_passes_metadata_through(monkeypatch):
+    channel = DoubaoResearchChannel()
+
+    async def fake_collect(config, parameters):
+        return ChannelResult.ok(
+            [{"title": "x"}], citation_count=3, citation_capture="answer_url_extraction"
+        )
+
+    monkeypatch.setattr(channel, "collect", fake_collect)
+    out = await channel.fetch(_ctx())
+
+    assert out.metadata["citation_count"] == 3
+    assert out.metadata["citation_capture"] == "answer_url_extraction"
+
+
+@pytest.mark.parametrize(
+    "stderr",
+    ["error: CDP connection is not open", "Inspected target navigated or closed"],
+)
+async def test_collect_classifies_cdp_transient_as_connection_error(
+    monkeypatch, stderr
+):
+    async def fake_run(command):
+        return 1, "", stderr
+
+    monkeypatch.setattr(
+        "backend.channels.doubao_research_channel._run_doubao_command", fake_run
+    )
+    result = await DoubaoResearchChannel().collect({"question": "测试"}, {})
+
+    assert not result.success
+    assert result.error_type == "ConnectionError"

@@ -4,7 +4,7 @@ FROM ${REGISTRY}python:3.13-slim
 # Base system deps (always installed)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl ca-certificates git procps unzip \
-    && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && curl -fsSL https://deb.nodesource.com/setup_26.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
@@ -22,8 +22,10 @@ fi
 
 # Install opencli globally — available as 'opencli' on PATH
 ARG OPENCLI_VERSION=1.8.7
+ARG PI_VERSION=0.83.0
 COPY scripts/patch-opencli.js /tmp/patch-opencli.js
 RUN npm install -g @jackwener/opencli@${OPENCLI_VERSION} \
+        @earendil-works/pi-coding-agent@${PI_VERSION} \
     && node /tmp/patch-opencli.js \
     && rm /tmp/patch-opencli.js \
     && rm -rf /root/.npm

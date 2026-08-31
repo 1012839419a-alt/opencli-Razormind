@@ -25,6 +25,9 @@ def test_public_images_package_opencli_without_a_private_checkout():
         assert "2233admin/OhMyOpenCLI" not in dockerfile
         assert "git clone ${OHMYOPENCLI_REPO}" not in dockerfile
 
+    assert "ARG PI_VERSION=0.83.0" in agent_image
+    assert "@earendil-works/pi-coding-agent@${PI_VERSION}" in agent_image
+
 def test_browser_images_package_the_pinned_violentmonkey_bundle_with_notices():
     chrome_image = (ROOT / "chrome" / "Dockerfile").read_text(encoding="utf-8")
     agent_image = (ROOT / "agent" / "Dockerfile").read_text(encoding="utf-8")

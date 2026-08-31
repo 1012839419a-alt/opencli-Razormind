@@ -186,8 +186,12 @@ async function getAutomationWindow(workspace: string, initialUrl?: string): Prom
     height: 900,
     type: 'normal',
   });
+  if (win?.id === undefined) {
+    throw new Error('Chrome did not create an automation window');
+  }
+  const windowId = win.id;
   const session: AutomationSession = {
-    windowId: win.id!,
+    windowId,
     idleTimer: null,
     idleDeadlineAt: Date.now() + getIdleTimeout(workspace),
     owned: true,
@@ -195,11 +199,11 @@ async function getAutomationWindow(workspace: string, initialUrl?: string): Prom
   };
   automationSessions.set(workspace, session);
   resetWindowIdleTimer(workspace);
-  const tabs = await chrome.tabs.query({ windowId: win.id! });
+  const tabs = await chrome.tabs.query({ windowId });
   if (tabs[0]?.id) {
     await new Promise<void>((resolve) => {
       const timeout = setTimeout(resolve, 500);
-      const listener = (tabId: number, info: chrome.tabs.TabChangeInfo) => {
+      const listener = (tabId: number, info: chrome.tabs.OnUpdatedInfo) => {
         if (tabId === tabs[0].id && info.status === 'complete') {
           chrome.tabs.onUpdated.removeListener(listener);
           clearTimeout(timeout);
@@ -443,7 +447,7 @@ async function handleNavigate(cmd: Command, workspace: string): Promise<Result> 
     const isNavigationDone = (url: string | undefined): boolean =>
       isTargetUrl(url, targetUrl) || normalizeUrlForComparison(url) !== beforeNormalized;
 
-    const listener = (id: number, info: chrome.tabs.TabChangeInfo, tab: chrome.tabs.Tab) => {
+    const listener = (id: number, info: chrome.tabs.OnUpdatedInfo, tab: chrome.tabs.Tab) => {
       if (id !== tabId) return;
       if (info.status === 'complete' && isNavigationDone(tab.url ?? info.url)) finish();
     };

@@ -6,7 +6,7 @@ export default defineConfig({
     outDir: 'dist',
     emptyOutDir: true,
     rollupOptions: {
-      input: resolve(__dirname, 'src/background.ts'),
+      input: resolve(import.meta.dirname, 'src/background.ts'),
       output: {
         entryFileNames: 'background.js',
         format: 'es',

@@ -8,7 +8,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     chromium x11vnc xvfb novnc websockify procps nginx \
     fonts-noto-cjk gettext-base \
     curl ca-certificates unzip \
-    && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && curl -fsSL https://deb.nodesource.com/setup_26.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && npm install -g @jackwener/opencli@${OPENCLI_VERSION} \
     && node /tmp/patch-opencli.js \
