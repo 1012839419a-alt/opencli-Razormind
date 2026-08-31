@@ -3,7 +3,7 @@ title: 'GitHub #37: Failure-Recovery Release Gate and Proof-Bundle Governance'
 type: 'chore'
 created: '2026-08-30'
 baseline_commit: 'dca17f83cfa0e169d594f98faeb4696435ec208a'
-status: 'in-review'
+status: 'done'
 ---
 
 <frozen-after-approval reason="human-owned intent — do not modify unless human renegotiates">
@@ -59,9 +59,9 @@ Materialization/DLQ/exact authority is only authenticated `POST /materialize` or
 ## Tasks & Acceptance
 
 **Execution:**
-- [ ] `Dockerfile`, `docker-compose.non-bypass-failure.yml`, `tests/acceptance/fault_tools/`, `tests/acceptance/fixtures/opencli-failure-proof`, `tests/acceptance/fixtures/opencli-failure-proof.sha256`, `tests/acceptance/non_bypass_failure_matrix.py` — add acceptance-target COPY/SHA verification and generated no-port overlay; add `proof-iii-actuator`, semantic gateways, deterministic one/zero/100-record fixture, actor-supplied 101st pre-snapshot and 102nd late records, two Admins/scenario PostgreSQL, and III/callback/PostgreSQL/TLS/RESP/PG-page gates. Keep base #36 invocation unchanged; verify catalog image IDs and fixture digests before `up --no-build`.
-- [ ] `scripts/run_non_bypass_failure_matrix.py`, `scripts/non_bypass_failure_proof_contract.py`, `tests/acceptance/test_non_bypass_failure_matrix.py` — preflight prerequisite tests/contracts and catalog IDs; compose base+overlay; actor drives only permitted real III bridge calls; public APIs supply all certificate facts; validate/hash/sign allowlisted result, assert boundaries/no fallback, timeout cleanup, and no actuator/gate control state in proof. Happy runner/contract remain unchanged except optional stable-helper import.
-- [ ] `scripts/proof_bundle_governance.py`, `tests/acceptance/test_proof_bundle_governance.py` — no-port `proof-governance` HTTP service and scenario durable store. Local OIDC/JWKS has separate `bundle-writer` and `key-admin`; immutable HTTP bootstrap-active/stage-next/promote/retire/revoke operations permit only active key/version signing, prohibit writer administration, expose trust-root/public fingerprint through authenticated HTTP, and audit each transition. A dedicated immutable audit-root Ed25519 key/fingerprint signs canonical predecessor-linked records with key ID. Each create; successful read/verify/audit-read; bundle-key lifecycle; retention/tombstone; and attributable authenticated denial appends one record. Invalid/unparseable credentials may receive fixed unaudited denial; never persist secret-bearing denial input. Audit GET appends its own redacted event first, then verifies full sequence/hash/predecessor/signatures; failure denies/no certificate. Create-if-absent canonical bytes/hash, immutable read, same-ID changed-byte conflict, scoped/tamper/continuity denies. Envelope includes `{governanceSchemaVersion,artifactId,scenarioId,run,contentHash,sourceSchemaVersion,createdAt,expiresAt,retentionClass,retentionPolicyVersion,scope,redactionProfile,signatureAlgorithm,keyId}`. Keys retain `{notBefore,notAfter,revokedAt}`: active/retired verify only inside bundle validity; revoked always fails; retain public key while referenced by an unexpired bundle. Expiry appends tombstone+audit first, deletes payload/signature, retains IDs/content/key fingerprints and policy/version/expiry, retrieve/verify returns HTTP `410`; private key remains 0700 scratch.
+- [x] `Dockerfile`, `docker-compose.non-bypass-failure.yml`, `tests/acceptance/fault_tools/`, `tests/acceptance/fixtures/opencli-failure-proof`, `tests/acceptance/fixtures/opencli-failure-proof.sha256`, `tests/acceptance/non_bypass_failure_matrix.py` — add acceptance-target COPY/SHA verification and generated no-port overlay; add `proof-iii-actuator`, semantic gateways, deterministic one/zero/100-record fixture, actor-supplied 101st pre-snapshot and 102nd late records, two Admins/scenario PostgreSQL, and III/callback/PostgreSQL/TLS/RESP/PG-page gates. Keep base #36 invocation unchanged; verify catalog image IDs and fixture digests before `up --no-build`.
+- [x] `scripts/run_non_bypass_failure_matrix.py`, `scripts/non_bypass_failure_proof_contract.py`, `tests/acceptance/test_non_bypass_failure_matrix.py` — preflight prerequisite tests/contracts and catalog IDs; compose base+overlay; actor drives only permitted real III bridge calls; public APIs supply all certificate facts; validate/hash/sign allowlisted result, assert boundaries/no fallback, timeout cleanup, and no actuator/gate control state in proof. Happy runner/contract remain unchanged except optional stable-helper import.
+- [x] `scripts/proof_bundle_governance.py`, `tests/acceptance/test_proof_bundle_governance.py` — no-port `proof-governance` HTTP service and scenario durable store. Local OIDC/JWKS has separate `bundle-writer` and `key-admin`; immutable HTTP bootstrap-active/stage-next/promote/retire/revoke operations permit only active key/version signing, prohibit writer administration, expose trust-root/public fingerprint through authenticated HTTP, and audit each transition. A dedicated immutable audit-root Ed25519 key/fingerprint signs canonical predecessor-linked records with key ID. Each create; successful read/verify/audit-read; bundle-key lifecycle; retention/tombstone; and attributable authenticated denial appends one record. Invalid/unparseable credentials may rec…
 
 **Acceptance Criteria:**
 - Given an admitted row completing before its deadline, when its authenticated public boundary settles, then exactly one signed `ScenarioResultV1` passes DTO and audit allowlists and records actuator, IDs/hashes, public facts, forbidden-fact absence, and governance reference.
@@ -75,3 +75,53 @@ Materialization/DLQ/exact authority is only authenticated `POST /materialize` or
 - `uv run --extra dev pytest -o addopts='' tests/integration/test_iii_collection_vertical.py tests/integration/test_evidence_batch_materialization_api.py -q`
 - `uv run --extra dev python scripts/run_non_bypass_failure_matrix.py --compose-file docker-compose.non-bypass-acceptance.yml --overlay-file docker-compose.non-bypass-failure.yml --artifact-dir .artifacts/non-bypass-failures`
 - `uv run --extra dev pytest -o addopts='' tests/acceptance/test_non_bypass_failure_matrix.py tests/acceptance/test_proof_bundle_governance.py -q`
+
+## Suggested Review Order
+
+**Release orchestration**
+
+- Builds isolated scenario lifecycles, admission, execution, governance, and cleanup from one runner.
+  [`run_non_bypass_failure_matrix.py:894`](../../scripts/run_non_bypass_failure_matrix.py#L894)
+
+- Derives collision-free public receiver networking for each Compose project.
+  [`run_non_bypass_failure_matrix.py:277`](../../scripts/run_non_bypass_failure_matrix.py#L277)
+
+**Proof boundary and governance**
+
+- Rejects non-allowlisted or secret-bearing facts before a scenario can become evidence.
+  [`non_bypass_failure_proof_contract.py:94`](../../scripts/non_bypass_failure_proof_contract.py#L94)
+
+- Stores signed, immutable, scoped bundles with lifecycle-controlled signing material.
+  [`proof_bundle_governance.py:166`](../../scripts/proof_bundle_governance.py#L166)
+
+- Verifies retained public bundle and audit evidence without service-private material.
+  [`proof_bundle_governance.py:877`](../../scripts/proof_bundle_governance.py#L877)
+
+**Materialization recovery authority**
+
+- Converts cross-workspace materialization read denial into non-enumerable absence.
+  [`iii_collections.py:131`](../../backend/api/v1/iii_collections.py#L131)
+
+- Reconciles changed signed receipts into immutable terminal N+1 revisions.
+  [`evidence_batch_materializer.py:341`](../../backend/workflow/evidence_batch_materializer.py#L341)
+
+**Failure topology**
+
+- Places Admin behind a TLS proxy while isolating the durable receiver backend.
+  [`docker-compose.non-bypass-failure.yml:113`](../../docker-compose.non-bypass-failure.yml#L113)
+
+- Routes only race and amendment scenarios through the permitted real III actuator.
+  [`non_bypass_failure_proof_contract.py:18`](../../scripts/non_bypass_failure_proof_contract.py#L18)
+
+**Receiver recovery**
+
+- Bounds each live delivery execution independently from restart and reconciliation.
+  [`non_bypass_failure_driver.py:1881`](../../tests/acceptance/non_bypass_failure_driver.py#L1881)
+
+**Verification peripherals**
+
+- Pins phase-local deadline boundaries with deterministic clock-driven assertions.
+  [`test_non_bypass_failure_matrix.py:889`](../../tests/acceptance/test_non_bypass_failure_matrix.py#L889)
+
+- Exercises receipt-amendment recovery and immutable prior manifest preservation.
+  [`test_evidence_batch_materialization_api.py:1176`](../../tests/integration/test_evidence_batch_materialization_api.py#L1176)
