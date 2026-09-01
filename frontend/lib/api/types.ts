@@ -21,6 +21,87 @@ export interface WorkspaceSettingsRead {
   updated_at: string | null
 }
 
+// Global Agent conversations retain only the selected server-side session. Route
+// context is captured by the API per turn, so previous turns never change when
+// the user navigates to another product surface.
+export interface AgentConversationContext {
+  project_id?: string | null
+  workflow_id?: string | null
+  run_id?: string | null
+  source_id?: string | null
+  surface?: string | null
+}
+
+export interface AgentProposal {
+  tool: string
+  args: Record<string, unknown>
+  summary: string
+  diff: string
+  work_item_id?: string | null
+  workspace_id?: string | null
+  proposal_version?: string | null
+}
+
+export interface AgentReply {
+  type: 'message' | 'proposal'
+  content?: string | null
+  proposal?: AgentProposal | null
+}
+
+export type AgentConversationStatus = 'active' | 'closed'
+export type AgentConversationTurnStatus = 'running' | 'completed' | 'proposal' | 'failed'
+
+export interface AgentConversation {
+  id: string
+  workspace_id: string
+  title: string | null
+  status: AgentConversationStatus
+  context_binding: AgentConversationContext
+  revision: number
+  created_at: string
+  updated_at: string
+}
+
+export interface AgentConversationTurn {
+  sequence: number
+  request_id: string
+  status: AgentConversationTurnStatus
+  user_content: string
+  response: AgentReply | null
+  context_binding: AgentConversationContext
+  tool_trace: Array<{
+    name: string
+    kind: 'read' | 'write'
+    status: string
+    argument_keys: string[]
+  }>
+  error_code?: string | null
+  error_message?: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface AgentConversationDetail extends AgentConversation {
+  turns: AgentConversationTurn[]
+}
+
+export interface CreateAgentConversationInput {
+  workspace_id?: string
+  title?: string
+  context: AgentConversationContext
+}
+
+export interface SendAgentConversationMessageInput {
+  request_id: string
+  content: string
+  context: AgentConversationContext
+}
+
+export interface SendAgentConversationMessageResult {
+  conversation_id: string
+  turn: AgentConversationTurn
+}
+
 // Self-hosted LLM-provider runtime (model-provider runtime, backend/llm/, no litellm) — mirrors
 // backend.schemas.provider.ModelProviderRead.from_model exactly. The raw
 // api_key is NEVER returned by the backend (from_model explicitly masks it) —

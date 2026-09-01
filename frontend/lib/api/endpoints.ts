@@ -74,6 +74,11 @@ import type {
   OperationsAgentRun,
   PublishedOperationsAgentVersion,
   Automation,
+  AgentConversation,
+  AgentConversationDetail,
+  CreateAgentConversationInput,
+  SendAgentConversationMessageInput,
+  SendAgentConversationMessageResult,
   WorkspaceSettingsRead,
   WorkspaceSettingsValues,
   WorkspaceSource,
@@ -112,6 +117,32 @@ export const changeLocalPassword = (currentPassword: string, newPassword: string
 
 export const listMyWorkspaces = () =>
   apiClient.get<ApiResponse<WorkspaceSummary[]>>('/workspaces').then((r) => r.data.data)
+
+export const listAgentConversations = (workspaceId: string, limit = 20) =>
+  apiClient
+    .get<ApiResponse<AgentConversation[]>>('/chat/sessions', { params: { workspace_id: workspaceId, limit } })
+    .then((r) => r.data.data)
+
+export const getAgentConversation = (conversationId: string, afterSequence = 0, limit = 50) =>
+  apiClient
+    .get<ApiResponse<AgentConversationDetail>>(`/chat/sessions/${conversationId}`, {
+      params: { after_sequence: afterSequence, limit },
+    })
+    .then((r) => r.data.data)
+
+export const createAgentConversation = (data: CreateAgentConversationInput) =>
+  apiClient.post<ApiResponse<AgentConversation>>('/chat/sessions', data).then((r) => r.data.data)
+
+export const sendAgentConversationMessage = (
+  conversationId: string,
+  data: SendAgentConversationMessageInput,
+) =>
+  apiClient
+    .post<ApiResponse<SendAgentConversationMessageResult>>(`/chat/sessions/${conversationId}/messages`, data)
+    .then((r) => r.data.data)
+
+export const closeAgentConversation = (conversationId: string) =>
+  apiClient.post<ApiResponse<AgentConversation>>(`/chat/sessions/${conversationId}/close`).then((r) => r.data.data)
 
 export const listWorkspaceProjects = (workspaceId: string) =>
   apiClient.get<ApiResponse<ProjectSummary[]>>(`/workspaces/${workspaceId}/projects`).then((r) => r.data.data)
