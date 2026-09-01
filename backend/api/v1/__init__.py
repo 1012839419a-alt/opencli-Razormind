@@ -6,6 +6,7 @@ from backend.api.v1 import (
     agents,
     automations,
     browser_act,
+    browser_spaces,
     browsers,
     chat,
     consumer_grants,
@@ -50,6 +51,7 @@ v1_router.include_router(geo_acquisition.router)
 v1_router.include_router(automations.router)
 v1_router.include_router(image_studio.router)
 v1_router.include_router(browser_act.router)
+v1_router.include_router(browser_spaces.router)
 v1_router.include_router(browsers.router)
 v1_router.include_router(chat.router)
 v1_router.include_router(control.router)
