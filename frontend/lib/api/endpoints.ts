@@ -265,6 +265,22 @@ export const getTask = (id: string) =>
     .get<ApiResponse<CollectionTask>>(`/tasks/${id}`)
     .then((r) => r.data.data);
 
+export const recoverTask = (
+  id: string,
+  data: {
+    idempotency_key: string;
+    reason: string;
+    mode?: "recollect";
+    initiating_actor?: string;
+  },
+) =>
+  apiClient
+    .post<ApiResponse<{ task_id: string; retry_of_task_id: string; status: string; recovery_mode: string; idempotency_replayed: boolean }>>(
+      `/tasks/${id}/recover`,
+      data,
+    )
+    .then((r) => r.data.data);
+
 export const listTaskRuns = (task_id: string) =>
   apiClient
     .get<ApiResponse<TaskRun[]>>(`/tasks/${task_id}/runs`)

@@ -12,6 +12,11 @@ async def create_task(
     priority: int = 5,
     agent_id: str | None = None,
     task_id: str | None = None,
+    retry_of_task_id: str | None = None,
+    recovery_mode: str | None = None,
+    recovery_reason: str | None = None,
+    initiating_actor: str | None = None,
+    recovery_idempotency_key: str | None = None,
 ) -> CollectionTask:
     values = dict(
         source_id=source_id,
@@ -20,6 +25,11 @@ async def create_task(
         parameters=parameters,
         priority=priority,
         status="pending",
+        retry_of_task_id=retry_of_task_id,
+        recovery_mode=recovery_mode,
+        recovery_reason=recovery_reason,
+        initiating_actor=initiating_actor,
+        recovery_idempotency_key=recovery_idempotency_key,
     )
     if task_id is not None:
         values["id"] = task_id
@@ -32,6 +42,30 @@ async def create_task(
 
 async def get_task(session: AsyncSession, task_id: str) -> CollectionTask | None:
     result = await session.execute(select(CollectionTask).where(CollectionTask.id == task_id))
+    return result.scalar_one_or_none()
+
+
+async def get_recovery_by_idempotency_key(
+    session: AsyncSession, key: str
+) -> CollectionTask | None:
+    result = await session.execute(
+        select(CollectionTask).where(CollectionTask.recovery_idempotency_key == key)
+    )
+    return result.scalar_one_or_none()
+
+
+async def get_inflight_recovery(
+    session: AsyncSession, task_id: str
+) -> CollectionTask | None:
+    result = await session.execute(
+        select(CollectionTask)
+        .where(
+            CollectionTask.retry_of_task_id == task_id,
+            CollectionTask.status.in_(["pending", "running"]),
+        )
+        .order_by(CollectionTask.created_at.desc())
+        .limit(1)
+    )
     return result.scalar_one_or_none()
 
 

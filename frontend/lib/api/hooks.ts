@@ -1,15 +1,12 @@
 "use client";
 
-<<<<<<< HEAD
 import {
   useInfiniteQuery,
   useMutation,
+  useQueries,
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-=======
-import { useInfiniteQuery, useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
->>>>>>> 47c3cdc0 (feat(notifications): expose delivery and ack evidence)
 
 import * as api from "./endpoints";
 import { getApiInstanceId } from "./restart-orchestration";
@@ -571,6 +568,19 @@ export function useTasks(params?: {
   return useQuery({
     queryKey: ["tasks", params],
     queryFn: () => api.listTasks(params),
+  });
+}
+
+export function useRecoverTask(taskId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (data: Parameters<typeof api.recoverTask>[1]) =>
+      api.recoverTask(taskId, data),
+    onSuccess: (result) => {
+      void queryClient.invalidateQueries({ queryKey: ["tasks", taskId] });
+      void queryClient.invalidateQueries({ queryKey: ["tasks"] });
+      return result;
+    },
   });
 }
 

@@ -26,6 +26,9 @@ test('dashboard restores the real signal chain and makes Agent delivery visible'
     assert.match(dashboard, new RegExp(label))
   }
   assert.match(dashboard, /<AgentDeliveryPanel/)
+  assert.match(dashboard, /已提交（\{delivery\.attempts\} 次尝试）/)
+  assert.match(dashboard, /已确认回执/)
+  assert.match(dashboard, /提交成功不等于已确认送达/)
   assert.match(dashboard, /发送目标由通知规则决定，不预设为某一个平台/)
   assert.match(dashboard, /notificationChannels=\{activeDeliveryChannels\}/)
   assert.match(dashboard, /deliveryChannels=\{activeDeliveryChannels\.length\}/)
