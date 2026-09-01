@@ -2,8 +2,15 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
+
+from backend.schemas.workflow import (
+    CollectorNodeParams,
+    CollectorSourceKind,
+    normalize_collector_node_params,
+)
 
 RuntimeIOContractStatus = Literal[
     "executable",
@@ -30,14 +37,29 @@ class RuntimeIOContract:
     errors: tuple[str, ...] = ()
     provenance_fields: tuple[str, ...] = ()
     limits: tuple[tuple[str, int], ...] = ()
+    variadic_input_port: tuple[str, str] | None = None
+    min_input_connections: int | None = None
+    legacy_input_ports: tuple[str, ...] = ()
 
     def to_manifest(self) -> dict[str, object]:
+        input_ports = [_port(name, type_) for name, type_ in self.input_ports]
+        if self.variadic_input_port is not None:
+            name, type_ = self.variadic_input_port
+            input_ports = [
+                _port(
+                    name,
+                    type_,
+                    cardinality="many",
+                    min_connections=self.min_input_connections,
+                    legacy_aliases=self.legacy_input_ports,
+                )
+            ]
         return {
             "schemaVersion": 1,
             "bindingId": self.binding_id,
             "status": self.status,
             "inputShape": {
-                "ports": [_port(name, type_) for name, type_ in self.input_ports],
+                "ports": input_ports,
                 "params": list(self.input_params),
             },
             "outputShape": {
@@ -501,6 +523,51 @@ RUNTIME_IO_CONTRACTS: dict[str, RuntimeIOContract] = {
     ),
 }
 
+for _collector_catalog_id, _collector_kind in {
+    "collection.source.web": "web",
+    "collection.source.api": "api",
+    "collection.source.rss": "rss",
+    "collection.source.cli": "cli",
+}.items():
+    RUNTIME_IO_CONTRACTS[_collector_catalog_id] = RuntimeIOContract(
+        binding_id=_collector_catalog_id,
+        status="dispatch_only",
+        input_ports=(("in", "trigger"),),
+        output_ports=(("out", "CollectorOutputV1"),),
+        input_params=("version", "execution", "sources"),
+        output_artifacts=("CollectorOutputV1", "CollectedItemV1[]", "SourceExecutionResult[]"),
+        permission_gate=("canFetchNetwork",),
+        config_gate=(f"{_collector_kind}_sources_valid",),
+        event_shape=(
+            "source_started",
+            "source_completed",
+            "source_failed",
+            "partial:itemCount",
+            "completed",
+        ),
+        fixture_coverage=(f"collector-{_collector_kind}-contract-v1",),
+        errors=("collector_source_invalid", "collector_all_enabled_sources_failed"),
+        provenance_fields=("sourceId", "sourceType", "lineage", "fetchedAt"),
+    )
+
+# Preserve the legacy ``in1``/``in2`` aliases while exposing a true many-input
+# contract to new clients.  Runtime execution reads actual upstream edges.
+RUNTIME_IO_CONTRACTS["workflow.flow.merge"] = RuntimeIOContract(
+    binding_id="workflow.flow.merge",
+    status="executable",
+    input_ports=(("in1", "CollectorMergeInputV1"), ("in2", "CollectorMergeInputV1")),
+    output_ports=(("out", "recordCandidate[]"),),
+    input_params=("preserveLineage",),
+    output_artifacts=("recordCandidate[]",),
+    permission_gate=(),
+    config_gate=("at_least_one_upstream", "typed_port_contract_registered"),
+    event_shape=("partial:mergedCandidateCount", "completed"),
+    fixture_coverage=("workflow-capabilities-api",),
+    variadic_input_port=("in", "CollectorMergeInputV1"),
+    min_input_connections=1,
+    legacy_input_ports=("in1", "in2"),
+)
+
 NATIVE_INTELLIGENCE_ACTION_CONTRACT_ROWS = (
     ("research", "storedItems[]", "researchArtifact", ("research_input_required",), True),
     ("ontology", "researchArtifact", "ontologyArtifact", ("research_artifact_missing",), True),
@@ -677,20 +744,49 @@ def runtime_io_contract_manifest(binding_id: str | None) -> dict[str, object] | 
     return contract.to_manifest() if contract else None
 
 
+def normalize_collector_runtime_params(
+    catalog_id: str,
+    params: Mapping[str, Any],
+) -> CollectorNodeParams:
+    """Project saved collector params to v1 without mutating authoring state."""
+
+    return normalize_collector_node_params(catalog_id, params)
+
+
+def collector_runtime_contract(kind: CollectorSourceKind) -> RuntimeIOContract:
+    return RUNTIME_IO_CONTRACTS[f"collection.source.{kind}"]
+
+
 def has_runtime_io_contract(binding_id: str | None) -> bool:
     return runtime_io_contract(binding_id) is not None
 
 
-def _port(name: str, type_: str) -> dict[str, str]:
-    return {"name": name, "type": type_}
+def _port(
+    name: str,
+    type_: str,
+    *,
+    cardinality: Literal["one", "many"] | None = None,
+    min_connections: int | None = None,
+    legacy_aliases: tuple[str, ...] = (),
+) -> dict[str, object]:
+    port: dict[str, object] = {"name": name, "type": type_}
+    if cardinality is not None:
+        port["cardinality"] = cardinality
+    if min_connections is not None:
+        port["minConnections"] = min_connections
+    if legacy_aliases:
+        port["legacyAliases"] = list(legacy_aliases)
+    return port
 
 
 __all__ = [
     "RUNTIME_IO_CONTRACTS",
     "RuntimeIOContract",
     "RuntimeIOContractStatus",
+    "collector_runtime_contract",
     "has_runtime_io_contract",
     "list_runtime_io_contracts",
+    "normalize_collector_runtime_params",
     "runtime_io_contract",
     "runtime_io_contract_manifest",
 ]
