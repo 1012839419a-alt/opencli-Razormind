@@ -83,7 +83,10 @@ export function WorkflowEditorSession({ forceStandalone = false }: WorkflowEdito
   const saveBlocked = useRef(false)
   const createWorkflow = useCreateProjectWorkflow()
   const consumedImageReturn = useRef<string | null>(null)
-  const { error: capabilityError, loading: capabilityLoading } = useWorkflowCapabilities(true)
+  const { error: capabilityError, loading: capabilityLoading } = useWorkflowCapabilities(
+    true,
+    workspaceId,
+  )
   const standalone = forceStandalone
   const missingProjectContext = !standalone && (!workspaceId || !projectId)
   const projectHref = workspaceId && projectId ? `/studio/projects/${projectId}?workspace=${workspaceId}` : '/studio'
@@ -333,7 +336,7 @@ export function WorkflowEditorSession({ forceStandalone = false }: WorkflowEdito
     <div className="relative h-full w-full overflow-hidden">
       {standalone ? (
         <ErrorBoundary label="WorkflowEditor">
-          <WorkflowEditor />
+          <WorkflowEditor workspaceId={workspaceId} />
         </ErrorBoundary>
       ) : missingProjectContext ? (
         <div className="grid h-full place-items-center px-4">
@@ -417,7 +420,7 @@ export function WorkflowEditorSession({ forceStandalone = false }: WorkflowEdito
         </div>
       ) : (
         <ErrorBoundary label="WorkflowEditor">
-          <WorkflowEditor documentState={documentState} />
+          <WorkflowEditor documentState={documentState} workspaceId={workspaceId} />
         </ErrorBoundary>
       )}
       {workspaceId && projectId && workflowId ? (

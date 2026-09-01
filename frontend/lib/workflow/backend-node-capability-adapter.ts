@@ -94,14 +94,16 @@ export function projectBackendNodeCapability(
       },
       plugin: node.origin === "plugin"
         ? {
+            installationId: node.installationId ?? undefined,
             providerKey: node.provider,
-            version: "catalog",
+            version: node.pluginVersion ?? "catalog",
             family: "plugin",
+            capabilityId: node.pluginCapabilityId ?? undefined,
           }
         : undefined,
       canvas: {
         node: true,
-        locked: false,
+        locked: node.origin === "plugin",
         runBlocked: !runtimeVerified,
         runBlockReason: runtimeVerified ? null : reason,
       },

@@ -626,7 +626,7 @@ export default function NewAgentStudioPage() {
             </p>
 
             <div className="mt-3 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
-              <Link href={workspaceId ? `/studio/templates?workspace=${workspaceId}` : '/studio/templates'} className="inline-flex min-h-11 items-center text-xs text-muted-foreground hover:text-foreground">
+              <Link href={workspaceId ? `/plugins?type=template&workspace=${workspaceId}` : '/plugins?type=template'} className="inline-flex min-h-11 items-center text-xs text-muted-foreground hover:text-foreground">
                 从模板开始
               </Link>
               <button

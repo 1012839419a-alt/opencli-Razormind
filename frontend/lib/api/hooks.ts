@@ -184,10 +184,13 @@ export function useProjectRecordGraph(
   })
 }
 
-export function useBootstrapWorkspaceProject() {
+export function useBootstrapWorkspaceProject(governed = false) {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: ({ workspaceId, data }: { workspaceId: string; data: Parameters<typeof api.bootstrapWorkspaceProject>[1] }) => api.bootstrapWorkspaceProject(workspaceId, data),
+    mutationFn: ({ workspaceId, data }: { workspaceId: string; data: Parameters<typeof api.bootstrapWorkspaceProject>[1] }) =>
+      governed
+        ? api.bootstrapGovernedWorkspaceProject(workspaceId, data)
+        : api.bootstrapWorkspaceProject(workspaceId, data),
     onSuccess: (result, { workspaceId }) => {
       void queryClient.invalidateQueries({ queryKey: ['workspace-projects', workspaceId] })
       queryClient.setQueryData(['project-workflows', workspaceId, result.project.id], [result.primary_workflow])

@@ -79,6 +79,7 @@ import type {
   WorkspaceSettingsValues,
   WorkspaceSource,
 } from './types'
+import type { WorkflowProject } from '@/lib/workflow/schema'
 
 export const getWorkspaceSettings = () =>
   apiClient.get<ApiResponse<WorkspaceSettingsRead>>('/settings').then((r) => r.data.data)
@@ -165,11 +166,24 @@ export const bootstrapWorkspaceProject = (
   workspaceId: string,
   data: {
     project: { name: string; slug: string; description?: string; app_type?: ProjectAppType }
-    workflow: { name: string; description?: string; graph: import('@/lib/workflow/schema').WorkflowProject }
+    workflow: { name: string; description?: string; graph: WorkflowProject }
   },
 ) =>
   apiClient
     .post<ApiResponse<ProjectBootstrapResult>>(`/workspaces/${workspaceId}/projects/bootstrap`, data)
+    .then((r) => r.data.data)
+export const bootstrapGovernedWorkspaceProject = (
+  workspaceId: string,
+  data: {
+    project: { name: string; slug: string; description?: string; app_type?: ProjectAppType }
+    workflow: { name: string; description?: string; graph: WorkflowProject }
+  },
+) =>
+  apiClient
+    .post<ApiResponse<ProjectBootstrapResult>>(
+      `/governance/workspaces/${workspaceId}/projects/bootstrap`,
+      data,
+    )
     .then((r) => r.data.data)
 
 export const listProjectWorkflows = (workspaceId: string, projectId: string) =>
