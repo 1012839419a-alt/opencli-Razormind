@@ -1,5 +1,6 @@
 from backend.models.acquisition import AcquisitionExecution, AcquisitionExecutionStatus
 from backend.models.agent import AIAgent
+from backend.models.agent_conversation import AgentConversation, AgentConversationTurn
 from backend.models.automation import Automation
 from backend.models.base import TimestampMixin
 from backend.models.browser import BrowserBinding, BrowserInstance
@@ -15,6 +16,7 @@ from backend.models.consumer_grant import ConsumerGrant
 from backend.models.control_action import ControlActionRecord
 from backend.models.cookie_jar import CookieJarEntry
 from backend.models.edge_node import EdgeNode, EdgeNodeEvent
+from backend.models.feed_provider import FeedProvider
 from backend.models.identity import (
     ServiceIdentity,
     Team,
@@ -24,7 +26,13 @@ from backend.models.identity import (
     WorkspaceMembership,
     WorkspaceRole,
 )
-from backend.models.feed_provider import FeedProvider
+from backend.models.image_studio import (
+    CanvasDocument,
+    CanvasSnapshot,
+    ImageGenerationJob,
+    ImageGenerationJobStatus,
+    MediaAsset,
+)
 from backend.models.intelligence import (
     IntelligenceArtifact,
     IntelligenceArtifactReference,
@@ -32,13 +40,6 @@ from backend.models.intelligence import (
     IntelligenceOutbox,
     IntelligenceSession,
     IntelligenceTransition,
-)
-from backend.models.image_studio import (
-    CanvasDocument,
-    CanvasSnapshot,
-    ImageGenerationJob,
-    ImageGenerationJobStatus,
-    MediaAsset,
 )
 from backend.models.model_default import ModelDefault
 from backend.models.notification import NotificationLog, NotificationRule
@@ -88,6 +89,8 @@ __all__ = [
     "TimestampMixin",
     "AcquisitionExecution",
     "AcquisitionExecutionStatus",
+    "AgentConversation",
+    "AgentConversationTurn",
     "AIAgent",
     "Automation",
     "BrowserBinding",
