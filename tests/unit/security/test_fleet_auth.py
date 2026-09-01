@@ -2,6 +2,7 @@
 websocket branch of FleetAuthMiddleware (ADR-0005)."""
 
 import pytest
+from jose import jwt
 
 from backend.config import get_settings
 from backend.security.fleet_auth import (
@@ -10,7 +11,6 @@ from backend.security.fleet_auth import (
     is_localhost_host,
     resolve_uvicorn_host,
 )
-
 
 # ── is_localhost_host ──────────────────────────────────────────────────────────
 
@@ -144,6 +144,14 @@ async def test_non_api_ws_path_passes_through_even_with_token(auth_enabled):
 
 
 @pytest.mark.asyncio
+async def test_lifespan_scope_without_path_passes_through(auth_enabled):
+    recorder = _Recorder()
+    scope = {"type": "lifespan"}
+    await _wrapped(recorder)(scope, recorder.receive, recorder.send)
+    assert recorder.app_called is True
+
+
+@pytest.mark.asyncio
 async def test_ws_no_token_configured_passes_through(auth_disabled):
     recorder = _Recorder()
     scope = _ws_scope("/api/v1/nodes/ws")
@@ -183,6 +191,25 @@ async def test_ws_wrong_bearer_header_is_rejected_4401(auth_enabled):
         headers=[(b"authorization", b"Bearer wrong-token")],
     )
     await _wrapped(recorder)(scope, recorder.receive, recorder.send)
+    assert recorder.app_called is False
+    assert recorder.sent[0]["code"] == 4401
+
+
+@pytest.mark.asyncio
+async def test_ws_rejects_local_token_forged_with_retired_public_default(auth_enabled):
+    forged = jwt.encode(
+        {"sub": "local-admin", "auth_method": "local"},
+        "change-me-in-production",
+        algorithm="HS256",
+    )
+    recorder = _Recorder()
+    scope = _ws_scope(
+        "/api/v1/nodes/ws",
+        headers=[(b"authorization", f"Bearer {forged}".encode())],
+    )
+
+    await _wrapped(recorder)(scope, recorder.receive, recorder.send)
+
     assert recorder.app_called is False
     assert recorder.sent[0]["code"] == 4401
 

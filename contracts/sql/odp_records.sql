@@ -19,3 +19,6 @@ CREATE TABLE IF NOT EXISTS odp_records (
 
 CREATE INDEX IF NOT EXISTS idx_odp_records_source_ts
     ON odp_records (source_id, source_ts DESC);
+
+CREATE INDEX IF NOT EXISTS idx_odp_records_attempt_page
+    ON odp_records (task_id, trace_id, source_id, committed_at, id);

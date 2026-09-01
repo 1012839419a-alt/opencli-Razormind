@@ -13,6 +13,8 @@ from backend.schemas.common import UTCModel
 
 AGENT_CONTRACT_CONFIGURATION_KEY = "agent_contract"
 AGENT_RUNTIME_BINDING_CONFIGURATION_KEY = "runtime_binding"
+DEFAULT_DEEP_RUN_TIMEOUT_SECONDS = 1800
+MAX_DEEP_RUN_TIMEOUT_SECONDS = 3600
 MAX_AGENT_SCHEMA_BYTES = 65_536
 MAX_AGENT_SCHEMA_DEPTH = 32
 MAX_AGENT_MODEL_CONFIGURATION_BYTES = 262_144
@@ -60,10 +62,26 @@ class AgentRuntimeBindingV1(BaseModel):
 
     schema_version: Literal["agent.runtime-binding.v1"]
     agent_url: str = Field(min_length=1, max_length=512)
-    runtime: Literal["pi"]
+    runtime: Literal["miniflow", "pi", "codex"]
     workflow: str = Field(min_length=1, max_length=255)
     config: dict[str, JsonValue] = Field(default_factory=dict)
-    dispatch_timeout_seconds: int = Field(default=600, ge=1, le=3600)
+    dispatch_timeout_seconds: int = Field(
+        default=DEFAULT_DEEP_RUN_TIMEOUT_SECONDS,
+        ge=1,
+        le=MAX_DEEP_RUN_TIMEOUT_SECONDS,
+    )
+
+    # Workbench requires an explicit, server-published affinity contract before
+    # it sends a controller-created worktree to an edge runtime. Existing
+    # non-Workbench agent bindings may leave these unset.
+    execution_node_url: str | None = Field(default=None, min_length=1, max_length=512)
+    shared_filesystem_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=255,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+    )
+
 
     @field_validator("config")
     @classmethod
@@ -71,16 +89,18 @@ class AgentRuntimeBindingV1(BaseModel):
         unsupported = sorted(set(value) - {"timeout_seconds"})
         if unsupported:
             raise ValueError(
-                "runtime config is Fleet-owned; unsupported task keys: "
-                + ", ".join(unsupported)
+                "runtime config is Fleet-owned; unsupported task keys: " + ", ".join(unsupported)
             )
         timeout = value.get("timeout_seconds")
         if timeout is not None and (
             not isinstance(timeout, (int, float))
             or isinstance(timeout, bool)
-            or not 1 <= timeout <= 3600
+            or not 1 <= timeout <= MAX_DEEP_RUN_TIMEOUT_SECONDS
         ):
-            raise ValueError("config.timeout_seconds must be between 1 and 3600")
+            raise ValueError(
+                "config.timeout_seconds must be between 1 and "
+                f"{MAX_DEEP_RUN_TIMEOUT_SECONDS}"
+            )
         return value
 
     @field_validator("agent_url")
@@ -89,6 +109,16 @@ class AgentRuntimeBindingV1(BaseModel):
         normalized = value.rstrip("/")
         if not normalized.startswith(("http://", "https://")):
             raise ValueError("agent_url must be an http/https URL")
+        return normalized
+
+    @field_validator("execution_node_url")
+    @classmethod
+    def execution_node_url_is_http(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.rstrip("/")
+        if not normalized.startswith(("http://", "https://")):
+            raise ValueError("execution_node_url must be an http/https URL")
         return normalized
 
 

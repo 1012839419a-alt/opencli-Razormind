@@ -124,5 +124,8 @@ test('dashboard restores the next schedule countdown from backend next_run_at', 
   assert.match(matrixClock, /role="timer"/)
   assert.match(matrixClock, /当前时间/)
   assert.match(matrixClock, /window\.setInterval\(update, 1_000\)/)
-  assert.match(hooks, /queryKey: \['schedules', params\][\s\S]*refetchInterval: 30_000/)
+  assert.match(
+    hooks,
+    /queryKey:\s*\[["']schedules["'],\s*params\][\s\S]*?refetchInterval:\s*30_000/,
+  )
 })

@@ -16,6 +16,7 @@ ChannelType = Literal[
     "browser_act",
     "doubao_research",
     "douyin_detail",
+    "feishu_table",
 ]
 
 
