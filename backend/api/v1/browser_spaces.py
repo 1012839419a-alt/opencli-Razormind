@@ -89,23 +89,29 @@ class _BrowserSpaceService(Protocol):
     def task_response(self, task: Any) -> dict[str, Any]: ...
 
 
-# Test seams may replace this value. The production import remains lazy because
-# the service is delivered by the sibling domain commit.
-browser_space_service: _BrowserSpaceService | None = None
+# Keep the domain import lazy while making an explicitly unavailable service a
+# deterministic 503, rather than retrying the import and reaching the database.
+_SERVICE_UNRESOLVED = object()
+browser_space_service: _BrowserSpaceService | None | object = _SERVICE_UNRESOLVED
 
 
 def _service() -> _BrowserSpaceService:
     global browser_space_service
     if browser_space_service is None:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"code": "browser_space_service_unavailable"},
+        )
+    if browser_space_service is _SERVICE_UNRESOLVED:
         try:
             from backend.services import browser_space_service as resolved_service
         except ImportError as exc:  # pragma: no cover - protects pre-integration deployments
             raise HTTPException(
                 status.HTTP_503_SERVICE_UNAVAILABLE,
-                {"code": "browser_space_service_unavailable"},
+                detail={"code": "browser_space_service_unavailable"},
             ) from exc
         browser_space_service = cast(_BrowserSpaceService, resolved_service)
-    return browser_space_service
+    return cast(_BrowserSpaceService, browser_space_service)
 
 
 def _service_error(service: _BrowserSpaceService, code: str, status_code: int) -> Exception:

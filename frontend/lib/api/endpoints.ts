@@ -130,8 +130,15 @@ export const getAgentConversation = (conversationId: string, afterSequence = 0, 
     })
     .then((r) => r.data.data)
 
+type CreateAgentConversationResponse = {
+  conversation_id: string
+  session: AgentConversation
+}
+
 export const createAgentConversation = (data: CreateAgentConversationInput) =>
-  apiClient.post<ApiResponse<AgentConversation>>('/chat/sessions', data).then((r) => r.data.data)
+  apiClient
+    .post<ApiResponse<CreateAgentConversationResponse>>('/chat/sessions', data)
+    .then((r) => r.data.data.session)
 
 export const sendAgentConversationMessage = (
   conversationId: string,

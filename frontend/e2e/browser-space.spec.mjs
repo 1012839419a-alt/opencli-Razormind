@@ -12,6 +12,8 @@ async function mockBrowserSpaces(page, options = {}) {
     createError: options.createError,
     submitError: options.submitError,
   }
+  const wireSpace = ({ id, ...space }) => ({ space_id: id, ...space })
+  const wireEvent = ({ id, ...event }) => event
   await page.addInitScript(() => sessionStorage.setItem('opencli.bootstrapIdentityToken', 'test-identity'))
   await page.route('**/api/v1/**', async (route) => {
     const request = route.request()
@@ -19,11 +21,11 @@ async function mockBrowserSpaces(page, options = {}) {
     const json = (data, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify({ data }) })
     if (url.pathname === '/api/v1/auth/me') return json({ subject: 'test-agent', email: null, name: 'Test Agent', username: null, picture: null, is_platform_admin: true, auth_method: 'development' })
     if (url.pathname === '/api/v1/workspaces') return json([workspace])
-    if (url.pathname.endsWith('/browser-spaces') && request.method() === 'GET') return json({ spaces: state.spaces, available_instances: [instance] })
+    if (url.pathname.endsWith('/browser-spaces') && request.method() === 'GET') return json({ spaces: state.spaces.map(wireSpace), available_instances: [instance] })
     if (url.pathname.endsWith('/browser-spaces') && request.method() === 'POST') {
       if (state.createError) return route.fulfill({ status: 409, contentType: 'application/json', body: JSON.stringify({ error: state.createError }) })
       state.spaces = [{ id: 'space-1', workspace_id: workspace.id, browser_instance_id: instance.id, owner_type: 'operator', owner_id: 'agent-7', status: 'idle', granted_capabilities: ['snapshot'] }]
-      return json(state.spaces[0], 201)
+      return json(wireSpace(state.spaces[0]), 201)
     }
     if (url.pathname.endsWith('/space-1/tasks')) {
       if (state.submitError) return route.fulfill({ status: 409, contentType: 'application/json', body: JSON.stringify({ error: state.submitError }) })
@@ -37,9 +39,9 @@ async function mockBrowserSpaces(page, options = {}) {
     }
     if (url.pathname.endsWith('/space-1/close')) {
       state.spaces[0].status = 'closed'
-      return json(state.spaces[0])
+      return json(wireSpace(state.spaces[0]))
     }
-    if (url.pathname.endsWith('/space-1/events')) return json(state.events)
+    if (url.pathname.endsWith('/space-1/events')) return json(state.events.map(wireEvent))
     return route.fallback()
   })
 }

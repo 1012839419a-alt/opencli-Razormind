@@ -1,14 +1,14 @@
 """add durable global agent conversations
 
 Revision ID: s0t1u2v3w4x5
-Revises: k8l9m0n1o2p3, 1901f6da7138
+Revises: l9m0n1o2p3q4, 1901f6da7138
 """
 
 import sqlalchemy as sa
 from alembic import op
 
 revision = "s0t1u2v3w4x5"
-down_revision = ("k8l9m0n1o2p3", "1901f6da7138")
+down_revision = ("l9m0n1o2p3q4", "1901f6da7138")
 branch_labels = None
 depends_on = None
 

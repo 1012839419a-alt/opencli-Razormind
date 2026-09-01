@@ -19,7 +19,7 @@ test('agent conversation session sends, restores, continues, and confirms a prop
     if (url.pathname.endsWith('/chat/sessions') && route.request().method() === 'GET') return reply(created ? [conversation] : [])
     if (url.pathname.endsWith('/chat/sessions') && route.request().method() === 'POST') {
       created = true
-      return reply(conversation)
+      return reply({ conversation_id: conversation.id, session: conversation })
     }
     if (url.pathname.endsWith('/chat/sessions/conversation-a') && route.request().method() === 'GET') return reply({ ...conversation, turns })
     if (url.pathname.endsWith('/chat/sessions/conversation-a/messages')) {
@@ -56,4 +56,27 @@ test('agent conversation session sends, restores, continues, and confirms a prop
   await expect(page.getByText('待确认操作')).toBeVisible()
   await page.getByRole('button', { name: '确认执行' }).click()
   await expect.poll(() => confirmationCount).toBe(1)
+})
+
+test('agent conversation reports a create-session API failure', async ({ page }) => {
+  await page.addInitScript(() => {
+    sessionStorage.setItem('opencli.bootstrapIdentityToken', 'test-token')
+  })
+  await page.route('**/api/v1/**', async (route) => {
+    const url = new URL(route.request().url())
+    const reply = (data, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify({ data }) })
+    if (url.pathname.endsWith('/auth/me')) return reply({ subject: 'test-user', email: null, name: 'Test User', username: 'test', picture: null, is_platform_admin: true, auth_method: 'test' })
+    if (url.pathname.endsWith('/workspaces')) return reply([workspace])
+    if (url.pathname.endsWith('/chat/sessions') && route.request().method() === 'GET') return reply([])
+    if (url.pathname.endsWith('/chat/sessions') && route.request().method() === 'POST') {
+      return route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ detail: 'conversation service unavailable' }) })
+    }
+    return reply({})
+  })
+
+  await page.goto('/dashboard?workspace=workspace-a')
+  await page.getByRole('button', { name: 'Agent', exact: true }).click()
+  await page.getByLabel('给全局 Agent 的消息').fill('创建会话')
+  await page.getByRole('button', { name: '发送' }).click()
+  await expect(page.getByText('conversation service unavailable')).toBeVisible()
 })
