@@ -14,7 +14,6 @@ import type {
   NotificationRuleInput,
   OperationsAgentMode,
   ProviderModelDiscoveryInput,
-  WorkspaceSettingsValues,
 } from './types'
 
 export function useMyWorkspaces() {
@@ -821,32 +820,6 @@ export function useDeleteAgent() {
   })
 }
 
-// Singleton workspace settings (GET/PATCH/DELETE /settings) — unlike every
-// other resource in this file, there's no list to invalidate; the query key
-// is a fixed singleton tuple and every mutation invalidates that same key.
-export function useWorkspaceSettings() {
-  return useQuery({
-    queryKey: ['workspace-settings'],
-    queryFn: () => api.getWorkspaceSettings(),
-  })
-}
-
-export function useUpdateWorkspaceSettings() {
-  const queryClient = useQueryClient()
-  return useMutation({
-    mutationFn: (data: Partial<WorkspaceSettingsValues>) => api.updateWorkspaceSettings(data),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['workspace-settings'] }),
-  })
-}
-
-export function useResetWorkspaceSettings() {
-  const queryClient = useQueryClient()
-  return useMutation({
-    mutationFn: () => api.resetWorkspaceSettings(),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['workspace-settings'] }),
-  })
-}
-
 export function useSkills(params?: { domain?: string; enabled?: boolean; page?: number; limit?: number }) {
   return useQuery({
     queryKey: ['skills', params],
@@ -904,12 +877,12 @@ export function useDismissCorrection() {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: (id: string) => api.dismissCorrection(id),
-    // The list query key carries a variable `params` object, so invalidate the
-    // whole 'skills' prefix — covers the list (any params) and this skill's
-    // own detail query (['skills', id]) in one call.
-    onSuccess: (skill, id) => {
-      queryClient.setQueryData(['skills', id], skill)
-      void queryClient.invalidateQueries({ queryKey: ['skills'] })
+    // Dismiss returns the compact list projection, not the detail body. Do
+    // not replace the detail cache with that projection; refetch the
+    // canonical detail before the caller renders the success state.
+    onSuccess: async (_brief, id) => {
+      await queryClient.invalidateQueries({ queryKey: ['skills', id] })
+      await queryClient.invalidateQueries({ queryKey: ['skills'] })
     },
   })
 }

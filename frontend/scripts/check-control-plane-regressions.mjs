@@ -61,15 +61,13 @@ test('studio node selector exposes the complete Dify-compatible component split'
   const selector = await read('components/flow/command-palette.tsx')
   const nodeCatalog = await read('lib/workflow/node-catalog.ts')
 
-  assert.match(selector, /type SelectorTab = "blocks" \| "sources" \| "tools" \| "start" \| "snippets"/)
-  assert.match(selector, /\["blocks", "节点"\]/)
-  assert.match(selector, /\["sources", "数据源"\]/)
-  assert.match(selector, /\["tools", "工具"\]/)
-  assert.match(selector, /\["start", "开始"\]/)
-  assert.match(selector, /\["snippets", "片段"\]/)
-  assert.match(selector, /item\.category === "source"/)
-  assert.match(selector, /item\.category === "package"/)
-  assert.match(selector, /item\.category === "trigger"/)
+  assert.match(selector, /type PickerTab = "nodes" \| "tools" \| "start"/)
+  assert.match(selector, /\{ id: "nodes", label: "节点" \}/)
+  assert.match(selector, /\{ id: "tools", label: "工具" \}/)
+  assert.match(selector, /\{ id: "start", label: "开始" \}/)
+  assert.match(selector, /source: \{ "zh-CN": "数据来源"/)
+  assert.match(selector, /package: \{ "zh-CN": "业务能力包"/)
+  assert.match(selector, /trigger: \{ "zh-CN": "触发与开始"/)
   for (const id of [
     'workflow.block.agent',
     'workflow.block.llm',

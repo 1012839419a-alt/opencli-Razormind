@@ -1,6 +1,7 @@
 'use client'
 
 import { useState } from 'react'
+import { toast } from 'sonner'
 
 import {
   useAdvisoryReport,
@@ -414,19 +415,46 @@ export default function ControlCenterPage() {
   const odp = useOdpState({ refetchInterval: 15_000 })
   const ledger = useControlActions({ page: 1, limit: PAGE_SIZE })
   const [confirmOpen, setConfirmOpen] = useState(false)
+  const [killFeedback, setKillFeedback] = useState<{
+    kind: 'success' | 'error'
+    message: string
+  } | null>(null)
 
   // 打开熔断是危险动作：弹确认；关闭熔断是恢复安全态：直接执行。
   const handleKillToggle = (engaged: boolean) => {
+    setKillFeedback(null)
     if (engaged) {
       setConfirmOpen(true)
     } else {
-      setKill.mutate(false)
+      setKill.mutate(false, {
+        onSuccess: () => {
+          const message = '熔断开关已解除，自动执行恢复正常门禁评估。'
+          setKillFeedback({ kind: 'success', message })
+          toast.success(message)
+        },
+        onError: (cause: Error) => {
+          const message = cause.message || '解除熔断失败'
+          setKillFeedback({ kind: 'error', message })
+          toast.error(message)
+        },
+      })
     }
   }
 
   const confirmEngage = () => {
-    setKill.mutate(true)
-    setConfirmOpen(false)
+    setKill.mutate(true, {
+      onSuccess: () => {
+        const message = '熔断开关已接合，自动执行已被阻断。'
+        setConfirmOpen(false)
+        setKillFeedback({ kind: 'success', message })
+        toast.success(message)
+      },
+      onError: (cause: Error) => {
+        const message = cause.message || '接合熔断失败'
+        setKillFeedback({ kind: 'error', message })
+        toast.error(message)
+      },
+    })
   }
 
   const odpAvailable = odp.data
@@ -481,6 +509,19 @@ export default function ControlCenterPage() {
           isPending={setKill.isPending}
           onToggle={handleKillToggle}
         />
+      ) : null}
+      {killFeedback ? (
+        <p
+          role={killFeedback.kind === 'error' ? 'alert' : 'status'}
+          aria-live="polite"
+          className={
+            killFeedback.kind === 'error'
+              ? 'rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive'
+              : 'rounded-md border border-success/40 bg-success/10 px-3 py-2 text-xs text-success'
+          }
+        >
+          {killFeedback.message}
+        </p>
       ) : null}
 
       {/* ── ODP data plane (Monitor) ───────────────────────────────────── */}

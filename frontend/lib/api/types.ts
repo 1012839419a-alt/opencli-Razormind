@@ -1,26 +1,3 @@
-export interface WorkspaceSettingsValues {
-  theme: 'system' | 'dark' | 'light'
-  motion_enabled: boolean
-  sidebar_mode: 'expanded' | 'icon' | 'collapsed'
-  timezone: string
-  landing_page: '/dashboard' | '/canvas' | '/inbox'
-  default_concurrency: number
-  automatic_retries: boolean
-  retain_raw_data: boolean
-  retention_days: 7 | 30 | 90 | 365
-  inbox_alerts: boolean
-  failure_alerts: boolean
-  agent_alerts: boolean
-}
-
-export interface WorkspaceSettingsRead {
-  values: WorkspaceSettingsValues
-  sources: Record<keyof WorkspaceSettingsValues, 'default' | 'override'>
-  apply_modes: Record<keyof WorkspaceSettingsValues, 'immediate' | 'next_run'>
-  revision: number
-  updated_at: string | null
-}
-
 // Self-hosted LLM-provider runtime (model-provider runtime, backend/llm/, no litellm) — mirrors
 // backend.schemas.provider.ModelProviderRead.from_model exactly. The raw
 // api_key is NEVER returned by the backend (from_model explicitly masks it) —
@@ -278,6 +255,12 @@ export interface Skill {
   evidence?: SkillEvidenceEntry[]
   last_failing_trace?: Record<string, unknown> | null
 }
+
+/** Compact projection returned by list and correction-dismiss endpoints. */
+export type SkillBrief = Pick<
+  Skill,
+  'id' | 'domain' | 'capability' | 'name' | 'version' | 'status' | 'enabled' | 'evidence_count' | 'has_open_proposal'
+>
 
 export interface CollectionTask {
   id: string

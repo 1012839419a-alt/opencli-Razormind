@@ -45,6 +45,7 @@ import type {
   PlanRunRead,
   PresetsGrouped,
   Skill,
+  SkillBrief,
   SourceControlState,
   SourceBinding,
   SourceBindingInput,
@@ -75,19 +76,8 @@ import type {
   OperationsAgentRun,
   PublishedOperationsAgentVersion,
   Automation,
-  WorkspaceSettingsRead,
-  WorkspaceSettingsValues,
   WorkspaceSource,
 } from './types'
-
-export const getWorkspaceSettings = () =>
-  apiClient.get<ApiResponse<WorkspaceSettingsRead>>('/settings').then((r) => r.data.data)
-
-export const updateWorkspaceSettings = (data: Partial<WorkspaceSettingsValues>) =>
-  apiClient.patch<ApiResponse<WorkspaceSettingsRead>>('/settings', data).then((r) => r.data.data)
-
-export const resetWorkspaceSettings = () =>
-  apiClient.delete<ApiResponse<WorkspaceSettingsRead>>('/settings').then((r) => r.data.data)
 
 export const getCurrentIdentity = () =>
   apiClient.get<ApiResponse<AuthIdentity>>('/auth/me').then((r) => r.data.data)
@@ -513,7 +503,7 @@ export const redistillSkill = (id: string, trace?: Record<string, unknown>) =>
     .then((r) => r.data.data)
 
 export const dismissCorrection = (id: string) =>
-  apiClient.post<ApiResponse<Skill>>(`/skills/${id}/dismiss-correction`).then((r) => r.data.data)
+  apiClient.post<ApiResponse<SkillBrief>>(`/skills/${id}/dismiss-correction`).then((r) => r.data.data)
 
 export const rollbackSkill = (id: string) =>
   apiClient.post<ApiResponse<Skill>>(`/skills/${id}/rollback`).then((r) => r.data.data)
