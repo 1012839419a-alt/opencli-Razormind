@@ -215,7 +215,17 @@ export interface DataSource {
   id: string
   name: string
   description?: string
-  channel_type: 'opencli' | 'web_scraper' | 'api' | 'rss' | 'cli' | 'skill' | 'crawl4ai' | 'browser_act'
+  channel_type:
+    | 'opencli'
+    | 'web_scraper'
+    | 'api'
+    | 'rss'
+    | 'cli'
+    | 'skill'
+    | 'crawl4ai'
+    | 'browser_act'
+    | 'doubao_research'
+    | 'douyin_detail'
   channel_config: Record<string, unknown>
   ai_config?: Record<string, unknown>
   enabled: boolean

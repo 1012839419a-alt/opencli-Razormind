@@ -17,7 +17,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
  */
 export function BrowserActPacksPanel() {
   const { data, isLoading, isError, error } = useBrowserActPacks()
-  const packs = data ?? []
+  const packs = useMemo(() => data ?? [], [data])
   const [query, setQuery] = useState('')
 
   const filtered = useMemo(() => {

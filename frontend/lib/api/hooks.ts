@@ -116,6 +116,23 @@ export function useProjectWorkflows(workspaceId: string | null, projectId: strin
   })
 }
 
+export function useProjectWorkflowVersions(
+  workspaceId: string | null,
+  projectId: string | null,
+  workflowId: string | null,
+) {
+  return useQuery({
+    queryKey: ['project-workflow-versions', workspaceId, projectId, workflowId],
+    queryFn: () =>
+      api.listProjectWorkflowVersions(
+        workspaceId as string,
+        projectId as string,
+        workflowId as string,
+      ),
+    enabled: !!workspaceId && !!projectId && !!workflowId,
+  })
+}
+
 export function useProjectRuntimeSummary(workspaceId: string | null, projectId: string | null) {
   return useQuery({
     queryKey: ['project-runtime-summary', workspaceId, projectId],
@@ -268,6 +285,23 @@ export function useOperationsAgentVersions(workspaceId: string | null, agentId: 
   })
 }
 
+export function useOperationsAgentVersion(
+  workspaceId: string | null,
+  agentId: string | null,
+  version: number | null,
+) {
+  return useQuery({
+    queryKey: ['operations-agent-version', workspaceId, agentId, version],
+    queryFn: () =>
+      api.getOperationsAgentVersion(
+        workspaceId as string,
+        agentId as string,
+        version as number,
+      ),
+    enabled: !!workspaceId && !!agentId && version !== null,
+  })
+}
+
 export function useUpdateOperationsAgentDraft() {
   const queryClient = useQueryClient()
   return useMutation({
@@ -398,6 +432,48 @@ export function useSources(params?: { page?: number; limit?: number; enabled?: b
   })
 }
 
+export function useCreateSource() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (data: Parameters<typeof api.createSource>[0]) => api.createSource(data),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['sources'] }),
+  })
+}
+
+export function useDeleteSource() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => api.deleteSource(id),
+    onSuccess: (_result, id) => {
+      queryClient.removeQueries({ queryKey: ['sources', id] })
+      void queryClient.invalidateQueries({ queryKey: ['sources'] })
+    },
+  })
+}
+
+export function useTestSourceConnectivity() {
+  return useMutation({
+    mutationFn: (id: string) => api.testSourceConnectivity(id),
+  })
+}
+
+export function useSetSourceObjective() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({
+      id,
+      objectiveOverride,
+    }: {
+      id: string
+      objectiveOverride: Record<string, unknown> | null
+    }) => api.setSourceObjective(id, objectiveOverride),
+    onSuccess: (source, { id }) => {
+      queryClient.setQueryData(['sources', id], source)
+      void queryClient.invalidateQueries({ queryKey: ['sources', id, 'control-state'] })
+    },
+  })
+}
+
 export function useTasks(params?: { source_id?: string; status?: string; page?: number; limit?: number }) {
   return useQuery({
     queryKey: ['tasks', params],
@@ -430,6 +506,41 @@ export function useRecords(params?: {
   return useQuery({
     queryKey: ['records', params],
     queryFn: () => api.listRecords(params),
+  })
+}
+
+export function useRecord(id: string | null) {
+  return useQuery({
+    queryKey: ['records', id],
+    queryFn: () => api.getRecord(id as string),
+    enabled: !!id,
+  })
+}
+
+export function useDeleteRecord() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => api.deleteRecord(id),
+    onSuccess: (_result, id) => {
+      queryClient.removeQueries({ queryKey: ['records', id] })
+      void queryClient.invalidateQueries({ queryKey: ['records'] })
+    },
+  })
+}
+
+export function useBatchDeleteRecords() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (ids: string[]) => api.batchDeleteRecords(ids),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['records'] }),
+  })
+}
+
+export function useClearAllRecords() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (sourceId?: string) => api.clearAllRecords(sourceId),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['records'] }),
   })
 }
 
@@ -476,6 +587,20 @@ export function useUpdateChromeInstanceConfig() {
       endpoint: string
       data: { mode?: string; agent_url?: string | null; agent_protocol?: string | null }
     }) => api.updateChromeInstanceConfig(endpoint, data),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['chrome-pool'] }),
+  })
+}
+
+export function useUpdateChromeEndpointMode() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({
+      endpoint,
+      mode,
+    }: {
+      endpoint: string
+      mode: 'bridge' | 'cdp'
+    }) => api.updateChromeEndpointMode(endpoint, mode),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['chrome-pool'] }),
   })
 }
@@ -729,6 +854,44 @@ export function useSkills(params?: { domain?: string; enabled?: boolean; page?: 
   })
 }
 
+export function useRedistillSkill() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, trace }: { id: string; trace?: Record<string, unknown> }) =>
+      api.redistillSkill(id, trace),
+    onSuccess: (_result, { id }) => {
+      void queryClient.invalidateQueries({ queryKey: ['skills', id] })
+      void queryClient.invalidateQueries({ queryKey: ['skills'] })
+    },
+  })
+}
+
+export function useRecordStart() {
+  return useMutation({
+    mutationFn: (data: Parameters<typeof api.recordStart>[0]) => api.recordStart(data),
+  })
+}
+
+export function useRecordStop() {
+  return useMutation({
+    mutationFn: ({
+      sessionId,
+      data,
+    }: {
+      sessionId: string
+      data: Parameters<typeof api.recordStop>[1]
+    }) => api.recordStop(sessionId, data),
+  })
+}
+
+export function useDistillSkill() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (data: Parameters<typeof api.distillSkill>[0]) => api.distillSkill(data),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['skills'] }),
+  })
+}
+
 export function useSkill(id: string | null) {
   return useQuery({
     queryKey: ['skills', id],
@@ -744,7 +907,10 @@ export function useDismissCorrection() {
     // The list query key carries a variable `params` object, so invalidate the
     // whole 'skills' prefix — covers the list (any params) and this skill's
     // own detail query (['skills', id]) in one call.
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['skills'] }),
+    onSuccess: (skill, id) => {
+      queryClient.setQueryData(['skills', id], skill)
+      void queryClient.invalidateQueries({ queryKey: ['skills'] })
+    },
   })
 }
 
@@ -752,7 +918,10 @@ export function useRollbackSkill() {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: (id: string) => api.rollbackSkill(id),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['skills'] }),
+    onSuccess: (skill, id) => {
+      queryClient.setQueryData(['skills', id], skill)
+      void queryClient.invalidateQueries({ queryKey: ['skills'] })
+    },
   })
 }
 
@@ -1025,6 +1194,36 @@ export function useNodes() {
   })
 }
 
+export function useNodeEvents(id: string | null) {
+  return useQuery({
+    queryKey: ['nodes', id, 'events'],
+    queryFn: () => api.getNodeEvents(id as string),
+    enabled: !!id,
+  })
+}
+
+export function useNodeStats(
+  id: string | null,
+  params?: { range?: string; start?: string; end?: string },
+) {
+  return useQuery({
+    queryKey: ['nodes', id, 'stats', params],
+    queryFn: () => api.getNodeStats(id as string, params),
+    enabled: !!id,
+  })
+}
+
+export function useDeleteNode() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => api.deleteNode(id),
+    onSuccess: (_result, id) => {
+      queryClient.removeQueries({ queryKey: ['nodes', id] })
+      void queryClient.invalidateQueries({ queryKey: ['nodes'] })
+    },
+  })
+}
+
 export function useWorkers() {
   return useQuery({
     queryKey: ['workers'],
@@ -1038,6 +1237,14 @@ export function useSystemConfig() {
   return useQuery({
     queryKey: ['system-config'],
     queryFn: () => api.getSystemConfig(),
+  })
+}
+
+export function useWsAgentStatus() {
+  return useQuery({
+    queryKey: ['ws-agent-status'],
+    queryFn: api.getWsAgentStatus,
+    refetchInterval: 15_000,
   })
 }
 
@@ -1114,11 +1321,15 @@ export function useInfiniteControlActions(params?: {
 // refresh. The mutation writes the fresh server response straight into the
 // query cache instead of invalidating, since the POST response IS the new
 // canonical snapshot (KillSwitchRead) — no extra round trip needed.
-export function useKillSwitch() {
+type ControlQueryOptions = {
+  refetchInterval?: number | false
+}
+
+export function useKillSwitch(options?: ControlQueryOptions) {
   return useQuery({
     queryKey: ['control', 'kill-switch'],
     queryFn: () => api.getKillSwitch(),
-    refetchInterval: 15_000,
+    refetchInterval: options?.refetchInterval ?? 15_000,
   })
 }
 
@@ -1136,20 +1347,21 @@ export function useSetKillSwitch() {
 // read like the actions table itself (no refetchInterval); the backend runs
 // its lazy outcome-evaluation pass on every read so refetching is how an
 // operator gets a newer verdict, not a background poll.
-export function useAdvisoryReport() {
+export function useAdvisoryReport(options?: ControlQueryOptions) {
   return useQuery({
     queryKey: ['control', 'advisory-report'],
     queryFn: () => api.getAdvisoryReport(),
+    refetchInterval: options?.refetchInterval,
   })
 }
 
 // System-level ODP data-plane snapshot — polled at the same cadence as
 // useNodes/useWorkers/useSourceControlState so the dashboard reflects a
 // down Redis or DLQ backlog without a manual refresh.
-export function useOdpState() {
+export function useOdpState(options?: ControlQueryOptions) {
   return useQuery({
     queryKey: ['control', 'odp-state'],
     queryFn: () => api.getOdpState(),
-    refetchInterval: 15_000,
+    refetchInterval: options?.refetchInterval ?? 15_000,
   })
 }

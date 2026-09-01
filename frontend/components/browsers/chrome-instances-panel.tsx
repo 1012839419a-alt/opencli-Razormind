@@ -4,7 +4,7 @@ import { useState } from 'react'
 import { Pencil, Plus, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 
-import { useChromePool, useRemoveChromeInstance } from '@/lib/api/hooks'
+import { useChromePool, useRemoveChromeInstance, useUpdateChromeEndpointMode, useWsAgentStatus } from '@/lib/api/hooks'
 import type { ChromeEndpoint } from '@/lib/api/types'
 import { ChromeInstanceFormDialog } from '@/components/browsers/chrome-instance-form-dialog'
 import { BACKEND_HINT, EmptyState, ErrorState, LoadingState } from '@/components/shell/data-states'
@@ -40,7 +40,10 @@ export function ChromeInstancesPanel() {
   const { data, isLoading, isError, error } = useChromePool()
   const endpoints = data?.endpoints ?? []
   const [confirmRemoveUrl, setConfirmRemoveUrl] = useState<string | null>(null)
+  const [confirmModeUrl, setConfirmModeUrl] = useState<string | null>(null)
   const removeMutation = useRemoveChromeInstance()
+  const modeMutation = useUpdateChromeEndpointMode()
+  const wsStatus = useWsAgentStatus()
 
   const handleRemove = (endpoint: ChromeEndpoint) => {
     const n = agentContainerIndex(endpoint.url)
@@ -64,6 +67,7 @@ export function ChromeInstancesPanel() {
         <CardTitle className="text-base">Chrome 实例</CardTitle>
         <CardDescription>
           本机 Docker 采集池，可选路由到远程 Agent。移除操作仅支持 Docker 管理的 agent-2 及以后实例。
+          {wsStatus.isLoading ? ' WebSocket Agent 状态同步中。' : ` 当前已连接 ${wsStatus.data?.connected.length ?? 0} 个 WebSocket Agent。`}
         </CardDescription>
         <CardAction>
           <ChromeInstanceFormDialog mode="create" triggerLabel="添加实例" triggerIcon={<Plus className="size-4" />} />
@@ -94,6 +98,8 @@ export function ChromeInstancesPanel() {
                 const n = agentContainerIndex(endpoint.url)
                 const removable = n !== null && n >= 2
                 const confirming = confirmRemoveUrl === endpoint.url
+                const confirmingMode = confirmModeUrl === endpoint.url
+                const nextMode = endpoint.mode === 'bridge' ? 'cdp' : 'bridge'
                 return (
                   <TableRow key={endpoint.url}>
                     <TableCell className="font-mono text-xs text-muted-foreground">
@@ -103,7 +109,33 @@ export function ChromeInstancesPanel() {
                       </div>
                     </TableCell>
                     <TableCell>
-                      <Badge variant="secondary">{MODE_LABEL[endpoint.mode] ?? endpoint.mode}</Badge>
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <Badge variant="secondary">{MODE_LABEL[endpoint.mode] ?? endpoint.mode}</Badge>
+                        <Button
+                          size="xs"
+                          variant={confirmingMode ? 'outline' : 'ghost'}
+                          disabled={modeMutation.isPending}
+                          onClick={() => {
+                            if (!confirmingMode) {
+                              setConfirmModeUrl(endpoint.url)
+                              return
+                            }
+                            modeMutation.mutate(
+                              { endpoint: endpoint.url, mode: nextMode },
+                              {
+                                onSuccess: () => {
+                                  toast.success(`${endpoint.url} 已切换为 ${MODE_LABEL[nextMode]}`)
+                                  setConfirmModeUrl(null)
+                                },
+                                onError: (cause: Error) => toast.error(cause.message),
+                              },
+                            )
+                          }}
+                          title={`切换为 ${MODE_LABEL[nextMode]}`}
+                        >
+                          {confirmingMode ? `确认 ${MODE_LABEL[nextMode]}` : `切换为 ${MODE_LABEL[nextMode]}`}
+                        </Button>
+                      </div>
                     </TableCell>
                     <TableCell className="text-xs">
                       {endpoint.agent_url ? (
