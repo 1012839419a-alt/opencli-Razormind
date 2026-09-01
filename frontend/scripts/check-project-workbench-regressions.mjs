@@ -1,11 +1,60 @@
 import assert from 'node:assert/strict'
+import { existsSync, readFileSync } from 'node:fs'
 import { access, readFile } from 'node:fs/promises'
 import path from 'node:path'
+import { registerHooks, stripTypeScriptTypes } from 'node:module'
 import test from 'node:test'
-import { fileURLToPath } from 'node:url'
-
+import { fileURLToPath, pathToFileURL } from 'node:url'
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const source = (file) => readFile(path.join(root, file), 'utf8')
+
+registerHooks({
+  resolve(specifier, context, nextResolve) {
+    const candidates = []
+    if (specifier.startsWith('@/')) {
+      candidates.push(path.join(root, specifier.slice(2)))
+    } else if (specifier.startsWith('.') && context.parentURL?.startsWith('file:')) {
+      candidates.push(path.resolve(path.dirname(fileURLToPath(context.parentURL)), specifier))
+    }
+    for (const candidate of candidates) {
+      for (const resolvedPath of [candidate, `${candidate}.ts`, `${candidate}.tsx`]) {
+        if (existsSync(resolvedPath)) {
+          return { url: pathToFileURL(resolvedPath).href, shortCircuit: true }
+        }
+      }
+    }
+    return nextResolve(specifier, context)
+  },
+  load(url, context, nextLoad) {
+    if (url.endsWith('.ts') || url.endsWith('.tsx')) {
+      const source = stripTypeScriptTypes(readFileSync(fileURLToPath(url), 'utf8'), {
+        mode: 'strip',
+        sourceUrl: url,
+      })
+      return { format: 'module', source, shortCircuit: true }
+    }
+    return nextLoad(url, context)
+  },
+})
+
+const { serializeCsvCell } = await import(pathToFileURL(path.join(root, 'lib/csv.ts')).href)
+
+test('CSV cells neutralize spreadsheet formulas before applying RFC-style quoting', () => {
+  assert.equal(serializeCsvCell('=SUM(A1:A2)'), "'=SUM(A1:A2)")
+  assert.equal(serializeCsvCell('+cmd'), "'+cmd")
+  assert.equal(serializeCsvCell('@value'), "'@value")
+  assert.equal(serializeCsvCell(' \t=SUM(A1:A2)'), "' \t=SUM(A1:A2)")
+  assert.equal(serializeCsvCell('\r\n@value'), "\"'\r\n@value\"")
+  assert.equal(serializeCsvCell('-42'), '-42')
+  assert.equal(serializeCsvCell('-1.5'), '-1.5')
+  assert.equal(serializeCsvCell('-1e3'), '-1e3')
+  assert.equal(serializeCsvCell('- pending review'), "'- pending review")
+  assert.equal(serializeCsvCell('@a,b\"c\r\nd'), "\"'@a,b\"\"c\r\nd\"")
+  assert.equal(serializeCsvCell('ordinary text'), 'ordinary text')
+  assert.equal(serializeCsvCell(''), '')
+  assert.equal(serializeCsvCell('2026-09-01'), '2026-09-01')
+  assert.equal(serializeCsvCell('record-123'), 'record-123')
+})
 
 test('project navigation exposes orchestration, data, and evidence as project surfaces', async () => {
   const navigation = await source('components/studio/project-navigation.tsx')
@@ -89,6 +138,7 @@ test('backend project API runs published versions and exposes project-scoped log
 test('project data workbench is project scoped and links data back to workflow evidence', async () => {
   const page = await source('app/(app)/studio/projects/[projectId]/data/page.tsx')
   const recordService = await source('../backend/services/record_service.py')
+  assert.match(page, /row\.map\(serializeCsvCell\)/)
   assert.match(page, /project_id: projectId/)
   assert.match(page, /active="data"/)
   assert.match(page, /数据集/)
