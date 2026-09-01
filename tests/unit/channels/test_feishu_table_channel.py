@@ -193,3 +193,4 @@ async def test_cli_bridge_applies_max_rows_across_a_page(monkeypatch):
     assert [item["keyword"] for item in result.items] == ["高吉星"]
     assert not result.has_more
     assert bridge.calls[0][1]["json"]["limit"] == 1
+    assert bridge.calls[0][1]["json"]["offset"] == 0

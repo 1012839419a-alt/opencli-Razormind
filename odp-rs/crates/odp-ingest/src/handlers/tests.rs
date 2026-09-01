@@ -192,3 +192,16 @@ fn signed_receipt_has_stable_identity_and_bounded_exact_outcomes() {
     );
     assert_eq!(first.issued_at.nanosecond() % 1_000, 0);
 }
+
+#[test]
+fn canonical_json_sorts_nested_object_keys() {
+    let value = serde_json::json!({
+        "z": {"b": 1, "a": 2},
+        "a": [{"d": 4, "c": 3}],
+    });
+
+    assert_eq!(
+        serde_json::to_vec(&canonicalize_json(value)).expect("canonical JSON"),
+        br#"{"a":[{"c":3,"d":4}],"z":{"a":2,"b":1}}"#
+    );
+}

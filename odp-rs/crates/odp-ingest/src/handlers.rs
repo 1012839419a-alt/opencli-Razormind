@@ -272,7 +272,7 @@ fn signed_receipt(
         receipt_hash: String::new(),
         signature: String::new(),
     };
-    let canonical = serde_json::to_vec(&serde_json::json!({
+    let canonical = serde_json::to_vec(&canonicalize_json(json!({
         "version": &receipt.version,
         "receipt_id": &receipt.receipt_id,
         "idempotency_key": &receipt.idempotency_key,
@@ -297,12 +297,34 @@ fn signed_receipt(
         "expected_key_set_sha256": &receipt.context.expected_key_set_sha256,
         "outcomes": &receipt.outcomes,
         "issued_at": &receipt.issued_at,
-    })).ok()?;
+    }))).ok()?;
     receipt.receipt_hash = hex_sha256(&canonical);
     let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).ok()?;
     mac.update(receipt.receipt_hash.as_bytes());
     receipt.signature = format!("sha256={:x}", mac.finalize().into_bytes());
     Some(receipt)
+}
+
+// Keep Rust's receipt preimage aligned with Admin's recursive sort_keys JSON.
+fn canonicalize_json(value: serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(entries) => {
+            let mut entries = entries
+                .into_iter()
+                .map(|(key, value)| (key, canonicalize_json(value)))
+                .collect::<Vec<_>>();
+            entries.sort_by(|left, right| left.0.cmp(&right.0));
+            let mut sorted = serde_json::Map::new();
+            for (key, value) in entries {
+                sorted.insert(key, value);
+            }
+            serde_json::Value::Object(sorted)
+        }
+        serde_json::Value::Array(values) => serde_json::Value::Array(
+            values.into_iter().map(canonicalize_json).collect(),
+        ),
+        value => value,
+    }
 }
 
 fn hex_sha256(bytes: &[u8]) -> String {
