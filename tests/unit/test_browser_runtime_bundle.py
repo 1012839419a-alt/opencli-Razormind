@@ -392,6 +392,39 @@ async def test_capability_gate_fail_closed_then_records_full_lineage(db_session,
 
 
 @pytest.mark.asyncio
+async def test_capability_audit_can_store_redacted_space_input(db_session, monkeypatch):
+    bundle = await create_bundle(db_session)
+    instance = BrowserInstance(
+        endpoint="http://agent:19830",
+        agent_url="http://agent:19830",
+        agent_protocol="http",
+        profile_name="operator-space-audit",
+        runtime_bundle_id=bundle.id,
+    )
+    db_session.add(instance)
+    await db_session.flush()
+    await browser_service.report_runtime_deployment(db_session, instance, healthy_report())
+
+    async def dispatch(_, __, args):
+        return {"result": {"title": "Example"}, "page_after": {"title": "Example"}}
+
+    monkeypatch.setattr(browser_capability_service, "_dispatch_capability", dispatch)
+    invocation = await browser_capability_service.invoke_capability(
+        db_session,
+        instance,
+        "page.read",
+        {"url": "https://example.com", "cookie": "session=secret"},
+        None,
+        audit_input_payload={"url": "[redacted-url]", "cookie": "[REDACTED]"},
+    )
+
+    assert invocation.input_payload == {
+        "url": "[redacted-url]",
+        "cookie": "[REDACTED]",
+    }
+
+
+@pytest.mark.asyncio
 async def test_bundle_is_projected_as_a_read_only_runtime_plugin(db_session):
     bundle = await create_bundle(db_session)
     instance = await browser_service.create_browser_instance(

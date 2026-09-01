@@ -88,6 +88,7 @@ async def invoke_capability(
     gate: str | None,
     *,
     gate_authorized: bool = False,
+    audit_input_payload: dict | None = None,
 ) -> BrowserCapabilityInvocation:
     deployment = await get_runtime_deployment(session, instance.id)
     bundle = (
@@ -105,7 +106,7 @@ async def invoke_capability(
         desired_bundle_version=bundle.version if bundle else None,
         loaded_bundle_version=deployment.loaded_bundle_version if deployment else None,
         component_versions=component_versions,
-        input_payload=args,
+        input_payload=audit_input_payload if audit_input_payload is not None else args,
         risk=capability.risk if capability else "high",
         gate=gate,
     )
