@@ -1,6 +1,6 @@
 version: 1
 source: backend.main.app.openapi
-openapi_operation_count: 283
+openapi_operation_count: 284
 allowed_dispositions:
 - operator_ui
 - studio_binding
@@ -1321,6 +1321,15 @@ operations:
 - method: GET
   path: /api/v1/tasks/{task_id}/runs
   operation_id: list_task_runs_api_v1_tasks__task_id__runs_get
+  disposition: operator_ui
+  frontend_route: /tasks
+  wrapper: null
+  decision: Expose through the existing operator surface in the target Epic.
+  target_epic: Epic 2
+  capability_id: operator.tasks
+- method: POST
+  path: /api/v1/tasks/{task_id}/recover
+  operation_id: recover_task_api_v1_tasks__task_id__recover_post
   disposition: operator_ui
   frontend_route: /tasks
   wrapper: null

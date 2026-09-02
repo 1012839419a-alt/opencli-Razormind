@@ -16,6 +16,8 @@ depends_on = None
 
 
 def upgrade() -> None:
+    if not sa.inspect(op.get_bind()).has_table("collection_tasks"):
+        return
     with op.batch_alter_table("collection_tasks") as batch:
         batch.add_column(sa.Column("retry_of_task_id", sa.String(36), nullable=True))
         batch.add_column(sa.Column("recovery_mode", sa.String(32), nullable=True))
@@ -37,6 +39,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    if not sa.inspect(op.get_bind()).has_table("collection_tasks"):
+        return
     op.drop_index("ix_collection_tasks_retry_of_task_id", table_name="collection_tasks")
     with op.batch_alter_table("collection_tasks") as batch:
         batch.drop_constraint("uq_collection_tasks_recovery_idempotency_key", type_="unique")
