@@ -8,14 +8,18 @@ ROOT = Path(__file__).parents[2]
 
 
 def run_resolver(
-    engine: str, overrides: dict[str, str] | None = None
+    engine: str | None, overrides: dict[str, str] | None = None
 ) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
-    env["BROWSER_ENGINE"] = engine
+    if engine is not None:
+        env["BROWSER_ENGINE"] = engine
     if overrides:
         env.update(overrides)
+    command = ["node", str(ROOT / "scripts" / "resolve-browser-executable.mjs")]
+    if engine is not None:
+        command.append(engine)
     return subprocess.run(
-        ["node", str(ROOT / "scripts" / "resolve-browser-executable.mjs"), engine],
+        command,
         env=env,
         capture_output=True,
         text=True,
@@ -51,6 +55,13 @@ def test_resolver_rejects_unknown_engine():
     result = run_resolver("webkit")
     assert result.returncode != 0
     assert "webkit" in result.stderr
+
+
+
+def test_resolver_rejects_empty_environment_engine():
+    result = run_resolver(None, {"BROWSER_ENGINE": ""})
+    assert result.returncode != 0
+    assert result.stdout == ""
 
 
 def test_resolver_rejects_empty_engine():
