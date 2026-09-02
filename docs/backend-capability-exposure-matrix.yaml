@@ -1,6 +1,6 @@
 version: 1
 source: backend.main.app.openapi
-openapi_operation_count: 317
+openapi_operation_count: 329
 allowed_dispositions:
 - operator_ui
 - studio_binding

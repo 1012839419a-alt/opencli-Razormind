@@ -166,7 +166,7 @@ test('shows the instance ownership typed error without a fallback', async ({ pag
   await page.getByLabel('BrowserInstance ID').fill('instance-1')
   await page.getByLabel('Owner ID').fill('agent-7')
   await page.getByRole('button', { name: '创建 Browser Space' }).click()
-  await expect(page.getByRole('alert')).toContainText('browser_instance_in_use')
+  await expect(page.locator('p[role="alert"]')).toContainText('browser_instance_in_use')
 })
 
 test('confirms cancellation and close before sending lifecycle actions', async ({ page }) => {
