@@ -7,6 +7,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import httpx
+
 from iii import InitOptions, register_worker
 from iii_observability import Logger
 
@@ -29,6 +31,30 @@ worker = register_worker(
 logger = Logger()
 
 
+def _admin_callback_url(resource: str) -> str:
+    lifecycle_url = os.environ.get("ADMIN_III_LIFECYCLE_URL", "").strip().rstrip("/")
+    if not lifecycle_url or not lifecycle_url.endswith("/lifecycle"):
+        raise RuntimeError("ADMIN_III_LIFECYCLE_URL must name the Admin lifecycle endpoint")
+    return f"{lifecycle_url.rsplit('/', 1)[0]}/{resource}"
+
+
+def _emit_ingress_receipt(receipt: dict[str, Any]) -> None:
+    headers = {"content-type": "application/json"}
+    fleet_token = os.environ.get("API_AUTH_TOKEN", "")
+    if fleet_token:
+        headers["authorization"] = f"Bearer {fleet_token}"
+    bridge_token = os.environ.get("ADMIN_III_LIFECYCLE_TOKEN", "")
+    if bridge_token:
+        headers["x-iii-bridge-token"] = bridge_token
+    try:
+        response = httpx.post(
+            _admin_callback_url("ingress-receipts"), json=receipt, headers=headers, timeout=10.0
+        )
+        response.raise_for_status()
+    except httpx.HTTPError as exc:
+        raise RuntimeError("Admin ingress receipt callback failed") from exc
+
+
 def batch_handler(payload: dict[str, Any]) -> dict[str, Any]:
     events = payload.get("events") or []
     if not isinstance(events, list):
@@ -47,9 +73,20 @@ def batch_handler(payload: dict[str, Any]) -> dict[str, Any]:
                 row["task_id"] = task_id
             patched.append(row)
         events = patched
+    metadata = payload.get("admin_collection")
+    receipt_context: dict[str, Any] | None = None
+    if metadata is not None:
+        if not isinstance(metadata, dict) or not isinstance(metadata.get("expected_key_set_sha256"), str):
+            raise ValueError("governed ingress requires immutable receipt context")
+        receipt_context = dict(metadata)
 
     logger.info("odp.ingest::batch", {"count": len(events)})
-    result = post_batch_sync(events)
+    result = post_batch_sync(events, receipt_context=receipt_context)
+    if receipt_context is not None:
+        receipt = result.pop("ingress_receipt", None)
+        if not isinstance(receipt, dict):
+            raise RuntimeError("odp-ingest did not produce a signed ingress receipt")
+        _emit_ingress_receipt(receipt)
     return {"ok": True, **result}
 
 

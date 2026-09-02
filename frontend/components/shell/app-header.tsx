@@ -1,7 +1,7 @@
 'use client'
 
 import Link from 'next/link'
-import { Bot, LogOut, Search } from 'lucide-react'
+import { Bot, LogOut, Search, Settings } from 'lucide-react'
 import { usePathname, useRouter } from 'next/navigation'
 import { Fragment } from 'react'
 
@@ -140,6 +140,10 @@ export function AppHeader({
                 <span className="block truncate text-xs">{accountLabel}</span>
               </DropdownMenuLabel>
             </DropdownMenuGroup>
+            <DropdownMenuItem onClick={() => router.push('/settings')}>
+              <Settings />
+              账户设置
+            </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem onClick={handleSignOut}>
               <LogOut />

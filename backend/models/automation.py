@@ -1,4 +1,4 @@
-from sqlalchemy import JSON, Boolean, ForeignKey, String, Text
+from sqlalchemy import JSON, Boolean, ForeignKey, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.models.base import TimestampMixin
@@ -8,10 +8,16 @@ class Automation(TimestampMixin):
     """Provider-neutral scheduled agent task, configurable by UI or API."""
 
     __tablename__ = "automations"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "starter_key", name="uq_automations_workspace_starter_key"),
+    )
 
     workspace_id: Mapped[str] = mapped_column(
         ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True
     )
+    # First-party starter identity.  Null keeps existing user-created automations
+    # compatible while making starter installation concurrency-safe.
+    starter_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     prompt: Mapped[str] = mapped_column(Text, nullable=False)
     precheck: Mapped[str | None] = mapped_column(Text, nullable=True)

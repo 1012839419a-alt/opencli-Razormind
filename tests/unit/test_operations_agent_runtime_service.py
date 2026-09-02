@@ -112,7 +112,7 @@ async def test_dispatch_uses_existing_runtime_protocol_and_validates_result(
     async def send_agent_task(agent_url, task, on_event, timeout):
         captured_task.update(task)
         assert agent_url == "http://agent-runtime.test:19823"
-        assert timeout == 600.0
+        assert timeout == 1800.0
         await on_event(
             {
                 "type": "state",
@@ -137,6 +137,7 @@ async def test_dispatch_uses_existing_runtime_protocol_and_validates_result(
     assert captured_task["instructions"] == "Inspect the requested target"
     assert captured_task["input"] == {"target_id": "daily-news"}
     assert captured_task["config"]["permission_mode"] == "observe_only"
+    assert captured_task["config"]["timeout_seconds"] == 1800
     assert run.status == "completed"
     assert run.state_payload == {"last_target_id": "daily-news"}
     assert run.output_payload == {"summary": "Target inspected"}

@@ -1,5 +1,8 @@
 'use client'
 
+import Link from 'next/link'
+import { ArrowUpRight } from 'lucide-react'
+
 import { useNodes } from '@/lib/api/hooks'
 import { formatRelative } from '@/lib/format'
 import { BACKEND_HINT, EmptyState, ErrorState, LoadingState } from '@/components/shell/data-states'
@@ -49,7 +52,15 @@ export default function NodesPage() {
             <TableBody>
               {nodes.map((n) => (
                 <TableRow key={n.id}>
-                  <TableCell className="font-medium">{n.label}</TableCell>
+                  <TableCell className="font-medium">
+                    <Link
+                      href={`/nodes/${n.id}`}
+                      className="inline-flex items-center gap-1.5 text-primary hover:underline"
+                    >
+                      {n.label}
+                      <ArrowUpRight className="size-3.5" aria-hidden />
+                    </Link>
+                  </TableCell>
                   <TableCell className="font-mono text-xs text-muted-foreground">{n.url}</TableCell>
                   <TableCell>
                     <Badge variant="outline">{n.node_type === 'docker' ? 'Docker' : 'Shell'}</Badge>

@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import { AlertTriangle, Loader2, RotateCcw, Save } from 'lucide-react'
 import { toast } from 'sonner'
 
+import { useAuth } from '@/components/auth/auth-provider'
 import { useResetWorkspaceSettings, useUpdateWorkspaceSettings, useWorkspaceSettings } from '@/lib/api/hooks'
 import type { WorkspaceSettingsRead, WorkspaceSettingsValues } from '@/lib/api/types'
 import { BACKEND_HINT, ErrorState, LoadingState } from '@/components/shell/data-states'
@@ -65,11 +66,16 @@ function FieldMeta({ read, field }: { read: WorkspaceSettingsRead; field: keyof 
 }
 
 export default function SettingsPage() {
+  const { changePassword } = useAuth()
   const { data, isLoading, isError, error } = useWorkspaceSettings()
   const updateMutation = useUpdateWorkspaceSettings()
   const resetMutation = useResetWorkspaceSettings()
   const [form, setForm] = useState<WorkspaceSettingsValues | null>(null)
   const [confirmReset, setConfirmReset] = useState(false)
+  const [currentPassword, setCurrentPassword] = useState('')
+  const [newPassword, setNewPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
+  const [savingPassword, setSavingPassword] = useState(false)
 
   // Sync local form state whenever the server value changes — on first load,
   // and again after our own save/reset mutations invalidate the query. Safe
@@ -114,6 +120,26 @@ export default function SettingsPage() {
       },
       onError: (cause) => toast.error((cause as Error).message),
     })
+  }
+
+  const handlePasswordSubmit = async (event: React.FormEvent) => {
+    event.preventDefault()
+    if (newPassword !== confirmPassword) {
+      toast.error('两次输入的新密码不一致')
+      return
+    }
+    setSavingPassword(true)
+    try {
+      await changePassword(currentPassword, newPassword)
+      setCurrentPassword('')
+      setNewPassword('')
+      setConfirmPassword('')
+      toast.success('密码已更新')
+    } catch (cause) {
+      toast.error(cause instanceof Error ? cause.message : '密码更新失败')
+    } finally {
+      setSavingPassword(false)
+    }
   }
 
   return (
@@ -405,6 +431,58 @@ export default function SettingsPage() {
           </div>
         </form>
       )}
+
+      <Card className="max-w-xl">
+        <CardHeader>
+          <CardTitle className="text-base">本地管理员密码</CardTitle>
+          <CardDescription>修改本地登录密码；首次使用时请替换安装器生成的初始密码。</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <form className="space-y-5" onSubmit={handlePasswordSubmit}>
+            <FieldGroup>
+              <Field>
+                <FieldLabel htmlFor="account-current-password">当前密码</FieldLabel>
+                <Input
+                  id="account-current-password"
+                  type="password"
+                  autoComplete="current-password"
+                  value={currentPassword}
+                  onChange={(event) => setCurrentPassword(event.target.value)}
+                  required
+                />
+              </Field>
+              <Field>
+                <FieldLabel htmlFor="account-new-password">新密码</FieldLabel>
+                <Input
+                  id="account-new-password"
+                  type="password"
+                  autoComplete="new-password"
+                  minLength={6}
+                  value={newPassword}
+                  onChange={(event) => setNewPassword(event.target.value)}
+                  required
+                />
+                <FieldDescription>至少 6 个字符。</FieldDescription>
+              </Field>
+              <Field>
+                <FieldLabel htmlFor="account-confirm-password">确认新密码</FieldLabel>
+                <Input
+                  id="account-confirm-password"
+                  type="password"
+                  autoComplete="new-password"
+                  minLength={6}
+                  value={confirmPassword}
+                  onChange={(event) => setConfirmPassword(event.target.value)}
+                  required
+                />
+              </Field>
+            </FieldGroup>
+            <Button type="submit" disabled={savingPassword}>
+              {savingPassword ? '保存中…' : '保存密码'}
+            </Button>
+          </form>
+        </CardContent>
+      </Card>
 
       <Dialog open={confirmReset} onOpenChange={setConfirmReset}>
         <DialogContent className="sm:max-w-md">

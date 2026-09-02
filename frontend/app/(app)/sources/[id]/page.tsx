@@ -1,10 +1,19 @@
 'use client'
 
-import { use } from 'react'
+import { use, useEffect, useState } from 'react'
 import Link from 'next/link'
-import { AlertTriangle, ArrowLeft, ShieldQuestion } from 'lucide-react'
+import { useRouter } from 'next/navigation'
+import { AlertTriangle, ArrowLeft, CheckCircle2, PlugZap, RotateCcw, ShieldQuestion, Trash2 } from 'lucide-react'
+import { toast } from 'sonner'
 
-import { useSource, useSourceControlState, useSourceMeasurements } from '@/lib/api/hooks'
+import {
+  useDeleteSource,
+  useSetSourceObjective,
+  useSource,
+  useSourceControlState,
+  useSourceMeasurements,
+  useTestSourceConnectivity,
+} from '@/lib/api/hooks'
 import type { SensorConfidence } from '@/lib/api/types'
 import { formatDateTime, formatDuration, formatNumber } from '@/lib/format'
 import { BACKEND_HINT, EmptyState, ErrorState, LoadingState } from '@/components/shell/data-states'
@@ -12,7 +21,7 @@ import { PageContainer } from '@/components/shell/page-container'
 import { StatusBadge } from '@/components/shell/status-badge'
 import { SourceCredentialsPanel } from '@/components/sources/source-credentials-panel'
 import { Badge } from '@/components/ui/badge'
-import { buttonVariants } from '@/components/ui/button'
+import { Button, buttonVariants } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import {
   Table,
@@ -23,6 +32,7 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { cn } from '@/lib/utils'
+import { Textarea } from '@/components/ui/textarea'
 
 const CONFIDENCE_META: Record<SensorConfidence, { tone: string; label: string }> = {
   high: { tone: 'text-success', label: '高' },
@@ -49,9 +59,22 @@ function Metric({ label, value }: { label: string; value: string }) {
 
 export default function SourceControlRoomPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params)
+  const router = useRouter()
   const source = useSource(id)
   const control = useSourceControlState(id)
   const measurements = useSourceMeasurements(id, { limit: 20 })
+  const testConnectivity = useTestSourceConnectivity()
+  const setObjective = useSetSourceObjective()
+  const deleteSource = useDeleteSource()
+  const [objectiveText, setObjectiveText] = useState('{}')
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  const [connectivity, setConnectivity] = useState<{ connected: boolean; errors: string[] } | null>(null)
+
+  useEffect(() => {
+    if (source.data) {
+      setObjectiveText(JSON.stringify(source.data.objective_override ?? {}, null, 2))
+    }
+  }, [source.data])
 
   const cs = control.data
   const m = cs?.measurement
@@ -62,10 +85,15 @@ export default function SourceControlRoomPage({ params }: { params: Promise<{ id
       title={source.data?.name ?? '数据源控制室'}
       description="传感器诚实视图 · 未采集到的信号绝不伪装为健康"
       actions={
-        <Link href="/sources" className={cn(buttonVariants({ variant: 'outline', size: 'sm' }))}>
-          <ArrowLeft className="size-4" />
-          返回列表
-        </Link>
+        <div className="flex flex-wrap gap-2">
+          <Link href="/sources/new" className={cn(buttonVariants({ variant: 'outline', size: 'sm' }))}>
+            新建数据源
+          </Link>
+          <Link href="/sources" className={cn(buttonVariants({ variant: 'outline', size: 'sm' }))}>
+            <ArrowLeft className="size-4" />
+            返回列表
+          </Link>
+        </div>
       }
     >
       {control.isLoading ? (
@@ -196,6 +224,127 @@ export default function SourceControlRoomPage({ params }: { params: Promise<{ id
       )}
 
       <SourceCredentialsPanel sourceId={id} />
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <PlugZap className="size-4 text-muted-foreground" />
+            连接与控制目标
+          </CardTitle>
+          <p className="text-sm text-muted-foreground">
+            连接测试只读取当前数据源；目标覆盖使用后端校验过的字段，不会改变全局默认值。
+          </p>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              variant="outline"
+              disabled={testConnectivity.isPending}
+              onClick={() => {
+                testConnectivity.mutate(id, {
+                  onSuccess: (result) => setConnectivity(result),
+                  onError: (error) => toast.error(error instanceof Error ? error.message : '连接测试失败'),
+                })
+              }}
+            >
+              <PlugZap className="size-4" />
+              {testConnectivity.isPending ? '测试中…' : '测试连接'}
+            </Button>
+            {connectivity ? (
+              <span className={cn('inline-flex items-center gap-1.5 text-sm', connectivity.connected ? 'text-success' : 'text-destructive')}>
+                <CheckCircle2 className="size-4" />
+                {connectivity.connected ? '连接正常' : connectivity.errors.join('；') || '连接失败'}
+              </span>
+            ) : null}
+          </div>
+          <div className="space-y-2">
+            <label htmlFor="source-objective" className="text-sm font-medium">SourceObjective 覆盖（JSON）</label>
+            <Textarea
+              id="source-objective"
+              value={objectiveText}
+              onChange={(event) => setObjectiveText(event.target.value)}
+              spellCheck={false}
+              className="min-h-32 font-mono text-xs"
+              aria-describedby="source-objective-hint"
+            />
+            <p id="source-objective-hint" className="text-xs text-muted-foreground">
+              可选字段：max_error_rate、max_duplicate_rate、max_freshness_lag_seconds、max_run_latency_ms、max_pending、min_accepted_per_run。留空对象会恢复全局默认值。
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                size="sm"
+                disabled={setObjective.isPending}
+                onClick={() => {
+                  try {
+                    const parsed = JSON.parse(objectiveText)
+                    if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') {
+                      throw new Error('目标覆盖必须是 JSON 对象')
+                    }
+                    setObjective.mutate(
+                      { id, objectiveOverride: Object.keys(parsed).length ? parsed : null },
+                      {
+                        onSuccess: () => toast.success('控制目标已保存'),
+                        onError: (error) => toast.error(error instanceof Error ? error.message : '目标保存失败'),
+                      },
+                    )
+                  } catch (error) {
+                    toast.error(error instanceof Error ? error.message : '目标覆盖 JSON 无效')
+                  }
+                }}
+              >
+                {setObjective.isPending ? '保存中…' : '保存控制目标'}
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={setObjective.isPending}
+                onClick={() => {
+                  setObjective.mutate(
+                    { id, objectiveOverride: null },
+                    {
+                      onSuccess: () => {
+                        setObjectiveText('{}')
+                        toast.success('已清除控制目标覆盖')
+                      },
+                      onError: (error) => toast.error(error instanceof Error ? error.message : '清除目标失败'),
+                    },
+                  )
+                }}
+              >
+                <RotateCcw className="size-3.5" />
+                清除覆盖
+              </Button>
+            </div>
+          </div>
+          <div className="border-t pt-4">
+            <Button
+              variant={confirmDelete ? 'destructive' : 'ghost'}
+              disabled={deleteSource.isPending}
+              onClick={() => {
+                if (!confirmDelete) {
+                  setConfirmDelete(true)
+                  return
+                }
+                deleteSource.mutate(id, {
+                  onSuccess: () => {
+                    toast.success('数据源已删除')
+                    router.push('/records')
+                  },
+                  onError: (error) => toast.error(error instanceof Error ? error.message : '删除数据源失败'),
+                })
+              }}
+            >
+              <Trash2 className="size-4" />
+              {deleteSource.isPending ? '删除中…' : confirmDelete ? '确认删除数据源' : '删除数据源'}
+            </Button>
+            {confirmDelete ? (
+              <p className="mt-2 text-xs text-destructive">
+                删除会移除该数据源配置及其凭据关联，确认后不可恢复。
+              </p>
+            ) : null}
+          </div>
+        </CardContent>
+      </Card>
     </PageContainer>
   )
 }

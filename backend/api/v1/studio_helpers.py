@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.api.v1.studio_schemas import ValidationRunRead
+from backend.models.identity import Workspace as GovernedWorkspace
 from backend.models.studio import (
     StudioProject,
     StudioWorkflow,
@@ -59,9 +60,18 @@ def validation_projection(row: StudioWorkflowValidationRun) -> ValidationRunRead
         ],
     )
 
-
 async def get_workspace(db: AsyncSession, workspace_id: str) -> StudioWorkspace:
     row = await db.get(StudioWorkspace, workspace_id)
+    if row is None:
+        governed = await db.get(GovernedWorkspace, workspace_id)
+        if governed is not None and governed.active:
+            row = StudioWorkspace(
+                id=governed.id,
+                name=governed.name,
+                slug=f"governed-{governed.slug}",
+            )
+            db.add(row)
+            await db.flush()
     if row is None or not row.active:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Workspace not found")
     return row

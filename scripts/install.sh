@@ -1,9 +1,19 @@
 #!/usr/bin/env sh
 set -eu
 
-VERSION="${OPENCLI_ADMIN_VERSION:-0.4.0}"
-REPOSITORY="${OPENCLI_ADMIN_REPOSITORY:-2233admin/opencli-admin}"
+VERSION="${OPENCLI_ADMIN_VERSION:-0.4.1}"
+REPOSITORY="${OPENCLI_ADMIN_REPOSITORY:-2233admin/opencli-Razormind}"
 INSTALL_DIR="${OPENCLI_ADMIN_DIR:-$PWD/opencli-admin}"
+
+if [ "${1:-}" = "--verify-restart-recovery" ]; then
+  INSTALL_DIR="$(cd "$INSTALL_DIR" && pwd -P)"
+  # shellcheck source=install-recovery.sh
+  . "$INSTALL_DIR/scripts/install-recovery.sh"
+  opencli_verify_restart_state "$INSTALL_DIR"
+  exit 0
+fi
+
+compose_project_name="${COMPOSE_PROJECT_NAME:-opencli-admin}"
 
 for command_name in docker curl tar; do
   command -v "$command_name" >/dev/null 2>&1 || {
@@ -20,11 +30,14 @@ if [ -d "$INSTALL_DIR" ] && [ -n "$(ls -A "$INSTALL_DIR" 2>/dev/null)" ]; then
 fi
 
 mkdir -p "$INSTALL_DIR"
+INSTALL_DIR="$(cd "$INSTALL_DIR" && pwd -P)"
 archive="$(mktemp)"
 trap 'rm -f "$archive"' EXIT
 curl -fsSL "https://github.com/${REPOSITORY}/archive/refs/tags/v${VERSION}.tar.gz" -o "$archive"
 tar -xzf "$archive" --strip-components=1 -C "$INSTALL_DIR"
 cp "$INSTALL_DIR/.env.docker.example" "$INSTALL_DIR/.env"
+# shellcheck source=install-recovery.sh
+. "$INSTALL_DIR/scripts/install-recovery.sh"
 
 random_hex() {
   if command -v openssl >/dev/null 2>&1; then
@@ -62,6 +75,7 @@ replace_env() {
 
 api_token="$(random_hex 32)"
 bootstrap_token="$(random_hex 32)"
+local_admin_password="$(random_hex 24)"
 credential_encryption_key="$(random_fernet)"
 if [ -z "$credential_encryption_key" ]; then
   echo "Failed to generate CREDENTIAL_ENCRYPTION_KEY" >&2
@@ -71,10 +85,13 @@ replace_env API_AUTH_TOKEN "$api_token"
 replace_env BOOTSTRAP_ADMIN_TOKEN "$bootstrap_token"
 replace_env SECRET_KEY "$(random_hex 32)"
 replace_env CREDENTIAL_ENCRYPTION_KEY "$credential_encryption_key"
+replace_env COMPOSE_PROJECT_NAME "$compose_project_name"
 chmod 600 "$INSTALL_DIR/.env"
 
 cd "$INSTALL_DIR"
 docker compose pull api frontend agent-1
+printf '%s' "$local_admin_password" | docker compose run --rm -T --no-deps api python -c \
+  'import sys; from backend.security.local_auth import hash_password, initialize_password_hash; initialize_password_hash(hash_password(sys.stdin.read().strip()), "/data/local-admin-password.hash")'
 docker compose up -d
 
 attempt=0
@@ -89,8 +106,16 @@ until curl -fsS "http://localhost:${FRONTEND_PORT:-3010}/login" >/dev/null 2>&1;
   sleep 5
 done
 
+restart_baseline_ready=0
+if opencli_prepare_restart_state "$INSTALL_DIR" "$compose_project_name" "$(random_hex 16)"; then
+  restart_baseline_ready=1
+else
+  echo "Warning: the pre-restart persistence baseline could not be created." >&2
+fi
+
 printf '\nOpenCLI Admin %s is ready.\n' "$VERSION"
 printf 'URL: http://localhost:%s\n' "${FRONTEND_PORT:-3010}"
-printf 'BOOTSTRAP_ADMIN_TOKEN: %s\n' "$bootstrap_token"
-printf 'API_AUTH_TOKEN: %s\n' "$api_token"
-printf 'Use BOOTSTRAP_ADMIN_TOKEN in the first login field and API_AUTH_TOKEN in the optional fleet field. Both are stored in %s/.env\n' "$INSTALL_DIR"
+printf 'Local login: admin / %s\n' "$local_admin_password"
+printf 'Emergency BOOTSTRAP_ADMIN_TOKEN is generated and stored in %s/.env\n' "$INSTALL_DIR"
+printf 'API_AUTH_TOKEN is generated for Fleet/Agent/API transport and stored in %s/.env\n' "$INSTALL_DIR"
+opencli_print_restart_status "$INSTALL_DIR" "${FRONTEND_PORT:-3010}" "${API_PORT:-8031}" "$restart_baseline_ready"

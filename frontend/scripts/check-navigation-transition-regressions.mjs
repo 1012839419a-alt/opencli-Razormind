@@ -12,7 +12,7 @@ test('Next View Transition integration is enabled and stays locally opt-in', asy
     read('components/motion/app-route-transition.tsx'),
   ])
 
-  assert.match(config, /viewTransition:\s*VIEW_TRANSITIONS_ENABLED/)
+  assert.doesNotMatch(config, /viewTransition/)
   assert.match(localTransition, /<ViewTransition name=\{name\}>/)
   assert.doesNotMatch(shell, /<ViewTransition\b/)
   assert.doesNotMatch(routeTransition, /<ViewTransition\b/)
@@ -42,6 +42,7 @@ test('sidebar consolidates tasks, notifications, automation, and agents into cle
     '概览',
     '任务与通知',
     '项目',
+    'Coding Workbench',
     '插件中心',
     '自动化与 Agent',
     '执行资源',
@@ -53,9 +54,10 @@ test('sidebar consolidates tasks, notifications, automation, and agents into cle
 
   assert.match(navigation, /href: '\/inbox'/)
   assert.match(navigation, /match: \['\/inbox', '\/tasks', '\/notifications'\]/)
-  assert.match(navigation, /match: \['\/sources', '\/schedules', '\/agents', '\/skills'\]/)
-  assert.match(navigation, /match: \['\/nodes', '\/workers'\]/)
-  assert.match(navigation, /match: \['\/providers', '\/control\/actions'\]/)
+  assert.match(navigation, /match: \['\/schedules', '\/plans', '\/agents', '\/skills'\]/)
+  assert.match(navigation, /match: \['\/nodes', '\/workers', '\/browsers'\]/)
+  assert.match(navigation, /match: \['\/providers'\]/)
+  assert.match(navigation, /href: '\/control\/actions'[\s\S]{0,120}match: \['\/control'\]/)
   for (const group of ['工作台', '构建', '运行与数据', '管理']) {
     assert.match(navigation, new RegExp(`label: '${group}'`))
   }
@@ -66,42 +68,43 @@ test('sidebar consolidates tasks, notifications, automation, and agents into cle
   assert.doesNotMatch(sidebar, /新建工作/)
 })
 
-test('records use a scalable source-to-table explorer with pagination and raw evidence detail', async () => {
+test('records use a scalable schema-adaptive table with pagination and raw evidence detail', async () => {
   const records = await read('app/(app)/records/page.tsx')
 
-  assert.match(records, /lg:grid-cols-\[15rem_minmax\(0,1fr\)\]/)
-  assert.doesNotMatch(records, /grid min-h-\[38rem\] overflow-hidden/)
-  assert.match(records, /min-h-\[20rem\]/)
-  assert.match(records, /min-h-\[32rem\]/)
-  assert.match(records, /aria-label="成果数据集"/)
-  assert.match(records, /useSources\(\{ page: 1, limit: 100 \}\)/)
+  assert.match(records, /DATA_EXPLORER_TABS/)
+  assert.match(records, /useRecords\(\{/)
+  assert.doesNotMatch(records, /useSources|selectedSourceId/)
+  assert.match(records, /const MAX_VISIBLE_FIELDS = 7/)
   assert.match(records, /limit: PAGE_SIZE/)
   assert.match(records, /visibleFields/)
+  assert.match(records, /aria-label="当前数据字段"/)
+  assert.match(records, /<Table className="min-w-max">/)
   assert.match(records, /第 \{page\.toLocaleString/)
   assert.match(records, /<Sheet open=\{Boolean\(selectedRecord\)\}/)
+  assert.match(records, /<LineagePanel record=\{selectedRecord\}/)
   assert.match(records, /标准化数据/)
   assert.match(records, /原始数据/)
 })
 
 test('task and automation sibling routes share their consolidated route tabs', async () => {
-  const [tabs, inbox, tasks, notifications, sources, schedules, agents, skills] = await Promise.all([
+  const [tabs, inbox, tasks, notifications, schedules, plans, agents, skills] = await Promise.all([
     read('components/shell/route-tabs.tsx'),
     read('app/(app)/inbox/page.tsx'),
     read('app/(app)/tasks/page.tsx'),
     read('app/(app)/notifications/page.tsx'),
-    read('app/(app)/sources/page.tsx'),
     read('app/(app)/schedules/page.tsx'),
+    read('app/(app)/plans/page.tsx'),
     read('app/(app)/agents/page.tsx'),
     read('app/(app)/skills/page.tsx'),
   ])
 
-  for (const label of ['待处理', '工作项', '通知规则', '数据源', '调度', 'Agent', '技能']) {
+  for (const label of ['待处理', '工作项', '通知规则', '调度', '计划', 'Agent', '技能']) {
     assert.match(tabs, new RegExp(`label: '${label}'`))
   }
   for (const page of [inbox, tasks, notifications]) {
     assert.match(page, /ACTION_CENTER_TABS/)
   }
-  for (const page of [sources, schedules, agents, skills]) {
+  for (const page of [schedules, plans, agents, skills]) {
     assert.match(page, /AUTOMATION_TABS/)
   }
 })
@@ -155,7 +158,7 @@ test('SSGOI boundary is pathname-keyed, interruptible, and reduced-motion safe',
   assert.match(transition, /key=\{pathname\}/)
   assert.match(transition, /data-ssgoi-transition=\{pathname\}/)
   assert.match(transition, /className="[^"]*h-full[^"]*min-h-full[^"]*"/)
-  assert.match(transition, /axis\(\{ paths: APP_ROUTES, type: 'x', variant: 'snappy' \}\)/)
+  assert.match(transition, /ordered: APP_ROUTES, transition: axis\(\{ type: 'x', variant: 'snappy' \}\)/)
   assert.match(transition, /prefersReducedMotion \? STATIC_CONFIG : MOTION_CONFIG/)
 })
 

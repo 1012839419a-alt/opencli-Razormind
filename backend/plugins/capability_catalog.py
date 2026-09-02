@@ -676,11 +676,17 @@ def _node(
     readiness: str = "blocked",
     missing: list[str] | None = None,
     origin: str = "native",
+    installation_id: str | None = None,
+    plugin_version: str | None = None,
+    plugin_capability_id: str | None = None,
 ) -> PluginNodeCapabilityRead:
     if origin == "native" and readiness == "composed":
         origin = "composite"
     return PluginNodeCapabilityRead(
         id=id,
+        installationId=installation_id,
+        pluginVersion=plugin_version,
+        pluginCapabilityId=plugin_capability_id,
         label=label,
         description=f"{label} 的后端能力定义。",
         category=category,
@@ -755,6 +761,9 @@ def _installed_plugin_nodes(
                     readiness="runnable" if runnable else "plugin_required",
                     missing=[] if runnable else ["compatible_runtime_adapter"],
                     origin="plugin",
+                    installation_id=installation.id,
+                    plugin_version=installation.version,
+                    plugin_capability_id=definition.capability_id,
                 )
             )
     return nodes

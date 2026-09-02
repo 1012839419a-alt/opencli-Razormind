@@ -23,6 +23,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.control.agent_control import ACTION_REGISTRY, agent_control_service
 from backend.database import get_db
+from backend.llm import ResolverError, resolver
+from backend.llm.base import LlmAdapterError, classify_retryable
 from backend.models.provider import ModelProvider
 from backend.schemas.common import ApiResponse
 from backend.security.identity import RequestIdentity, get_request_identity
@@ -169,6 +171,10 @@ class ChatMessage(BaseModel):
 class ChatRequest(BaseModel):
     messages: list[ChatMessage]
     provider_id: Optional[str] = None
+    # Persistent conversation callers set this from the already-authorized
+    # conversation row. Direct chat callers may provide it to disambiguate
+    # Agent Control's Workspace resolution.
+    workspace_id: Optional[str] = None
     # 当前页面、项目或选中对象上下文，注入给 agent 当指代背景
     context: Optional[dict[str, Any]] = None
 
@@ -341,34 +347,53 @@ async def _build_proposal(
     )
 
 
-@router.post("", response_model=ApiResponse[ChatReply])
-async def chat(
+async def _chat_with_client(
+    client: Any,
+    model: str,
     body: ChatRequest,
-    identity: RequestIdentity | None = Depends(_optional_request_identity),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession,
+    identity: RequestIdentity | None,
+    *,
+    tool_trace: list[dict[str, Any]] | None = None,
 ) -> ApiResponse:
-    provider = await _pick_provider(db, body.provider_id)
-    client = await _build_client(provider)
-    model = provider.default_model or "gpt-4o-mini"
+    """Run the agent-dock tool loop against ``client`` with ``model``.
 
+    Extracted from the ``chat`` endpoint so the same loop serves both the
+    legacy single-provider path and each candidate tried inside
+    ``ProviderResolver.resolve_with_fallback`` (model-provider runtime
+    PR-E, issue #55). LLM-call failures are re-raised as
+    :class:`~backend.llm.base.LlmAdapterError` carrying
+    :func:`~backend.llm.base.classify_retryable`'s connection-vs-business
+    split (decision #7) — the resolver only fails over connection-level
+    failures, and the HTTP 502 conversion happens once at the endpoint
+    boundary instead of being baked into the loop.
+    """
     system = SYSTEM_PROMPT
     if body.context:
         system += f"\n\n当前用户操作上下文 (JSON): {json.dumps(body.context, ensure_ascii=False)}"
 
     if _is_xml_tool_model(model):
-        return await _chat_xml(client, model, system, body, db, identity)
+        return await _chat_xml(client, model, system, body, db, identity, tool_trace=tool_trace)
 
     messages: list[dict[str, Any]] = [{"role": "system", "content": system}]
     messages += [{"role": m.role, "content": m.content} for m in body.messages]
 
     for _step in range(MAX_TOOL_STEPS):
+        # End any read-only transaction before an outbound model call. The
+        # persistent conversation service commits its running turn separately;
+        # this boundary prevents a model call from holding that transaction.
+        await db.commit()
         try:
             response = await client.chat.completions.create(
                 model=model, messages=messages, tools=TOOLS, tool_choice="auto"
             )
+        except LlmAdapterError:
+            raise
         except Exception as exc:
             logger.error("chat llm error | %s", exc)
-            raise HTTPException(status_code=502, detail=f"模型调用失败: {exc}") from exc
+            raise LlmAdapterError(
+                f"chat llm error: {exc}", retryable=classify_retryable(exc)
+            ) from exc
 
         msg = response.choices[0].message
         tool_calls = msg.tool_calls or []
@@ -380,12 +405,21 @@ async def chat(
         for tc in tool_calls:
             if tc.function.name in WRITE_TOOLS:
                 args = _safe_json(tc.function.arguments)
+                if tool_trace is not None:
+                    tool_trace.append(
+                        {
+                            "name": tc.function.name,
+                            "kind": "write",
+                            "status": "proposal",
+                            "argument_keys": sorted(args),
+                        }
+                    )
                 proposal = await _build_proposal(
                     db,
                     tc.function.name,
                     args,
                     identity=_require_write_identity(identity),
-                    workspace_id=_workspace_id(body.context),
+                    workspace_id=body.workspace_id or _workspace_id(body.context),
                 )
                 return ApiResponse.ok(ChatReply(type="proposal", proposal=proposal))
 
@@ -405,12 +439,79 @@ async def chat(
             }
         )
         for tc in tool_calls:
+            if tool_trace is not None:
+                tool_trace.append(
+                    {
+                        "name": tc.function.name,
+                        "kind": "read",
+                        "status": "completed",
+                        "argument_keys": sorted(_safe_json(tc.function.arguments)),
+                    }
+                )
             result = await _run_read_tool(db, tc.function.name, _safe_json(tc.function.arguments))
             messages.append(
                 {"role": "tool", "tool_call_id": tc.id, "content": json.dumps(result, ensure_ascii=False)}
             )
 
     return ApiResponse.ok(ChatReply(type="message", content="(达到工具调用步数上限, 请换个说法再试)"))
+
+
+async def _chat_single_provider(
+    db: AsyncSession,
+    body: ChatRequest,
+    identity: RequestIdentity | None,
+    provider_id: Optional[str],
+    *,
+    tool_trace: list[dict[str, Any]] | None = None,
+) -> ApiResponse:
+    """Legacy pre-failover chat path (issue #55): one provider — the
+    explicit ``provider_id`` or the first enabled one — no candidate
+    failover.
+    """
+    provider = await _pick_provider(db, provider_id)
+    client = await _build_client(provider)
+    model = provider.default_model or "gpt-4o-mini"
+    return await _chat_with_client(client, model, body, db, identity, tool_trace=tool_trace)
+
+
+async def run_chat_request(
+    db: AsyncSession,
+    body: ChatRequest,
+    identity: RequestIdentity | None,
+    *,
+    tool_trace: list[dict[str, Any]] | None = None,
+) -> ApiResponse:
+    """Execute the existing chat provider/tool loop for persistent sessions."""
+    if body.provider_id or not await resolver.has_candidates(db, "chat"):
+        return await _chat_single_provider(
+            db, body, identity, body.provider_id, tool_trace=tool_trace
+        )
+
+    async def operation(adapter: Any, model_id: str) -> ApiResponse:
+        provider = adapter.provider
+        client = await _build_client(provider)
+        model = model_id or provider.default_model or "gpt-4o-mini"
+        return await _chat_with_client(
+            client, model, body, db, identity, tool_trace=tool_trace
+        )
+
+    return await resolver.resolve_with_fallback(db, "chat", operation)
+
+
+@router.post("", response_model=ApiResponse[ChatReply])
+async def chat(
+    body: ChatRequest,
+    identity: RequestIdentity | None = Depends(_optional_request_identity),
+    db: AsyncSession = Depends(get_db),
+) -> ApiResponse:
+    """Agent dock chat, preserving the legacy unauthenticated read path."""
+    try:
+        return await run_chat_request(db, body, identity)
+    except (LlmAdapterError, ResolverError) as exc:
+        # Business-level failure or every candidate skipped/failed. Keep the
+        # existing HTTP boundary and sanitized provider error behavior.
+        logger.error("chat failover | %s", exc)
+        raise HTTPException(status_code=502, detail=f"模型调用失败: {exc}") from exc
 
 
 @router.post("/confirm", response_model=ApiResponse[dict])
@@ -494,17 +595,24 @@ async def _chat_xml(
     body: ChatRequest,
     db: AsyncSession,
     identity: RequestIdentity | None,
+    *,
+    tool_trace: list[dict[str, Any]] | None = None,
 ) -> ApiResponse:
     """Tool loop for XML-style models (parse <tool_use> from content, feed results back as text)."""
     messages: list[dict[str, Any]] = [{"role": "system", "content": system + XML_TOOL_TEXT}]
     messages += [{"role": m.role, "content": m.content} for m in body.messages]
 
     for _step in range(MAX_TOOL_STEPS):
+        await db.commit()
         try:
             response = await client.chat.completions.create(model=model, messages=messages, max_tokens=1024)
+        except LlmAdapterError:
+            raise
         except Exception as exc:
             logger.error("chat(xml) llm error | %s", exc)
-            raise HTTPException(status_code=502, detail=f"模型调用失败: {exc}") from exc
+            raise LlmAdapterError(
+                f"chat(xml) llm error: {exc}", retryable=classify_retryable(exc)
+            ) from exc
 
         content = response.choices[0].message.content or ""
         calls = _parse_tool_use(content)
@@ -516,18 +624,36 @@ async def _chat_xml(
         # write tool hit → return proposal immediately
         for name, args in calls:
             if name in WRITE_TOOLS:
+                if tool_trace is not None:
+                    tool_trace.append(
+                        {
+                            "name": name,
+                            "kind": "write",
+                            "status": "proposal",
+                            "argument_keys": sorted(args),
+                        }
+                    )
                 proposal = await _build_proposal(
                     db,
                     name,
                     args,
                     identity=_require_write_identity(identity),
-                    workspace_id=_workspace_id(body.context),
+                    workspace_id=body.workspace_id or _workspace_id(body.context),
                 )
                 return ApiResponse.ok(ChatReply(type="proposal", proposal=proposal))
 
         # read tools → execute, feed results back as <tool_result> text, loop
         messages.append({"role": "assistant", "content": content})
         for name, args in calls:
+            if tool_trace is not None:
+                tool_trace.append(
+                    {
+                        "name": name,
+                        "kind": "read",
+                        "status": "completed",
+                        "argument_keys": sorted(args),
+                    }
+                )
             result = await _run_read_tool(db, name, args)
             messages.append(
                 {"role": "user", "content": f'<tool_result name="{name}">{json.dumps(result, ensure_ascii=False)}</tool_result>'}

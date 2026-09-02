@@ -57,6 +57,62 @@ class OpenCLIAdapterNodeMaterializationError(ValueError):
         self.missing_params = missing_params or []
 
 
+def validate_opencli_adapter_arguments(
+    adapter: WorkflowOpenCLIAdapterNode | Any,
+    arguments: dict[str, Any],
+) -> None:
+    """Validate CLI collector args against the registered typed adapter schema."""
+
+    if not isinstance(arguments, dict):
+        raise ValueError("invalid_opencli_adapter_arguments")
+    declared_args = getattr(adapter, "args", [])
+    declared_by_name = {
+        str(getattr(argument, "name", "")): argument
+        for argument in declared_args
+        if getattr(argument, "name", None)
+    }
+    unknown = sorted(set(arguments) - set(declared_by_name))
+    if unknown:
+        raise ValueError(
+            "unknown_opencli_adapter_arguments:" + ",".join(unknown)
+        )
+    missing = sorted(
+        str(getattr(argument, "name"))
+        for argument in declared_args
+        if bool(getattr(argument, "required", False))
+        and not bool(getattr(argument, "name", None) in arguments)
+    )
+    if missing:
+        raise ValueError(
+            "missing_opencli_adapter_arguments:" + ",".join(missing)
+        )
+    for name, value in arguments.items():
+        argument = declared_by_name[name]
+        argument_type = str(getattr(argument, "type", "str")).lower()
+        valid_type = (
+            argument_type in {"str", "string"} and isinstance(value, str)
+        ) or (
+            argument_type in {"int", "integer"}
+            and isinstance(value, int)
+            and not isinstance(value, bool)
+        ) or (
+            argument_type in {"float", "number"}
+            and isinstance(value, (int, float))
+            and not isinstance(value, bool)
+        ) or (
+            argument_type in {"bool", "boolean"} and isinstance(value, bool)
+        )
+        if not valid_type:
+            raise ValueError(
+                f"invalid_opencli_adapter_argument_type:{name}"
+            )
+        choices = getattr(argument, "choices", [])
+        if choices and value not in choices:
+            raise ValueError(
+                f"invalid_opencli_adapter_argument_choice:{name}"
+            )
+
+
 def list_opencli_adapter_nodes(
     *,
     site: str | None = None,
