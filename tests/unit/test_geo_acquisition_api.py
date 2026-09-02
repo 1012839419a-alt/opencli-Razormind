@@ -31,7 +31,7 @@ def _official_site_runtime_is_probed(monkeypatch):
                     "capability_source_commit": (
                         "73cc60c83586ef2c95469b3b70d6cfc80fa5bc53"
                     ),
-                    "opencli_version": "1.8.6",
+                    "opencli_version": "1.8.7",
                 },
             )
         ]
@@ -92,7 +92,7 @@ async def test_geo_can_discover_submit_observe_and_cancel_an_execution(
                     "capability_source_commit": (
                         "73cc60c83586ef2c95469b3b70d6cfc80fa5bc53"
                     ),
-                    "opencli_version": "1.8.6",
+                    "opencli_version": "1.8.7",
                 },
                 "unavailable_reason": None,
             }

@@ -88,7 +88,7 @@ from backend.agent_runtimes.registry import register_runtime
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_TIMEOUT_SECONDS = 300
+_DEFAULT_TIMEOUT_SECONDS = 1800
 _KILL_GRACE_SECONDS = 10
 _STDERR_TAIL_BYTES = 2048
 _READ_ONLY_PROFILE_MODES = frozenset({"observe_only", "suggest_changes"})

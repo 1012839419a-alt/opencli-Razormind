@@ -14,7 +14,12 @@ import {
 } from 'lucide-react'
 import { toast } from 'sonner'
 
-import { useDismissCorrection, useRollbackSkill, useSkill } from '@/lib/api/hooks'
+import {
+  useDismissCorrection,
+  useRedistillSkill,
+  useRollbackSkill,
+  useSkill,
+} from '@/lib/api/hooks'
 import type { SkillEvidenceEntry } from '@/lib/api/types'
 import { formatDateTime, formatNumber } from '@/lib/format'
 import { cn } from '@/lib/utils'
@@ -161,9 +166,15 @@ export default function SkillDetailPage({ params }: { params: Promise<{ id: stri
   const { data: skill, isLoading, isError, error } = useSkill(id)
   const dismissCorrection = useDismissCorrection()
   const rollbackSkill = useRollbackSkill()
+  const redistillSkill = useRedistillSkill()
 
   const [confirmDismiss, setConfirmDismiss] = useState(false)
   const [confirmRollback, setConfirmRollback] = useState(false)
+  const [confirmRedistill, setConfirmRedistill] = useState(false)
+  const [actionFeedback, setActionFeedback] = useState<{
+    kind: 'pending' | 'success' | 'error'
+    message: string
+  } | null>(null)
 
   const evidence = skill?.evidence ?? []
   const proposal = openProposal(evidence)
@@ -176,23 +187,46 @@ export default function SkillDetailPage({ params }: { params: Promise<{ id: stri
 
   async function handleDismiss() {
     if (!skill) return
+    setActionFeedback({ kind: 'pending', message: '正在忽略纠正建议…' })
     try {
       await dismissCorrection.mutateAsync(skill.id)
       toast.success('已忽略该纠正建议')
       setConfirmDismiss(false)
+      setActionFeedback({ kind: 'success', message: '纠正建议已忽略，技能内容和版本保持不变。' })
     } catch (reason) {
-      toast.error(reason instanceof Error ? reason.message : '操作失败')
+      const message = reason instanceof Error ? reason.message : '操作失败'
+      toast.error(message)
+      setActionFeedback({ kind: 'error', message })
     }
   }
 
   async function handleRollback() {
     if (!skill) return
+    setActionFeedback({ kind: 'pending', message: '正在回滚技能版本…' })
     try {
       await rollbackSkill.mutateAsync(skill.id)
       toast.success('已回滚到上一版本')
       setConfirmRollback(false)
+      setActionFeedback({ kind: 'success', message: '技能已恢复到重蒸馏前版本，回滚记录已写入证据时间线。' })
     } catch (reason) {
-      toast.error(reason instanceof Error ? reason.message : '回滚失败')
+      const message = reason instanceof Error ? reason.message : '回滚失败'
+      toast.error(message)
+      setActionFeedback({ kind: 'error', message })
+    }
+  }
+
+  async function handleRedistill() {
+    if (!skill) return
+    setActionFeedback({ kind: 'pending', message: '正在使用最近失败 trace 重蒸馏技能…' })
+    try {
+      const result = await redistillSkill.mutateAsync({ id: skill.id })
+      toast.success(`重蒸馏完成，技能已更新为 v${result.version}`)
+      setConfirmRedistill(false)
+      setActionFeedback({ kind: 'success', message: `重蒸馏完成，技能已更新为 v${result.version}。` })
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : '重蒸馏失败'
+      toast.error(message)
+      setActionFeedback({ kind: 'error', message })
     }
   }
 
@@ -219,6 +253,22 @@ export default function SkillDetailPage({ params }: { params: Promise<{ id: stri
       ) : skill ? (
         <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_20rem]">
           <div className="space-y-4">
+            {actionFeedback ? (
+              <div
+                role={actionFeedback.kind === 'error' ? 'alert' : 'status'}
+                aria-live="polite"
+                className={cn(
+                  'rounded-md border px-3 py-2 text-sm',
+                  actionFeedback.kind === 'error'
+                    ? 'border-destructive/40 bg-destructive/10 text-destructive'
+                    : actionFeedback.kind === 'success'
+                      ? 'border-success/40 bg-success/10 text-success'
+                      : 'border-primary/40 bg-primary/10 text-primary',
+                )}
+              >
+                {actionFeedback.message}
+              </div>
+            ) : null}
             <Card>
               <CardHeader className="flex flex-row items-center justify-between gap-4">
                 <div>
@@ -360,7 +410,21 @@ export default function SkillDetailPage({ params }: { params: Promise<{ id: stri
                   <Button
                     variant="outline"
                     className="w-full justify-start"
-                    disabled={!proposal}
+                    disabled={!trace || redistillSkill.isPending}
+                    onClick={() => setConfirmRedistill(true)}
+                  >
+                    <Sparkles className="size-4" />
+                    {redistillSkill.isPending ? '正在重蒸馏…' : '使用失败 trace 重蒸馏'}
+                  </Button>
+                  <p className="text-xs text-muted-foreground">
+                    {trace ? '人工触发重蒸馏，成功后版本号递增；不会自动执行。' : '没有失败 trace，暂不能重蒸馏。'}
+                  </p>
+                </div>
+                <div className="space-y-1.5">
+                  <Button
+                    variant="outline"
+                    className="w-full justify-start"
+                    disabled={!proposal || dismissCorrection.isPending}
                     onClick={() => setConfirmDismiss(true)}
                   >
                     <Ban className="size-4" />
@@ -374,7 +438,7 @@ export default function SkillDetailPage({ params }: { params: Promise<{ id: stri
                   <Button
                     variant="outline"
                     className="w-full justify-start"
-                    disabled={!rollbackTarget}
+                    disabled={!rollbackTarget || rollbackSkill.isPending}
                     onClick={() => setConfirmRollback(true)}
                   >
                     <RotateCcw className="size-4" />
@@ -459,6 +523,28 @@ export default function SkillDetailPage({ params }: { params: Promise<{ id: stri
               disabled={rollbackSkill.isPending || !rollbackTarget}
             >
               {rollbackSkill.isPending ? '正在回滚…' : '确认回滚'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={confirmRedistill}
+        onOpenChange={(open) => !open && !redistillSkill.isPending && setConfirmRedistill(false)}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>使用失败 trace 重蒸馏？</DialogTitle>
+            <DialogDescription>
+              系统会把最近一次失败的 journey_trace_v1 交给同一蒸馏器，生成下一个技能版本。原版本会保留在证据记录中，可在需要时回滚；这不是手工编辑。
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setConfirmRedistill(false)} disabled={redistillSkill.isPending}>
+              取消
+            </Button>
+            <Button variant="default" onClick={() => void handleRedistill()} disabled={redistillSkill.isPending || !trace}>
+              {redistillSkill.isPending ? '正在重蒸馏…' : '确认重蒸馏'}
             </Button>
           </DialogFooter>
         </DialogContent>

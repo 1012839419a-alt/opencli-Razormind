@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
-import { CheckCircle2, Loader2, RefreshCw, Route, Sparkles } from 'lucide-react'
+import { CheckCircle2, CircleHelp, Loader2, RefreshCw, Route, Sparkles } from 'lucide-react'
 import { toast } from 'sonner'
 
 import {
@@ -25,6 +25,42 @@ const ROLES: ModelRole[] = ['chat', 'executor', 'enrichment']
 
 function sameCandidate(a?: ModelDefaultCandidate, b?: ModelDefaultCandidate) {
   return a?.provider_id === b?.provider_id && a?.model_id === b?.model_id
+}
+
+function UsageVisibilityCard({ providers }: { providers: ModelProvider[] }) {
+  const enabled = providers.filter((provider) => provider.enabled).length
+
+  return (
+    <Card className="border-dashed">
+      <CardHeader className="flex flex-row items-start justify-between gap-3">
+        <div>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <CircleHelp className="size-4 text-muted-foreground" />
+            用量与额度
+          </CardTitle>
+          <CardDescription>不把运行时长误报成额度，只有供应商返回 usage 数据时才展示数字。</CardDescription>
+        </div>
+        <Badge variant="outline">诚实状态</Badge>
+      </CardHeader>
+      <CardContent className="grid gap-2 text-sm sm:grid-cols-3">
+        <div className="rounded-lg border bg-muted/20 p-3">
+          <div className="text-xs text-muted-foreground">本地 Claude Code</div>
+          <div className="mt-1 font-medium">额度不可读取</div>
+          <p className="mt-1 text-xs leading-5 text-muted-foreground">CLI 没有稳定的 5 小时额度查询接口。</p>
+        </div>
+        <div className="rounded-lg border bg-muted/20 p-3">
+          <div className="text-xs text-muted-foreground">已启用 API</div>
+          <div className="mt-1 font-mono text-lg">{enabled}</div>
+          <p className="mt-1 text-xs leading-5 text-muted-foreground">当前没有接入 provider usage endpoint。</p>
+        </div>
+        <div className="rounded-lg border border-primary/20 bg-primary/[0.04] p-3">
+          <div className="text-xs text-muted-foreground">执行策略</div>
+          <div className="mt-1 font-medium text-primary">允许深度执行</div>
+          <p className="mt-1 text-xs leading-5 text-muted-foreground">任务按完成度和超时策略结束，不因猜测额度提前截断。</p>
+        </div>
+      </CardContent>
+    </Card>
+  )
 }
 
 export function PrimaryModelCard({ providers }: { providers: ModelProvider[] }) {
@@ -282,6 +318,8 @@ export function PrimaryModelCard({ providers }: { providers: ModelProvider[] }) 
           选择上方任一供应商，完成连接后即可设置默认模型。
         </p>
       )}
+
+      <UsageVisibilityCard providers={providers} />
 
       <ProviderFormDialog
         mode="create"

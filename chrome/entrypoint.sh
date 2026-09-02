@@ -1,36 +1,20 @@
 #!/bin/bash
 set -e
 
-# Clean up stale display lock (left by container restart)
 rm -f /tmp/.X99-lock
-
-# Start virtual display
 Xvfb :99 -screen 0 1280x900x24 -nolisten tcp &
 export DISPLAY=:99
-
 sleep 1
 
-# Remove stale profile locks (left by crashed/restarted containers)
 find /home/chrome/.config/chromium -name 'SingletonLock' -o -name 'SingletonCookie' -o -name 'SingletonSocket' 2>/dev/null | xargs rm -f 2>/dev/null || true
 
-# Generate nginx config with this container's hostname so CDP WebSocket URLs
-# are rewritten to the correct container name (supports multi-instance pools).
 export CHROME_HOSTNAME="${CHROME_HOSTNAME:-${HOSTNAME:-chrome}}"
-envsubst '${CHROME_HOSTNAME}' \
-  < /etc/nginx/conf.d/cdp.conf.template \
-  > /etc/nginx/conf.d/cdp.conf
-
-# nginx proxy: rewrites Host header to localhost so Chrome accepts CDP requests
+envsubst '${CHROME_HOSTNAME}' < /etc/nginx/conf.d/cdp.conf.template > /etc/nginx/conf.d/cdp.conf
 nginx -g 'daemon off;' &
-
-# Start noVNC web UI on port 6080
 x11vnc -display :99 -nopw -listen 0.0.0.0 -xkb -forever -shared &
 websockify --web /usr/share/novnc 6080 localhost:5900 &
 
-# Start Browser Bridge daemon (always enabled).
-# Listens on 0.0.0.0 so the API/worker containers can reach it via chrome-{N}:19825.
-# The extension connects to ws://localhost:19825/ext.
-DAEMON_JS="$(npm root -g)/@jackwener/opencli/dist/daemon.js"
+DAEMON_JS="$(npm root -g)/@jackwener/opencli/dist/src/daemon.js"
 if [ -f "$DAEMON_JS" ]; then
   (while true; do
     OPENCLI_DAEMON_LISTEN=0.0.0.0 node "$DAEMON_JS"
@@ -42,29 +26,75 @@ else
   echo "[entrypoint] WARNING: Browser Bridge daemon not found at $DAEMON_JS"
 fi
 
-# Keep Chromium running; restart on crash
-CHROME_EXTRA_FLAGS=""
-if [ -f /home/chrome/extension/manifest.json ]; then
-  CHROME_EXTRA_FLAGS="--load-extension=/home/chrome/extension"
-  echo "[entrypoint] Browser Bridge extension loaded from /home/chrome/extension"
+# The profile is writable user/site state only. Every capability comes from a
+# read-only, versioned runtime bundle and Chromium is given exactly the
+# allowlisted extension directories below.
+BROWSER_RUNTIME_BUNDLE_ROOT="${BROWSER_RUNTIME_BUNDLE_ROOT:-/opt/browser-runtime-bundles}"
+BROWSER_RUNTIME_BUNDLE_MANIFEST="${BROWSER_RUNTIME_BUNDLE_MANIFEST:-$BROWSER_RUNTIME_BUNDLE_ROOT/opencli-default/2/manifest.json}"
+BUNDLE_EXTENSION_OUTPUT="$(node /usr/local/bin/resolve-browser-runtime-bundle.mjs "$BROWSER_RUNTIME_BUNDLE_MANIFEST" "$BROWSER_RUNTIME_BUNDLE_ROOT")"
+BUNDLE_RUNTIME_REPORT="$(node /usr/local/bin/resolve-browser-runtime-bundle.mjs "$BROWSER_RUNTIME_BUNDLE_MANIFEST" "$BROWSER_RUNTIME_BUNDLE_ROOT" --report)"
+read_manifest_component_version() {
+  node -e 'const manifest=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); const component=manifest.components.find((item)=>item.id===process.argv[2]); if(component) process.stdout.write(component.version);' "$BROWSER_RUNTIME_BUNDLE_MANIFEST" "$1"
+}
+SCRIPT_HOST_VERSION="$(read_manifest_component_version opencli-script-host)"
+VIOLENTMONKEY_VERSION="$(read_manifest_component_version violentmonkey)"
+
+BUNDLE_EXTENSION_DIRS=()
+if [ -n "$BUNDLE_EXTENSION_OUTPUT" ]; then
+  mapfile -t BUNDLE_EXTENSION_DIRS <<< "$BUNDLE_EXTENSION_OUTPUT"
+fi
+CHROME_EXTRA_FLAGS=(--disable-extensions)
+if [ "${#BUNDLE_EXTENSION_DIRS[@]}" -gt 0 ]; then
+  EXTENSION_DIRS="$(IFS=,; echo "${BUNDLE_EXTENSION_DIRS[*]}")"
+  CHROME_EXTRA_FLAGS=("--disable-extensions-except=$EXTENSION_DIRS" "--load-extension=$EXTENSION_DIRS")
+  echo "[entrypoint] Runtime bundle loaded from $BROWSER_RUNTIME_BUNDLE_MANIFEST"
+fi
+NETWORK_MODE="$(node -e 'const policy=JSON.parse(process.argv[1]||"{\"mode\":\"direct\"}"); if(!["direct","restricted"].includes(policy.mode)) process.exit(1); process.stdout.write(policy.mode);' "${BROWSER_NETWORK_POLICY:-}")"
+if [ "$NETWORK_MODE" = "restricted" ]; then
+  CHROME_EXTRA_FLAGS+=("--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE localhost")
+fi
+STARTUP_PAGES=()
+if [ -n "${BROWSER_STARTUP_PAGES:-}" ]; then
+  STARTUP_PAGE_OUTPUT="$(node -e 'const pages=JSON.parse(process.argv[1]); if(!Array.isArray(pages)||pages.length>10||pages.some((item)=>typeof item!=="string"||!/^https?:\/\//.test(item))) process.exit(1); process.stdout.write(pages.join("\n"));' "$BROWSER_STARTUP_PAGES")"
+  if [ -n "$STARTUP_PAGE_OUTPUT" ]; then mapfile -t STARTUP_PAGES <<< "$STARTUP_PAGE_OUTPUT"; fi
 fi
 
 start_chrome() {
   find /home/chrome/.config/chromium -name 'SingletonLock' -o -name 'SingletonCookie' -o -name 'SingletonSocket' 2>/dev/null | xargs rm -f 2>/dev/null || true
-  chromium \
-    --remote-debugging-port=9222 \
-    --remote-debugging-address=0.0.0.0 \
-    --remote-allow-origins='*' \
-    --no-sandbox \
-    --disable-dev-shm-usage \
-    --user-data-dir=/home/chrome/.config/chromium \
-    --window-size=1280,900 \
-    $CHROME_EXTRA_FLAGS \
-    "$@"
+  chromium --remote-debugging-port=9222 --remote-debugging-address=0.0.0.0 --remote-allow-origins='*' --no-sandbox --disable-dev-shm-usage --user-data-dir=/home/chrome/.config/chromium --window-size=1280,900 "${CHROME_EXTRA_FLAGS[@]}" "$@"
+}
+
+run_runtime_self_check() {
+  for _ in $(seq 1 30); do
+    if curl -sf http://localhost:9222/json/version >/dev/null 2>&1; then
+      EXTENSION_WORKERS="$(curl -sf http://localhost:9222/json/list | node -e 'let data=""; process.stdin.on("data",(chunk)=>data+=chunk); process.stdin.on("end",()=>{const targets=JSON.parse(data); process.stdout.write(String(targets.filter((target)=>target.type==="service_worker"&&target.url.startsWith("chrome-extension://")).length));});')"
+      if [ "$EXTENSION_WORKERS" -ge "${#BUNDLE_EXTENSION_DIRS[@]}" ] && { [ -z "$SCRIPT_HOST_VERSION" ] || node /usr/local/bin/ensure-script-host.mjs http://localhost:9222 >/dev/null; }; then
+        READY_RUNTIME_REPORT="$BUNDLE_RUNTIME_REPORT"
+        if [ -n "$VIOLENTMONKEY_VERSION" ]; then
+          USER_SCRIPTS_ACCESS_CHECK="$(node /usr/local/bin/ensure-violentmonkey-userscripts-access.mjs http://localhost:9222 "$VIOLENTMONKEY_VERSION")" || { sleep 1; continue; }
+          READY_RUNTIME_REPORT="$(node -e 'const report=JSON.parse(process.argv[1]); const check=JSON.parse(process.argv[2]); report.self_check={...report.self_check,violentmonkey_user_scripts_access:check}; process.stdout.write(JSON.stringify(report));' "$BUNDLE_RUNTIME_REPORT" "$USER_SCRIPTS_ACCESS_CHECK")"
+        fi
+        printf '%s\n' "$READY_RUNTIME_REPORT" > /tmp/browser-runtime-report.json
+        return 0
+      fi
+    fi
+    sleep 1
+  done
+  echo "[entrypoint] Chromium did not become ready; runtime report not written" >&2
+  return 1
 }
 
 while true; do
-  start_chrome || true
+  # A report is only valid for the Chromium process that produced it.
+  rm -f /tmp/browser-runtime-report.json
+  start_chrome "${STARTUP_PAGES[@]}" &
+  CHROME_PID=$!
+  run_runtime_self_check &
+  CHECK_PID=$!
+  wait "$CHROME_PID" || true
+  kill "$CHECK_PID" 2>/dev/null || true
+  wait "$CHECK_PID" 2>/dev/null || true
+  rm -f /tmp/browser-runtime-report.json
   echo "[entrypoint] Chromium exited, restarting in 2s..."
   sleep 2
 done

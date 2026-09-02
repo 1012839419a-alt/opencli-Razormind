@@ -5,6 +5,8 @@ export type PortDataType =
   | "trigger"
   | "text"
   | "items[]"
+  | "CollectorOutputV1"
+  | "CollectorMergeInputV1"
   | "mediaAsset[]"
   | "mediaGenerationResult"
   | "recordCandidate[]"
@@ -25,6 +27,9 @@ export type PortContract = {
   type: PortDataType
   required: boolean
   description: string
+  cardinality?: "one" | "many"
+  minConnections?: number
+  legacyIds?: string[]
 }
 
 export type ParamContract = {
@@ -349,6 +354,35 @@ const CONTRACTS: Record<string, NodeContract> = {
     ],
     ["source slot params must stay structured", "slot execution is delegated to OpenCLI runtime resources"],
   ),
+  "intelligence.source.feishu-table": contract(
+    "intelligence.source.feishu-table",
+    "Feishu Bitable Keywords",
+    "trigger -> keyword items[]",
+    [port("in", "input", "trigger", false, "Consumes a schedule or manual trigger.")],
+    [port("out", "output", "items[]", true, "Emits bounded keyword rows with stable Feishu lineage.")],
+    [
+      param("sourceId", "params", "string", true, "", { description: "Configured DataSource id; credentials never live in the graph." }),
+      param("app_token", "params", "string", true, "", { description: "Feishu Bitable app token identifier." }),
+      param("table_id", "params", "string", true, "", { description: "Feishu table identifier." }),
+      param("keyword_field", "params", "string", true, "关键词", { description: "Column containing the search term." }),
+      param("status_field", "params", "string", false, "状态", { description: "Optional eligibility status column." }),
+      param("eligible_status", "params", "string", false, "待采集", { description: "Optional value required before a row is collected." }),
+      param("max_rows", "params", "number", false, 500, { min: 1, max: 5000, description: "Hard row bound per run." }),
+    ],
+    ["sourceId must resolve to an enabled feishu_table DataSource", "tenant token must remain in encrypted source credentials", "each item must retain source_row_id lineage"],
+  ),
+  "intelligence.source.doubao-research": contract(
+    "intelligence.source.doubao-research",
+    "Doubao Research",
+    "keyword items[] -> research items[]",
+    [port("in", "input", "items[]", false, "Consumes Feishu keyword rows.")],
+    [port("out", "output", "items[]", true, "Emits Doubao answers and captured citations.")],
+    [
+      param("question", "params", "string", true, "", { description: "Research question; runtime may interpolate an upstream keyword." }),
+      param("site_session", "params", "string", false, "ephemeral", { enum: ["ephemeral", "persistent"], description: "OpenCLI Doubao session policy." }),
+    ],
+    ["Doubao session readiness must be verified before live execution", "answers must preserve upstream keyword lineage"],
+  ),
   "intelligence.source.pool": contract(
     "intelligence.source.pool",
     "Source Pool",
@@ -401,13 +435,20 @@ const CONTRACTS: Record<string, NodeContract> = {
   "intelligence.data.filter": dataOperatorContract("intelligence.data.filter", "Filter Data"),
   "intelligence.data.evaluate": dataOperatorContract("intelligence.data.evaluate", "Evaluate Data"),
   "intelligence.data.refine": dataOperatorContract("intelligence.data.refine", "Refine Data"),
+  "collection.source.web": collectorContract("web", "网页采集"),
+  "collection.source.api": collectorContract("api", "API 采集"),
+  "collection.source.rss": collectorContract("rss", "RSS 采集"),
+  "collection.source.cli": collectorContract("cli", "CLI 采集"),
   "intelligence.flow.merge": contract(
     "intelligence.flow.merge",
     "Merge",
-    "recordCandidate[] + recordCandidate[] -> recordCandidate[]",
+    "CollectorMergeInputV1* -> recordCandidate[]",
     [
-      port("in1", "input", "recordCandidate[]", true, "Consumes the first candidate stream."),
-      port("in2", "input", "recordCandidate[]", true, "Consumes another candidate stream."),
+      port("in", "input", "CollectorMergeInputV1", true, "Consumes collector envelopes or candidate streams.", {
+        cardinality: "many",
+        minConnections: 1,
+        legacyIds: ["in1", "in2"],
+      }),
     ],
     [port("out", "output", "recordCandidate[]", true, "Emits merged candidates with lineage preserved.")],
     [
@@ -424,7 +465,8 @@ const CONTRACTS: Record<string, NodeContract> = {
       }),
     ],
     [
-      "merge requires at least two compatible upstream inputs",
+      "merge requires at least one compatible upstream input",
+      "legacy in1/in2 edges remain load-compatible",
       "lineage must be preserved for every output item",
     ],
   ),
@@ -779,7 +821,9 @@ export function resolveEdgeContract(project: WorkflowProject, edge: WorkflowProj
   const outputs = sourceContract?.ports.filter((port) => port.direction === "output") ?? []
   const inputs = targetContract?.ports.filter((port) => port.direction === "input") ?? []
   const targetPort = edge.targetPort
-    ? inputs.find((port) => port.id === edge.targetPort) ?? null
+    ? inputs.find((port) => (
+      port.id === edge.targetPort || port.legacyIds?.includes(edge.targetPort ?? "")
+    )) ?? null
     : inferTargetPort(inputs)
   const sourcePort = edge.sourcePort
     ? outputs.find((port) => port.id === edge.sourcePort) ?? null
@@ -811,7 +855,7 @@ export function validateNodeContract(node: WorkflowProjectNode, adapter?: Adapte
     }]
   }
 
-  return contract.params.flatMap((paramSpec) => {
+  const paramFindings = contract.params.flatMap((paramSpec) => {
     const value = readParamValue(node, adapter, paramSpec)
     if ((value === undefined || value === "") && paramSpec.required) {
       return [finding(node.id, contract.id, "fail", `Required param "${paramSpec.id}" is missing.`, { param: paramSpec })]
@@ -836,6 +880,150 @@ export function validateNodeContract(node: WorkflowProjectNode, adapter?: Adapte
     }
     return []
   })
+  return [...paramFindings, ...validateCollectorNode(node, contract)]
+}
+
+function collectorContract(kind: "web" | "api" | "rss" | "cli", title: string): NodeContract {
+  return contract(
+    `collection.source.${kind}`,
+    title,
+    "trigger -> CollectorOutputV1 { items[], sourceResults[] }",
+    [port("in", "input", "trigger", false, "Optionally consumes a workflow trigger.")],
+    [port("out", "output", "CollectorOutputV1", true, "Emits items and sourceResults as one typed envelope.")],
+    [
+      param("version", "params", "number", true, 1, {
+        min: 1,
+        max: 1,
+        description: "Collector node contract version.",
+      }),
+      param("execution", "params", "object", true, {}, {
+        description: "Concurrency, timeout, and retry policy.",
+      }),
+      param("sources", "params", "object[]", true, [], {
+        description: `Ordered ${kind} source definitions with stable sourceId values.`,
+      }),
+    ],
+    [
+      `every source kind must be ${kind}`,
+      "disabled sources are preserved and reported as skipped",
+      "publishedAt and fetchedAt must remain distinct",
+      ...(kind === "cli"
+        ? ["CLI sources select registered adapterNodeId values and structured typed args; free shell text is forbidden"]
+        : []),
+    ],
+  )
+}
+
+const FORBIDDEN_COLLECTOR_KEYS = new Set([
+  "apikey",
+  "xapikey",
+  "accesstoken",
+  "refreshtoken",
+  "authtoken",
+  "bearertoken",
+  "clientsecret",
+  "secret",
+  "shell",
+  "commandline",
+  "scripttext",
+  "rawcommand",
+  "token",
+  "password",
+  "cookie",
+  "authorization",
+])
+
+function validateCollectorNode(
+  node: WorkflowProjectNode,
+  nodeContract: NodeContract,
+): NodeContractFinding[] {
+  if (!nodeContract.id.startsWith("collection.source.")) return []
+  const expectedKind = nodeContract.id.slice("collection.source.".length)
+  const sources = node.params.sources
+  if (!Array.isArray(sources)) return []
+  const findings: NodeContractFinding[] = []
+  const sourceIds = new Set<string>()
+  sources.forEach((source, index) => {
+    const evidence = { index, source }
+    if (!source || typeof source !== "object" || Array.isArray(source)) return
+    const candidate = source as Record<string, unknown>
+    if (candidate.kind !== expectedKind) {
+      findings.push(finding(
+        node.id,
+        nodeContract.id,
+        "fail",
+        `Source ${index + 1} must have kind "${expectedKind}".`,
+        evidence,
+      ))
+    }
+    const sourceId = typeof candidate.sourceId === "string" ? candidate.sourceId.trim() : ""
+    if (!sourceId) {
+      findings.push(finding(
+        node.id,
+        nodeContract.id,
+        "fail",
+        `Source ${index + 1} needs a stable sourceId.`,
+        evidence,
+      ))
+    } else if (sourceIds.has(sourceId)) {
+      findings.push(finding(
+        node.id,
+        nodeContract.id,
+        "fail",
+        `Source id "${sourceId}" is duplicated.`,
+        evidence,
+      ))
+    } else {
+      sourceIds.add(sourceId)
+    }
+    if (containsForbiddenCollectorKey(candidate)) {
+      findings.push(finding(
+        node.id,
+        nodeContract.id,
+        "fail",
+        `Source "${sourceId || index + 1}" contains a forbidden secret or free-command field.`,
+        evidence,
+      ))
+    }
+    if (expectedKind === "cli") {
+      if (typeof candidate.adapterNodeId !== "string" || !candidate.adapterNodeId.trim()) {
+        findings.push(finding(
+          node.id,
+          nodeContract.id,
+          "fail",
+          `CLI source "${sourceId || index + 1}" must select adapterNodeId.`,
+          evidence,
+        ))
+      }
+      if (!candidate.args || typeof candidate.args !== "object" || Array.isArray(candidate.args)) {
+        findings.push(finding(
+          node.id,
+          nodeContract.id,
+          "fail",
+          `CLI source "${sourceId || index + 1}" must use structured typed args.`,
+          evidence,
+        ))
+      }
+    }
+  })
+  return findings
+}
+
+function containsForbiddenCollectorKey(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false
+  if (Array.isArray(value)) return value.some(containsForbiddenCollectorKey)
+  return Object.entries(value as Record<string, unknown>).some(
+    ([key, nested]) => (
+      FORBIDDEN_COLLECTOR_KEYS.has(normalizeCollectorKey(key)) ||
+      containsForbiddenCollectorKey(nested)
+    ),
+  )
+}
+
+function normalizeCollectorKey(key: string): string {
+  return [...key.toLowerCase()]
+    .filter((character) => /[a-z0-9]/.test(character))
+    .join("")
 }
 
 function contract(
@@ -875,8 +1063,15 @@ function dataOperatorContract(id: string, title: string): NodeContract {
   )
 }
 
-function port(id: string, direction: PortDirection, type: PortDataType, required: boolean, description: string): PortContract {
-  return { id, direction, type, required, description }
+function port(
+  id: string,
+  direction: PortDirection,
+  type: PortDataType,
+  required: boolean,
+  description: string,
+  options: Pick<PortContract, "cardinality" | "minConnections" | "legacyIds"> = {},
+): PortContract {
+  return { id, direction, type, required, description, ...options }
 }
 
 function param(
@@ -953,6 +1148,10 @@ function inferSourcePort(
 
 function portTypesCompatible(source: PortDataType, target: PortDataType): boolean {
   if (source === target) return true
+  if (
+    target === "CollectorMergeInputV1" &&
+    (source === "CollectorOutputV1" || source === "recordCandidate[]")
+  ) return true
   if (source === "unknown" || target === "unknown") return true
   return false
 }

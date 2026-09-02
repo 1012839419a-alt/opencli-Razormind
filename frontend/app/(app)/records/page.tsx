@@ -10,7 +10,9 @@ import {
   Search,
   Sparkles,
   TableProperties,
+  Trash2,
 } from 'lucide-react'
+import { toast } from 'sonner'
 
 import { BACKEND_HINT, EmptyState, ErrorState, LoadingState } from '@/components/shell/data-states'
 import { PageContainer } from '@/components/shell/page-container'
@@ -33,7 +35,13 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { useRecords } from '@/lib/api/hooks'
+import {
+  useBatchDeleteRecords,
+  useClearAllRecords,
+  useDeleteRecord,
+  useRecord,
+  useRecords,
+} from '@/lib/api/hooks'
 import type { CollectedRecord } from '@/lib/api/types'
 import { formatRelative } from '@/lib/format'
 
@@ -123,6 +131,13 @@ export default function RecordsPage() {
   const [search, setSearch] = useState('')
   const [page, setPage] = useState(1)
   const [selectedRecord, setSelectedRecord] = useState<CollectedRecord | null>(null)
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [confirmBatchDelete, setConfirmBatchDelete] = useState(false)
+  const [confirmClearAll, setConfirmClearAll] = useState(false)
+  const recordDetailQuery = useRecord(selectedRecord?.id ?? null)
+  const deleteRecord = useDeleteRecord()
+  const batchDeleteRecords = useBatchDeleteRecords()
+  const clearAllRecords = useClearAllRecords()
   const recordsQuery = useRecords({
     ...(search ? { search } : {}),
     page,
@@ -160,7 +175,13 @@ export default function RecordsPage() {
   useEffect(() => {
     setPage(1)
     setSelectedRecord(null)
+    setSelectedIds(new Set())
   }, [search])
+
+  useEffect(() => {
+    setSelectedIds(new Set())
+    setConfirmBatchDelete(false)
+  }, [page])
 
   useEffect(() => {
     const linkedSearch = new URLSearchParams(window.location.search).get('search')
@@ -210,14 +231,64 @@ export default function RecordsPage() {
               </code>
             )) : <span className="text-xs text-muted-foreground">暂无可预览字段</span>}
           </div>
-          <div className="relative w-full shrink-0 sm:w-72">
-            <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              value={search}
-              onChange={(event) => setSearch(event.target.value)}
-              placeholder="搜索全部记录…"
-              className="h-9 pl-8"
-            />
+          <div className="flex w-full shrink-0 flex-wrap items-center justify-end gap-2 sm:w-auto">
+            <div className="relative w-full sm:w-72">
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                placeholder="搜索全部记录…"
+                className="h-9 pl-8"
+              />
+            </div>
+            {selectedIds.size > 0 ? (
+              <Button
+                size="sm"
+                variant={confirmBatchDelete ? 'destructive' : 'outline'}
+                disabled={batchDeleteRecords.isPending}
+                onClick={() => {
+                  if (!confirmBatchDelete) {
+                    setConfirmBatchDelete(true)
+                    return
+                  }
+                  batchDeleteRecords.mutate([...selectedIds], {
+                    onSuccess: (result) => {
+                      toast.success(`已删除 ${result.data.deleted} 条记录`)
+                      setSelectedIds(new Set())
+                      setConfirmBatchDelete(false)
+                    },
+                    onError: (error) =>
+                      toast.error(error instanceof Error ? error.message : '批量删除失败'),
+                  })
+                }}
+              >
+                <Trash2 className="size-3.5" />
+                {confirmBatchDelete ? '确认批量删除' : `删除所选（${selectedIds.size}）`}
+              </Button>
+            ) : null}
+            <Button
+              size="sm"
+              variant={confirmClearAll ? 'destructive' : 'ghost'}
+              disabled={clearAllRecords.isPending}
+              onClick={() => {
+                if (!confirmClearAll) {
+                  setConfirmClearAll(true)
+                  return
+                }
+                clearAllRecords.mutate(undefined, {
+                  onSuccess: (result) => {
+                    toast.success(`已清空 ${result.data.deleted} 条记录`)
+                    setConfirmClearAll(false)
+                    setSelectedIds(new Set())
+                  },
+                  onError: (error) =>
+                    toast.error(error instanceof Error ? error.message : '清空记录失败'),
+                })
+              }}
+            >
+              <Trash2 className="size-3.5" />
+              {confirmClearAll ? '确认清空全部' : '清空全部'}
+            </Button>
           </div>
         </div>
 
@@ -239,6 +310,22 @@ export default function RecordsPage() {
               <Table className="min-w-max">
                 <TableHeader className="sticky top-0 z-10 bg-card shadow-[0_1px_0_hsl(var(--border))]">
                   <TableRow>
+                    <TableHead className="w-10 bg-card">
+                      <input
+                        type="checkbox"
+                        aria-label="选择当前页全部记录"
+                        checked={records.length > 0 && records.every((record) => selectedIds.has(record.id))}
+                        onChange={(event) => {
+                          const next = new Set(selectedIds)
+                          records.forEach((record) => {
+                            if (event.target.checked) next.add(record.id)
+                            else next.delete(record.id)
+                          })
+                          setSelectedIds(next)
+                          setConfirmBatchDelete(false)
+                        }}
+                      />
+                    </TableHead>
                     <TableHead className="w-32 bg-card">记录 ID</TableHead>
                     {visibleFields.map((field) => (
                       <TableHead key={field} className="min-w-44 max-w-72 bg-card font-mono text-xs">
@@ -257,6 +344,20 @@ export default function RecordsPage() {
                     const enriched = Boolean(record.ai_enrichment && Object.keys(record.ai_enrichment).length > 0)
                     return (
                       <TableRow key={record.id} className="group">
+                        <TableCell>
+                          <input
+                            type="checkbox"
+                            aria-label={`选择${recordTitle(record)}`}
+                            checked={selectedIds.has(record.id)}
+                            onChange={(event) => {
+                              const next = new Set(selectedIds)
+                              if (event.target.checked) next.add(record.id)
+                              else next.delete(record.id)
+                              setSelectedIds(next)
+                              setConfirmBatchDelete(false)
+                            }}
+                          />
+                        </TableCell>
                         <TableCell>
                           <button
                             type="button"
@@ -329,9 +430,39 @@ export default function RecordsPage() {
               </SheetHeader>
               <div className="space-y-6 px-4 pb-6">
                 <LineagePanel record={selectedRecord} />
-                <JsonPanel label="标准化数据" value={selectedRecord.normalized_data} />
-                <JsonPanel label="AI 富化" value={selectedRecord.ai_enrichment} />
-                <JsonPanel label="原始数据" value={selectedRecord.raw_data} />
+                <JsonPanel
+                  label="标准化数据"
+                  value={recordDetailQuery.data?.normalized_data ?? selectedRecord.normalized_data}
+                />
+                <JsonPanel label="AI 富化" value={recordDetailQuery.data?.ai_enrichment ?? selectedRecord.ai_enrichment} />
+                <JsonPanel label="原始数据" value={recordDetailQuery.data?.raw_data ?? selectedRecord.raw_data} />
+                <div className="flex items-center justify-between gap-3 border-t pt-4">
+                  <p className="text-xs text-muted-foreground" aria-live="polite">
+                    {recordDetailQuery.isLoading
+                      ? '正在加载完整记录…'
+                      : recordDetailQuery.isError
+                        ? '完整记录加载失败，当前显示列表快照。'
+                        : '已加载完整记录。'}
+                  </p>
+                  <Button
+                    size="sm"
+                    variant="destructive"
+                    disabled={deleteRecord.isPending}
+                    onClick={() => {
+                      deleteRecord.mutate(selectedRecord.id, {
+                        onSuccess: () => {
+                          toast.success('记录已删除')
+                          setSelectedRecord(null)
+                        },
+                        onError: (error) =>
+                          toast.error(error instanceof Error ? error.message : '删除记录失败'),
+                      })
+                    }}
+                  >
+                    <Trash2 className="size-3.5" />
+                    删除记录
+                  </Button>
+                </div>
               </div>
             </>
           ) : null}
