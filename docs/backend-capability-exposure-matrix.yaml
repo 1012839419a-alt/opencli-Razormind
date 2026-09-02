@@ -1,6 +1,6 @@
 version: 1
 source: backend.main.app.openapi
-openapi_operation_count: 283
+openapi_operation_count: 296
 allowed_dispositions:
 - operator_ui
 - studio_binding
@@ -490,6 +490,60 @@ operations:
   decision: Bind to Workflow Studio; do not create a second top-level product surface.
   target_epic: Epic 8
   capability_id: studio.workflow
+- method: GET
+  path: /api/v1/chat/sessions
+  operation_id: list_sessions_api_v1_chat_sessions_get
+  disposition: operator_ui
+  frontend_route: /studio
+  wrapper: null
+  decision: Expose through the existing operator surface in the target Epic.
+  target_epic: Epic 2
+  capability_id: operator.workspace-governance
+- method: GET
+  path: /api/v1/chat/sessions/{conversation_id}
+  operation_id: get_session_api_v1_chat_sessions__conversation_id__get
+  disposition: operator_ui
+  frontend_route: /studio
+  wrapper: null
+  decision: Expose through the existing operator surface in the target Epic.
+  target_epic: Epic 2
+  capability_id: operator.workspace-governance
+- method: GET
+  path: /api/v1/chat/sessions/{conversation_id}/replay
+  operation_id: replay_session_api_v1_chat_sessions__conversation_id__replay_get
+  disposition: operator_ui
+  frontend_route: /studio
+  wrapper: null
+  decision: Expose through the existing operator surface in the target Epic.
+  target_epic: Epic 2
+  capability_id: operator.workspace-governance
+- method: POST
+  path: /api/v1/chat/sessions
+  operation_id: create_session_api_v1_chat_sessions_post
+  disposition: operator_ui
+  frontend_route: /studio
+  wrapper: null
+  decision: Expose through the existing operator surface in the target Epic.
+  target_epic: Epic 2
+  capability_id: operator.workspace-governance
+- method: POST
+  path: /api/v1/chat/sessions/{conversation_id}/close
+  operation_id: close_session_api_v1_chat_sessions__conversation_id__close_post
+  disposition: operator_ui
+  frontend_route: /studio
+  wrapper: null
+  decision: Expose through the existing operator surface in the target Epic.
+  target_epic: Epic 2
+  capability_id: operator.workspace-governance
+- method: POST
+  path: /api/v1/chat/sessions/{conversation_id}/messages
+  operation_id: send_session_message_api_v1_chat_sessions__conversation_id__messages_post
+  disposition: operator_ui
+  frontend_route: /studio
+  wrapper: null
+  decision: Expose through the existing operator surface in the target Epic.
+  target_epic: Epic 2
+  capability_id: operator.workspace-governance
 - method: GET
   path: /api/v1/control/actions
   operation_id: list_control_actions_api_v1_control_actions_get
@@ -1866,6 +1920,69 @@ operations:
   wrapper: null
   decision: Added by branch-consolidation merge; governance review pending.
   target_epic: Epic 8
+  capability_id: operator.workspace-governance
+- method: GET
+  path: /api/v1/workspaces/{workspace_id}/browser-spaces
+  operation_id: list_browser_spaces_api_v1_workspaces__workspace_id__browser_spaces_get
+  disposition: operator_ui
+  frontend_route: /browsers
+  wrapper: null
+  decision: Expose browser-space lifecycle through the existing workspace operator surface.
+  target_epic: Epic 2
+  capability_id: operator.workspace-governance
+- method: GET
+  path: /api/v1/workspaces/{workspace_id}/browser-spaces/{space_id}
+  operation_id: get_browser_space_api_v1_workspaces__workspace_id__browser_spaces__space_id__get
+  disposition: operator_ui
+  frontend_route: /browsers
+  wrapper: null
+  decision: Expose browser-space lifecycle through the existing workspace operator surface.
+  target_epic: Epic 2
+  capability_id: operator.workspace-governance
+- method: GET
+  path: /api/v1/workspaces/{workspace_id}/browser-spaces/{space_id}/events
+  operation_id: replay_browser_space_events_api_v1_workspaces__workspace_id__browser_spaces__space_id__events_get
+  disposition: operator_ui
+  frontend_route: /browsers
+  wrapper: null
+  decision: Expose browser-space lifecycle through the existing workspace operator surface.
+  target_epic: Epic 2
+  capability_id: operator.workspace-governance
+- method: POST
+  path: /api/v1/workspaces/{workspace_id}/browser-spaces
+  operation_id: create_browser_space_api_v1_workspaces__workspace_id__browser_spaces_post
+  disposition: operator_ui
+  frontend_route: /browsers
+  wrapper: null
+  decision: Expose browser-space lifecycle through the existing workspace operator surface.
+  target_epic: Epic 2
+  capability_id: operator.workspace-governance
+- method: POST
+  path: /api/v1/workspaces/{workspace_id}/browser-spaces/{space_id}/cancel
+  operation_id: cancel_browser_space_api_v1_workspaces__workspace_id__browser_spaces__space_id__cancel_post
+  disposition: operator_ui
+  frontend_route: /browsers
+  wrapper: null
+  decision: Expose browser-space lifecycle through the existing workspace operator surface.
+  target_epic: Epic 2
+  capability_id: operator.workspace-governance
+- method: POST
+  path: /api/v1/workspaces/{workspace_id}/browser-spaces/{space_id}/close
+  operation_id: close_browser_space_api_v1_workspaces__workspace_id__browser_spaces__space_id__close_post
+  disposition: operator_ui
+  frontend_route: /browsers
+  wrapper: null
+  decision: Expose browser-space lifecycle through the existing workspace operator surface.
+  target_epic: Epic 2
+  capability_id: operator.workspace-governance
+- method: POST
+  path: /api/v1/workspaces/{workspace_id}/browser-spaces/{space_id}/tasks
+  operation_id: submit_browser_space_task_api_v1_workspaces__workspace_id__browser_spaces__space_id__tasks_post
+  disposition: operator_ui
+  frontend_route: /browsers
+  wrapper: null
+  decision: Expose browser-space lifecycle through the existing workspace operator surface.
+  target_epic: Epic 2
   capability_id: operator.workspace-governance
 - method: GET
   path: /api/v1/workspaces/{workspace_id}/consumer-grants

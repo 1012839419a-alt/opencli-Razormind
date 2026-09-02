@@ -14,7 +14,7 @@ def test_alembic_has_one_head():
     config = Config()
     config.set_main_option("script_location", "backend/migrations")
 
-    assert ScriptDirectory.from_config(config).get_heads() == ["q4r5s6t7u8v9"]
+    assert ScriptDirectory.from_config(config).get_heads() == ["r8s9t0u1v2w3"]
 
 
 def test_ci_downgrade_target_is_unambiguous():

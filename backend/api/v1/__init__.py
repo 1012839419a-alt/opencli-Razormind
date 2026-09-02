@@ -3,10 +3,12 @@
 from fastapi import APIRouter
 
 from backend.api.v1 import (
+    agent_conversations,
     agents,
     automations,
     browser_act,
     browser_containers,
+    browser_spaces,
     browsers,
     chat,
     consumer_grants,
@@ -63,8 +65,10 @@ v1_router.include_router(browser_act.router)
 v1_router.include_router(browser_containers.router)
 v1_router.include_router(browsers.router)
 v1_router.include_router(browsers.runtime_router)
+v1_router.include_router(agent_conversations.router)
 v1_router.include_router(chat.router)
 v1_router.include_router(control.router)
+v1_router.include_router(browser_spaces.router)
 v1_router.include_router(consumer_grants.router)
 v1_router.include_router(cookies.router)
 v1_router.include_router(model_defaults.router)
