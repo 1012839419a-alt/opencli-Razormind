@@ -27,7 +27,7 @@ def run_resolver(
 
 
 def test_resolver_accepts_stock_chromium():
-    result = run_resolver("chromium")
+    result = run_resolver("chromium", {"CHROMIUM_BINARY": ""})
     assert result.returncode == 0
     assert result.stdout.strip() == "chromium"
 
