@@ -124,7 +124,7 @@ export default function OdpStatePage() {
           <Row label="近 24 小时" value={dlq.last_24h === null ? '—' : formatNumber(dlq.last_24h)} />
         </SectionCard>
 
-        <SectionCard icon={Database} title="odp-store 存活" status="unknown" note={store.note}>
+        <SectionCard icon={Database} title="odp-store 存活" status="unknown" note={store.note ?? undefined}>
           <Row label="可用" value="否" />
           <Row
             label="心跳年龄"
@@ -132,7 +132,7 @@ export default function OdpStatePage() {
           />
         </SectionCard>
 
-        <SectionCard icon={Server} title="未发布 Outbox 积压" status="unknown" note={outbox.note}>
+        <SectionCard icon={Server} title="未发布 Outbox 积压" status="unknown" note={outbox.note ?? undefined}>
           <Row label="可用" value="否" />
           <Row label="未发布数量" value={outbox.unpublished === null ? '—' : formatNumber(outbox.unpublished)} />
         </SectionCard>

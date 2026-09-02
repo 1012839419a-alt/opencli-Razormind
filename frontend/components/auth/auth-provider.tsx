@@ -487,19 +487,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await changeLocalPassword(currentPassword, newPassword)
   }, [])
 
-  const signInWithPassword = useCallback(
-    async (username: string, password: string) => {
-      const result = await loginWithPassword(username, password)
-      await acceptIdentityToken(result.access_token)
-      persistBootstrapIdentityToken(result.access_token)
-      return result.using_default_password
-    },
-    [acceptIdentityToken],
-  )
-
-  const changePassword = useCallback(async (currentPassword: string, newPassword: string) => {
-    await changeLocalPassword(currentPassword, newPassword)
-  }, [])
 
   const completeOidcSignIn = useCallback(async () => {
     const manager = getOidcManager()

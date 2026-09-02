@@ -263,7 +263,7 @@ export function ProjectGraphExplorer({
                 className="min-h-[44rem]"
                 fallback={(
                   <ProjectGraphFallback
-                    preview={preview}
+                    preview={graphPreview!}
                     selectedNodeId={selectedNodeId}
                     onSelectNode={setSelectedNodeId}
                   />

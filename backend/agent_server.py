@@ -135,11 +135,14 @@ def _bundle_declared_runtimes() -> set[str]:
     capabilities = manifest.get("capabilities", [])
     if not isinstance(capabilities, list):
         return set()
-    return {
-        capability.get("runtime")
-        for capability in capabilities
-        if isinstance(capability, dict) and isinstance(capability.get("runtime"), str)
-    }
+    declared: set[str] = set()
+    for capability in capabilities:
+        if not isinstance(capability, dict):
+            continue
+        runtime = capability.get("runtime", "opentabs")
+        if isinstance(runtime, str):
+            declared.add(runtime)
+    return declared
 
 
 def _available_agent_runtimes() -> list[str]:
@@ -150,8 +153,28 @@ def _available_agent_runtimes() -> list[str]:
     return runtimes
 
 
-_EDGE_RUNTIME_CONFIG_KEYS = frozenset(
-    {"binary", "args", "env", "cwd", "project_root", "provider_dir", "usage_file"}
+_EDGE_RUNTIME_TASK_CONFIG_KEYS = frozenset(
+    {
+        "action",
+        "agent_id",
+        "base_delay",
+        "breaker_threshold",
+        "chrome",
+        "input_wait_seconds",
+        "local",
+        "max_attempts",
+        "model",
+        "pack",
+        "permission_mode",
+        "plugin",
+        "poll_interval",
+        "provider",
+        "response_timeout_seconds",
+        "settle_seconds",
+        "suggested_wait_seconds",
+        "tab_id",
+        "timeout_seconds",
+    }
 )
 
 
@@ -525,6 +548,10 @@ async def _register_via_ws(advertise_url: str) -> None:
     _proxy = _HTTPS_PROXY or _HTTP_PROXY or None
     # Computed once (not per reconnect attempt): runtime availability includes
     # fixed-binary compatibility probes and does not change without a restart.
+    runtimes = _available_agent_runtimes()
+    runtime_capabilities = available_runtime_capabilities()
+    for runtime in runtimes:
+        runtime_capabilities.setdefault(runtime, [])
     register_payload = json.dumps(
         {
             "type": "register",
@@ -532,7 +559,8 @@ async def _register_via_ws(advertise_url: str) -> None:
             "mode": _AGENT_MODE,
             "node_type": _AGENT_DEPLOY_TYPE,
             "label": _AGENT_LABEL,
-            "runtimes": _available_agent_runtimes(),
+            "runtimes": runtimes,
+            "runtime_capabilities": runtime_capabilities,
             "profile_kind": _BROWSER_PROFILE_KIND,
         }
     )
@@ -687,7 +715,7 @@ async def invoke_runtime_http(
             status_code=403,
             detail=f"runtime {req.runtime!r} is not declared by the installed bundle",
         )
-    unsafe_keys = sorted(_EDGE_RUNTIME_CONFIG_KEYS.intersection(req.config))
+    unsafe_keys = sorted(set(req.config) - _EDGE_RUNTIME_TASK_CONFIG_KEYS)
     if unsafe_keys:
         raise HTTPException(
             status_code=400,

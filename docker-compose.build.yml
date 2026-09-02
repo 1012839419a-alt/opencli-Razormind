@@ -54,7 +54,6 @@ services:
 
   agent-1:
     <<: *agent-build
-
   # Remote edge agent: same image, same default (no embedded Chrome).
   agent:
     <<: *agent-build

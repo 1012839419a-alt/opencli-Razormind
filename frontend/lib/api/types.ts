@@ -214,7 +214,7 @@ export interface AIAgent {
   id: string;
   name: string;
   description?: string;
-  processor_type: "claude" | "openai" | "local";
+  processor_type: "claude" | "openai" | "local" | "paw";
   model?: string;
   prompt_template: string;
   processor_config: Record<string, unknown>;
@@ -461,6 +461,8 @@ export interface EdgeNode {
   mode: "bridge" | "cdp";
   node_type: "docker" | "shell";
   status: "online" | "offline";
+  runtimes?: string[] | null;
+  runtime_capabilities?: Record<string, string[]> | null;
   last_seen_at?: string | null;
   ip?: string | null;
   created_at: string;
@@ -491,11 +493,13 @@ export interface SystemConfig {
   netbird_mode: "off" | "host" | "docker";
   opencli_cdp_endpoint: string;
   agent_pool_endpoints: string[];
+  effective_cdp_endpoints: string[];
   llm_request_timeout_seconds: number;
   llm_max_concurrency: number;
   control_mode: "advisory" | "automatic";
   control_kill_switch: boolean;
   image_tag: string;
+  runtime_revision: string;
   database_kind: string;
   api_auth_configured: boolean;
   oidc_configured: boolean;
@@ -1318,18 +1322,37 @@ export interface OperationsAgent {
   updated_at: string;
 }
 
-export interface AgentContractV1 {
-  schema_version: "agent.contract.v1";
+export interface OperationsAgentTeam {
+  id: string;
+  workspace_id: string;
+  name: string;
+  slug: string;
+  created_at: string;
+}
+
+export interface AgentQualityGateV1 {
+  id: string;
+  required?: boolean;
+  config?: Record<string, unknown>;
+}
+
+export interface AgentContractV2 {
+  schema_version: "agent.contract.v2";
+  role: string;
   input_schema: Record<string, unknown>;
   output_schema: Record<string, unknown>;
   state_schema: Record<string, unknown>;
+  required_capabilities: string[];
+  tool_policy: Record<string, unknown>;
+  budget: Record<string, unknown>;
+  quality_gates: AgentQualityGateV1[];
+  evidence_requirements: string[];
 }
-
 export interface AgentRuntimeBindingV2 {
   schema_version: "agent.runtime-binding.v2";
   workflow: string;
   preferred_agent_urls: string[];
-  preferred_runtimes: Array<"miniflow" | "pi" | "codex">;
+  preferred_runtimes: string[];
   model_binding: {
     schema_version: "agent.model-binding.v1";
     provider: string;
@@ -1344,7 +1367,7 @@ export interface OperationsAgentDraft {
   revision: number;
   instructions: string;
   model_configuration: Record<string, unknown> & {
-    agent_contract?: AgentContractV1;
+    agent_contract?: AgentContractV2;
     runtime_binding?: AgentRuntimeBindingV2;
   };
   tool_configuration: Record<string, unknown>;
@@ -1397,6 +1420,10 @@ export interface Automation {
   approval_mode: OperationsAgentMode;
   project: Record<string, unknown>;
   enabled: boolean;
+  starter_key: string | null;
+  revision: number;
+  operations_agent_id: string | null;
+  operations_agent_version: number | null;
   created_by_user_id: string;
   created_at: string;
   updated_at: string;

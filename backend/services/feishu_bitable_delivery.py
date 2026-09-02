@@ -45,6 +45,23 @@ class FeishuDeliveryError(RuntimeError):
         super().__init__(kind)
 
 
+def _reuse_existing_attempt(
+    attempt: DeliveryAttempt,
+    *,
+    evidence_digest: str | None,
+    field_map: dict[str, str],
+) -> DeliveryAttempt | None:
+    if attempt.status not in {"succeeded", "pending"}:
+        return None
+    if attempt.evidence_digest != evidence_digest or attempt.field_map != field_map:
+        raise FeishuDeliveryError("idempotency_conflict")
+    if attempt.status == "succeeded":
+        return attempt
+    if not _pending_attempt_is_stale(attempt):
+        raise FeishuDeliveryError("delivery_in_progress")
+    return None
+
+
 def _response_object(response: httpx.Response, *, failure_kind: str) -> dict[str, Any]:
     try:
         data = response.json()
@@ -152,12 +169,14 @@ async def deliver_record_once(
         DeliveryAttempt.record_id == record_id,
     ).with_for_update()
     existing = (await session.execute(query)).scalar_one_or_none()
-    if existing and existing.status == "succeeded":
-        if existing.evidence_digest != evidence_digest or existing.field_map != field_map:
-            raise FeishuDeliveryError("idempotency_conflict")
-        return existing
-    if existing and existing.status == "pending" and not _pending_attempt_is_stale(existing):
-        raise FeishuDeliveryError("delivery_in_progress")
+    if existing:
+        reusable = _reuse_existing_attempt(
+            existing,
+            evidence_digest=evidence_digest,
+            field_map=field_map,
+        )
+        if reusable is not None:
+            return reusable
     attempt = existing or DeliveryAttempt(
         connection_id=connection.id,
         app_token=app_token,
@@ -180,12 +199,13 @@ async def deliver_record_once(
         winner = (await session.execute(query)).scalar_one_or_none()
         if winner is None:
             raise
-        if winner.status == "succeeded":
-            if winner.evidence_digest != evidence_digest or winner.field_map != field_map:
-                raise FeishuDeliveryError("idempotency_conflict")
-            return winner
-        if winner.status == "pending" and not _pending_attempt_is_stale(winner):
-            raise FeishuDeliveryError("delivery_in_progress")
+        reusable = _reuse_existing_attempt(
+            winner,
+            evidence_digest=evidence_digest,
+            field_map=field_map,
+        )
+        if reusable is not None:
+            return reusable
         attempt = winner
         _mark_attempt_pending(
             attempt,

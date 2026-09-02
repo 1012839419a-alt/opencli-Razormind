@@ -61,6 +61,7 @@ ARG PI_VERSION=0.83.0
 COPY scripts/patch-opencli.js /tmp/patch-opencli.js
 RUN npm install -g @jackwener/opencli@${OPENCLI_VERSION} \
         @earendil-works/pi-coding-agent@${PI_VERSION} \
+        @browserbridge/bbx@${BBX_VERSION} \
     && node /tmp/patch-opencli.js \
     && rm /tmp/patch-opencli.js \
     && rm -rf /root/.npm
@@ -98,6 +99,9 @@ RUN set -eux; \
 COPY scripts/resolve-browser-runtime-bundle.mjs /usr/local/bin/resolve-browser-runtime-bundle.mjs
 COPY scripts/ensure-script-host.mjs /usr/local/bin/ensure-script-host.mjs
 COPY scripts/ensure-violentmonkey-userscripts-access.mjs /usr/local/bin/ensure-violentmonkey-userscripts-access.mjs
+COPY --from=browser-bridge-extension /src/browser-bridge/dist/browser-bridge-extension /opt/browser-bridge-extension
+COPY --from=browser-bridge-extension /src/browser-bridge/dist/browser-bridge-extension-id /etc/browser-bridge-extension-id
+COPY chrome/nginx-cdp.conf.template /etc/nginx/conf.d/cdp.conf.template
 
 # Agent server source plus the runtime adapters it imports at startup.
 WORKDIR /app

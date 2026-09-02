@@ -17,7 +17,7 @@ import logging
 import re
 from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Literal, Optional
+from typing import Any, Awaitable, Callable, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -27,6 +27,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.control.agent_control import ACTION_REGISTRY, agent_control_service
 from backend.database import AsyncSessionLocal, get_db
+from backend.llm.base import LlmAdapterError, classify_retryable
+from backend.llm.resolver import ResolverError, resolver
 from backend.models.agent_run import AgentRun, AgentRunEvent, AgentSession
 from backend.models.provider import ModelProvider
 from backend.schemas.common import ApiResponse
@@ -222,12 +224,9 @@ class ChatMessage(BaseModel):
 
 class ChatRequest(BaseModel):
     messages: list[ChatMessage]
-    provider_id: Optional[str] = None
-    # Persistent conversation callers set this from the already-authorized
-    # conversation row. Direct chat callers may provide it to disambiguate
-    # Agent Control's Workspace resolution.
-    workspace_id: Optional[str] = None
-    # 当前页面、项目或选中对象上下文，注入给 agent 当指代背景
+    provider_id: str | None = None
+    session_id: str | None = None
+    workspace_id: str | None = None
     context: dict[str, Any] | None = None
 
 
@@ -263,9 +262,27 @@ async def _create_durable_run(body: ChatRequest, identity: RequestIdentity | Non
         agent_session: AgentSession | None = None
         if body.session_id:
             agent_session = await session.get(AgentSession, body.session_id)
+            if agent_session is not None:
+                if identity is None:
+                    raise HTTPException(
+                        status_code=401,
+                        detail="Bearer token required for session reuse",
+                    )
+                if agent_session.actor_subject not in (None, identity.subject):
+                    raise HTTPException(
+                        status_code=403,
+                        detail="Agent session belongs to another identity",
+                    )
+                if body.workspace_id and agent_session.workspace_id != body.workspace_id:
+                    raise HTTPException(
+                        status_code=403,
+                        detail="Agent session belongs to another workspace",
+                    )
+                if agent_session.actor_subject is None:
+                    agent_session.actor_subject = identity.subject
         if agent_session is None:
             agent_session = AgentSession(
-                workspace_id=_workspace_id(body.context),
+                workspace_id=body.workspace_id or _workspace_id(body.context),
                 actor_subject=identity.subject if identity else None,
                 context=body.context or {},
             )
@@ -318,7 +335,6 @@ class _RunScopedDurableEventWriter:
             raise RuntimeError("Durable event writer is not open")
         self.run.status = "running"
         self.dirty = True
-
     async def emit(self, event: dict[str, Any]) -> None:
         if self.session is None or self.run is None:
             raise RuntimeError("Durable event writer is not open")
@@ -575,8 +591,6 @@ async def _build_proposal(
     )
 
 
-
-
 async def _chat_with_client(
     client: Any,
     model: str,
@@ -587,7 +601,12 @@ async def _chat_with_client(
     tool_trace: list[dict[str, Any]] | None = None,
 ) -> ChatExecution:
     """Run either provider protocol while returning a persistence-safe tool trace."""
-
+    await _emit_activity(
+        "phase.changed",
+        "制定执行路径",
+        "已选择可用模型，正在判断需要读取的信息和可能的操作。",
+        state="active",
+    )
     system = SYSTEM_PROMPT
     if body.context:
         system += f"\n\n当前用户操作上下文 (JSON): {json.dumps(body.context, ensure_ascii=False)}"
@@ -600,9 +619,12 @@ async def _chat_with_client(
     tool_trace = tool_trace if tool_trace is not None else []
 
     for _step in range(MAX_TOOL_STEPS):
-        # End any read-only transaction before an outbound model call. The
-        # persistent conversation service commits its running turn separately;
-        # this boundary prevents a model call from holding that transaction.
+        await _emit_activity(
+            "phase.changed",
+            "分析当前状态",
+            "正在根据已获得的信息决定下一步。",
+            state="active",
+        )
         await db.commit()
         try:
             response = await client.chat.completions.create(
@@ -610,27 +632,41 @@ async def _chat_with_client(
             )
         except Exception as exc:
             logger.error("chat llm error | %s", exc)
-            raise HTTPException(status_code=502, detail=f"模型调用失败: {exc}") from exc
+            raise LlmAdapterError(
+                f"模型调用失败: {exc}",
+                retryable=classify_retryable(exc),
+            ) from exc
 
         msg = response.choices[0].message
         tool_calls = msg.tool_calls or []
-
         if not tool_calls:
+            await _emit_activity(
+                "run.completed",
+                "处理完成",
+                "已生成基于本次执行信息的结果摘要。",
+                state="completed",
+            )
             return ChatExecution(ChatReply(type="message", content=msg.content or ""), tool_trace)
 
-        # 写工具命中 → 立即返回 proposal (不执行, 不继续推理)
         for tc in tool_calls:
             if tc.function.name in WRITE_TOOLS:
                 args = _safe_json(tc.function.arguments)
-                if tool_trace is not None:
-                    tool_trace.append(
-                        {
-                            "name": tc.function.name,
-                            "kind": "write",
-                            "status": "proposal",
-                            "argument_keys": sorted(args),
-                        }
-                    )
+                label, target_type, target_id = _tool_public_description(tc.function.name, args)
+                tool_trace.append(
+                    {
+                        "name": tc.function.name,
+                        "kind": "write",
+                        "status": "proposal",
+                        "argument_keys": sorted(args),
+                    }
+                )
+                await _emit_activity(
+                    "tool.completed",
+                    label,
+                    "已定位目标并准备变更方案。",
+                    state="completed",
+                    target={"type": target_type, "id": target_id},
+                )
                 proposal = await _build_proposal(
                     db,
                     tc.function.name,
@@ -646,9 +682,15 @@ async def _chat_with_client(
                         "argument_keys": sorted(args),
                     }
                 )
+                await _emit_activity(
+                    "approval.required",
+                    "等待确认",
+                    proposal.summary,
+                    state="attention",
+                    target={"type": target_type, "id": target_id},
+                )
                 return ChatExecution(ChatReply(type="proposal", proposal=proposal), tool_trace)
 
-        # 只读工具 → 执行, 喂回结果, 继续循环
         messages.append(
             {
                 "role": "assistant",
@@ -664,16 +706,24 @@ async def _chat_with_client(
             }
         )
         for tc in tool_calls:
-            if tool_trace is not None:
-                tool_trace.append(
-                    {
-                        "name": tc.function.name,
-                        "kind": "read",
-                        "status": "completed",
-                        "argument_keys": sorted(_safe_json(tc.function.arguments)),
-                    }
-                )
-            result = await _run_read_tool(db, tc.function.name, _safe_json(tc.function.arguments))
+            args = _safe_json(tc.function.arguments)
+            label, target_type, target_id = _tool_public_description(tc.function.name, args)
+            result = await _run_read_tool(db, tc.function.name, args)
+            tool_trace.append(
+                {
+                    "name": tc.function.name,
+                    "kind": "read",
+                    "status": "completed",
+                    "argument_keys": sorted(args),
+                }
+            )
+            await _emit_activity(
+                "tool.completed",
+                label,
+                _result_public_summary(result),
+                state="completed",
+                target={"type": target_type, "id": target_id},
+            )
             messages.append(
                 {
                     "role": "tool",
@@ -691,18 +741,19 @@ async def _chat_single_provider(
     db: AsyncSession,
     body: ChatRequest,
     identity: RequestIdentity | None,
-    provider_id: Optional[str],
+    provider_id: str | None,
     *,
     tool_trace: list[dict[str, Any]] | None = None,
 ) -> ApiResponse:
-    """Legacy pre-failover chat path (issue #55): one provider — the
-    explicit ``provider_id`` or the first enabled one — no candidate
-    failover.
+    """Run chat through one provider without failover.
+
+    Use the requested provider when given; otherwise use the first enabled one.
     """
     provider = await _pick_provider(db, provider_id)
     client = await _build_client(provider)
     model = provider.default_model or "gpt-4o-mini"
-    return await _chat_with_client(client, model, body, db, identity, tool_trace=tool_trace)
+    result = await _chat_with_client(client, model, body, db, identity, tool_trace=tool_trace)
+    return ApiResponse.ok(result.reply)
 
 
 async def run_chat_request(
@@ -722,9 +773,10 @@ async def run_chat_request(
         provider = adapter.provider
         client = await _build_client(provider)
         model = model_id or provider.default_model or "gpt-4o-mini"
-        return await _chat_with_client(
+        result = await _chat_with_client(
             client, model, body, db, identity, tool_trace=tool_trace
         )
+        return ApiResponse.ok(result.reply)
 
     return await resolver.resolve_with_fallback(db, "chat", operation)
 
@@ -736,6 +788,12 @@ async def chat(
     db: AsyncSession = Depends(get_db),
 ) -> ApiResponse:
     """Agent dock chat, preserving the legacy unauthenticated read path."""
+    await _emit_activity(
+        "phase.changed",
+        "理解目标",
+        "正在结合当前页面、工作区和选中对象理解请求。",
+        state="completed",
+    )
     try:
         return await run_chat_request(db, body, identity)
     except (LlmAdapterError, ResolverError) as exc:
@@ -743,6 +801,159 @@ async def chat(
         # existing HTTP boundary and sanitized provider error behavior.
         logger.error("chat failover | %s", exc)
         raise HTTPException(status_code=502, detail=f"模型调用失败: {exc}") from exc
+
+
+@router.post("/stream")
+async def chat_stream(
+    body: ChatRequest,
+    identity: RequestIdentity | None = Depends(_optional_request_identity),
+    db: AsyncSession = Depends(get_db),
+) -> StreamingResponse:
+    """Stream ordered, durable execution facts as newline-delimited JSON."""
+    run = await _create_durable_run(body, identity)
+
+    async def event_source():
+        queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
+
+        async def produce() -> None:
+            try:
+                async with _RunScopedDurableEventWriter(run.id, queue) as writer:
+                    writer.mark_running()
+                    await writer.emit(
+                        {
+                            "type": "run.started",
+                            "label": "开始处理",
+                            "detail": "已接收请求，正在建立执行上下文。",
+                            "state": "active",
+                        }
+                    )
+                    await writer.flush()
+                    token = _activity_sink.set(writer.emit)
+                    try:
+                        response = await chat(body, identity, db)
+                        reply = response.data.model_dump(mode="json")
+                        await writer.emit(
+                            {
+                                "type": "reply",
+                                "label": "结果已就绪",
+                                "detail": "本次处理已返回结果。",
+                                "state": "completed",
+                                "reply": reply,
+                            }
+                        )
+                        await writer.finish(reply=reply)
+                    except HTTPException as exc:
+                        detail = str(exc.detail)
+                        await writer.emit(
+                            {
+                                "type": "run.failed",
+                                "label": "处理未完成",
+                                "detail": detail,
+                                "state": "failed",
+                                "status": exc.status_code,
+                                "recovery": "检查连接或目标状态后重试。",
+                            }
+                        )
+                        await writer.finish(error=detail)
+                    except Exception as exc:
+                        logger.exception("chat stream failed")
+                        detail = str(exc) or "Agent 暂时无法完成这项任务。"
+                        await writer.emit(
+                            {
+                                "type": "run.failed",
+                                "label": "处理未完成",
+                                "detail": detail,
+                                "state": "failed",
+                                "status": 500,
+                                "recovery": "稍后重试，或调整请求后继续。",
+                            }
+                        )
+                        await writer.finish(error=detail)
+                    finally:
+                        _activity_sink.reset(token)
+            except _DurableEventPersistenceError:
+                await _persist_writer_failure(run.id, queue)
+            except Exception:
+                logger.exception("chat stream durable persistence failed")
+                await _persist_writer_failure(run.id, queue)
+            finally:
+                await queue.put(None)
+
+        task = asyncio.create_task(produce())
+        try:
+            while True:
+                event = await queue.get()
+                if event is None:
+                    break
+                yield json.dumps(event, ensure_ascii=False) + "\n"
+        finally:
+            if not task.done():
+                task.cancel()
+
+    return StreamingResponse(
+        event_source(),
+        media_type="application/x-ndjson",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+            "X-Agent-Run-Id": run.id,
+        },
+    )
+
+
+def _run_payload(run: AgentRun) -> dict[str, Any]:
+    return {
+        "id": run.id,
+        "session_id": run.session_id,
+        "kind": run.kind,
+        "status": run.status,
+        "goal": run.goal,
+        "reply": run.reply_payload,
+        "error": run.error_message,
+    }
+async def _authorize_durable_run(
+    db: AsyncSession,
+    run: AgentRun,
+    identity: RequestIdentity | None,
+) -> None:
+    session = await db.get(AgentSession, run.session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Agent session not found")
+    if session.actor_subject is not None and (
+        identity is None or session.actor_subject != identity.subject
+    ):
+        raise HTTPException(status_code=403, detail="Agent run belongs to another identity")
+
+
+@router.get("/runs/{run_id}", response_model=ApiResponse[dict[str, Any]])
+async def get_chat_run(
+    run_id: str,
+    identity: RequestIdentity | None = Depends(_optional_request_identity),
+    db: AsyncSession = Depends(get_db),
+) -> ApiResponse[dict[str, Any]]:
+    run = await db.get(AgentRun, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Agent run not found")
+    await _authorize_durable_run(db, run, identity)
+    return ApiResponse.ok(_run_payload(run))
+
+
+@router.get("/runs/{run_id}/events", response_model=ApiResponse[list[dict[str, Any]]])
+async def get_chat_run_events(
+    run_id: str,
+    identity: RequestIdentity | None = Depends(_optional_request_identity),
+    db: AsyncSession = Depends(get_db),
+) -> ApiResponse[list[dict[str, Any]]]:
+    run = await db.get(AgentRun, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Agent run not found")
+    await _authorize_durable_run(db, run, identity)
+    result = await db.execute(
+        select(AgentRunEvent)
+        .where(AgentRunEvent.run_id == run_id)
+        .order_by(AgentRunEvent.sequence.asc())
+    )
+    return ApiResponse.ok([event.payload for event in result.scalars().all()])
 
 
 @router.post("/confirm", response_model=ApiResponse[dict])

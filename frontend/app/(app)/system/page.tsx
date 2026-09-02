@@ -1,5 +1,6 @@
 'use client'
 
+import Link from 'next/link'
 import { useState } from 'react'
 import { toast } from 'sonner'
 
@@ -7,7 +8,6 @@ import { useAuth } from '@/components/auth/auth-provider'
 import { BACKEND_HINT, ErrorState, LoadingState } from '@/components/shell/data-states'
 import { PageContainer } from '@/components/shell/page-container'
 import { RestartApiCard } from '@/components/system/restart-api-card'
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card'
 import { Field, FieldDescription, FieldGroup, FieldLabel } from '@/components/ui/field'
@@ -144,7 +144,7 @@ function SystemConfigOverview({ config }: { config: SystemConfig }) {
               value={config.public_url || '未配置'}
               badge={configuredBadge(Boolean(config.public_url))}
             />
-            <Button variant="ghost" render={<a href="/nodes" />}>
+            <Button variant="ghost" render={<Link href="/nodes" />}>
               查看节点
             </Button>
           </CardContent>
@@ -778,9 +778,16 @@ export default function SystemSettingsPage() {
             <LoadingState rows={3} />
           </CardContent>
         </Card>
-
-        <RestartApiCard />
-      </div>
+      ) : config.isError ? (
+        <ErrorState message={(config.error as Error)?.message} hint={BACKEND_HINT} />
+      ) : config.data ? (
+        <div className="space-y-5">
+          <SystemConfigOverview config={config.data} />
+          <RuntimeSettingsForm config={config.data} />
+          <AccountSecurityCard />
+          <RestartApiCard />
+        </div>
+      ) : null}
     </PageContainer>
   )
 }

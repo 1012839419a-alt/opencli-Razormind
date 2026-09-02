@@ -9,6 +9,7 @@ from backend.database import AsyncSessionLocal
 from backend.models.task import CollectionTask, TaskRun
 from backend.pipeline import events
 from backend.pipeline.error_taxonomy import effective_error_type
+from backend.pipeline.domain_limiter import domain_slot
 from backend.pipeline.pipeline import run_pipeline
 
 logger = logging.getLogger(__name__)

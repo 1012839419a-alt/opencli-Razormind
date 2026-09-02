@@ -656,14 +656,15 @@ export default function PluginHubPage() {
 
   function updateSubtype(type: PluginSubtype) {
     const params = new URLSearchParams(searchParams.toString())
-    params.delete('tab')
+    if (activeTab === 'installed') params.delete('tab')
+    else params.set('tab', activeTab)
     params.set('type', type)
     router.push(`/plugins?${params.toString()}`, { scroll: false })
   }
 
   const availableProviders = (() => {
     const source: RegistryPluginProvider[] = activeTab === 'marketplace'
-      ? []
+      ? PLUGIN_PROVIDERS.filter((provider) => provider.marketplace)
       : activeTab === 'capabilities'
         ? nodeCatalog?.nodes.length
           ? [backendNodeCatalogProvider(nodeCatalog)]

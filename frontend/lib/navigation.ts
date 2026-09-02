@@ -8,8 +8,6 @@ import {
   Settings2,
   ShieldAlert,
   ShieldCheck,
-  ShieldAlert,
-  Settings,
   Workflow,
   type LucideIcon,
 } from 'lucide-react'

@@ -1,6 +1,6 @@
 version: 1
 source: backend.main.app.openapi
-openapi_operation_count: 297
+openapi_operation_count: 317
 allowed_dispositions:
 - operator_ui
 - studio_binding
@@ -3000,6 +3000,231 @@ operations:
   decision: Keep III lifecycle receipts as machine ingress; project results through run-scoped Studio APIs.
   target_epic: Epic 8
   projection_reason: Machine-to-machine III collection ingress; intentionally not projected to a human-facing surface.
+- method: DELETE
+  path: /api/v1/delivery-connections/{connection_id}
+  operation_id: delete_connection_api_v1_delivery_connections__connection_id__delete
+  disposition: internal_only
+  frontend_route: null
+  wrapper: deleteDeliveryConnection
+  decision: Keep delivery connection removal behind authenticated control-plane administration.
+  target_epic: Epic 8
+  projection_reason: Authenticated delivery infrastructure administration; not a direct operator projection.
+- method: GET
+  path: /api/v1/delivery-connections
+  operation_id: list_connections_api_v1_delivery_connections_get
+  disposition: internal_only
+  frontend_route: null
+  wrapper: listDeliveryConnections
+  decision: Keep delivery connection inventory behind authenticated control-plane administration.
+  target_epic: Epic 8
+  projection_reason: Authenticated delivery infrastructure inventory; not a direct operator projection.
+- method: GET
+  path: /api/v1/nodes/install/agent-runtime.tar.gz
+  operation_id: get_agent_runtime_bundle_api_v1_nodes_install_agent_runtime_tar_gz_get
+  disposition: setup_status
+  frontend_route: /nodes
+  wrapper: null
+  decision: Retain the runtime bundle download for node bootstrap and recovery.
+  target_epic: Epic 6
+  capability_id: setup.nodes
+- method: GET
+  path: /api/v1/workspaces/{workspace_id}/operations-agents/teams
+  operation_id: list_operations_agent_teams_api_v1_workspaces__workspace_id__operations_agents_teams_get
+  disposition: operator_ui
+  frontend_route: /operations-agents
+  wrapper: listOperationsAgentTeams
+  decision: Expose operations-agent team inventory in the existing operator surface.
+  target_epic: Epic 5
+  capability_id: operator.workspace-governance
+- method: PATCH
+  path: /api/v1/delivery-connections/{connection_id}
+  operation_id: update_connection_api_v1_delivery_connections__connection_id__patch
+  disposition: internal_only
+  frontend_route: null
+  wrapper: updateDeliveryConnection
+  decision: Keep delivery connection updates behind authenticated control-plane administration.
+  target_epic: Epic 8
+  projection_reason: Authenticated delivery infrastructure administration; not a direct operator projection.
+- method: POST
+  path: /api/v1/delivery-connections
+  operation_id: create_connection_api_v1_delivery_connections_post
+  disposition: internal_only
+  frontend_route: null
+  wrapper: createDeliveryConnection
+  decision: Keep delivery connection creation behind authenticated control-plane administration.
+  target_epic: Epic 8
+  projection_reason: Authenticated delivery infrastructure administration; not a direct operator projection.
+- method: POST
+  path: /api/v1/delivery-connections/{connection_id}/probe
+  operation_id: probe_connection_api_v1_delivery_connections__connection_id__probe_post
+  disposition: internal_only
+  frontend_route: null
+  wrapper: probeFeishuBitable
+  decision: Keep delivery connection probes behind authenticated control-plane administration.
+  target_epic: Epic 8
+  projection_reason: Authenticated delivery infrastructure probe; not a direct operator projection.
+- method: POST
+  path: /api/v1/workflows/runs/question-bank
+  operation_id: start_run_from_question_bank_api_v1_workflows_runs_question_bank_post
+  disposition: studio_binding
+  frontend_route: /workflows
+  wrapper: null
+  decision: Retain question-bank workflow starts for the Workflow Studio execution surface.
+  target_epic: Epic 8
+  capability_id: studio.workflow
+- method: POST
+  path: /api/v1/workflows/runs/{run_id}/gaojixing/resume
+  operation_id: resume_gaojixing_run_api_v1_workflows_runs__run_id__gaojixing_resume_post
+  disposition: studio_binding
+  frontend_route: /workflows
+  wrapper: null
+  decision: Retain resumable 高级性 workflow execution for the Workflow Studio surface.
+  target_epic: Epic 8
+  capability_id: studio.workflow
+- method: POST
+  path: /api/v1/workspaces/{workspace_id}/automations/{automation_id}/runs
+  operation_id: start_automation_run_api_v1_workspaces__workspace_id__automations__automation_id__runs_post
+  disposition: operator_ui
+  frontend_route: /operations-agents
+  wrapper: startAutomationRun
+  decision: Expose schedule-bound automation runs through the operator surface.
+  target_epic: Epic 5
+  capability_id: operator.schedules
+- method: POST
+  path: /api/v1/workspaces/{workspace_id}/projects/{project_id}/workflows/{workflow_id}/runs/question-bank
+  operation_id: start_published_workflow_run_from_question_bank_api_v1_workspaces__workspace_id__projects__project_id__workflows__workflow_id__runs_question_bank_post
+  disposition: studio_binding
+  frontend_route: /workflows
+  wrapper: null
+  decision: Retain published question-bank workflow starts for the Workflow Studio surface.
+  target_epic: Epic 8
+  capability_id: studio.workflow
+- method: POST
+  path: /api/v1/workspaces/{workspace_id}/projects/{project_id}/workflows/{workflow_id}/runs/{run_id}/downstream-replay
+  operation_id: replay_persisted_gaojixing_source_downstream_api_v1_workspaces__workspace_id__projects__project_id__workflows__workflow_id__runs__run_id__downstream_replay_post
+  disposition: studio_binding
+  frontend_route: /workflows
+  wrapper: null
+  decision: Retain persisted downstream replay for the Workflow Studio execution surface.
+  target_epic: Epic 8
+  capability_id: studio.workflow
+- method: POST
+  path: /api/v1/workspaces/{workspace_id}/projects/{project_id}/workflows/{workflow_id}/runs/{run_id}/gaojixing/resume
+  operation_id: resume_published_gaojixing_run_api_v1_workspaces__workspace_id__projects__project_id__workflows__workflow_id__runs__run_id__gaojixing_resume_post
+  disposition: studio_binding
+  frontend_route: /workflows
+  wrapper: null
+  decision: Retain resumable published 高级性 workflow execution for the Workflow Studio surface.
+  target_epic: Epic 8
+  capability_id: studio.workflow
+- method: POST
+  path: /api/v1/chat/stream
+  operation_id: chat_stream_api_v1_chat_stream_post
+  disposition: studio_binding
+  frontend_route: /studio
+  wrapper: null
+  decision: Bind durable chat streaming to Workflow Studio.
+  target_epic: Epic 8
+  capability_id: studio.workflow
+- method: GET
+  path: /api/v1/chat/runs/{run_id}
+  operation_id: get_chat_run_api_v1_chat_runs__run_id__get
+  disposition: studio_binding
+  frontend_route: /studio
+  wrapper: null
+  decision: Bind durable chat run replay to Workflow Studio.
+  target_epic: Epic 8
+  capability_id: studio.workflow
+- method: GET
+  path: /api/v1/chat/runs/{run_id}/events
+  operation_id: get_chat_run_events_api_v1_chat_runs__run_id__events_get
+  disposition: studio_binding
+  frontend_route: /studio
+  wrapper: null
+  decision: Bind durable chat event replay to Workflow Studio.
+  target_epic: Epic 8
+  capability_id: studio.workflow
+- method: POST
+  path: /api/v1/internal/automations/scheduler/tick
+  operation_id: automation_scheduler_tick_api_v1_internal_automations_scheduler_tick_post
+  disposition: internal_only
+  frontend_route: null
+  wrapper: null
+  decision: Keep scheduler control behind internal orchestration.
+  target_epic: Epic 2
+  capability_id: operator.workspace-governance
+- method: POST
+  path: /api/v1/internal/operations-agent-runs/{run_id}/dispatch
+  operation_id: dispatch_scheduled_agent_run_api_v1_internal_operations_agent_runs__run_id__dispatch_post
+  disposition: internal_only
+  frontend_route: null
+  wrapper: null
+  decision: Keep scheduled agent dispatch behind internal orchestration.
+  target_epic: Epic 2
+  capability_id: operator.workspace-governance
+- method: POST
+  path: /api/v1/internal/collaboration/authorize
+  operation_id: authorize_collaboration_room_api_v1_internal_collaboration_authorize_post
+  disposition: internal_only
+  frontend_route: null
+  wrapper: null
+  decision: Keep collaboration authorization behind internal orchestration.
+  target_epic: Epic 2
+  capability_id: operator.workspace-governance
+- method: POST
+  path: /api/v1/internal/collaboration/snapshot
+  operation_id: snapshot_collaboration_draft_api_v1_internal_collaboration_snapshot_post
+  disposition: internal_only
+  frontend_route: null
+  wrapper: null
+  decision: Keep collaboration snapshots behind internal orchestration.
+  target_epic: Epic 2
+  capability_id: operator.workspace-governance
+- method: GET
+  path: /api/v1/workspaces/{workspace_id}/projects/{project_id}/workflows/{workflow_id}/runs/{run_id}
+  operation_id: get_project_workflow_run_projection_api_v1_workspaces__workspace_id__projects__project_id__workflows__workflow_id__runs__run_id__get
+  disposition: studio_binding
+  frontend_route: /studio
+  wrapper: null
+  decision: Bind scoped workflow run projections to Workflow Studio.
+  target_epic: Epic 8
+  capability_id: studio.workflow
+- method: GET
+  path: /api/v1/workspaces/{workspace_id}/projects/{project_id}/workflows/{workflow_id}/runs/{run_id}/events
+  operation_id: list_project_workflow_run_events_api_v1_workspaces__workspace_id__projects__project_id__workflows__workflow_id__runs__run_id__events_get
+  disposition: studio_binding
+  frontend_route: /studio
+  wrapper: null
+  decision: Bind scoped workflow event replay to Workflow Studio.
+  target_epic: Epic 8
+  capability_id: studio.workflow
+- method: GET
+  path: /api/v1/workspaces/{workspace_id}/projects/{project_id}/workflows/{workflow_id}/runs/{run_id}/evidence-batches
+  operation_id: list_project_workflow_evidence_batches_api_v1_workspaces__workspace_id__projects__project_id__workflows__workflow_id__runs__run_id__evidence_batches_get
+  disposition: studio_binding
+  frontend_route: /studio
+  wrapper: null
+  decision: Bind scoped evidence batch listing to Workflow Studio.
+  target_epic: Epic 8
+  capability_id: studio.workflow
+- method: GET
+  path: /api/v1/workspaces/{workspace_id}/projects/{project_id}/workflows/{workflow_id}/runs/{run_id}/evidence-batches/{batch_id}
+  operation_id: get_project_workflow_evidence_batch_api_v1_workspaces__workspace_id__projects__project_id__workflows__workflow_id__runs__run_id__evidence_batches__batch_id__get
+  disposition: studio_binding
+  frontend_route: /studio
+  wrapper: null
+  decision: Bind scoped evidence batch reads to Workflow Studio.
+  target_epic: Epic 8
+  capability_id: studio.workflow
+- method: GET
+  path: /api/v1/workspaces/{workspace_id}/projects/{project_id}/workflows/{workflow_id}/runs/{run_id}/projection
+  operation_id: get_project_workflow_evidence_projection_api_v1_workspaces__workspace_id__projects__project_id__workflows__workflow_id__runs__run_id__projection_get
+  disposition: studio_binding
+  frontend_route: /studio
+  wrapper: null
+  decision: Bind scoped workflow evidence projections to Workflow Studio.
+  target_epic: Epic 8
+  capability_id: studio.workflow
 unreferenced_wrappers:
 - wrapper: invokeBrowserCapability
   operation_id: invoke_runtime_capability_api_v1_browser_sessions__instance_id__capabilities__capability__invoke_post

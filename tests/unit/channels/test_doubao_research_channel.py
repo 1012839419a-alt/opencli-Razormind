@@ -1,5 +1,6 @@
 import pytest
 
+from backend.channels.base import ChannelFetchError, ChannelResult, FetchContext
 from backend.channels.doubao_research_channel import (
     DoubaoResearchChannel,
     _citations,
