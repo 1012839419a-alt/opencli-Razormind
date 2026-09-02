@@ -30,7 +30,7 @@ if [ -n "${BROWSER_STARTUP_PAGES:-}" ]; then
 fi
 
 if [ "$HAVE_CHROME" = "true" ]; then
-  BROWSER_ENGINE="${BROWSER_ENGINE:-chromium}"
+  BROWSER_ENGINE="${BROWSER_ENGINE-chromium}"
   CHROME_BIN="$(node /usr/local/bin/resolve-browser-executable.mjs "$BROWSER_ENGINE")" || {
     echo "[agent] Browser engine resolution failed for $BROWSER_ENGINE" >&2
     exit 1

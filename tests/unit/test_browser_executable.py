@@ -94,7 +94,8 @@ def _start_chrome_body(entrypoint: str) -> str:
 def test_entrypoints_resolve_browser_engine_with_shared_resolver():
     for name in ("chrome", "agent"):
         entrypoint = _read_entrypoint(name)
-        assert 'BROWSER_ENGINE="${BROWSER_ENGINE:-chromium}"' in entrypoint
+        assert 'BROWSER_ENGINE="${BROWSER_ENGINE-chromium}"' in entrypoint
+        assert 'BROWSER_ENGINE="${BROWSER_ENGINE:-chromium}"' not in entrypoint
         assert (
             'CHROME_BIN="$(node /usr/local/bin/resolve-browser-executable.mjs '
             '"$BROWSER_ENGINE")" || {'
