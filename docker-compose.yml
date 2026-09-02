@@ -317,7 +317,7 @@ services:
     image: ${DOCKER_REGISTRY:-ghcr.io/}${DOCKER_IMAGE_NAMESPACE:-2233admin}/opencli-admin-chrome:${IMAGE_TAG:-0.4.1}
     environment:
       CHROME_HOSTNAME: agent-1
-      BROWSER_ENGINE: ${BROWSER_ENGINE:-chromium}
+      BROWSER_ENGINE: ${BROWSER_ENGINE-chromium}
       CLOAKBROWSER_CACHE_DIR: ${CLOAKBROWSER_CACHE_DIR:-/opt/cloakbrowser/cache}
       CLOAKBROWSER_BINARY_PATH: ${CLOAKBROWSER_BINARY_PATH:-}
       CLOAKBROWSER_LICENSE_KEY: ${CLOAKBROWSER_LICENSE_KEY:-}
