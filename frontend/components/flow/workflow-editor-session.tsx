@@ -157,6 +157,7 @@ export function WorkflowEditorSession({ forceStandalone = false }: WorkflowEdito
   )
   useEffect(() => {
     if (!workspaceId || !projectId) return
+    saveSession.current += 1
     if (primaryWorkflowPending) return
     useSettingsStore.getState().patch({ collabProvider: 'off', yjsEnabled: false, yjsConnected: false })
     let active = true
