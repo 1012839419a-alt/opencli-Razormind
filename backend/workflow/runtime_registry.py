@@ -69,6 +69,8 @@ NOTIFY_SEND_BINDING_ID = "workflow.notify.send"
 EXTERNAL_TOOL_BINDING_ID = "workflow.external-tool.capability"
 IMAGE_GENERATION_BINDING_ID = "workflow.media.image-generation"
 IMAGE_ASSET_BINDING_ID = "workflow.media.image-asset"
+COLLECTOR_SOURCE_TYPES = {"web", "api", "rss", "cli"}
+COLLECTOR_BINDING_PREFIX = "collection.source."
 SUPPORTED_TOOL_EXECUTOR_MODES = {
     "fixture",
     "okx_market_ticker_snapshot",
@@ -81,6 +83,21 @@ SUPPORTED_TOOL_EXECUTOR_MODES = {
     "kats_runtime",
 }
 _LEGACY_DATA_OPERATOR_PACK_VERSION = "1.0.0"
+_SENSITIVE_CONFIG_KEYS = {
+    "accesstoken",
+    "authorization",
+    "authtoken",
+    "bearertoken",
+    "clientsecret",
+    "cookie",
+    "password",
+    "secret",
+    "token",
+    "apikey",
+    "xapikey",
+    "xapikey",
+    "refreshtoken",
+}
 
 
 class WorkflowRuntimeBinding(BaseModel):
@@ -412,6 +429,7 @@ def _resolve_source_fetch_node(
     node_id: str,
 ) -> dict[str, Any]:
     config = adapter.config if adapter else {}
+    collector_type = _collector_source_type(node)
     provider = (
         adapter.provider if adapter else _read_string(node.params.get("provider")) or "workflow"
     )
@@ -421,6 +439,7 @@ def _resolve_source_fetch_node(
         or _read_string(config.get("channelType"))
         or _read_string(config.get("channel_type"))
         or _read_string(config.get("channel"))
+        or collector_type
         or provider
     )
     live_mode = (
@@ -432,20 +451,44 @@ def _resolve_source_fetch_node(
     source_id = _read_string(node.params.get("sourceId")) or _read_string(
         node.params.get("dataSourceId")
     )
+    sources = [
+        _sanitize_runtime_config(source)
+        for source in node.params.get("sources", [])
+        if isinstance(source, dict)
+    ]
+    execution = _sanitize_runtime_config(_read_dict(node.params.get("execution")))
+    if collector_type:
+        mismatched_sources = [
+            _read_string(source.get("sourceId")) or "<unknown>"
+            for source in sources
+            if _read_string(source.get("kind")) != collector_type
+        ]
+        if mismatched_sources:
+            raise ValueError(
+                f"collector source kind mismatch for {collector_type}: "
+                + ", ".join(mismatched_sources)
+            )
     return {
         "binding": {
             "status": "bound",
-            "binding_id": SOURCE_FETCH_BINDING_ID,
+            "binding_id": (
+                f"{COLLECTOR_BINDING_PREFIX}{collector_type}"
+                if collector_type
+                else SOURCE_FETCH_BINDING_ID
+            ),
             "runtime": "workflow",
-            "channel": "source",
+            "channel": "collector" if collector_type else "source",
             "input": {
                 "provider": provider,
                 "channelType": channel_type,
                 "liveMode": live_mode,
                 "sourceId": source_id,
                 "adapterMode": adapter.mode if adapter else None,
-                "adapterConfig": config,
-                "params": dict(node.params),
+                "adapterConfig": _sanitize_runtime_config(config),
+                "params": _sanitize_runtime_config(dict(node.params)),
+                "collectorType": collector_type,
+                "sources": sources,
+                "execution": execution,
                 "outputPort": "items[]",
             },
         },
@@ -453,7 +496,11 @@ def _resolve_source_fetch_node(
             "node_id": node_id,
             "provider": provider,
             "channelType": channel_type,
-            "dispatch": "runtime_source_binding",
+            "dispatch": (
+                "collector_multi_source_fanout"
+                if collector_type in COLLECTOR_SOURCE_TYPES
+                else "runtime_source_binding"
+            ),
         },
     }
 
@@ -1154,7 +1201,11 @@ def _is_source_fetch_node(
     node: WorkflowProjectNode,
     adapter: WorkflowAdapterBinding | None,
 ) -> bool:
-    return node.kind == "source" and node.capability == "fetch" and adapter is not None
+    return (
+        node.kind == "source"
+        and node.capability == "fetch"
+        and (adapter is not None or _collector_source_type(node) is not None)
+    )
 
 
 def _is_collection_output(node: WorkflowProjectNode) -> bool:
@@ -1412,6 +1463,34 @@ def _read_string_list(value: Any) -> list[str]:
 
 def _read_dict(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
+
+
+def _collector_source_type(node: WorkflowProjectNode) -> str | None:
+    catalog_id = _read_string((node.ui or {}).get("catalogId"))
+    if catalog_id and catalog_id.startswith(COLLECTOR_BINDING_PREFIX):
+        catalog_kind = catalog_id.rsplit(".", 1)[-1]
+        if catalog_kind in COLLECTOR_SOURCE_TYPES:
+            return catalog_kind
+    configured_kind = (
+        _read_string(node.params.get("collectorType"))
+        or _read_string(node.params.get("sourceType"))
+    )
+    return configured_kind if configured_kind in COLLECTOR_SOURCE_TYPES else None
+
+
+def _sanitize_runtime_config(value: Any) -> Any:
+    """Keep references while removing secret material from runtime metadata."""
+    if isinstance(value, list):
+        return [_sanitize_runtime_config(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    sanitized: dict[str, Any] = {}
+    for key, item in value.items():
+        normalized = "".join(character for character in str(key).lower() if character.isalnum())
+        if normalized in _SENSITIVE_CONFIG_KEYS:
+            continue
+        sanitized[str(key)] = _sanitize_runtime_config(item)
+    return sanitized
 
 
 def _dump_missing_runtime(missing_runtime: WorkflowMissingRuntime) -> dict[str, Any]:
