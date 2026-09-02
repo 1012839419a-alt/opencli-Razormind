@@ -23,8 +23,7 @@ RUN if [ "$BROWSER_ENGINE" = "cloakbrowser" ]; then \
       mkdir -p /opt/cloakbrowser \
       && npm install --prefix /opt/cloakbrowser --omit=dev \
            "cloakbrowser@${CLOAKBROWSER_VERSION}" "playwright-core@^1.53.0" \
-      && CLOAKBROWSER_CACHE_DIR=/opt/cloakbrowser/cache \
-           node --input-type=module -e \
+      && env -u CLOAKBROWSER_VERSION CLOAKBROWSER_CACHE_DIR=/opt/cloakbrowser/cache node --input-type=module -e \
            'import {ensureBinary} from "/opt/cloakbrowser/node_modules/cloakbrowser"; await ensureBinary();' \
       ; \
     elif [ "$BROWSER_ENGINE" != "chromium" ]; then \

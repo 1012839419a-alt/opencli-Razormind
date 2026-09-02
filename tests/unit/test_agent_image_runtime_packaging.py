@@ -31,6 +31,11 @@ def test_browser_images_declare_selectable_cloakbrowser_runtime():
         assert 'if [ "$BROWSER_ENGINE" = "cloakbrowser" ]; then' in dockerfile
         assert '"cloakbrowser@${CLOAKBROWSER_VERSION}"' in dockerfile
         assert '"playwright-core@^1.53.0"' in dockerfile
+        assert (
+            "env -u CLOAKBROWSER_VERSION "
+            "CLOAKBROWSER_CACHE_DIR=/opt/cloakbrowser/cache node "
+            "--input-type=module -e"
+        ) in dockerfile
 
 
 def test_browser_image_build_override_passes_engine_and_version_args():
