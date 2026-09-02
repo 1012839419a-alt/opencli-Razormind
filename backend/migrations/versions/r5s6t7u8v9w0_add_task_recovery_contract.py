@@ -5,7 +5,7 @@ Revises: q4r5s6t7u8v9
 Create Date: 2026-09-02
 """
 
-from alembic import op
+from alembic import context, op
 import sqlalchemy as sa
 
 
@@ -16,7 +16,7 @@ depends_on = None
 
 
 def upgrade() -> None:
-    if not sa.inspect(op.get_bind()).has_table("collection_tasks"):
+    if not context.is_offline_mode() and not sa.inspect(op.get_bind()).has_table("collection_tasks"):
         return
     with op.batch_alter_table("collection_tasks") as batch:
         batch.add_column(sa.Column("retry_of_task_id", sa.String(36), nullable=True))
@@ -39,7 +39,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    if not sa.inspect(op.get_bind()).has_table("collection_tasks"):
+    if not context.is_offline_mode() and not sa.inspect(op.get_bind()).has_table("collection_tasks"):
         return
     op.drop_index("ix_collection_tasks_retry_of_task_id", table_name="collection_tasks")
     with op.batch_alter_table("collection_tasks") as batch:
