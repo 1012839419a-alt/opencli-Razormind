@@ -3,7 +3,7 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { Bot, Check, Loader2, Plus, Send, ShieldCheck, X } from 'lucide-react'
 import { usePathname, useSearchParams } from 'next/navigation'
-import { FormEvent, KeyboardEvent, useEffect, useState } from 'react'
+import { FormEvent, KeyboardEvent, useEffect, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
@@ -105,12 +105,14 @@ export function GlobalAgentDock({
   const [loadingSessions, setLoadingSessions] = useState(false)
   const [loadingConversation, setLoadingConversation] = useState(false)
   const [closing, setClosing] = useState(false)
+  const skipConversationLoadRef = useRef<string | null>(null)
 
   useEffect(() => {
     if (open && initialPrompt) setInput(initialPrompt)
   }, [initialPrompt, open])
 
   useEffect(() => {
+    skipConversationLoadRef.current = null
     if (!open) return
     setLoadingSessions(false)
     setLoadingConversation(false)
@@ -154,6 +156,10 @@ export function GlobalAgentDock({
 
   useEffect(() => {
     if (!open || !workspaceId || !sessionId || loadedWorkspaceId !== workspaceId) return
+    if (skipConversationLoadRef.current === sessionId) {
+      skipConversationLoadRef.current = null
+      return
+    }
     let cancelled = false
     setLoadingConversation(true)
     setMessages([])
@@ -242,6 +248,7 @@ export function GlobalAgentDock({
         activeSessionId = created.id
         setSessions((current) => [created, ...current.filter((session) => session.id !== created.id)])
         setLoadedWorkspaceId(workspaceId)
+        skipConversationLoadRef.current = created.id
         setSessionId(created.id)
         if (storageKey) window.localStorage.setItem(storageKey, created.id)
       }

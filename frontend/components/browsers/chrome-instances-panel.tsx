@@ -70,7 +70,7 @@ export function ChromeInstancesPanel() {
         <CardTitle className="text-base">Chrome 实例</CardTitle>
         <CardDescription>
           本机 Docker 采集池，可选路由到远程 Agent。移除操作仅支持 Docker 管理的 agent-2 及以后实例。
-          {wsStatus.isLoading ? ' WebSocket Agent 状态同步中。' : ` 当前已连接 ${wsStatus.data?.connected.length ?? 0} 个 WebSocket Agent。`}
+          {wsStatus.isLoading ? ' WebSocket Agent 状态同步中。' : ` 当前已连接 ${wsStatus.data?.connected?.length ?? 0} 个 WebSocket Agent。`}
         </CardDescription>
         <CardAction>
           <ChromeInstanceFormDialog

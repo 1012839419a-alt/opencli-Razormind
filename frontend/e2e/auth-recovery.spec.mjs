@@ -27,6 +27,7 @@ const systemConfig = {
   netbird_mode: 'off',
   opencli_cdp_endpoint: 'http://127.0.0.1:9222',
   agent_pool_endpoints: [],
+  effective_cdp_endpoints: [],
   llm_request_timeout_seconds: 60,
   llm_max_concurrency: 2,
   control_mode: 'advisory',
