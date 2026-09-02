@@ -1,0 +1,64 @@
+#!/usr/bin/env node
+
+import fs from "node:fs";
+
+const [engineArgument] = process.argv.slice(2);
+const engine = engineArgument || process.env.BROWSER_ENGINE || "chromium";
+
+function redactSecret(message) {
+  const licenseKey = process.env.CLOAKBROWSER_LICENSE_KEY;
+  return licenseKey ? message.split(licenseKey).join("[redacted]") : message;
+}
+
+function fail(message) {
+  process.stderr.write(
+    `CloakBrowser executable resolution failed: ${redactSecret(message)}\n`,
+  );
+  process.exitCode = 1;
+}
+
+function printExecutable(executable) {
+  if (typeof executable !== "string" || executable.length === 0) {
+    fail("ensureBinary() did not return an executable path");
+    return;
+  }
+  process.stdout.write(`${executable}\n`);
+}
+
+async function resolveExecutable() {
+  if (engine === "chromium") {
+    printExecutable(process.env.CHROMIUM_BINARY || "chromium");
+    return;
+  }
+
+  if (engine !== "cloakbrowser") {
+    fail(`unsupported browser engine: ${engine}`);
+    return;
+  }
+
+  const override = process.env.CLOAKBROWSER_BINARY_PATH;
+  if (override) {
+    if (!fs.existsSync(override)) {
+      fail("configured CLOAKBROWSER_BINARY_PATH does not exist");
+      return;
+    }
+    printExecutable(override);
+    return;
+  }
+
+  for (const method of ["log", "info", "warn", "error"]) {
+    console[method] = () => {};
+  }
+  try {
+    const { ensureBinary } = await import(
+      "/opt/cloakbrowser/node_modules/cloakbrowser/dist/index.js"
+    );
+    printExecutable(await ensureBinary());
+  } catch {
+    fail("unable to resolve the CloakBrowser executable");
+  }
+}
+
+resolveExecutable().catch(() => {
+  fail("unable to resolve the CloakBrowser executable");
+});
