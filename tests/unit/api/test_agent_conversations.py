@@ -1,15 +1,14 @@
-from types import SimpleNamespace
-
 import pytest
 from fastapi import HTTPException
 from sqlalchemy import select
 
 from backend.api.v1 import agent_conversations
-from backend.api.v1.chat import ChatExecution, ChatReply
+from backend.api.v1.chat import ChatReply
 from backend.models.agent_conversation import AgentConversationTurn
 from backend.models.identity import User, Workspace, WorkspaceMembership, WorkspaceRole
+from backend.schemas.common import ApiResponse
 from backend.security.identity import RequestIdentity, get_request_identity
-
+from backend.services import agent_conversation_service as conversation_service
 
 async def _seed_member(db_session, subject: str, slug: str):
     user = User(subject=subject)
@@ -38,23 +37,15 @@ async def test_session_create_restore_message_and_idempotency(client, db_session
     async def fake_chat(*args, **kwargs):
         nonlocal calls
         calls += 1
-        return ChatExecution(ChatReply(type="message", content="persisted reply"), [])
+        return ApiResponse.ok(ChatReply(type="message", content="persisted reply"))
 
-    async def fake_provider(*args, **kwargs):
-        return SimpleNamespace(default_model="fake")
-
-    async def fake_client(*args, **kwargs):
-        return object()
-
-    monkeypatch.setattr(agent_conversations, "_chat_with_client", fake_chat)
-    monkeypatch.setattr(agent_conversations, "_pick_provider", fake_provider)
-    monkeypatch.setattr(agent_conversations, "_build_client", fake_client)
+    monkeypatch.setattr(conversation_service.chat, "run_chat_request", fake_chat)
 
     created = await client.post(
         "/api/v1/chat/sessions", json={"workspace_id": workspace.id, "context": {"surface": "home"}}
     )
     assert created.status_code == 201
-    conversation_id = created.json()["data"]["conversation_id"]
+    conversation_id = created.json()["data"]["id"]
     payload = {"request_id": "same-request", "content": "hello", "context": {"surface": "project"}}
     first = await client.post(f"/api/v1/chat/sessions/{conversation_id}/messages", json=payload)
     second = await client.post(f"/api/v1/chat/sessions/{conversation_id}/messages", json=payload)
@@ -83,7 +74,7 @@ async def test_cross_workspace_read_is_denied_and_model_failure_is_durable(
 
     app.dependency_overrides[get_request_identity] = identity_override
     created = await client.post("/api/v1/chat/sessions", json={"workspace_id": workspace_a.id})
-    conversation_id = created.json()["data"]["conversation_id"]
+    conversation_id = created.json()["data"]["id"]
     subject = "session-b"
     denied = await client.get(f"/api/v1/chat/sessions/{conversation_id}")
     assert denied.status_code == 403
@@ -93,15 +84,7 @@ async def test_cross_workspace_read_is_denied_and_model_failure_is_durable(
     async def failing_chat(*args, **kwargs):
         raise HTTPException(status_code=502, detail="provider unavailable")
 
-    async def fake_provider(*args, **kwargs):
-        return SimpleNamespace(default_model="fake")
-
-    async def fake_client(*args, **kwargs):
-        return object()
-
-    monkeypatch.setattr(agent_conversations, "_chat_with_client", failing_chat)
-    monkeypatch.setattr(agent_conversations, "_pick_provider", fake_provider)
-    monkeypatch.setattr(agent_conversations, "_build_client", fake_client)
+    monkeypatch.setattr(conversation_service.chat, "run_chat_request", failing_chat)
     failed = await client.post(
         f"/api/v1/chat/sessions/{conversation_id}/messages",
         json={"request_id": "failure", "content": "hello"},
@@ -112,4 +95,4 @@ async def test_cross_workspace_read_is_denied_and_model_failure_is_durable(
     assert failed.status_code == 502
     assert turn is not None
     assert turn.status == "failed"
-    assert turn.error_code == "http_502"
+    assert turn.error_code == "model_error"
