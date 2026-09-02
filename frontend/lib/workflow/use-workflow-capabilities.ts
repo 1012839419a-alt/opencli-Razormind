@@ -9,8 +9,11 @@ import type { WorkflowCapabilitiesResponse } from "./capabilities"
 let cachedCapabilities: WorkflowCapabilitiesResponse | null = null
 let inFlight: Promise<WorkflowCapabilitiesResponse> | null = null
 
-export function useWorkflowCapabilities(enabled = true) {
-  const nodeCatalog = useBackendNodeCapabilityCatalog(enabled)
+export function useWorkflowCapabilities(
+  enabled = true,
+  workspaceId?: string | null,
+) {
+  const nodeCatalog = useBackendNodeCapabilityCatalog(enabled, workspaceId)
   const [capabilities, setCapabilities] = useState<WorkflowCapabilitiesResponse | null>(
     cachedCapabilities,
   )

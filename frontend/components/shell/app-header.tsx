@@ -140,9 +140,9 @@ export function AppHeader({
                 <span className="block truncate text-xs">{accountLabel}</span>
               </DropdownMenuLabel>
             </DropdownMenuGroup>
-            <DropdownMenuItem onClick={() => router.push('/system')}>
+            <DropdownMenuItem onClick={() => router.push('/settings')}>
               <Settings />
-              系统设置
+              账户设置
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem onClick={handleSignOut}>

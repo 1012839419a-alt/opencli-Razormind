@@ -7,9 +7,34 @@ from pathlib import Path
 import pytest
 from sqlalchemy import func, select
 
+from backend.main import app
 from backend.models.plugin_installation import PluginInstallation
 from backend.models.studio import StudioWorkflowDraft
+from backend.security.identity import RequestIdentity, get_request_identity
 from backend.workflow.dify_graphon_client import DifyGraphonClient
+
+
+@pytest.fixture(autouse=True)
+def _platform_admin_identity():
+    app.dependency_overrides[get_request_identity] = lambda: RequestIdentity(
+        subject="test-platform-admin",
+        is_platform_admin=True,
+        auth_method="test",
+    )
+    yield
+
+
+async def test_legacy_plugin_mutation_requires_platform_admin(client):
+    app.dependency_overrides[get_request_identity] = lambda: RequestIdentity(
+        subject="test-member",
+        is_platform_admin=False,
+        auth_method="test",
+    )
+    response = await client.post(
+        "/api/v1/plugins/import/dify",
+        files={"file": ("manifest.yaml", FIXTURE.read_bytes(), "text/yaml")},
+    )
+    assert response.status_code == 403
 
 FIXTURE = Path(__file__).parents[1] / "fixtures" / "dify_plugins" / "tool_manifest.yaml"
 

@@ -621,6 +621,22 @@ const HTTP_ADAPTER: AdapterBinding = {
   config: { channel: "http", method: "GET" },
 }
 
+const FEISHU_TABLE_ADAPTER: AdapterBinding = {
+  id: "feishu-table-source",
+  type: "source",
+  provider: "feishu",
+  mode: "live",
+  config: { channel: "feishu_table", channelType: "feishu_table" },
+}
+
+const DOUBAO_RESEARCH_ADAPTER: AdapterBinding = {
+  id: "doubao-research-source",
+  type: "source",
+  provider: "doubao",
+  mode: "live",
+  config: { channel: "doubao_research", channelType: "doubao_research" },
+}
+
 const WEBHOOK_NOTIFY_ADAPTER: AdapterBinding = {
   id: "webhook-notifier",
   type: "notification",
@@ -1182,6 +1198,49 @@ export const WORKFLOW_NODE_CATALOG: WorkflowNodeCatalogItem[] = [
       site: "http-api",
     },
     keywords: ["http", "https", "api", "rest", "json", "reader", "network", "网络", "接口", "读取"],
+  },
+  {
+    id: "intelligence.source.feishu-table",
+    idPrefix: "source-feishu-table",
+    label: "Feishu Bitable Keywords",
+    description: "只读读取飞书多维表格中的搜索词，输出带 Feishu 行引用的 items[]",
+    category: "source",
+    profile: "intelligence",
+    kind: "source",
+    capability: "fetch",
+    icon: "Table2",
+    color: "var(--chart-4)",
+    adapter: FEISHU_TABLE_ADAPTER.id,
+    requiredAdapters: [FEISHU_TABLE_ADAPTER],
+    params: {
+      sourceId: "",
+      app_token: "",
+      table_id: "",
+      keyword_field: "关键词",
+      status_field: "状态",
+      eligible_status: "待采集",
+      max_rows: 500,
+      source_group: "feishu-keywords",
+      provider: "feishu",
+      channelType: "feishu_table",
+    },
+    keywords: ["feishu", "lark", "bitable", "table", "keyword", "飞书", "多维表格", "关键词", "数据源"],
+  },
+  {
+    id: "intelligence.source.doubao-research",
+    idPrefix: "source-doubao-research",
+    label: "Doubao Research",
+    description: "把上游关键词转换成豆包研究问题，保留引用和问题血缘",
+    category: "source",
+    profile: "intelligence",
+    kind: "source",
+    capability: "fetch",
+    icon: "Bot",
+    color: "var(--chart-2)",
+    adapter: DOUBAO_RESEARCH_ADAPTER.id,
+    requiredAdapters: [DOUBAO_RESEARCH_ADAPTER],
+    params: { question: "", site_session: "ephemeral", provider: "doubao", channelType: "doubao_research" },
+    keywords: ["doubao", "research", "ai", "豆包", "研究", "分析", "问题"],
   },
   {
     id: "intelligence.processing.normalize",

@@ -81,6 +81,9 @@ jobs:
       - name: Typecheck
         run: pnpm exec tsc --noEmit
 
+      - name: Auth and API recovery regressions
+        run: pnpm check:auth-recovery
+
       - name: Workflow regressions
         run: pnpm check:workflow-regressions
 
@@ -95,11 +98,10 @@ jobs:
 
   release-contract:
     runs-on: ubuntu-latest
-    name: Public Install Smoke
+    name: Source Recovery Smoke
     env:
       API_AUTH_TOKEN: ci-release-token
       BOOTSTRAP_ADMIN_TOKEN: ci-bootstrap-admin-token
-      SECRET_KEY: ci-release-secret
       CREDENTIAL_ENCRYPTION_KEY: MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA=
       COMPOSE_PROJECT_NAME: opencli-admin-ci
     steps:
@@ -107,6 +109,9 @@ jobs:
         uses: actions/checkout@v6
         with:
           persist-credentials: false
+
+      - name: Generate ephemeral test secret
+        run: echo "SECRET_KEY=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
 
       - name: Validate Compose
         run: docker compose --env-file .env.docker.example -f docker-compose.yml -f docker-compose.build.yml config --quiet
@@ -123,6 +128,9 @@ jobs:
             -H "X-API-Token: ci-release-token" \
             http://localhost:8031/api/v1/auth/me |
             python -c 'import json,sys; assert json.load(sys.stdin)["data"]["subject"] == "bootstrap-admin"'
+
+      - name: Verify Docker daemon restart recovery and persistence
+        run: bash .github/scripts/verify-daemon-restart.sh
 
       - name: Show logs on failure
         if: failure()
@@ -268,7 +276,7 @@ jobs:
       # rot (dropped columns with no re-add, wrong op order, etc.).
       - name: alembic downgrade/upgrade smoke test
         run: |
-          alembic downgrade -1
+          alembic downgrade p3q4r5s6t7u8
           alembic upgrade head
 
       - name: Native intelligence and event spine PostgreSQL conformance

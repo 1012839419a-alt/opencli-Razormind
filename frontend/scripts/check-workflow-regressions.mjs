@@ -542,7 +542,7 @@ test('node workflow lives inside a project shell while the legacy canvas route r
 test('studio creation is transactional and the editor anchors to the project primary workflow', async () => {
   const [types, endpoints, hooks, studio, templates, newProject, session, lifecycle] = await Promise.all([
     readSource('lib/api/types.ts'),
-    readSource('lib/api/endpoints.ts'),
+    readSource('lib/api/workspace-endpoints.ts'),
     readSource('lib/api/hooks.ts'),
     readSource('app/(app)/studio/page.tsx'),
     readSource('app/(app)/studio/templates/page.tsx'),
@@ -556,10 +556,12 @@ test('studio creation is transactional and the editor anchors to the project pri
   assert.doesNotMatch(endpoints, /createWorkspaceProject/)
   assert.match(hooks, /useBootstrapWorkspaceProject/)
   assert.doesNotMatch(hooks, /useCreateWorkspaceProject/)
-  for (const source of [studio, templates, newProject]) {
+  for (const source of [studio, newProject]) {
     assert.match(source, /useBootstrapWorkspaceProject/)
     assert.doesNotMatch(source, /useCreateWorkspaceProject/)
   }
+  assert.match(templates, /redirect\(`\/plugins\?\$\{params\.toString\(\)\}`\)/)
+  assert.doesNotMatch(templates, /useCreateWorkspaceProject/)
   assert.match(session, /project\?\.primary_workflow_id/)
   assert.doesNotMatch(session, /projectWorkflows\.data\?\.\[0\]\?\.id/)
   assert.match(session, /if \(!active\) return/)
@@ -567,9 +569,6 @@ test('studio creation is transactional and the editor anchors to the project pri
   assert.match(session, /createBlankWorkflow/)
   assert.match(session, /loadState === 'error'/)
   assert.match(session, /返回项目/)
-  assert.match(templates, /CATEGORIES\.map/)
-  assert.doesNotMatch(templates, /CATEGORIES\.slice\(0,\s*4\)/)
-  assert.match(templates, /aria-pressed=\{active\}/)
   assert.match(newProject, /nextRequirementPrompt/)
   assert.match(newProject, /role="log"/)
   assert.match(newProject, /const studioHref = workspaceId \? `\/studio\?workspace=\$\{workspaceId\}` : '\/studio'/)
@@ -1117,7 +1116,7 @@ test('workflow validation waits for the runtime capability catalog', async () =>
 
   assert.match(capabilitiesHook, /capabilities: projectedCapabilities/)
   assert.match(capabilitiesHook, /loading: loading \|\| nodeCatalog\.loading/)
-  assert.match(session, /const \{ error: capabilityError, loading: capabilityLoading \} = useWorkflowCapabilities\(true\)/)
+  assert.match(session, /const \{ error: capabilityError, loading: capabilityLoading \} = useWorkflowCapabilities\(\s*true,\s*workspaceId,\s*\)/)
   assert.match(session, /if \(capabilityLoading\) \{[\s\S]*运行能力目录仍在加载/)
   assert.match(session, /disabled=\{capabilityLoading \|\| Boolean\(capabilityError\)/)
   assert.match(session, /capabilityLoading \? '正在加载运行能力目录'/)
@@ -1404,7 +1403,11 @@ test('the right inspector uses graph contracts instead of manual keys and field 
   assert.match(inspector, /onReconnect\(currentEdge, connection\)/)
   assert.match(inspector, /connectNodes\(connection\)/)
   assert.match(inspector, /removeEdgesByIds\(currentEdges\.map\(\(edge\) => edge\.id\)\)/)
-  assert.match(inspector, /value === UNBOUND_INPUT_VALUE[\s\S]{0,120}copy\.inputUnbound/)
+  assert.match(
+    inspector,
+    /<SelectValue>[\s\S]{0,500}value === UNBOUND_INPUT_VALUE[\s\S]{0,500}copy\.inputUnbound[\s\S]{0,500}options\.find/,
+  )
+  assert.match(inspector, /<SelectItem value=\{UNBOUND_INPUT_VALUE\}>\{copy\.inputUnbound\}<\/SelectItem>/)
   assert.doesNotMatch(inspector, /placeholder=["']data\.source["']/)
   assert.doesNotMatch(inspector, /placeholder=["']data\.target["']/)
   assert.doesNotMatch(parameterInterface, /Config \(JSON\)/)

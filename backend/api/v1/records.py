@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -16,6 +16,17 @@ class BatchDeleteRequest(BaseModel):
     ids: list[str]
 
 
+RecordSortField = Literal[
+    "created_at",
+    "updated_at",
+    "status",
+    "source_id",
+    "workflow_id",
+    "workflow_run_id",
+]
+RecordSortOrder = Literal["asc", "desc"]
+
+
 @router.get("", response_model=ApiResponse[list[CollectedRecordRead]])
 async def list_records(
     source_id: Optional[str] = None,
@@ -25,6 +36,8 @@ async def list_records(
     search: Optional[str] = Query(None),
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
+    sort_by: RecordSortField = Query("created_at"),
+    sort_order: RecordSortOrder = Query("desc"),
     db: AsyncSession = Depends(get_db),
 ) -> ApiResponse:
     records, total = await record_service.list_records(
@@ -36,6 +49,8 @@ async def list_records(
         search=search,
         page=page,
         limit=limit,
+        sort_by=sort_by,
+        sort_order=sort_order,
     )
     return ApiResponse.ok(
         data=[CollectedRecordRead.model_validate(r) for r in records],

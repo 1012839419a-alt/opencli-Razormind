@@ -100,6 +100,16 @@ async def dispatch_operations_agent_run(run_id: str) -> None:
 
             runtime_input = cast(dict[str, Any], run.input_payload)
             runtime_config = dict(binding.config)
+            configured_timeout = runtime_config.get("timeout_seconds")
+            if (
+                not isinstance(configured_timeout, (int, float))
+                or isinstance(configured_timeout, bool)
+                or configured_timeout < binding.dispatch_timeout_seconds
+            ):
+                # The edge runtime must not expire before the governed outer
+                # deep-run profile. Binding validation supplies the hard
+                # ceiling; this fills/raises the inner timeout to that profile.
+                runtime_config["timeout_seconds"] = binding.dispatch_timeout_seconds
             runtime_config["permission_mode"] = profile.mode
 
         state_contract_error: str | None = None

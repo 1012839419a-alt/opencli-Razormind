@@ -32,7 +32,7 @@ export function getOidcManager(): UserManager | null {
       token_endpoint: `${origin}/api/auth/oidc/token`,
       jwks_uri: `${origin}/api/auth/oidc/jwks`,
     },
-    automaticSilentRenew: true,
+    automaticSilentRenew: false,
     loadUserInfo: false,
     monitorSession: false,
     revokeTokensOnSignout: true,
@@ -47,6 +47,47 @@ export function oidcReturnTo(user: User): string {
   if (!state || typeof state !== 'object' || !('returnTo' in state)) return '/studio'
   const returnTo = (state as { returnTo?: unknown }).returnTo
   return sanitizeReturnTo(returnTo)
+}
+
+export function isOidcIdentity(authMethod: unknown): boolean {
+  return authMethod === 'oidc'
+}
+
+export type StoredOidcUserState = 'absent' | 'expired' | 'invalid' | 'usable'
+
+export function classifyStoredOidcUser(
+  user: { expired?: boolean; id_token?: string } | null | undefined,
+): StoredOidcUserState {
+  if (!user) return 'absent'
+  if (user.expired) return 'expired'
+  if (!user.id_token?.trim()) return 'invalid'
+  return 'usable'
+}
+
+export function shouldClearIdentityForOidcUnload(
+  ownsOidcIdentity: boolean,
+  removalInProgress: boolean,
+  eventGeneration?: number,
+  currentGeneration?: number,
+  hasStoredUser = false,
+): boolean {
+  return (
+    ownsOidcIdentity &&
+    !removalInProgress &&
+    !hasStoredUser &&
+    (eventGeneration === undefined ||
+      currentGeneration === undefined ||
+      eventGeneration === currentGeneration)
+  )
+}
+
+export function shouldAcceptOidcRenewal(
+  ownsOidcIdentity: boolean,
+  removalInProgress: boolean,
+  eventGeneration: number,
+  currentGeneration: number,
+): boolean {
+  return ownsOidcIdentity && !removalInProgress && eventGeneration === currentGeneration
 }
 
 export function sanitizeReturnTo(value: unknown): string {

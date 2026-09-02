@@ -35,6 +35,15 @@ class NoCleanProfileError(RuntimeError):
         super().__init__(self.code)
 
 
+class NoReadyBrowserSlotError(RuntimeError):
+    """No slot has reported an exact desired/loaded runtime match and self-check."""
+
+    code = "no_ready_browser_slot"
+
+    def __init__(self) -> None:
+        super().__init__(self.code)
+
+
 class LocalBrowserPool:
     """In-process pool backed by per-endpoint asyncio.Queue slots.
 
@@ -64,9 +73,15 @@ class LocalBrowserPool:
         self._node_types: dict[str, str] = {ep: "docker" for ep in endpoints}
         # Fail closed: an endpoint is potentially personalized until an agent
         # or operator explicitly registers it as a dedicated anonymous profile.
-        self._profile_kinds: dict[str, str] = {
-            ep: "authenticated" for ep in endpoints
-        }
+        self._profile_kinds: dict[str, str] = {ep: "authenticated" for ep in endpoints}
+        # Legacy slots have no runtime bundle and retain their historic
+        # admission behaviour. A slot assigned a bundle is immediately set to
+        # DEGRADED until a loaded-fact report proves it READY.
+        self._runtime_states: dict[str, str] = {ep: "LEGACY" for ep in endpoints}
+        # Profile write leases are independent of endpoint leases. They defend
+        # against accidental duplicate profile assignment across Chromium slots.
+        self._profile_names: dict[str, str] = {ep: ep for ep in endpoints}
+        self._profile_locks: dict[str, asyncio.Lock] = {ep: asyncio.Lock() for ep in endpoints}
         logger.info(
             "BrowserPool (local): %d Chrome instance(s): %s",
             self._total,
@@ -88,13 +103,14 @@ class LocalBrowserPool:
             raise NoCleanProfileError()
         if endpoint:
             if endpoint not in self._slots:
-                # Requested endpoint not in pool — fall back to any available
                 logger.warning(
                     "Requested Chrome endpoint %r not in pool; falling back to any instance.",
                     endpoint,
                 )
                 ep = await self._acquire_any()
             else:
+                if not self.is_ready(endpoint):
+                    raise NoReadyBrowserSlotError()
                 ep = await self._slots[endpoint].get()
                 logger.debug("Chrome acquired (routed): %s", ep)
         else:
@@ -104,34 +120,20 @@ class LocalBrowserPool:
             self._slots[ep].put_nowait(ep)
             raise NoCleanProfileError()
 
+        profile_lock = self._profile_locks.setdefault(self.get_profile_name(ep), asyncio.Lock())
+        await profile_lock.acquire()
         try:
             yield ep
         finally:
+            profile_lock.release()
             self._slots[ep].put_nowait(ep)
             logger.debug("Chrome released: %s", ep)
 
     @asynccontextmanager
     async def acquire_anonymous(self) -> AsyncIterator[str]:
-        candidates = self.anonymous_endpoints()
-
-        tasks: dict[asyncio.Task[str], str] = {
-            asyncio.get_event_loop().create_task(self._slots[endpoint].get()): endpoint
-            for endpoint in candidates
-        }
-        done, pending = await asyncio.wait(
-            tasks.keys(), return_when=asyncio.FIRST_COMPLETED
-        )
-        for task in pending:
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-        endpoint = tasks[next(iter(done))]
-        try:
-            yield endpoint
-        finally:
-            self._slots[endpoint].put_nowait(endpoint)
+        endpoint = self.select_anonymous_endpoint()
+        async with self.acquire(endpoint, required_profile_kind="anonymous") as acquired_endpoint:
+            yield acquired_endpoint
 
     def anonymous_endpoints(self) -> list[str]:
         candidates = [
@@ -141,7 +143,10 @@ class LocalBrowserPool:
         ]
         if not candidates:
             raise NoCleanProfileError()
-        return candidates
+        ready_candidates = [endpoint for endpoint in candidates if self.is_ready(endpoint)]
+        if not ready_candidates:
+            raise NoReadyBrowserSlotError()
+        return ready_candidates
 
     def select_anonymous_endpoint(self) -> str:
         candidates = self.anonymous_endpoints()
@@ -151,13 +156,14 @@ class LocalBrowserPool:
         )
 
     async def _acquire_any(self) -> str:
-        """Wait for whichever endpoint slot becomes free first."""
+        """Wait for whichever READY endpoint slot becomes free first."""
+        ready_slots = {ep: slot for ep, slot in self._slots.items() if self.is_ready(ep)}
+        if not ready_slots:
+            raise NoReadyBrowserSlotError()
         tasks: dict[asyncio.Task[str], str] = {
-            asyncio.get_event_loop().create_task(slot.get()): ep
-            for ep, slot in self._slots.items()
+            asyncio.get_event_loop().create_task(slot.get()): ep for ep, slot in ready_slots.items()
         }
         done, pending = await asyncio.wait(tasks.keys(), return_when=asyncio.FIRST_COMPLETED)
-        # Cancel remaining waiters (they haven't consumed a token)
         for task in pending:
             task.cancel()
             try:
@@ -238,6 +244,25 @@ class LocalBrowserPool:
             profile_kind,
         )
 
+    def get_profile_name(self, endpoint: str) -> str:
+        return self._profile_names.get(endpoint, endpoint)
+
+    def set_profile_name(self, endpoint: str, profile_name: str) -> None:
+        if not profile_name:
+            raise ValueError("profile_name must not be empty")
+        self._profile_names[endpoint] = profile_name
+        self._profile_locks.setdefault(profile_name, asyncio.Lock())
+
+    def runtime_status(self, endpoint: str) -> str:
+        return self._runtime_states.get(endpoint, "LEGACY")
+
+    def is_ready(self, endpoint: str) -> bool:
+        return self.runtime_status(endpoint) in {"READY", "LEGACY"}
+
+    def set_runtime_status(self, endpoint: str, state: str) -> None:
+        self._runtime_states[endpoint] = state
+        logger.info("BrowserPool: endpoint %s runtime status set to %s", endpoint, state)
+
     def add_endpoint(self, endpoint: str) -> None:
         """Hot-add a new Chrome instance to the pool without restarting."""
         if endpoint in self._slots:
@@ -249,6 +274,9 @@ class LocalBrowserPool:
         self._agent_urls.setdefault(endpoint, None)
         self._agent_protocols.setdefault(endpoint, None)
         self._node_types.setdefault(endpoint, "docker")
+        self._runtime_states.setdefault(endpoint, "LEGACY")
+        self._profile_names.setdefault(endpoint, endpoint)
+        self._profile_locks.setdefault(self._profile_names[endpoint], asyncio.Lock())
         self._profile_kinds.setdefault(endpoint, "authenticated")
         self._total += 1
         logger.info("BrowserPool: added endpoint %s (total: %d)", endpoint, self._total)
@@ -262,6 +290,8 @@ class LocalBrowserPool:
         self._agent_urls.pop(endpoint, None)
         self._agent_protocols.pop(endpoint, None)
         self._node_types.pop(endpoint, None)
+        self._runtime_states.pop(endpoint, None)
+        self._profile_names.pop(endpoint, None)
         self._profile_kinds.pop(endpoint, None)
         self._total -= 1
         logger.info("BrowserPool: removed endpoint %s (total: %d)", endpoint, self._total)
@@ -310,12 +340,13 @@ class RedisBrowserPool:
         self._redis_url = redis_url
         self._total = len(endpoints)
         self._modes: dict[str, str] = {ep: "bridge" for ep in endpoints}
-        self._profile_kinds: dict[str, str] = {
-            ep: "authenticated" for ep in endpoints
-        }
+        self._profile_kinds: dict[str, str] = {ep: "authenticated" for ep in endpoints}
+        self._runtime_states: dict[str, str] = {ep: "LEGACY" for ep in endpoints}
+        self._profile_names: dict[str, str] = {ep: ep for ep in endpoints}
 
     def _client(self):
         import redis.asyncio as aioredis  # type: ignore[import]
+
         return aioredis.from_url(self._redis_url, decode_responses=True)
 
     async def initialize(self) -> None:
@@ -352,6 +383,8 @@ class RedisBrowserPool:
             self._profile_kinds.setdefault(endpoint, "authenticated")
 
         async with self._client() as r:
+            self._runtime_states.setdefault(endpoint, "LEGACY")
+            self._profile_names.setdefault(endpoint, endpoint)
             added = await r.sadd(self._REGISTRY_KEY, endpoint)
             if not added:
                 return
@@ -371,7 +404,15 @@ class RedisBrowserPool:
             or self.get_profile_kind(endpoint) != required_profile_kind
         ):
             raise NoCleanProfileError()
-        candidates = [endpoint] if endpoint else list(self._endpoints)
+        if endpoint is not None and not self.is_ready(endpoint):
+            raise NoReadyBrowserSlotError()
+        candidates = [
+            candidate
+            for candidate in ([endpoint] if endpoint else list(self._endpoints))
+            if candidate is not None and self.is_ready(candidate)
+        ]
+        if not candidates:
+            raise NoReadyBrowserSlotError()
         deadline = time.monotonic() + self._ACQUIRE_TIMEOUT_SECONDS
         ep = None
         owner = None
@@ -401,9 +442,7 @@ class RedisBrowserPool:
         async def renew() -> None:
             while True:
                 try:
-                    await asyncio.wait_for(
-                        stop_renewal.wait(), timeout=self._LEASE_RENEW_SECONDS
-                    )
+                    await asyncio.wait_for(stop_renewal.wait(), timeout=self._LEASE_RENEW_SECONDS)
                     return
                 except TimeoutError:
                     pass
@@ -467,11 +506,28 @@ class RedisBrowserPool:
             raise ValueError("profile_kind must be 'anonymous' or 'authenticated'")
         self._profile_kinds[endpoint] = profile_kind
 
+    def get_profile_name(self, endpoint: str) -> str:
+        return self._profile_names.get(endpoint, endpoint)
+
+    def set_profile_name(self, endpoint: str, profile_name: str) -> None:
+        if not profile_name:
+            raise ValueError("profile_name must not be empty")
+        self._profile_names[endpoint] = profile_name
+
+    def runtime_status(self, endpoint: str) -> str:
+        return self._runtime_states.get(endpoint, "LEGACY")
+
+    def is_ready(self, endpoint: str) -> bool:
+        return self.runtime_status(endpoint) in {"READY", "LEGACY"}
+
+    def set_runtime_status(self, endpoint: str, state: str) -> None:
+        self._runtime_states[endpoint] = state
+
     def anonymous_endpoints(self) -> list[str]:
         candidates = [
             endpoint
             for endpoint in self.endpoints
-            if self.get_profile_kind(endpoint) == "anonymous"
+            if self.get_profile_kind(endpoint) == "anonymous" and self.is_ready(endpoint)
         ]
         if not candidates:
             raise NoCleanProfileError()

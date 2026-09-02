@@ -30,6 +30,8 @@ export interface WorkerView {
 
 export interface StreamTask {
   id: string
+  /** User-facing destination for the authoritative task context, when available. */
+  href?: string
   lane: LaneKind
   title: string
   /** Collect: source name. Dispatch: destination channel. */
@@ -45,6 +47,8 @@ export interface StreamTask {
 
 export interface FailureItem {
   id: string
+  /** User-facing destination for the authoritative task context, when available. */
+  href?: string
   lane: LaneKind
   title: string
   workerName: string

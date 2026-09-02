@@ -94,6 +94,40 @@ def test_app_has_health_endpoint(client):
     assert response.status_code == 200
     data = response.json()
     assert data["status"] == "ok"
+    assert isinstance(data["instance_id"], str)
+    assert data["instance_id"]
+
+
+def test_each_app_process_identity_is_stable_and_unique():
+    """Health identity is stable per app instance and changes for a new one."""
+    import asyncio
+
+    from httpx import ASGITransport, AsyncClient
+
+    from backend.main import create_app
+
+    first_app = create_app()
+    second_app = create_app()
+
+    async def _instance_ids():
+        async with AsyncClient(
+            transport=ASGITransport(app=first_app), base_url="http://first"
+        ) as first_client:
+            first_response = await first_client.get("/health")
+            repeated_response = await first_client.get("/health")
+        async with AsyncClient(
+            transport=ASGITransport(app=second_app), base_url="http://second"
+        ) as second_client:
+            second_response = await second_client.get("/health")
+        return (
+            first_response.json()["instance_id"],
+            repeated_response.json()["instance_id"],
+            second_response.json()["instance_id"],
+        )
+
+    first_id, repeated_id, second_id = asyncio.run(_instance_ids())
+    assert repeated_id == first_id
+    assert second_id != first_id
 
 
 def test_app_has_openapi_docs():

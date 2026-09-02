@@ -171,6 +171,10 @@ class ChatMessage(BaseModel):
 class ChatRequest(BaseModel):
     messages: list[ChatMessage]
     provider_id: Optional[str] = None
+    # Persistent conversation callers set this from the already-authorized
+    # conversation row. Direct chat callers may provide it to disambiguate
+    # Agent Control's Workspace resolution.
+    workspace_id: Optional[str] = None
     # 当前页面、项目或选中对象上下文，注入给 agent 当指代背景
     context: Optional[dict[str, Any]] = None
 
@@ -349,6 +353,8 @@ async def _chat_with_client(
     body: ChatRequest,
     db: AsyncSession,
     identity: RequestIdentity | None,
+    *,
+    tool_trace: list[dict[str, Any]] | None = None,
 ) -> ApiResponse:
     """Run the agent-dock tool loop against ``client`` with ``model``.
 
@@ -367,12 +373,16 @@ async def _chat_with_client(
         system += f"\n\n当前用户操作上下文 (JSON): {json.dumps(body.context, ensure_ascii=False)}"
 
     if _is_xml_tool_model(model):
-        return await _chat_xml(client, model, system, body, db, identity)
+        return await _chat_xml(client, model, system, body, db, identity, tool_trace=tool_trace)
 
     messages: list[dict[str, Any]] = [{"role": "system", "content": system}]
     messages += [{"role": m.role, "content": m.content} for m in body.messages]
 
     for _step in range(MAX_TOOL_STEPS):
+        # End any read-only transaction before an outbound model call. The
+        # persistent conversation service commits its running turn separately;
+        # this boundary prevents a model call from holding that transaction.
+        await db.commit()
         try:
             response = await client.chat.completions.create(
                 model=model, messages=messages, tools=TOOLS, tool_choice="auto"
@@ -395,12 +405,21 @@ async def _chat_with_client(
         for tc in tool_calls:
             if tc.function.name in WRITE_TOOLS:
                 args = _safe_json(tc.function.arguments)
+                if tool_trace is not None:
+                    tool_trace.append(
+                        {
+                            "name": tc.function.name,
+                            "kind": "write",
+                            "status": "proposal",
+                            "argument_keys": sorted(args),
+                        }
+                    )
                 proposal = await _build_proposal(
                     db,
                     tc.function.name,
                     args,
                     identity=_require_write_identity(identity),
-                    workspace_id=_workspace_id(body.context),
+                    workspace_id=body.workspace_id or _workspace_id(body.context),
                 )
                 return ApiResponse.ok(ChatReply(type="proposal", proposal=proposal))
 
@@ -420,6 +439,15 @@ async def _chat_with_client(
             }
         )
         for tc in tool_calls:
+            if tool_trace is not None:
+                tool_trace.append(
+                    {
+                        "name": tc.function.name,
+                        "kind": "read",
+                        "status": "completed",
+                        "argument_keys": sorted(_safe_json(tc.function.arguments)),
+                    }
+                )
             result = await _run_read_tool(db, tc.function.name, _safe_json(tc.function.arguments))
             messages.append(
                 {"role": "tool", "tool_call_id": tc.id, "content": json.dumps(result, ensure_ascii=False)}
@@ -433,17 +461,41 @@ async def _chat_single_provider(
     body: ChatRequest,
     identity: RequestIdentity | None,
     provider_id: Optional[str],
+    *,
+    tool_trace: list[dict[str, Any]] | None = None,
 ) -> ApiResponse:
     """Legacy pre-failover chat path (issue #55): one provider — the
     explicit ``provider_id`` or the first enabled one — no candidate
-    failover. Kept as the fallback when the ``chat`` role has no
-    ``model_defaults.candidates`` configured, so existing installs behave
-    exactly as before the failover wiring.
+    failover.
     """
     provider = await _pick_provider(db, provider_id)
     client = await _build_client(provider)
     model = provider.default_model or "gpt-4o-mini"
-    return await _chat_with_client(client, model, body, db, identity)
+    return await _chat_with_client(client, model, body, db, identity, tool_trace=tool_trace)
+
+
+async def run_chat_request(
+    db: AsyncSession,
+    body: ChatRequest,
+    identity: RequestIdentity | None,
+    *,
+    tool_trace: list[dict[str, Any]] | None = None,
+) -> ApiResponse:
+    """Execute the existing chat provider/tool loop for persistent sessions."""
+    if body.provider_id or not await resolver.has_candidates(db, "chat"):
+        return await _chat_single_provider(
+            db, body, identity, body.provider_id, tool_trace=tool_trace
+        )
+
+    async def operation(adapter: Any, model_id: str) -> ApiResponse:
+        provider = adapter.provider
+        client = await _build_client(provider)
+        model = model_id or provider.default_model or "gpt-4o-mini"
+        return await _chat_with_client(
+            client, model, body, db, identity, tool_trace=tool_trace
+        )
+
+    return await resolver.resolve_with_fallback(db, "chat", operation)
 
 
 @router.post("", response_model=ApiResponse[ChatReply])
@@ -452,33 +504,12 @@ async def chat(
     identity: RequestIdentity | None = Depends(_optional_request_identity),
     db: AsyncSession = Depends(get_db),
 ) -> ApiResponse:
-    """Agent dock chat (model-provider runtime PR-E, issue #55).
-
-    Provider selection now runs through
-    :func:`backend.llm.resolver.ProviderResolver.resolve_with_fallback` for
-    the ``chat`` role whenever ``model_defaults.candidates`` are configured
-    for it: candidates are tried in order and a connection-level failure
-    (connect error / timeout / 5xx — decision #7) fails over to the next
-    candidate, while a business failure (4xx: bad key, malformed request)
-    is re-raised immediately. An explicit ``provider_id`` still bypasses
-    failover (the user picked that provider on purpose), and a role with no
-    candidates falls back to the legacy first-enabled-provider lookup.
-    """
-    if body.provider_id or not await resolver.has_candidates(db, "chat"):
-        return await _chat_single_provider(db, body, identity, body.provider_id)
-
-    async def operation(adapter: Any, model_id: str) -> ApiResponse:
-        provider = adapter.provider
-        client = await _build_client(provider)
-        model = model_id or provider.default_model or "gpt-4o-mini"
-        return await _chat_with_client(client, model, body, db, identity)
-
+    """Agent dock chat, preserving the legacy unauthenticated read path."""
     try:
-        return await resolver.resolve_with_fallback(db, "chat", operation)
+        return await run_chat_request(db, body, identity)
     except (LlmAdapterError, ResolverError) as exc:
-        # Business-level failure (re-raised immediately, no candidate left
-        # untried) or every candidate skipped/failed → single 502 explaining
-        # why; never leaks a provider api_key (adapters sanitize).
+        # Business-level failure or every candidate skipped/failed. Keep the
+        # existing HTTP boundary and sanitized provider error behavior.
         logger.error("chat failover | %s", exc)
         raise HTTPException(status_code=502, detail=f"模型调用失败: {exc}") from exc
 
@@ -564,12 +595,15 @@ async def _chat_xml(
     body: ChatRequest,
     db: AsyncSession,
     identity: RequestIdentity | None,
+    *,
+    tool_trace: list[dict[str, Any]] | None = None,
 ) -> ApiResponse:
     """Tool loop for XML-style models (parse <tool_use> from content, feed results back as text)."""
     messages: list[dict[str, Any]] = [{"role": "system", "content": system + XML_TOOL_TEXT}]
     messages += [{"role": m.role, "content": m.content} for m in body.messages]
 
     for _step in range(MAX_TOOL_STEPS):
+        await db.commit()
         try:
             response = await client.chat.completions.create(model=model, messages=messages, max_tokens=1024)
         except LlmAdapterError:
@@ -590,18 +624,36 @@ async def _chat_xml(
         # write tool hit → return proposal immediately
         for name, args in calls:
             if name in WRITE_TOOLS:
+                if tool_trace is not None:
+                    tool_trace.append(
+                        {
+                            "name": name,
+                            "kind": "write",
+                            "status": "proposal",
+                            "argument_keys": sorted(args),
+                        }
+                    )
                 proposal = await _build_proposal(
                     db,
                     name,
                     args,
                     identity=_require_write_identity(identity),
-                    workspace_id=_workspace_id(body.context),
+                    workspace_id=body.workspace_id or _workspace_id(body.context),
                 )
                 return ApiResponse.ok(ChatReply(type="proposal", proposal=proposal))
 
         # read tools → execute, feed results back as <tool_result> text, loop
         messages.append({"role": "assistant", "content": content})
         for name, args in calls:
+            if tool_trace is not None:
+                tool_trace.append(
+                    {
+                        "name": name,
+                        "kind": "read",
+                        "status": "completed",
+                        "argument_keys": sorted(args),
+                    }
+                )
             result = await _run_read_tool(db, name, args)
             messages.append(
                 {"role": "user", "content": f'<tool_result name="{name}">{json.dumps(result, ensure_ascii=False)}</tool_result>'}

@@ -107,3 +107,43 @@ async def test_opinion_monitor_projects_ai_and_configured_delivery_evidence(
     assert data["recent"][0]["notification_channels"] == ["email", "feishu"]
     assert data["sources"][0]["notification_sent"] == 1
     assert data["sources"][0]["notification_failed"] == 1
+
+
+@pytest.mark.asyncio
+async def test_dashboard_delivery_summary_separates_submission_and_ack_evidence(
+    client, db_session
+):
+    rule = NotificationRule(
+        name="delivery summary rule",
+        trigger_event="on_new_record",
+        notifier_type="webhook",
+        notifier_config={"url": "https://example.test/hook"},
+        enabled=True,
+    )
+    db_session.add(rule)
+    await db_session.flush()
+    db_session.add_all(
+        [
+            NotificationLog(rule_id=rule.id, status="sent", ack_status="pending"),
+            NotificationLog(rule_id=rule.id, status="sent", ack_status="acked"),
+            NotificationLog(rule_id=rule.id, status="sent", ack_status="not_required"),
+            NotificationLog(rule_id=rule.id, status="failed", ack_status="not_required"),
+        ]
+    )
+    await db_session.commit()
+
+    response = await client.get("/api/v1/dashboard/stats")
+    assert response.status_code == 200
+    delivery = response.json()["data"]["delivery"]
+    assert delivery == {
+        "attempts": 4,
+        "submitted": 3,
+        "awaiting_ack": 1,
+        "confirmed": 1,
+        "ack_failed": 0,
+        "submission_failed": 1,
+        "ack_not_required": 1,
+        "window": "all",
+        "since": None,
+        "until": None,
+    }

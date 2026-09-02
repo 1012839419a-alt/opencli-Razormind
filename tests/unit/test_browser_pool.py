@@ -20,6 +20,7 @@ def empty_pool():
 
 # ── properties ────────────────────────────────────────────────────────────────
 
+
 def test_total_equals_endpoint_count(pool):
     assert pool.total == 2
 
@@ -46,6 +47,7 @@ def test_available_for_unknown_endpoint(pool):
 
 # ── mode management ────────────────────────────────────────────────────────────
 
+
 def test_default_mode_is_bridge(pool):
     assert pool.get_mode("http://chrome:9222") == "bridge"
 
@@ -60,6 +62,7 @@ def test_get_mode_unknown_endpoint_returns_bridge(pool):
 
 
 # ── agent_url management ───────────────────────────────────────────────────────
+
 
 def test_default_agent_url_is_none(pool):
     assert pool.get_agent_url("http://chrome:9222") is None
@@ -80,6 +83,7 @@ def test_set_agent_protocol(pool):
 
 
 # ── add/remove endpoints ───────────────────────────────────────────────────────
+
 
 def test_add_endpoint_increases_total(pool):
     pool.add_endpoint("http://chrome-3:9222")
@@ -104,6 +108,7 @@ def test_remove_endpoint_nonexistent_no_error(pool):
 
 
 # ── acquire / release via context manager ─────────────────────────────────────
+
 
 @pytest.mark.asyncio
 async def test_acquire_specific_endpoint(pool):
@@ -133,6 +138,7 @@ async def test_acquire_releases_on_exit(pool):
 
 # ── empty pool ────────────────────────────────────────────────────────────────
 
+
 def test_empty_pool_total_is_zero(empty_pool):
     assert empty_pool.total == 0
 
@@ -146,6 +152,7 @@ def test_empty_pool_endpoints_is_empty(empty_pool):
 
 
 # ── init_pool / get_pool ───────────────────────────────────────────────────────
+
 
 def test_init_pool_local(monkeypatch):
     """init_pool with use_redis=False creates a LocalBrowserPool."""
@@ -178,6 +185,7 @@ async def test_ensure_ready_local_pool_noop():
 
 # ── LocalBrowserPool: _acquire_any concurrent acquisition ─────────────────────
 
+
 @pytest.mark.asyncio
 async def test_acquire_any_concurrent_gets_endpoints():
     """Two concurrent unrouted acquires each get a Chrome endpoint."""
@@ -199,11 +207,14 @@ async def test_acquire_any_concurrent_gets_endpoints():
 
 # ── RedisBrowserPool properties ────────────────────────────────────────────────
 
+
 def test_redis_pool_properties():
     """RedisBrowserPool exposes the correct properties."""
     from backend.browser_pool import RedisBrowserPool
 
-    pool = RedisBrowserPool(["http://chrome:9222", "http://chrome-2:9222"], "redis://localhost:6379")
+    pool = RedisBrowserPool(
+        ["http://chrome:9222", "http://chrome-2:9222"], "redis://localhost:6379"
+    )
     assert pool.total == 2
     assert pool.available == -1  # unknown
     assert "http://chrome:9222" in pool.endpoints
@@ -222,6 +233,7 @@ def test_redis_pool_ep_key():
 
 # ── LocalBrowserPool: acquire fallback for unknown endpoint ──────────────────
 
+
 @pytest.mark.asyncio
 async def test_acquire_unknown_endpoint_falls_back_to_any():
     """Requesting an endpoint not in pool falls back to any available instance."""
@@ -237,18 +249,15 @@ async def test_required_anonymous_route_never_falls_back_or_uses_authenticated()
     p = LocalBrowserPool(["http://authenticated:9222"])
 
     with pytest.raises(NoCleanProfileError):
-        async with p.acquire(
-            "http://missing:9222", required_profile_kind="anonymous"
-        ):
+        async with p.acquire("http://missing:9222", required_profile_kind="anonymous"):
             pass
     with pytest.raises(NoCleanProfileError):
-        async with p.acquire(
-            "http://authenticated:9222", required_profile_kind="anonymous"
-        ):
+        async with p.acquire("http://authenticated:9222", required_profile_kind="anonymous"):
             pass
 
 
 # ── init_pool with Redis ──────────────────────────────────────────────────────
+
 
 def test_init_pool_redis(monkeypatch):
     """init_pool with use_redis=True and redis_url creates a RedisBrowserPool."""
@@ -281,6 +290,7 @@ async def test_ensure_ready_redis_pool_calls_initialize():
 
 # ── RedisBrowserPool._client ─────────────────────────────────────────────────
 
+
 def test_redis_pool_client_returns_redis_client():
     """_client() returns an aioredis client from the configured URL."""
     from unittest.mock import MagicMock
@@ -296,6 +306,7 @@ def test_redis_pool_client_returns_redis_client():
 
 
 # ── RedisBrowserPool.initialize ──────────────────────────────────────────────
+
 
 @pytest.mark.asyncio
 async def test_redis_pool_initialize():
@@ -364,6 +375,7 @@ async def test_redis_pool_registers_a_dynamic_anonymous_endpoint_idempotently():
 
 
 # ── RedisBrowserPool.acquire ──────────────────────────────────────────────────
+
 
 @pytest.mark.asyncio
 async def test_redis_pool_acquire_any():
@@ -449,6 +461,8 @@ async def test_redis_routed_and_unrouted_share_one_endpoint_lease(monkeypatch):
 
     lease_keys = [call.args[0] for call in redis.set.await_args_list]
     assert set(lease_keys) == {pool._lease_key(endpoint)}
+
+
 # Managed official-site acquisition must never fall back to the operator's
 # default (potentially authenticated) browser profile.
 @pytest.mark.asyncio
@@ -466,10 +480,26 @@ async def test_acquire_anonymous_profile_fails_closed_when_none_is_registered():
 async def test_acquire_anonymous_profile_routes_only_to_explicit_anonymous_profile():
     from backend.browser_pool import LocalBrowserPool
 
-    pool = LocalBrowserPool(
-        ["http://signed-in-profile:9222", "http://anonymous-profile:9222"]
-    )
+    pool = LocalBrowserPool(["http://signed-in-profile:9222", "http://anonymous-profile:9222"])
     pool.set_profile_kind("http://anonymous-profile:9222", "anonymous")
 
     async with pool.acquire_anonymous() as endpoint:
         assert endpoint == "http://anonymous-profile:9222"
+
+
+@pytest.mark.asyncio
+async def test_runtime_drift_slot_never_receives_a_new_session():
+    from backend.browser_pool import LocalBrowserPool, NoReadyBrowserSlotError
+
+    drifted = "http://drifted-slot:9222"
+    ready = "http://ready-slot:9222"
+    pool = LocalBrowserPool([drifted, ready])
+    pool.set_runtime_status(drifted, "CONFIG_DRIFT")
+    pool.set_runtime_status(ready, "READY")
+
+    with pytest.raises(NoReadyBrowserSlotError):
+        async with pool.acquire(drifted):
+            pass
+
+    async with pool.acquire() as endpoint:
+        assert endpoint == ready

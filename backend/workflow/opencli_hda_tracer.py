@@ -74,6 +74,10 @@ from backend.workflow.http_source_executor import (
     WorkflowHTTPSourceExecutionError,
     execute_workflow_http_source,
 )
+from backend.workflow.channel_source_executor import (
+    WorkflowChannelSourceExecutionError,
+    execute_workflow_channel_source,
+)
 from backend.workflow.intelligence_store import (
     IntelligenceStoreError,
     run_intelligence_transaction,
@@ -1066,6 +1070,47 @@ async def start_workflow_run(
                     },
                 )
                 emitter.emit(node, "completed", message="Live HTTP source completed")
+                continue
+
+            try:
+                channel_items = await execute_workflow_channel_source(
+                    binding_input,
+                    max_items=body.project.settings.maxItemsPerRun,
+                    session=session,
+                    upstream_items=_upstream_outputs(node, outputs_by_node),
+                )
+            except WorkflowChannelSourceExecutionError as exc:
+                reason = WorkflowRunBlockReason(
+                    code=exc.code,
+                    message=exc.message,
+                    source="workflow_channel_source",
+                    details={"nodeId": node.id, **(exc.details or {})},
+                )
+                emitter.emit(
+                    node,
+                    "blocked" if exc.status == "blocked" else "failed",
+                    message=reason.message,
+                    block_reason=reason,
+                )
+                continue
+
+            if channel_items is not None:
+                live_items = _live_source_items(node, channel_items, artifact="live_channel_source")
+                outputs_by_node[node.id] = live_items
+                emitter.emit(
+                    node,
+                    "partial",
+                    message="Live channel source loaded as workflow items",
+                    batch=_node_batch_reference(body.project.id, run_id, node, item_count=len(live_items)),
+                    details={
+                        "bindingId": SOURCE_FETCH_BINDING_ID,
+                        "channelType": binding_input.get("channelType"),
+                        "itemCount": len(live_items),
+                        "outputPort": "items[]",
+                        "lineage": _lineage_pointer(node),
+                    },
+                )
+                emitter.emit(node, "completed", message="Live channel source completed")
                 continue
 
             reason = _source_fetch_block_reason(node, body.project.agentPermissions)

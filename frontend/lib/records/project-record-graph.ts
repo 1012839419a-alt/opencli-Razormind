@@ -157,3 +157,31 @@ export function buildProjectRecordGraph(preview: ProjectRecordGraphPreview) {
 
   return graph
 }
+
+/**
+ * Create a view-specific graph preview without changing the server projection.
+ * Operational nodes such as collection runs can remain available to the
+ * runtime/operations surfaces while a relationship view focuses on evidence.
+ */
+export function withoutRecordGraphNodeKinds(
+  preview: ProjectRecordGraphPreview,
+  hiddenKinds: readonly RecordGraphNodeKind[],
+) {
+  const hidden = new Set(hiddenKinds)
+  const nodes = preview.nodes.filter((node) => !hidden.has(node.kind))
+  const visibleNodeIds = new Set(nodes.map((node) => node.id))
+  const edges = preview.edges.filter((edge) => (
+    visibleNodeIds.has(edge.source) && visibleNodeIds.has(edge.target)
+  ))
+
+  return {
+    ...preview,
+    nodes,
+    edges,
+    stats: {
+      ...preview.stats,
+      visible_nodes: nodes.length,
+      visible_edges: edges.length,
+    },
+  }
+}

@@ -131,12 +131,56 @@ test('project preview becomes an undirected WebGL graph with aggregate node sizi
   )
 })
 
+test('evidence relationships hide collection runs without dropping collected records', async () => {
+  const { withoutRecordGraphNodeKinds } = await import(
+    pathToFileURL(path.join(frontendRoot, 'lib/records/project-record-graph.ts')).href
+  )
+
+  const source = {
+    id: 'source:source-1',
+    kind: 'source',
+    label: '豆包采集',
+    count: 1,
+  }
+  const run = {
+    id: 'run:4b25e1d5',
+    kind: 'run',
+    label: '运行 4b25e1d5',
+    count: 1,
+    workflow_run_id: '4b25e1d5-full',
+  }
+  const record = {
+    id: 'record:record-1',
+    kind: 'record',
+    label: '一条采集结果',
+    count: 1,
+    workflow_run_id: '4b25e1d5-full',
+  }
+  const filtered = withoutRecordGraphNodeKinds({
+    ...preview(),
+    nodes: [...preview().nodes, source, run, record],
+    edges: [
+      ...preview().edges,
+      { id: 'workflow-run', source: 'workflow:workflow-1', target: run.id, kind: 'produced', label: '工作流产出', weight: 1, bidirectional: true },
+      { id: 'run-record', source: run.id, target: record.id, kind: 'produced', label: '工作流产出', weight: 1, bidirectional: true },
+      { id: 'source-record', source: source.id, target: record.id, kind: 'origin', label: '采集来源', weight: 1, bidirectional: true },
+    ],
+  }, ['run'])
+
+  assert.equal(filtered.nodes.some((node) => node.kind === 'run'), false)
+  assert.equal(filtered.nodes.some((node) => node.id === record.id), true)
+  assert.equal(filtered.edges.some((edge) => edge.source === run.id || edge.target === run.id), false)
+  assert.equal(filtered.edges.some((edge) => edge.id === 'source-record'), true)
+  assert.equal(filtered.stats.visible_nodes, filtered.nodes.length)
+  assert.equal(filtered.stats.visible_edges, filtered.edges.length)
+})
+
 test('records graph is project-scoped, bounded and rendered through a client-only Sigma island', async () => {
   const [tabs, page, canvas, endpoints, hooks] = await Promise.all([
     read('components/shell/route-tabs.tsx'),
     read('app/(app)/records/graph/page.tsx'),
     read('components/records/project-record-graph-canvas.tsx'),
-    read('lib/api/endpoints.ts'),
+    read('lib/api/workspace-endpoints.ts'),
     read('lib/api/hooks.ts'),
   ])
 
@@ -151,7 +195,7 @@ test('records graph is project-scoped, bounded and rendered through a client-onl
   assert.match(canvas, /barnesHutOptimize/)
   assert.match(canvas, /layout\.kill\(\)/)
   assert.match(endpoints, /projects\/\$\{projectId\}\/record-graph/)
-  assert.match(hooks, /\['project-record-graph'/)
+  assert.match(hooks, /\[\s*["']project-record-graph["']/)
 })
 
 test('project data surface distinguishes source freshness from ingestion time', async () => {
