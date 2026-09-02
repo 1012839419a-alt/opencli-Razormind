@@ -29,7 +29,7 @@ def draft_workflow_demand(body: WorkflowDemandDraftRequest) -> WorkflowPatchResp
     capabilities that the Canvas can review before materialization.
     """
 
-    sources = _source_slots_for_need(body.text)
+    sources = _doubao_research_slots_for_need(body.text) or _source_slots_for_need(body.text)
     if not sources:
         return preview_workflow_patch(
             body.project,
@@ -71,7 +71,14 @@ def _native_first_loop_operations(
 
     for index, source in enumerate(sources):
         source_slug = _read_string(source.get("id")) or f"source-{index + 1}"
-        adapter_id = _unique_id(used_adapter_ids, f"opencli-{source_slug}")
+        adapter_id = _unique_id(
+            used_adapter_ids,
+            _read_string(source.get("adapterId")) or f"opencli-{source_slug}",
+        )
+        provider = _read_string(source.get("provider")) or "opencli"
+        adapter_config = source.get("adapterConfig")
+        if not isinstance(adapter_config, dict):
+            adapter_config = {"channel": "opencli"}
         if adapter_id not in {adapter.id for adapter in project.adapters}:
             operations.append(
                 WorkflowPatchOperation(
@@ -79,9 +86,9 @@ def _native_first_loop_operations(
                     adapter=WorkflowAdapterBinding(
                         id=adapter_id,
                         type="source",
-                        provider="opencli",
-                        mode="live",
-                        config={"channel": "opencli"},
+                        provider=provider,
+                        mode=_read_string(source.get("mode")) or "live",
+                        config=adapter_config,
                     ),
                 )
             )
@@ -89,6 +96,24 @@ def _native_first_loop_operations(
         source_id = _unique_id(used_node_ids, f"source-{source_slug}")
         normalize_id = _unique_id(used_node_ids, f"normalize-{source_slug}")
         normalize_ids.append(normalize_id)
+        source_params = source.get("params")
+        if not isinstance(source_params, dict):
+            source_params = {
+                "site": source["site"],
+                "command": source["command"],
+                "args": source.get("args", {}),
+                "sourceGroup": source.get("sourceGroup"),
+            }
+        source_params = {
+            **source_params,
+            "demand": {
+                "text": demand_text,
+                "locale": locale,
+                "source": "ai_plan_draft",
+                "labels": _demand_labels(demand_text),
+                "labelSource": "demand",
+            },
+        }
         operations.extend(
             [
                 WorkflowPatchOperation(
@@ -98,19 +123,11 @@ def _native_first_loop_operations(
                         kind="source",
                         capability="fetch",
                         adapter=adapter_id,
-                        params={
-                            "site": source["site"],
-                            "command": source["command"],
-                            "args": source.get("args", {}),
-                            "sourceGroup": source.get("sourceGroup"),
-                            "demand": {
-                                "text": demand_text,
-                                "locale": locale,
-                                "source": "ai_plan_draft",
-                            },
-                        },
+                        params=source_params,
                         ui={
-                            "catalogId": "intelligence.source.opencli-slot",
+                            "catalogId": source.get(
+                                "catalogId", "intelligence.source.opencli-slot"
+                            ),
                             "label": source.get("label", source_slug),
                             "position": {"x": 180, "y": 180 + index * 120},
                         },
@@ -542,6 +559,74 @@ def _research_dimensions_for_need(text: str) -> list[str]:
         return []
     values = re.split(r"[,，、\s]+", match.group(1).strip())
     return list(dict.fromkeys(value for value in values if value))[:12]
+
+
+_DOUBAO_RESEARCH_DEMAND_MARKERS = ("竞品", "同类产品", "产品溯源", "grounded")
+_DEMAND_LABEL_MARKERS = (
+    "竞品",
+    "品牌",
+    "产品",
+    "配方",
+    "价格",
+    "渠道",
+    "监管",
+    "投诉",
+    "召回",
+    "检测",
+    "风险",
+    "grounded",
+)
+
+
+def _doubao_research_slots_for_need(text: str) -> list[dict[str, Any]]:
+    normalized = text.casefold()
+    if not any(marker.casefold() in normalized for marker in _DOUBAO_RESEARCH_DEMAND_MARKERS):
+        return []
+    target = _demand_target(text)
+    batch_match = re.search(r"每批\s*(\d{1,2})\s*条", text)
+    batch_size = int(batch_match.group(1)) if batch_match else 5
+    return [
+        {
+            "id": "doubao-research",
+            "adapterId": "source-doubao-research-capture",
+            "label": f"{target} · 需求研究",
+            "provider": "doubao_research",
+            "mode": "live",
+            "catalogId": "intelligence.source.doubao-research",
+            "adapterConfig": {
+                "channelType": "doubao_research",
+                "liveMode": "live",
+                "site_session": "persistent",
+                "settle_seconds": 240,
+                "capabilityId": "chat-ai.capture",
+                "extract_citations": True,
+                "capture_conversation_url": True,
+            },
+            "params": {
+                "question": text,
+                "sourceGroup": "demand-competitor-research",
+                "rotationBatchSize": batch_size,
+            },
+        }
+    ]
+
+
+def _demand_target(text: str) -> str:
+    match = re.search(r"围绕\s*([^，,；;。\n]+)", text, flags=re.IGNORECASE)
+    if match:
+        return match.group(1).strip()
+    return _keyword_from_need(text)[:48]
+
+
+def _demand_labels(text: str) -> list[str]:
+    labels = [_demand_target(text)]
+    normalized = text.casefold()
+    labels.extend(
+        marker
+        for marker in _DEMAND_LABEL_MARKERS
+        if marker.casefold() in normalized and marker not in labels
+    )
+    return labels[:12]
 
 
 def _source_slots_for_need(text: str) -> list[dict[str, Any]]:

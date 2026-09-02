@@ -1,0 +1,59 @@
+{
+  "schema": "design-pipeline.design-synthesis.v1",
+  "changeId": "workflow-editor-design-pipeline-v090",
+  "status": "ready-to-implement",
+  "stage": "implementation",
+  "initializedAt": "2026-08-26T15:40:42.444Z",
+  "updatedAt": "2026-08-26T15:47:41.761Z",
+  "artifactRoot": "openspec/changes/workflow-editor-design-pipeline-v090",
+  "projectRoot": "../../..",
+  "problem": "Design the OpenCLI workflow editor for operators building demand-driven, Yjs-collaborative, evidence-grounded automations; preserve the Dark Ops Console, make node authoring immediate, surface collaboration, lifecycle, lineage, recovery, and grounded-state truth without generic AI styling.",
+  "inputs": {
+    "mode": "requirements-only",
+    "framework": "nextjs",
+    "references": [],
+    "templates": []
+  },
+  "interaction": {
+    "mode": "human-in-loop",
+    "nextCommand": "Implement from DESIGN.md, change design.md, and tasks.md; then run normal design-pipeline QA.",
+    "message": "All synthesis gates passed. Continue without another interaction pause."
+  },
+  "scope": {
+    "budget": "program",
+    "threshold": 60,
+    "status": "fit",
+    "score": 37,
+    "surprise": false,
+    "counts": {
+      "surfaces": 3,
+      "workflows": 4,
+      "integrations": 3,
+      "unknowns": 2,
+      "decisions": 8
+    }
+  },
+  "wayfinder": {
+    "required": false,
+    "status": "not-required",
+    "mapUrl": null
+  },
+  "output": {
+    "path": "DESIGN.md",
+    "status": "validated",
+    "sha256": "150086d05ca2940d2e741501de2f3d86c99454415d846abf832c0a752d8ffbd6",
+    "validatedAt": "2026-08-26T15:47:27.918Z"
+  },
+  "evidence": [
+    {
+      "type": "grill",
+      "path": "openspec/changes/workflow-editor-design-pipeline-v090/decisions/grill.md",
+      "recordedAt": "2026-08-26T15:41:08.154Z"
+    },
+    {
+      "type": "design-validation",
+      "path": "DESIGN.md",
+      "recordedAt": "2026-08-26T15:47:27.918Z"
+    }
+  ]
+}

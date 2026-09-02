@@ -59,10 +59,11 @@ Each runtime profile must declare:
    - Rationale: It already has compose, image, and installer surfaces. It is the
      shortest path to a real Agent and evidence persistence loop.
 
-3. Shell/systemd Agent remains blocked for runtime support until it distributes
-   runtime adapter packages, not only `agent_server.py`.
-   - Rationale: Current Python install mode can start the server but cannot
-     import the runtime registry package reliably.
+3. Shell/systemd packaging is unblocked at the package-distribution layer; real
+   host PTT remains pending.
+   - Rationale: The installer now downloads and validates the authenticated
+     runtime bundle, but a real host enrollment is still required before runtime
+     support is accepted.
 
 4. Runtime profile support is separate from source support.
    - Rationale: A source may be approved, but a node still needs the runtime

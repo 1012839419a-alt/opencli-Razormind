@@ -70,6 +70,7 @@ import type {
   OperationsAgentMode,
   OperationsAgentProfile,
   OperationsAgentRun,
+  OperationsAgentTeam,
   PublishedOperationsAgentVersion,
   Automation,
   WorkspaceSource,
@@ -331,6 +332,19 @@ export const listOperationsAgents = (workspaceId: string) =>
     .get<ApiResponse<OperationsAgent[]>>(`/workspaces/${workspaceId}/operations-agents`)
     .then((r) => r.data.data)
 
+export const listOperationsAgentTeams = (workspaceId: string) =>
+  apiClient
+    .get<ApiResponse<OperationsAgentTeam[]>>(`/workspaces/${workspaceId}/operations-agents/teams`)
+    .then((r) => r.data.data)
+
+export const createOperationsAgent = (
+  workspaceId: string,
+  data: { name: string; description?: string | null; owning_team_id?: string | null },
+) =>
+  apiClient
+    .post<ApiResponse<OperationsAgent>>(`/workspaces/${workspaceId}/operations-agents`, data)
+    .then((r) => r.data.data)
+
 export const listOperationsAgentActivity = (workspaceId: string) =>
   apiClient.get<ApiResponse<OperationsAgentRun[]>>(`/workspaces/${workspaceId}/operations-agents/activity`).then((r) => r.data.data)
 
@@ -373,11 +387,32 @@ export const startOperationsAgentRun = (
 export const listAutomations = (workspaceId: string) =>
   apiClient.get<ApiResponse<Automation[]>>(`/workspaces/${workspaceId}/automations`).then((r) => r.data.data)
 
-export const createAutomation = (workspaceId: string, data: Omit<Automation, 'id' | 'workspace_id' | 'created_by_user_id' | 'created_at' | 'updated_at'>) =>
+export const installAutomationStarters = (workspaceId: string) =>
+  apiClient
+    .post<ApiResponse<{ created_count: number; skipped_count: number }>>(
+      `/workspaces/${workspaceId}/automations/starters/install`,
+    )
+    .then((r) => r.data.data)
+
+export const createAutomation = (
+  workspaceId: string,
+  data: Omit<Automation, 'id' | 'workspace_id' | 'revision' | 'created_by_user_id' | 'created_at' | 'updated_at'>,
+) =>
   apiClient.post<ApiResponse<Automation>>(`/workspaces/${workspaceId}/automations`, data).then((r) => r.data.data)
 
-export const patchAutomation = (workspaceId: string, automationId: string, data: Partial<Automation>) =>
+export const patchAutomation = (
+  workspaceId: string,
+  automationId: string,
+  data: Partial<Omit<Automation, 'id' | 'workspace_id' | 'revision' | 'created_by_user_id' | 'created_at' | 'updated_at'>>,
+) =>
   apiClient.patch<ApiResponse<Automation>>(`/workspaces/${workspaceId}/automations/${automationId}`, data).then((r) => r.data.data)
+
+export const startAutomationRun = (workspaceId: string, automationId: string) =>
+  apiClient
+    .post<ApiResponse<OperationsAgentRun>>(
+      `/workspaces/${workspaceId}/automations/${automationId}/runs`,
+    )
+    .then((r) => r.data.data)
 
 export const patchOperationsAgent = (workspaceId: string, agentId: string, disabled: boolean) =>
   apiClient

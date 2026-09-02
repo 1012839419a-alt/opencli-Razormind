@@ -61,6 +61,7 @@ import uuid
 from contextlib import asynccontextmanager
 from typing import Any
 from urllib.parse import urlparse
+from urllib.request import proxy_bypass
 
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel
@@ -80,7 +81,11 @@ from backend.agent_runtime_dispatch import (
 # dependency set (see module docstring); this avoids depending on the package
 # __init__ staying lightweight as more adapters are added later.
 from backend.agent_runtimes.base import AgentTask, RuntimeInvocationError
-from backend.agent_runtimes.registry import available_runtimes, get_runtime
+from backend.agent_runtimes.registry import (
+    available_runtime_capabilities,
+    available_runtimes,
+    get_runtime,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s [%(name)s] %(message)s")
 logger = logging.getLogger("agent_server")
@@ -247,14 +252,18 @@ def _detect_advertise_url() -> str:
     return f"http://{ip}:{_AGENT_PORT}"
 
 
+def _center_proxy() -> str | None:
+    """Return the configured outbound proxy unless the center host is bypassed."""
+    center_host = urlparse(_CENTRAL_API_URL).hostname
+    if center_host and proxy_bypass(center_host):
+        return None
+    return _HTTPS_PROXY or _HTTP_PROXY or None
+
+
 def _build_proxies() -> dict:
-    """Build httpx proxy dict from environment variables."""
-    proxies: dict = {}
-    if _HTTPS_PROXY:
-        proxies["https://"] = _HTTPS_PROXY
-    if _HTTP_PROXY:
-        proxies["http://"] = _HTTP_PROXY
-    return proxies
+    """Build the legacy httpx proxy map for center registration."""
+    proxy = _center_proxy()
+    return {"https://": proxy, "http://": proxy} if proxy else {}
 
 
 async def _register_with_center(advertise_url: str) -> None:
@@ -392,6 +401,12 @@ async def _handle_ws_agent_task(ws, msg: dict) -> None:
             input=msg.get("input") or {},
             config=msg.get("config") or {},
             session_id=msg.get("session_id"),
+            provider=msg.get("provider"),
+            model=msg.get("model"),
+            required_capabilities=tuple(msg.get("required_capabilities") or ()),
+            permissions=msg.get("permissions") or {},
+            budget=msg.get("budget") or {},
+            evidence_requirements=tuple(msg.get("evidence_requirements") or ()),
         )
         config_errors = adapter.validate_config(task.config)
         if config_errors:
@@ -432,6 +447,12 @@ async def _handle_ws_agent_task(ws, msg: dict) -> None:
                 "error_type": "RuntimeInvocationError",
             }
         await _send_result(terminal_event)
+        logger.info(
+            "WS agent_task finished request_id=%s runtime=%s terminal=%s",
+            request_id,
+            runtime_type,
+            terminal_event.get("type"),
+        )
     except RuntimeInvocationError as exc:
         logger.exception(
             "WS agent_task request_id=%s: adapter invocation error: %s",

@@ -106,7 +106,12 @@ class PiRuntimeAdapter(RuntimeAdapter):
         resume_by_id=False,  # see module docstring: no --session-id in pi's RPC protocol
         checkpoint="none",
         concurrent_sessions=True,
+        features=frozenset(
+            {"tool_events", "model_selection", "workspace_read", "workspace_write"}
+        ),
     )
+    binary_name = "pi"
+    session_dir_env = "PI_CODING_AGENT_SESSION_DIR"
 
     def validate_config(self, config: dict[str, Any]) -> list[str]:
         errors: list[str] = []
@@ -118,7 +123,7 @@ class PiRuntimeAdapter(RuntimeAdapter):
                     "read-only permission modes cannot override Fleet launch config: "
                     + ", ".join(unsupported)
                 )
-        binary = config.get("binary", "pi")
+        binary = config.get("binary", self.binary_name)
         if not isinstance(binary, str) or not binary:
             errors.append("'binary' must be a non-empty string")
         if "cwd" in config and config["cwd"] is not None and not isinstance(config["cwd"], str):
@@ -145,17 +150,23 @@ class PiRuntimeAdapter(RuntimeAdapter):
         return self.is_available()
 
     @classmethod
-    def is_available(cls, binary: str = "pi") -> bool:
+    def is_available(cls, binary: str | None = None) -> bool:
         """Cheap sync check used by ``registry.available_runtimes()``."""
-        return shutil.which(binary) is not None
+        return shutil.which(binary or cls.binary_name) is not None
 
     # ── argv / env composition ───────────────────────────────────────────────
     # Split into small methods (OpenAlice CliAdapter pattern cited in the GOAL
     # doc) rather than one monolithic spawn(): argv, env, and the request
     # payload are each independently testable and independently overridable.
 
-    def _compose_argv(self, config: dict[str, Any]) -> list[str]:
-        binary = config.get("binary") or "pi"
+    def _compose_argv(
+        self,
+        config: dict[str, Any],
+        *,
+        provider: str | None = None,
+        model: str | None = None,
+    ) -> list[str]:
+        binary = config.get("binary") or self.binary_name
         extra_args = config.get("args") or []
         # `args` is inserted BEFORE `--mode rpc` so tests can point `binary`
         # at a bare interpreter (e.g. sys.executable) and supply the script
@@ -176,6 +187,10 @@ class PiRuntimeAdapter(RuntimeAdapter):
                     _READ_ONLY_TOOLS,
                 ]
             )
+        if provider:
+            argv.extend(("--provider", provider))
+        if model:
+            argv.extend(("--model", model))
         return [*argv, "--mode", "rpc"]
 
     def _compose_env(self, config: dict[str, Any]) -> dict[str, str] | None:
@@ -186,7 +201,7 @@ class PiRuntimeAdapter(RuntimeAdapter):
         if provider_dir:
             # See module docstring: pi has no PI_CODING_AGENT_DIR; the real
             # override is PI_CODING_AGENT_SESSION_DIR.
-            extra_env.setdefault("PI_CODING_AGENT_SESSION_DIR", provider_dir)
+            extra_env.setdefault(self.session_dir_env, provider_dir)
         if not extra_env:
             return None
         return {**os.environ, **extra_env}
@@ -209,7 +224,11 @@ class PiRuntimeAdapter(RuntimeAdapter):
         if config_errors:
             yield event_error(task.task_id, "; ".join(config_errors), error_type="ConfigError")
             return
-        argv = self._compose_argv(config)
+        argv = self._compose_argv(
+            config,
+            provider=task.provider,
+            model=task.model,
+        )
         env = self._compose_env(config)
         cwd = config.get("cwd")
         timeout_seconds = config.get("timeout_seconds") or _DEFAULT_TIMEOUT_SECONDS
@@ -224,10 +243,18 @@ class PiRuntimeAdapter(RuntimeAdapter):
                 env=env,
             )
         except FileNotFoundError as exc:
-            yield event_error(task.task_id, f"pi binary not found: {argv[0]!r}", error_type=type(exc).__name__)
+            yield event_error(
+                task.task_id,
+                f"{self.runtime_type} binary not found: {argv[0]!r}",
+                error_type=type(exc).__name__,
+            )
             return
         except OSError as exc:
-            yield event_error(task.task_id, f"failed to spawn pi: {exc}", error_type=type(exc).__name__)
+            yield event_error(
+                task.task_id,
+                f"failed to spawn {self.runtime_type}: {exc}",
+                error_type=type(exc).__name__,
+            )
             return
 
         yield event_started(task.task_id)
@@ -288,7 +315,7 @@ class PiRuntimeAdapter(RuntimeAdapter):
                 raise
             yield event_error(
                 task.task_id,
-                f"pi run timed out after {timeout_seconds}s",
+                f"{self.runtime_type} run timed out after {timeout_seconds}s",
                 error_type="TimeoutError",
             )
             return
@@ -306,7 +333,7 @@ class PiRuntimeAdapter(RuntimeAdapter):
             tail = stderr_tail[-_STDERR_TAIL_BYTES:].decode(errors="replace")
             yield event_error(
                 task.task_id,
-                f"pi exited with code {returncode}: {tail}",
+                f"{self.runtime_type} exited with code {returncode}: {tail}",
                 error_type="ProcessExitError",
             )
             return
@@ -323,7 +350,10 @@ class PiRuntimeAdapter(RuntimeAdapter):
 
         if native_type == "response":
             if native.get("success") is False:
-                return event_error(task_id, native.get("error") or "pi command failed")
+                return event_error(
+                    task_id,
+                    native.get("error") or f"{self.runtime_type} command failed",
+                )
             return None
 
         if native_type == "message_update":

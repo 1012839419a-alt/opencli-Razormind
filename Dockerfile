@@ -32,6 +32,7 @@ ARG OPENCLI_VERSION=1.8.7
 ARG IMAGE_TAG=latest
 COPY scripts/patch-opencli.js /tmp/patch-opencli.js
 RUN npm install -g @jackwener/opencli@${OPENCLI_VERSION} \
+    && npm install -g @larksuite/cli@1.0.91 \
     && node /tmp/patch-opencli.js \
     && rm /tmp/patch-opencli.js \
     && rm -rf /root/.npm

@@ -64,6 +64,82 @@ def _answer(rows: list[dict[str, Any]]) -> str:
     ).strip()
 
 
+def _structured_response(text: str) -> dict[str, Any]:
+    # merge marker
+    """Decode Doubao JSON while retaining the complete provider response."""
+    raw = text.strip()
+    candidates = [raw]
+    fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw, re.DOTALL | re.IGNORECASE)
+    if fenced:
+        candidates.insert(0, fenced.group(1))
+    start, end = raw.find("{"), raw.rfind("}")
+    if start >= 0 and end > start:
+        candidates.append(raw[start : end + 1])
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if not isinstance(parsed, dict):
+            continue
+        answer = parsed.get("answer") or parsed.get("content") or raw
+        data = (
+            parsed.get("data")
+            or parsed.get("details")
+            or parsed.get("answer_data")
+            or parsed.get("result")
+            or parsed.get("key_points")
+            or []
+        )
+        links = (
+            parsed.get("links")
+            or parsed.get("references")
+            or parsed.get("sources")
+            or parsed.get("urls")
+            or []
+        )
+        share_data = (
+            parsed.get("session_share_data")
+            or parsed.get("conversation_share_data")
+            or parsed.get("share_data")
+            or parsed.get("share_urls")
+            or []
+        )
+        suggested = (
+            parsed.get("suggested_keywords")
+            or parsed.get("suggested_keys")
+            or parsed.get("recommend_keywords")
+            or parsed.get("recommended_keywords")
+            or []
+        )
+        if not isinstance(data, (list, dict, str)):
+            data = []
+        if not isinstance(links, (list, dict, str)):
+            links = []
+        if not isinstance(share_data, (list, dict, str)):
+            share_data = []
+        if not isinstance(suggested, list):
+            suggested = [suggested] if suggested else []
+        return {
+            "answer": str(answer).strip(),
+            "data": data,
+            "links": links,
+            "response_data": parsed,
+            "session_share_data": share_data,
+            "suggested_keywords": [str(item).strip() for item in suggested if str(item).strip()],
+            "raw_answer": raw,
+        }
+    return {
+        "answer": raw,
+        "data": [],
+        "links": [],
+        "response_data": {},
+        "session_share_data": [],
+        "suggested_keywords": [],
+        "raw_answer": raw,
+    }
+
+
 def _conversation_url(stdout: str) -> str:
     """Extract the active Doubao chat URL from status output."""
     try:
@@ -196,7 +272,7 @@ async def _run_doubao_command(command: list[str]) -> tuple[int, str, str]:
 
     from backend.channels.opencli_channel import _run_opencli
 
-    return await _run_opencli(command, os.environ.copy())
+    return await _run_opencli(command)
 
 
 def _opencli_binary() -> str:
@@ -231,6 +307,13 @@ class DoubaoResearchChannel(AbstractChannel):
             return ChannelResult.fail("'question' is required for doubao_research channel")
 
         extract_citations = bool(config.get("extract_citations", True))
+        try:
+            settle_seconds = float(config.get("settle_seconds", 0))
+        except (TypeError, ValueError):
+            return ChannelResult.fail("'settle_seconds' must be a non-negative number")
+        if settle_seconds < 0:
+            return ChannelResult.fail("'settle_seconds' must be a non-negative number")
+        site_session = str(config.get("site_session", "ephemeral"))
         # Prompt wording belongs to the research brief.  Appending a fixed
         # instruction made the browser adapter lose its active conversation;
         # extract URLs from the returned answer without altering the query.
@@ -243,7 +326,7 @@ class DoubaoResearchChannel(AbstractChannel):
             "-f",
             "json",
             "--site-session",
-            str(config.get("site_session", "ephemeral")),
+            site_session,
         ]
         try:
             returncode, stdout, stderr = await _run_doubao_command(command)
@@ -300,7 +383,7 @@ class DoubaoResearchChannel(AbstractChannel):
                 "-f",
                 "json",
                 "--site-session",
-                str(config.get("site_session", "ephemeral")),
+                site_session,
             ]
             try:
                 returncode, status_stdout, _ = await _run_doubao_command(status_command)

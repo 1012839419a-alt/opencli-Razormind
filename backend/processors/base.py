@@ -11,6 +11,7 @@ class ProcessingResult:
     success: bool
     enrichments: list[dict[str, Any]] = field(default_factory=list)
     error: str | None = None
+    failed_indices: set[int] = field(default_factory=set)
 
 
 class AbstractProcessor(ABC):

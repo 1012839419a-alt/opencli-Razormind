@@ -1,4 +1,76 @@
+---
+name: OpenCLI Workflow Editor Design System
+schema: design-pipeline.design-foundation.v0.1
+activeChange: workflow-editor-design-pipeline-v090
+status: active
+---
+
 # Design
+
+## Product Context
+
+OpenCLI is a dense, local-first operations console for people and Agents that build, validate, publish, run, and audit demand-driven workflows. The primary design target is the Studio workflow editor: a React Flow canvas backed by a canonical WorkflowProject, Yjs collaboration, immutable versions, runtime Trace, Evidence, Lineage, and grounded gates. The product must remain useful during partial capability availability, slow networks, and collaboration outages.
+
+## Overview
+
+The selected direction is **Calm Live Operations**: refine the existing Dark Ops Console rather than redesign it. Local authoring feels immediate; collaboration, durable persistence, validation, publication, execution, and evidence are distinct visible states. Business intent leads, implementation detail appears on demand, and AI output never outranks the original demand or source evidence.
+
+## Colors
+
+- Page and canvas surfaces use the existing zinc-based dark hierarchy from `docs/DESIGN_SYSTEM.md` and `frontend/app/globals.css`.
+- Primary blue is reserved for selection, focus, and the current actionable path.
+- Success, warning, danger, info, and Agent colors are semantic signal tokens and always appear with text or an icon.
+- LIVE, SYNCING, OFFLINE, BLOCKED, grounded, and ungrounded never rely on color alone.
+- New work must reconcile existing token drift instead of introducing additional literal color families.
+
+## Typography
+
+- Chinese interface text uses the existing Noto Sans SC/system UI stack.
+- Identifiers, ports, hashes, revisions, timings, room names, and Trace data use IBM Plex Mono or `font-mono`.
+- Critical controls and status text are at least 11px; 10px is limited to non-critical telemetry.
+- Mixed Chinese and Latin labels use explicit line-height and fallback behavior; truncation must preserve an accessible full label.
+
+## Layout
+
+- Desktop remains canvas-first with a single right-side Workflow Dock for outline, configuration, last run, and Trace.
+- Project identity, workflow switching, lifecycle, and collaboration state remain visible without covering the graph.
+- Spacing follows a 4px rhythm. Controls use 2px radius, nodes and panels 6px, and overlays 8px.
+- Narrow screens convert the Dock into a mutually exclusive sheet without resetting the canvas viewport.
+- Large graphs progressively disclose internals; the parent canvas shows business-level nodes and stable contracts.
+
+## Components
+
+- Reuse project-owned `frontend/components/ui/*`, shell components, React Flow canvas primitives, WorkflowNode, CommandPalette, Inspector, Workflow Dock, RunTracePanel, and lifecycle controls.
+- Yjs/y-websocket is the collaboration execution layer; Studio Workflow Draft remains the durable authority.
+- Node cards expose business name, capability truth, one key summary, and typed ports. Parameters belong in the Dock.
+- Demand labels, generated search terms, grounded entities, missing evidence, and recovery actions use the same canonical graph and project context; no parallel UI-only store is allowed.
+- Every asynchronous action completes its empty, loading, success, blocked, failure, retry, offline, and reduced-motion states.
+
+## Do's and Don'ts
+
+### Do
+
+- Show local node mutation immediately and durable acknowledgement separately.
+- Preserve keyboard selection, visible focus, palette search, undo, and recovery.
+- Derive labels and proposals from the original demand and display their provenance.
+- Keep REAL, BLOCKED, LIVE, OFFLINE, grounded, and ungrounded tied to backend facts.
+- Use bounded motion for spatial entry, connection creation, selection, and acknowledgement.
+
+### Don't
+
+- Do not rebuild React Flow, Yjs, y-websocket, or existing UI primitives.
+- Do not upload the full graph for every connected edit.
+- Do not use the public Yjs demo server for project data.
+- Do not add decorative gradients, glass-heavy cards, oversized marketing layouts, anonymous AI sparkle styling, or continuous idle animation.
+- Do not present model-discovered entities as grounded without a readable exact-product URL.
+
+## Source Decisions
+
+- **Adopted:** the existing Dark Ops Console, project navigation, compact node language, typed ports, Workflow Dock, React Flow, Zustand, Yjs/y-websocket, first-party Draft/Version lifecycle, and Evidence/Lineage boundaries.
+- **Adopted:** the Design Pipeline v0.9.0 discipline of requirements-first foundations, explicit motion posture, component-first reuse, browser evidence, and hash-bound change artifacts.
+- **Rejected:** public-demo collaboration, parallel workflow state stores, per-edit full graph PUT, decorative AI visual defaults, unverified component adoption, and UI-only capability claims.
+- **Rejected:** copying external product branding or component source merely because it appears in a reference catalog.
+- Active synthesis change: `openspec/changes/workflow-editor-design-pipeline-v090/`.
 
 ## Source of truth
 

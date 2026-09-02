@@ -1,6 +1,5 @@
 'use client'
 
-import Link from 'next/link'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import {
   Suspense,
@@ -13,7 +12,6 @@ import {
 } from 'react'
 import {
   AlertCircle,
-  ArrowUpRight,
   Bell,
   CheckCircle2,
   Clock3,
@@ -27,19 +25,27 @@ import {
   X,
 } from 'lucide-react'
 
+import { ApprovalQueueDetail, QueueDetail } from '@/components/inbox/queue-detail'
 import { BACKEND_HINT, ErrorState, LoadingState } from '@/components/shell/data-states'
 import { ACTION_CENTER_TABS, RouteTabs } from '@/components/shell/route-tabs'
-import { StatusBadge } from '@/components/shell/status-badge'
-import { Button, buttonVariants } from '@/components/ui/button'
+import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Kbd } from '@/components/ui/kbd'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import {
+  useGovernedWorkspaces,
   useInfiniteControlActions,
   useInfiniteNotificationLogs,
   useInfiniteTasks,
+  useOperationsInbox,
 } from '@/lib/api/hooks'
-import type { CollectionTask, ControlActionRecord, NotificationLog } from '@/lib/api/types'
+import type {
+  CollectionTask,
+  ControlActionRecord,
+  NotificationLog,
+  OperationsWorkItem,
+} from '@/lib/api/types'
+import { resolveApprovalAvailability, shouldIgnoreInboxShortcut } from '@/lib/inbox/workbench-state'
 import { formatRelative } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
@@ -62,6 +68,7 @@ interface QueueItem {
   occurrenceCount: number
   detailLabel: string
   detailValue: string
+  approval?: OperationsWorkItem
 }
 
 const SECTION_META: Record<
@@ -112,6 +119,14 @@ function signature(value?: string | null) {
 
 function shortId(value: string) {
   return value.length > 12 ? `${value.slice(0, 8)}…` : value
+}
+
+function evidenceText(evidence: Record<string, unknown>, keys: string[]) {
+  for (const key of keys) {
+    const value = evidence[key]
+    if (typeof value === 'string' && value.trim()) return value.trim()
+  }
+  return null
 }
 
 function taskToQueueItem(task: CollectionTask, waiting = false): QueueItem {
@@ -180,6 +195,34 @@ function controlToQueueItem(action: ControlActionRecord): QueueItem {
     occurrenceCount: 1,
     detailLabel: '执行模式',
     detailValue: action.executed ? '已执行，等待结果' : '建议，尚未执行',
+  }
+}
+
+function approvalToQueueItem(approval: OperationsWorkItem, workspaceName: string): QueueItem {
+  const title =
+    evidenceText(approval.evidence, ['title', 'action', 'operation']) ??
+    'Operations Agent 请求批准'
+  const summary =
+    compact(approval.reason, '') ||
+    evidenceText(approval.evidence, ['summary', 'description', 'reason']) ||
+    '智能体已暂停执行，等待人工决定。'
+
+  return {
+    id: `approval-${approval.id}`,
+    groupKey: `approval:${approval.id}`,
+    section: 'review',
+    eyebrow: `人工审批 · ${workspaceName}`,
+    title,
+    summary,
+    status: approval.status,
+    createdAt: approval.created_at,
+    href: '/operations-agents',
+    hrefLabel: '打开智能体',
+    sourceName: workspaceName,
+    occurrenceCount: 1,
+    detailLabel: '风险级别',
+    detailValue: `${approval.priority} · ${approval.severity}`,
+    approval,
   }
 }
 
@@ -268,104 +311,7 @@ function QueueRow({
   )
 }
 
-function QueueDetail({ item }: { item: QueueItem }) {
-  const meta = SECTION_META[item.section]
-  const nextStep = {
-    blocked: '先检查错误和运行参数，再决定是否重新触发采集。',
-    waiting: '确认执行容量或通知目标状态，避免事项长期停留在队列。',
-    review: '观察后续运行是否恢复，并在控制证据中完成结果判断。',
-  }[item.section]
 
-  return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex min-h-16 items-start justify-between gap-4 border-b px-5 py-3.5">
-        <div className="flex min-w-0 items-start gap-3">
-          <span className={cn('grid size-8 shrink-0 place-items-center rounded-md', meta.iconTone)}>
-            {meta.icon}
-          </span>
-          <div className="min-w-0">
-            <p className="text-xs font-medium text-muted-foreground">{item.eyebrow}</p>
-            <h2 className="mt-0.5 truncate text-base font-semibold leading-tight">{item.title}</h2>
-          </div>
-        </div>
-        <StatusBadge status={item.status} className="shrink-0" />
-      </div>
-
-      <ScrollArea data-testid="inbox-detail-scroll" className="min-h-0 flex-1">
-        <div className="mx-auto w-full max-w-3xl space-y-7 p-5 lg:p-7">
-          <section aria-labelledby="signal-context-heading">
-            <h3 id="signal-context-heading" className="text-xs font-medium text-muted-foreground">
-              信号上下文
-            </h3>
-            <p className="mt-3 whitespace-pre-wrap break-words text-sm leading-6 text-foreground/90">
-              {item.summary}
-            </p>
-            {item.occurrenceCount > 1 ? (
-              <p className="mt-4 border-l-2 border-border pl-3 text-xs leading-5 text-muted-foreground">
-                已将 {item.occurrenceCount} 条同一对象、同一处理阶段的信号合并为一个主题，当前展示最近一次上下文。
-              </p>
-            ) : null}
-          </section>
-
-          <section aria-labelledby="signal-facts-heading">
-            <h3 id="signal-facts-heading" className="text-xs font-medium text-muted-foreground">
-              关键信息
-            </h3>
-            <dl className="mt-3 divide-y border-y text-sm">
-              <div className="grid grid-cols-[7rem_minmax(0,1fr)] gap-3 py-2.5">
-                <dt className="text-muted-foreground">队列</dt>
-                <dd>{meta.label}</dd>
-              </div>
-              <div className="grid grid-cols-[7rem_minmax(0,1fr)] gap-3 py-2.5">
-                <dt className="text-muted-foreground">{item.detailLabel}</dt>
-                <dd className="break-words">{item.detailValue}</dd>
-              </div>
-              {item.sourceId ? (
-                <div className="grid grid-cols-[7rem_minmax(0,1fr)] gap-3 py-2.5">
-                  <dt className="text-muted-foreground">数据源</dt>
-                  <dd>
-                    <Link
-                      href={`/sources/${item.sourceId}`}
-                      className="inline-flex items-center gap-1 font-medium hover:underline focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                    >
-                      {item.sourceName ?? shortId(item.sourceId)}
-                      <ArrowUpRight aria-hidden="true" className="size-3.5 text-muted-foreground" />
-                    </Link>
-                  </dd>
-                </div>
-              ) : null}
-              <div className="grid grid-cols-[7rem_minmax(0,1fr)] gap-3 py-2.5">
-                <dt className="text-muted-foreground">最近发生</dt>
-                <dd>{formatRelative(item.createdAt)}</dd>
-              </div>
-            </dl>
-          </section>
-
-          <section aria-labelledby="signal-next-step-heading">
-            <h3 id="signal-next-step-heading" className="text-xs font-medium text-muted-foreground">
-              建议下一步
-            </h3>
-            <p className="mt-3 text-sm leading-6 text-muted-foreground">{nextStep}</p>
-          </section>
-        </div>
-      </ScrollArea>
-
-      <div className="flex min-h-14 flex-wrap items-center justify-between gap-3 border-t px-5 py-2.5">
-        <span className="hidden text-xs text-muted-foreground sm:inline">
-          <Kbd>J</Kbd>
-          <Kbd className="ml-1">K</Kbd>
-          <span className="ml-2">切换</span>
-          <Kbd className="ml-3">Enter</Kbd>
-          <span className="ml-2">打开</span>
-        </span>
-        <Link href={item.href} className={buttonVariants({ size: 'sm' })}>
-          {item.hrefLabel}
-          <ArrowUpRight aria-hidden="true" className="size-3.5" />
-        </Link>
-      </div>
-    </div>
-  )
-}
 
 function InboxLoadingFallback() {
   return (
@@ -394,6 +340,24 @@ function InboxContent() {
   const [search, setSearch] = useState(searchParams.get('q') ?? '')
   const [selectedId, setSelectedId] = useState<string | null>(null)
 
+  const workspaces = useGovernedWorkspaces()
+  const requestedWorkspaceId = searchParams.get('workspace')
+  const workspaceId =
+    workspaces.data?.find((workspace) => workspace.id === requestedWorkspaceId)?.id ??
+    workspaces.data?.[0]?.id ??
+    null
+  const workspaceName =
+    workspaces.data?.find((workspace) => workspace.id === workspaceId)?.name ?? 'Workspace'
+  const operationsInbox = useOperationsInbox(workspaceId, 'open')
+  const approvalAvailability = resolveApprovalAvailability({
+    workspaceLoading: workspaces.isLoading,
+    workspaceError: workspaces.isError,
+    workspaceCount: workspaces.data?.length ?? 0,
+    workspaceId,
+    inboxLoading: operationsInbox.isLoading,
+    inboxError: operationsInbox.isError,
+  })
+
   const failedTasks = useInfiniteTasks({ status: 'failed', limit: 100 })
   const pendingTasks = useInfiniteTasks({ status: 'pending', limit: 100 })
   const notificationLogs = useInfiniteNotificationLogs({ limit: 100 })
@@ -418,12 +382,16 @@ function InboxContent() {
     () => pendingControlActions.data?.pages.flatMap((page) => page.data) ?? [],
     [pendingControlActions.data?.pages],
   )
+  const approvals = useMemo(
+    () => operationsInbox.data?.data?.filter((item) => item.type === 'approval') ?? [],
+    [operationsInbox.data],
+  )
 
   const rawCounts: Record<QueueFilter, number> = {
-    all: failed.length + pending.length + notifications.length + controls.length,
+    all: failed.length + pending.length + notifications.length + controls.length + approvals.length,
     blocked: failed.length + notifications.filter((log) => /fail|error/i.test(log.status)).length,
     waiting: pending.length + notifications.filter((log) => !/fail|error/i.test(log.status)).length,
-    review: controls.length,
+    review: controls.length + approvals.length,
   }
 
   const queueItems = useMemo(
@@ -433,8 +401,9 @@ function InboxContent() {
         ...pending.map((task) => taskToQueueItem(task, true)),
         ...notifications.map(notificationToQueueItem),
         ...controls.map(controlToQueueItem),
+        ...approvals.map((approval) => approvalToQueueItem(approval, workspaceName)),
       ]),
-    [controls, failed, notifications, pending],
+    [approvals, controls, failed, notifications, pending, workspaceName],
   )
 
   const filteredItems = useMemo(() => {
@@ -461,6 +430,16 @@ function InboxContent() {
       const currentQuery = searchParamsKey
       const nextQuery = params.toString()
       if (currentQuery === nextQuery) return
+      router.replace(nextQuery ? `${pathname}?${nextQuery}` : pathname, { scroll: false })
+    },
+    [pathname, router, searchParamsKey],
+  )
+
+  const selectWorkspace = useCallback(
+    (nextWorkspaceId: string) => {
+      const params = new URLSearchParams(searchParamsKey)
+      params.set('workspace', nextWorkspaceId)
+      const nextQuery = params.toString()
       router.replace(nextQuery ? `${pathname}?${nextQuery}` : pathname, { scroll: false })
     },
     [pathname, router, searchParamsKey],
@@ -494,24 +473,30 @@ function InboxContent() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      const target = event.target as HTMLElement | null
-      const isEditing =
-        target?.tagName === 'INPUT' ||
-        target?.tagName === 'TEXTAREA' ||
-        target?.isContentEditable
+      const target = event.target instanceof Element ? event.target : null
+      const targetElement = target instanceof HTMLElement ? target : null
+      const isInteractive = shouldIgnoreInboxShortcut({
+        tagName: target?.tagName,
+        isContentEditable: targetElement?.isContentEditable,
+        withinInteractive: Boolean(
+          target?.closest(
+            'a,button,input,select,textarea,summary,[contenteditable="true"],[role="button"],[role="link"],[role="menuitem"],[role="option"],[role="tab"],[tabindex]:not([tabindex="-1"])',
+          ),
+        ),
+      })
+
+      if (isInteractive) {
+        if (event.key === 'Escape' && target === searchRef.current) {
+          setSearch('')
+          searchRef.current?.blur()
+        }
+        return
+      }
 
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') {
         event.preventDefault()
         searchRef.current?.focus()
         searchRef.current?.select()
-        return
-      }
-
-      if (isEditing) {
-        if (event.key === 'Escape') {
-          setSearch('')
-          searchRef.current?.blur()
-        }
         return
       }
 
@@ -528,7 +513,7 @@ function InboxContent() {
         setSelectedId(filteredItems[nextIndex].id)
       }
 
-      if (event.key === 'Enter' && selectedItem) {
+      if (event.key === 'Enter' && selectedItem && !selectedItem.approval) {
         event.preventDefault()
         router.push(selectedItem.href)
       }
@@ -539,19 +524,31 @@ function InboxContent() {
   }, [filteredItems, router, selectedItem])
 
   const queries = [failedTasks, pendingTasks, notificationLogs, pendingControlActions]
-  const isInitialLoading = queries.every((query) => query.isLoading)
-  const isTotalFailure = queries.every((query) => query.isError)
+  const isInitialLoading =
+    queries.every((query) => query.isLoading) &&
+    (approvalAvailability !== 'ready' || approvals.length === 0)
+  const isTotalFailure =
+    queries.every((query) => query.isError) &&
+    (approvalAvailability === 'workspace_error' ||
+      approvalAvailability === 'inbox_error' ||
+      approvalAvailability === 'no_workspace')
   const partialFailures = [
     failedTasks.isError ? '失败任务' : null,
     pendingTasks.isError ? '等待任务' : null,
     notificationLogs.isError ? '通知记录' : null,
     pendingControlActions.isError ? '控制结果' : null,
+    workspaces.isError ? 'Workspace' : null,
+    operationsInbox.isError ? '人工审批' : null,
   ].filter(Boolean)
   const hasMoreSignals = queries.some((query) => query.hasNextPage)
   const isFetchingNextPage = queries.some((query) => query.isFetchingNextPage)
 
   const refetchAll = () => {
-    void Promise.all(queries.map((query) => query.refetch()))
+    void Promise.all([
+      ...queries.map((query) => query.refetch()),
+      workspaces.refetch(),
+      operationsInbox.refetch(),
+    ])
   }
 
   const loadMoreSignals = () => {
@@ -569,6 +566,12 @@ function InboxContent() {
     { key: 'waiting', label: '等待' },
     { key: 'review', label: '复核' },
   ]
+  const approvalNotice =
+    approvalAvailability === 'loading'
+      ? '正在读取 Workspace 人工审批…'
+      : approvalAvailability === 'no_workspace'
+        ? '尚未加入 Workspace，人工审批目前不可用。'
+        : null
 
   return (
     <div
@@ -589,6 +592,20 @@ function InboxContent() {
         />
 
         <div className="ml-auto flex w-full items-center gap-1.5 md:w-auto">
+          {workspaceId ? (
+            <select
+              value={workspaceId}
+              onChange={(event) => selectWorkspace(event.target.value)}
+              aria-label="选择人工审批 Workspace"
+              className="h-9 max-w-40 shrink-0 rounded-md border bg-background px-2 text-xs md:h-8"
+            >
+              {workspaces.data?.map((workspace) => (
+                <option key={workspace.id} value={workspace.id}>
+                  {workspace.name}
+                </option>
+              ))}
+            </select>
+          ) : null}
           <div className="relative min-w-0 flex-1 md:w-64 md:flex-none">
             <Search
               aria-hidden="true"
@@ -639,6 +656,12 @@ function InboxContent() {
         <div className="flex shrink-0 items-center gap-2 border-b bg-destructive/5 px-4 py-2 text-xs text-destructive">
           <AlertCircle aria-hidden="true" className="size-3.5 shrink-0" />
           {partialFailures.join('、')}暂时无法读取，其余信号仍可处理。
+        </div>
+      ) : null}
+
+      {approvalNotice ? (
+        <div role="status" className="shrink-0 border-b bg-muted/25 px-4 py-2 text-xs text-muted-foreground">
+          {approvalNotice}
         </div>
       ) : null}
 
@@ -776,7 +799,15 @@ function InboxContent() {
             className="flex min-h-[32rem] min-w-0 flex-col bg-muted/10 lg:min-h-0"
           >
             {selectedItem ? (
-              <QueueDetail item={selectedItem} />
+              selectedItem.approval ? (
+                <ApprovalQueueDetail key={selectedItem.id} item={selectedItem} />
+              ) : (
+                <QueueDetail
+                  item={selectedItem}
+                  meta={SECTION_META[selectedItem.section]}
+                  createdAtLabel={formatRelative(selectedItem.createdAt)}
+                />
+              )
             ) : (
               <div className="grid min-h-80 flex-1 place-items-center px-6 text-center">
                 <div>

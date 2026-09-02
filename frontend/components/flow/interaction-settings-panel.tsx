@@ -201,13 +201,13 @@ export function InteractionSettingsPanel() {
             </div>
             <div className="space-y-1.5">
               <Label className="font-mono text-[10px] uppercase tracking-wider">Yjs Room</Label>
-              <Input value={s.yjsRoom} onChange={(e) => s.set("yjsRoom", e.target.value)} />
+              <Input readOnly value={s.yjsRoom} />
             </div>
             <div className="space-y-1.5">
               <Label className="font-mono text-[10px] uppercase tracking-wider">Yjs WebSocket URL</Label>
-              <Input value={s.yjsUrl} onChange={(e) => s.set("yjsUrl", e.target.value)} />
+              <Input readOnly value={s.yjsUrl} />
               <p className="text-[10px] text-muted-foreground">
-                默认 wss://demos.yjs.dev — 或自建 y-websocket-server。
+                由 Studio 工作流地址生成；可通过 NEXT_PUBLIC_YJS_URL 配置服务地址。
               </p>
             </div>
           </div>

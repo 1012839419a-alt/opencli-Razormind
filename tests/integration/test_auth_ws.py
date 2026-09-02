@@ -148,6 +148,38 @@ def test_nodes_ws_register_with_runtimes_accepted(test_client, auth_enabled):
         assert reply["type"] == "registered"
 
 
+
+def test_nodes_ws_register_with_runtime_capabilities_accepted(test_client, auth_enabled):
+    msg = {
+        **REGISTER_MSG_NODES,
+        "runtimes": ["pi", "prime-agent"],
+        "runtime_capabilities": {
+            "pi": ["streaming", "tool_events"],
+            "prime-agent": ["streaming", "subagents", "tool_events"],
+        },
+    }
+    with test_client.websocket_connect(
+        "/api/v1/nodes/ws", headers={"Authorization": f"Bearer {TOKEN}"}
+    ) as ws:
+        ws.send_json(msg)
+        assert ws.receive_json()["type"] == "registered"
+
+
+def test_nodes_ws_rejects_capability_manifest_for_unadvertised_runtime(
+    test_client, auth_enabled
+):
+    msg = {
+        **REGISTER_MSG_NODES,
+        "runtimes": ["pi"],
+        "runtime_capabilities": {"prime-agent": ["streaming"]},
+    }
+    with pytest.raises(WebSocketDisconnect):
+        with test_client.websocket_connect(
+            "/api/v1/nodes/ws", headers={"Authorization": f"Bearer {TOKEN}"}
+        ) as ws:
+            ws.send_json(msg)
+            ws.receive_json()
+
 def test_nodes_ws_register_invalid_runtimes_type_rejected(test_client, auth_enabled):
     msg = {**REGISTER_MSG_NODES, "runtimes": "not-a-list"}
     with pytest.raises(WebSocketDisconnect):

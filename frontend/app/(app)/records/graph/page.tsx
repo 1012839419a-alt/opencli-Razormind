@@ -13,6 +13,7 @@ import {
   Waypoints,
 } from 'lucide-react'
 
+import { GpuSurface } from '@/components/gpu/gpu-surface'
 import { BACKEND_HINT, EmptyState, ErrorState, LoadingState } from '@/components/shell/data-states'
 import { PageContainer } from '@/components/shell/page-container'
 import { DATA_EXPLORER_TABS, RouteTabs } from '@/components/shell/route-tabs'
@@ -26,7 +27,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { useMyWorkspaces, useProjectRecordGraph, useWorkspaceProjects } from '@/lib/api/hooks'
-import type { RecordGraphNode } from '@/lib/api/types'
+import type { ProjectRecordGraphPreview, RecordGraphNode } from '@/lib/api/types'
 import {
   RECORD_GRAPH_KIND_COLOR,
   RECORD_GRAPH_KIND_LABEL,
@@ -56,6 +57,61 @@ function selectedNodeDescription(node: RecordGraphNode) {
   if (node.kind === 'record') return node.preview ?? node.subtitle ?? '这条记录暂无正文预览。'
   if (node.count > 1) return `聚合了 ${node.count.toLocaleString('zh-CN')} 条项目数据。`
   return node.subtitle ?? RECORD_GRAPH_KIND_LABEL[node.kind]
+}
+
+function RecordGraphFallback({
+  preview,
+  selectedNodeId,
+  onSelectNode,
+}: {
+  preview: ProjectRecordGraphPreview
+  selectedNodeId: string | null
+  onSelectNode: (nodeId: string | null) => void
+}) {
+  const initialNodes = preview.nodes.slice(0, 200)
+
+  return (
+    <div
+      className="h-full min-h-[38rem] overflow-y-auto bg-muted/20 p-4"
+      data-record-graph-fallback
+    >
+      <div className="rounded-lg border bg-background p-4">
+        <h2 className="text-sm font-semibold">WebGL 图谱不可用</h2>
+        <p className="mt-1 text-sm text-muted-foreground">
+          当前显示前 200 个节点；可使用上方搜索定位其余节点，并继续查看双向邻居。
+        </p>
+      </div>
+      <div className="mt-4 space-y-2">
+        {initialNodes.map((node) => (
+          <button
+            key={node.id}
+            type="button"
+            aria-pressed={selectedNodeId === node.id}
+            onClick={() => onSelectNode(node.id)}
+            className={`w-full rounded-lg border bg-background p-3 text-left transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+              selectedNodeId === node.id ? 'border-primary bg-primary/5' : ''
+            }`}
+          >
+            <span className="flex items-center justify-between gap-3">
+              <span className="flex min-w-0 items-center gap-2">
+                <span
+                  className="size-2 shrink-0 rounded-full"
+                  style={{ backgroundColor: RECORD_GRAPH_KIND_COLOR[node.kind] }}
+                />
+                <span className="truncate text-sm font-medium">{node.label}</span>
+              </span>
+              <span className="shrink-0 font-mono text-xs text-muted-foreground">
+                {node.count.toLocaleString('zh-CN')}
+              </span>
+            </span>
+            <span className="mt-1 block text-xs text-muted-foreground">
+              {RECORD_GRAPH_KIND_LABEL[node.kind]}
+            </span>
+          </button>
+        ))}
+      </div>
+    </div>
+  )
 }
 
 export default function RecordRelationshipGraphPage() {
@@ -258,15 +314,29 @@ export default function RecordRelationshipGraphPage() {
         ) : (
           <div className="grid h-[70rem] min-h-0 grid-rows-[38rem_32rem] lg:h-[42rem] lg:grid-cols-[minmax(0,1fr)_20rem] lg:grid-rows-1">
             <div className="relative min-h-0 overflow-hidden bg-[#09090b]">
-              <ProjectRecordGraphCanvas
-                preview={preview}
-                selectedNodeId={selectedNodeId}
-                onSelectNode={setSelectedNodeId}
-              />
-              <div className="pointer-events-none absolute left-3 top-3 flex items-center gap-2 rounded-md border border-white/10 bg-black/60 px-2.5 py-1.5 text-xs text-zinc-400 backdrop-blur-sm">
-                <Waypoints className="size-3.5" />
-                滚轮缩放 · 双击聚焦 · 点击查看双向邻居
-              </div>
+              <GpuSurface
+                surface="record-relationship-graph"
+                className="h-full"
+                fallback={(
+                  <RecordGraphFallback
+                    preview={preview}
+                    selectedNodeId={selectedNodeId}
+                    onSelectNode={setSelectedNodeId}
+                  />
+                )}
+              >
+                <>
+                  <ProjectRecordGraphCanvas
+                    preview={preview}
+                    selectedNodeId={selectedNodeId}
+                    onSelectNode={setSelectedNodeId}
+                  />
+                  <div className="pointer-events-none absolute left-3 top-3 flex items-center gap-2 rounded-md border border-white/10 bg-black/60 px-2.5 py-1.5 text-xs text-zinc-400 backdrop-blur-sm">
+                    <Waypoints className="size-3.5" />
+                    滚轮缩放 · 双击聚焦 · 点击查看双向邻居
+                  </div>
+                </>
+              </GpuSurface>
             </div>
 
             <aside

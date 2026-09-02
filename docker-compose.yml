@@ -1,6 +1,6 @@
 # Shared backend config (DRY)
 x-backend-common: &backend-common
-  image: ${DOCKER_REGISTRY:-ghcr.io/}${DOCKER_IMAGE_NAMESPACE:-2233admin}/opencli-admin-api:${IMAGE_TAG:-0.4.1}
+  image: ${DOCKER_REGISTRY:-ghcr.io/}${DOCKER_IMAGE_NAMESPACE:-2233admin}/opencli-admin-api:${IMAGE_TAG:-0.4.0}
   env_file:
     - path: .env
       required: false
@@ -141,6 +141,42 @@ services:
       start_period: 60s
     restart: unless-stopped
 
+  # ── PAW local enrichment runtime ─────────────────────────────────────────
+  # The fixed PAW 0.4.4 program is opt-in and never receives egress access.
+  paw-runtime:
+    profiles: ["paw"]
+    build:
+      context: ./compat/paw_runtime
+      dockerfile: Dockerfile
+    environment:
+      PAW_OFFLINE: "1"
+      PAW_PROGRAM_ID: ${PAW_PROGRAM_ID:-}
+      PAW_EXECUTION_TIMEOUT_SECONDS: ${PAW_EXECUTION_TIMEOUT_SECONDS:-30}
+      PAW_N_CTX: ${PAW_N_CTX:-2048}
+    volumes:
+      - ${PAW_CACHE_DIR:-./.paw-cache}:/var/cache/paw:ro
+    networks:
+      - paw_runtime
+    read_only: true
+    tmpfs:
+      - /tmp:size=${PAW_RUNTIME_TMPFS_SIZE:-64m},mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:8097/health', timeout=3)"
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+    restart: unless-stopped
+
   # ── Backend API ───────────────────────────────────────────────────────────
   api:
     <<: *backend-common
@@ -159,6 +195,12 @@ services:
       BOOTSTRAP_ADMIN_TOKEN: ${BOOTSTRAP_ADMIN_TOKEN:-}
       OPENCLI_MCP_ALLOWED_HOSTS: ${OPENCLI_MCP_ALLOWED_HOSTS:-}
       OPENCLI_MCP_ALLOWED_ORIGINS: ${OPENCLI_MCP_ALLOWED_ORIGINS:-}
+      # Docker cannot read the Windows credential manager used by lark-cli.
+      # Keep Feishu CLI authentication on the host and call its read-only bridge.
+      LARK_CLI_BRIDGE_URL: ${LARK_CLI_BRIDGE_URL:-http://host.docker.internal:18765/feishu/records}
+      # Reuse the deployment's existing local API secret unless a dedicated
+      # bridge token is supplied; never run a non-loopback bridge unauthenticated.
+      LARK_CLI_BRIDGE_TOKEN: ${LARK_CLI_BRIDGE_TOKEN:-${API_AUTH_TOKEN}}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       # Internal-only ODP reconciliation transport; service availability is
@@ -177,7 +219,7 @@ services:
       PUBLIC_URL: ${PUBLIC_URL:-}
       # Passed to the agent pool manager so it can name containers/networks correctly
       COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-opencli-admin}
-      CHROME_IMAGE: ${DOCKER_REGISTRY:-ghcr.io/}${DOCKER_IMAGE_NAMESPACE:-2233admin}/opencli-admin-chrome:${IMAGE_TAG:-0.4.1}
+      CHROME_IMAGE: ${DOCKER_REGISTRY:-ghcr.io/}${DOCKER_IMAGE_NAMESPACE:-2233admin}/opencli-admin-chrome:${IMAGE_TAG:-0.4.0}
       NOVNC_BASE_PORT: ${NOVNC_BASE_PORT:-6080}
       # NAS + III: cron 由 III schedule-bootstrap 驱动，API 不再跑内置 scheduler
       COLLECTION_ORCHESTRATOR: ${COLLECTION_ORCHESTRATOR:-admin}
@@ -188,6 +230,10 @@ services:
       III_INGRESS_RECEIPT_SECRET: ${III_INGRESS_RECEIPT_SECRET:-}
       DIFY_GRAPHON_RUNTIME_URL: ${DIFY_GRAPHON_RUNTIME_URL:-http://dify-graphon-runtime:8095}
       KATS_RUNTIME_URL: ${KATS_RUNTIME_URL:-http://kats-runtime:8096}
+      PAW_RUNTIME_URL: ${PAW_RUNTIME_URL:-http://paw-runtime:8097}
+      PAW_PROGRAM_ID: ${PAW_PROGRAM_ID:-}
+      PAW_RUNTIME_TIMEOUT_SECONDS: ${PAW_RUNTIME_TIMEOUT_SECONDS:-30}
+      PAW_MAX_TOKENS: ${PAW_MAX_TOKENS:-512}
       INVOKEAI_ENABLED: ${INVOKEAI_ENABLED:-false}
       INVOKEAI_BASE_URL: http://invokeai:9090
       INVOKEAI_API_TOKEN: ${INVOKEAI_API_TOKEN:-}
@@ -202,6 +248,7 @@ services:
       - default
       - dify_runtime
       - kats_runtime
+      - paw_runtime
       - invokeai-private
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
@@ -211,7 +258,7 @@ services:
       start_period: 20s
   # ── Next.js operator console ─────────────────────────────────────────────
   frontend:
-    image: ${DOCKER_REGISTRY:-ghcr.io/}${DOCKER_IMAGE_NAMESPACE:-2233admin}/opencli-admin-frontend:${IMAGE_TAG:-0.4.1}
+    image: ${DOCKER_REGISTRY:-ghcr.io/}${DOCKER_IMAGE_NAMESPACE:-2233admin}/opencli-admin-frontend:${IMAGE_TAG:-0.4.0}
     environment:
       BACKEND_URL: http://api:8000
     ports:
@@ -248,9 +295,14 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENCLI_CDP_ENDPOINT: ${OPENCLI_CDP_ENDPOINT:-http://agent-1:19222}
       AGENT_POOL_ENDPOINTS: ${AGENT_POOL_ENDPOINTS:-}
+      CONTROL_PLANE_URL: ${CONTROL_PLANE_URL:-http://api:8000}
       KATS_RUNTIME_URL: ${KATS_RUNTIME_URL:-http://kats-runtime:8096}
       INVOKEAI_ENABLED: ${INVOKEAI_ENABLED:-false}
       INVOKEAI_BASE_URL: http://invokeai:9090
+      PAW_RUNTIME_URL: ${PAW_RUNTIME_URL:-http://paw-runtime:8097}
+      PAW_PROGRAM_ID: ${PAW_PROGRAM_ID:-}
+      PAW_RUNTIME_TIMEOUT_SECONDS: ${PAW_RUNTIME_TIMEOUT_SECONDS:-30}
+      PAW_MAX_TOKENS: ${PAW_MAX_TOKENS:-512}
       INVOKEAI_API_TOKEN: ${INVOKEAI_API_TOKEN:-}
       IMAGE_ASSET_STORAGE_PATH: /data/image-studio/assets
     depends_on:
@@ -261,6 +313,7 @@ services:
     networks:
       - default
       - kats_runtime
+      - paw_runtime
       - invokeai-private
 
   # ── Private image-generation data plane ─────────────────────────────────
@@ -312,17 +365,19 @@ services:
         condition: service_healthy
 
   # ── Built-in interactive browser ─────────────────────────────────────────
-  # noVNC is loopback-only by default; use an SSH tunnel for remote servers.
+  # This is the single VNC Agent: persistent Chrome + noVNC + Browser Bridge
+  # (BBX) + the reverse-channel Agent server all share agent_profile_1.
   agent-1:
-    image: ${DOCKER_REGISTRY:-ghcr.io/}${DOCKER_IMAGE_NAMESPACE:-2233admin}/opencli-admin-chrome:${IMAGE_TAG:-0.4.1}
+    image: ${DOCKER_REGISTRY:-ghcr.io/}${DOCKER_IMAGE_NAMESPACE:-2233admin}/opencli-admin-agent:${IMAGE_TAG:-0.4.0}${CHROME_SUFFIX:-}
     environment:
       CHROME_HOSTNAME: agent-1
       BROWSER_RUNTIME_BUNDLE_ROOT: /opt/browser-runtime-bundles
       BROWSER_RUNTIME_BUNDLE_MANIFEST: /opt/browser-runtime-bundles/opencli-default/2/manifest.json
     volumes:
-      - agent_profile_1:/home/chrome/.config/chromium
+      - agent_profile_1:/home/agent/.config/chromium
     ports:
       - "127.0.0.1:${NOVNC_PORT:-6080}:6080"
+      - "${AGENT_PORT:-19823}:19823"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9222/json/version"]
       interval: 10s
@@ -346,25 +401,26 @@ services:
   #     -v /host/opencli/codex-isolated-runner:/opt/opencli/codex-isolated-runner:ro \
   #     -v /host/workspaces:/workspaces \
   #     -p 19823:19823 \
-  #     ghcr.io/2233admin/opencli-admin-agent:0.4.1
+  #     ghcr.io/2233admin/opencli-admin-agent:0.4.0
   #
   # Or start the bundled agent profile (local network):
   #   docker compose --profile agent up agent
   agent:
     profiles: ["agent"]
-    image: ${DOCKER_REGISTRY:-ghcr.io/}${DOCKER_IMAGE_NAMESPACE:-2233admin}/opencli-admin-agent:${IMAGE_TAG:-0.4.1}${CHROME_SUFFIX:-}
+    image: ${DOCKER_REGISTRY:-ghcr.io/}${DOCKER_IMAGE_NAMESPACE:-2233admin}/opencli-admin-agent:${IMAGE_TAG:-0.4.0}${CHROME_SUFFIX:-}
     environment:
-      CENTRAL_API_URL: ${CENTRAL_API_URL:-}
-      AGENT_ADVERTISE_URL: ${AGENT_ADVERTISE_URL:-}
+      CENTRAL_API_URL: ${CENTRAL_API_URL:-http://api:8000}
+      AGENT_ADVERTISE_URL: ${AGENT_ADVERTISE_URL:-http://agent:19823}
       AGENT_PORT: ${AGENT_PORT:-19823}
       AGENT_MODE: ${AGENT_MODE:-cdp}
-      AGENT_LABEL: ${AGENT_LABEL:-}
-      AGENT_REGISTER: ${AGENT_REGISTER:-http}
+      AGENT_LABEL: ${AGENT_LABEL:-OpenCLI Local Operations Runtime}
+      AGENT_REGISTER: ${AGENT_REGISTER:-ws}
       OPENCLI_TIMEOUT: ${OPENCLI_TIMEOUT:-120}
       AGENT_CODEX_ISOLATED_RUNNER: ${AGENT_CODEX_ISOLATED_RUNNER:-}
       AGENT_CODEX_ALLOWED_ROOTS: ${AGENT_CODEX_ALLOWED_ROOTS:-}
       API_AUTH_TOKEN: ${API_AUTH_TOKEN:-}
       AGENT_API_TOKEN: ${AGENT_API_TOKEN:-}
+      MINIFLOW_WORKFLOW_ROOT: ${MINIFLOW_WORKFLOW_ROOT:-/app/workflows}
       HTTP_PROXY: ${HTTP_PROXY:-}
       HTTPS_PROXY: ${HTTPS_PROXY:-}
       BROWSER_RUNTIME_BUNDLE_ROOT: /opt/browser-runtime-bundles
@@ -543,6 +599,9 @@ networks:
   dify_runtime:
     internal: true
   kats_runtime:
+    internal: true
+  # PAW has no egress; only the API and Celery worker can reach it.
+  paw_runtime:
     internal: true
   # Dedicated outbound network: the Graphon sidecar can reach server-owned
   # sandbox/model endpoints without becoming reachable from sibling services.

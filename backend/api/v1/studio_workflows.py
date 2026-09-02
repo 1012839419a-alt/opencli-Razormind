@@ -23,7 +23,13 @@ from backend.api.v1.studio_schemas import (
     WorkflowCreate,
     WorkflowRead,
 )
-from backend.api.v1.workflows import dispatch_materialized_image_jobs
+from backend.api.v1.workflows import (
+    build_evidence_projection,
+    dispatch_materialized_image_jobs,
+    get_evidence_batch,
+    list_evidence_batches,
+    parse_projection_includes,
+)
 from backend.database import get_db
 from backend.models.studio import (
     StudioProject,
@@ -38,6 +44,7 @@ from backend.workflow.opencli_hda_tracer import (
     get_workflow_run_checkpoint,
     get_workflow_run_projection,
     list_workflow_run_events,
+    replay_downstream_from_persisted_gaojixing_source,
     start_workflow_run,
 )
 
@@ -69,6 +76,48 @@ def _runtime_log(
         started_at=row.created_at,
         updated_at=row.updated_at,
     )
+
+
+def _default_published_trigger_kind(
+    project: workflow_schemas.WorkflowProject,
+    trigger_node_id: str | None,
+) -> workflow_schemas.WorkflowRunTriggerKind:
+    """Choose the graph's real trigger when Studio Run omits one.
+
+    The authoring UI historically posted ``manual`` unconditionally.  That
+    silently makes schedule-only workflows fail before any node executes.  A
+    direct Studio/CLI run is still an explicit run, but it must enter through
+    the trigger entry that actually exists in the published graph.
+    """
+    nodes = project.nodes
+    if trigger_node_id:
+        selected = next((node for node in nodes if node.id == trigger_node_id), None)
+        if selected is not None:
+            if selected.kind == "webhook":
+                return "webhook"
+            if selected.kind == "schedule":
+                params = selected.params
+                builder = params.get("builder")
+                if params.get("mode") == "manual" or (
+                    isinstance(builder, dict) and builder.get("nodeType") == "manual-trigger"
+                ):
+                    return "manual"
+                return "schedule"
+
+    for node in nodes:
+        if node.kind == "schedule" and (
+            node.params.get("mode") == "manual"
+            or (
+                isinstance(node.params.get("builder"), dict)
+                and node.params["builder"].get("nodeType") == "manual-trigger"
+            )
+        ):
+            return "manual"
+    if any(node.kind == "schedule" for node in nodes):
+        return "schedule"
+    if any(node.kind == "webhook" for node in nodes):
+        return "webhook"
+    return "manual"
 
 
 async def _project_runtime_scope(
@@ -198,8 +247,7 @@ async def get_project_runtime_summary(
             blocked_runs=sum(1 for row in aggregate_rows if row.status in blocked),
             running_runs=sum(1 for row in aggregate_rows if row.status in running),
             total_events=sum(
-                int((row.projection or {}).get("eventCount", 0))
-                for row in aggregate_rows
+                int((row.projection or {}).get("eventCount", 0)) for row in aggregate_rows
             ),
             recent_logs=[
                 _runtime_log(
@@ -255,12 +303,7 @@ async def list_project_runtime_logs(
             )
         )
 
-    total = int(
-        await db.scalar(
-            select(func.count()).select_from(WorkflowRun).where(*filters)
-        )
-        or 0
-    )
+    total = int(await db.scalar(select(func.count()).select_from(WorkflowRun).where(*filters)) or 0)
     rows = list(
         (
             await db.execute(
@@ -293,10 +336,7 @@ async def list_project_runtime_logs(
 
 
 @router.post(
-    (
-        "/workspaces/{workspace_id}/projects/{project_id}/workflows/{workflow_id}"
-        "/runs"
-    ),
+    ("/workspaces/{workspace_id}/projects/{project_id}/workflows/{workflow_id}/runs"),
     response_model=ApiResponse[workflow_schemas.WorkflowRunProjection],
     status_code=202,
 )
@@ -357,12 +397,16 @@ async def start_published_workflow_run(
                 return ApiResponse.ok(projection)
 
     project = workflow_schemas.WorkflowProject.model_validate(version.graph)
+    trigger_kind = body.trigger_kind or _default_published_trigger_kind(
+        project, body.trigger_node_id
+    )
     projection = await start_workflow_run(
         workflow_schemas.WorkflowRunStartRequest(
             project=project,
             runId=run_id,
             trigger=workflow_schemas.WorkflowRunTrigger(
-                kind="manual",
+                kind=trigger_kind,
+                triggerNodeId=body.trigger_node_id,
                 requestId=request_id,
                 idempotencyKey=idempotency_key,
             ),
@@ -377,6 +421,55 @@ async def start_published_workflow_run(
         studio_workflow_version_id=version.id,
     )
     await dispatch_materialized_image_jobs(db, projection.runId)
+    return ApiResponse.ok(projection)
+
+
+@router.post(
+    (
+        "/workspaces/{workspace_id}/projects/{project_id}/workflows/{workflow_id}"
+        "/runs/{run_id}/downstream-replay"
+    ),
+    response_model=ApiResponse[workflow_schemas.WorkflowRunProjection],
+    status_code=202,
+)
+async def replay_persisted_gaojixing_source_downstream(
+    workspace_id: str,
+    project_id: str,
+    workflow_id: str,
+    run_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> ApiResponse:
+    """Replay normalization through sink from completed persisted Gaojixing evidence."""
+
+    workflow = await get_workflow(db, workspace_id, project_id, workflow_id)
+    if workflow.current_published_version is None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "Workflow must be published before downstream replay"
+        )
+    version = await db.scalar(
+        select(StudioWorkflowVersion).where(
+            StudioWorkflowVersion.workflow_id == workflow_id,
+            StudioWorkflowVersion.version == workflow.current_published_version,
+        )
+    )
+    if version is None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "Published workflow version is unavailable")
+    await _get_project_workflow_run(
+        db,
+        workspace_id=workspace_id,
+        project_id=project_id,
+        workflow_id=workflow_id,
+        run_id=run_id,
+    )
+    try:
+        projection = await replay_downstream_from_persisted_gaojixing_source(
+            run_id,
+            expected_workflow_id=workflow_id,
+            expected_studio_workflow_version_id=version.id,
+            session=db,
+        )
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     return ApiResponse.ok(projection)
 
 
@@ -398,10 +491,13 @@ async def get_project_runtime_trace(
 ) -> ApiResponse:
     """Return one project-owned run trace without opening generic run access."""
 
-    await get_workflow(db, workspace_id, project_id, workflow_id)
-    row = await db.get(WorkflowRun, run_id)
-    if row is None or row.workflow_id != workflow_id:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Workflow run not found")
+    row, workflow_version = await _get_project_workflow_run(
+        db,
+        workspace_id=workspace_id,
+        project_id=project_id,
+        workflow_id=workflow_id,
+        run_id=run_id,
+    )
     projection = await get_workflow_run_projection(run_id, session=db)
     checkpoint = await get_workflow_run_checkpoint(run_id, session=db)
     events = await list_workflow_run_events(
@@ -414,13 +510,6 @@ async def get_project_runtime_trace(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Workflow run not found")
     request = row.request or {}
     input_payload = request.get("input") or {}
-    workflow_version = None
-    if row.studio_workflow_version_id:
-        workflow_version = await db.scalar(
-            select(StudioWorkflowVersion.version).where(
-                StudioWorkflowVersion.id == row.studio_workflow_version_id
-            )
-        )
     return ApiResponse.ok(
         ProjectRuntimeTraceRead(
             workflow_version=workflow_version,

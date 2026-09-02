@@ -1,11 +1,17 @@
 'use client'
 
+
 import { useQueryClient } from '@tanstack/react-query'
 import { Bot, Check, Loader2, Plus, Send, ShieldCheck, X } from 'lucide-react'
 import { usePathname, useSearchParams } from 'next/navigation'
 import { FormEvent, KeyboardEvent, useEffect, useState } from 'react'
 
-import { Button } from '@/components/ui/button'
+import {
+  AgentPromptBar,
+  ApprovalCard,
+  ThinkingTrace,
+  ToolChip,
+} from '@/components/agent-native/agent-primitives'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import {
   Dialog,
@@ -440,55 +446,36 @@ export function GlobalAgentDock({
               <div
                 key={`${message.role}-${index}`}
                 className={message.role === 'user'
-                  ? 'ml-8 rounded-md bg-primary px-3 py-2 text-sm text-primary-foreground'
-                  : 'mr-8 rounded-md border bg-muted/30 px-3 py-2 text-sm'}
+                  ? 'ml-8 rounded-lg bg-primary px-3 py-2 text-sm text-primary-foreground'
+                  : 'mr-8 rounded-lg border bg-muted/30 px-3 py-2 text-sm'}
               >
                 {message.content}
               </div>
             ))}
             {sending ? (
-              <div className="flex items-center gap-2 text-xs text-muted-foreground" role="status">
-                <Loader2 className="size-3.5 animate-spin" aria-hidden />
-                Agent 正在处理
-              </div>
+              <ThinkingTrace
+                steps={['读取当前页面上下文', '整理可执行建议', '等待 Agent 回复']}
+              />
             ) : null}
             {proposal ? (
-              <div className="rounded-md border border-warning/40 bg-warning/10 p-3">
-                <div className="text-sm font-medium">待确认操作</div>
-                <p className="mt-1 text-xs text-muted-foreground">{proposal.summary}</p>
-                <div className="mt-3 rounded-xs border bg-background/70 p-2 font-mono text-2xs">
-                  {proposal.diff}
-                </div>
-                <div className="mt-2 space-y-1 font-mono text-3xs text-muted-foreground">
-                  <div>工作项：{proposal.work_item_id ?? '未生成'}</div>
-                  <div>工作区：{proposal.workspace_id ?? '未绑定'}</div>
-                  <div>提案版本：{proposal.proposal_version ?? '未生成'}</div>
-                </div>
-                <div className="mt-3 flex justify-end gap-2">
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    disabled={confirming}
-                    onClick={() => setProposal(null)}
-                  >
-                    <X aria-hidden />
-                    拒绝
-                  </Button>
-                  <Button
-                    size="sm"
-                    disabled={
-                      confirming
-                      || !proposal.work_item_id
-                      || !proposal.workspace_id
-                      || !proposal.proposal_version
-                    }
-                    onClick={() => void confirmProposal()}
-                  >
-                    {confirming ? <Loader2 className="animate-spin" aria-hidden /> : <Check aria-hidden />}
-                    确认执行
-                  </Button>
-                </div>
-              </div>
+              <ApprovalCard
+                summary={proposal.summary}
+                diff={proposal.diff}
+                metadata={[
+                  { label: '工具', value: proposal.tool },
+                  { label: '工作项', value: proposal.work_item_id ?? '未生成' },
+                  { label: '工作区', value: proposal.workspace_id ?? '未绑定' },
+                  { label: '提案版本', value: proposal.proposal_version ?? '未生成' },
+                ]}
+                confirming={confirming}
+                disabled={
+                  !proposal.work_item_id
+                  || !proposal.workspace_id
+                  || !proposal.proposal_version
+                }
+                onReject={() => setProposal(null)}
+                onConfirm={() => void confirmProposal()}
+              />
             ) : null}
             {error ? <p className="text-xs text-destructive" role="alert">{error}</p> : null}
           </div>

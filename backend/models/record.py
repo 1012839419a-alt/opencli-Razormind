@@ -37,6 +37,10 @@ class CollectedRecord(TimestampMixin):
         String(36), nullable=True, index=True
     )
 
+    # Immutable collection provenance envelope. Nullable for pre-envelope rows
+    # and for paths that did not establish optional references.
+    lineage: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
     # Raw data as returned by the channel
     raw_data: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     # Normalized standard fields: title, url, content, author, published_at, ...

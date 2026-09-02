@@ -60,6 +60,33 @@ class CollectOnlyChannel(AbstractChannel):
         return []
 
 
+class NonIncrementalPagedChannel(AbstractChannel):
+    """Paginated channel whose cursor is only meaningful during one run."""
+
+    channel_type = "paged-no-resume"
+    capabilities = Capabilities(incremental=False, paginated=True)
+
+    def __init__(self) -> None:
+        self.cursors_seen: list[dict | None] = []
+
+    async def fetch(self, ctx):
+        self.cursors_seen.append(ctx.cursor)
+        offset = (ctx.cursor or {}).get("offset", 0)
+        if offset == 0:
+            return FetchResult(
+                items=[{"id": "first-page"}],
+                next_cursor={"offset": 1},
+                has_more=True,
+            )
+        return FetchResult(items=[{"id": "second-page"}], has_more=False)
+
+    async def collect(self, config, parameters):  # pragma: no cover - unused
+        raise AssertionError("runner must call fetch(), not collect()")
+
+    async def validate_config(self, config):
+        return []
+
+
 class InfiniteChannel(AbstractChannel):
     """Always has_more → exercises the MAX_PAGES guard. 1 item/page."""
 
@@ -81,7 +108,9 @@ class InfiniteChannel(AbstractChannel):
 async def test_runner_drives_pagination_and_saves_cursor_each_page():
     chan = PagedChannel(total_pages=3)
     store = InMemoryCursorStore()
-    items = (await run_channel(_source(), {}, channel=chan, cursor_store=store, http=object())).items
+    items = (
+        await run_channel(_source(), {}, channel=chan, cursor_store=store, http=object())
+    ).items
 
     assert len(items) == 6  # 3 pages x 2 items
     assert [i["id"] for i in items] == ["0-0", "0-1", "1-0", "1-1", "2-0", "2-1"]
@@ -96,7 +125,9 @@ async def test_runner_resumes_from_stored_cursor():
     chan = PagedChannel(total_pages=3)
     store = InMemoryCursorStore()
     await store.save("s1", {"page": 2})  # pretend a prior run got to page 2
-    items = (await run_channel(_source(), {}, channel=chan, cursor_store=store, http=object())).items
+    items = (
+        await run_channel(_source(), {}, channel=chan, cursor_store=store, http=object())
+    ).items
 
     assert chan.cursors_seen[0] == {"page": 2}  # started where it left off
     assert [i["id"] for i in items] == ["2-0", "2-1"]  # only the remaining page
@@ -110,6 +141,19 @@ async def test_collect_only_channel_runs_once_no_cursor():
 
     assert result.items == [{"id": "x"}]
     assert await store.load("s1") is None  # not incremental → nothing saved
+
+
+@pytest.mark.asyncio
+async def test_non_incremental_pagination_advances_cursor_within_run():
+    """A non-incremental paginated source must not fetch page zero repeatedly."""
+    chan = NonIncrementalPagedChannel()
+    store = InMemoryCursorStore()
+
+    result = await run_channel(_source(), {}, channel=chan, cursor_store=store, http=object())
+
+    assert result.items == [{"id": "first-page"}, {"id": "second-page"}]
+    assert chan.cursors_seen == [None, {"offset": 1}]
+    assert await store.load("s1") is None
 
 
 @pytest.mark.asyncio

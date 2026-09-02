@@ -28,4 +28,10 @@ celery_app.conf.update(
     # that restart and, as it turned out, was never even wired in here.
     beat_scheduler="redbeat.RedBeatScheduler",
     redbeat_redis_url=settings.redis_url,
+    beat_schedule={
+        "scheduled-automation-tick": {
+            "task": "run_automation_scheduler_tick",
+            "schedule": 60.0,
+        }
+    },
 )

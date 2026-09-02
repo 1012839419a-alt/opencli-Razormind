@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import shutil
 from collections.abc import AsyncIterator
 from typing import Any
@@ -26,6 +27,9 @@ _DEFAULT_TIMEOUT_SECONDS = 60.0
 _LIST_WORKFLOWS = {"tool.list", "tools.list", "list_tools", "bbx_list_tools"}
 _CALL_WORKFLOWS = {"tool.call", "tools.call", "call_tool", "bbx_call"}
 _HEALTH_WORKFLOWS = {"health", "server.health", "bbx_health"}
+_DOUBAO_WORKFLOWS = {"workflow.gaojixing.doubao.browser"}
+_DOUBAO_URL = "https://www.doubao.com/chat"
+_DOUBAO_INPUT_SELECTOR = 'textarea, [contenteditable="true"], [role="textbox"]'
 
 
 @register_runtime
@@ -39,6 +43,7 @@ class BbxRuntimeAdapter(RuntimeAdapter):
         resume_by_id=False,
         checkpoint="none",
         concurrent_sessions=True,
+        features=frozenset({"browser", "tool_events"}),
     )
 
     def validate_config(self, config: dict[str, Any]) -> list[str]:
@@ -82,6 +87,10 @@ class BbxRuntimeAdapter(RuntimeAdapter):
                 return
             if task.workflow in _HEALTH_WORKFLOWS:
                 async for event in self._invoke_health(task):
+                    yield event
+                return
+            if task.workflow in _DOUBAO_WORKFLOWS:
+                async for event in self._invoke_doubao_browser(task):
                     yield event
                 return
             async for event in self._invoke_call_tool(task):
@@ -157,6 +166,527 @@ class BbxRuntimeAdapter(RuntimeAdapter):
             return
         yield event_done(task.task_id, result={"tool": tool_name, "result": result})
 
+    async def _invoke_doubao_browser(self, task: AgentTask) -> AsyncIterator[dict[str, Any]]:
+        """Run the bounded Gaojixing browser flow through the local BBX daemon.
+
+        This is intentionally a deterministic browser protocol, rather than a
+        prompt sent to another model: the question is filled into the same
+        persistent Chrome profile that noVNC exposes, and the final visible
+        page plus observed links/share metadata are returned as one structured
+        response for the center-side evidence mapper.
+        """
+        question = _question_from_task(task)
+        if not question:
+            yield event_error(
+                task.task_id,
+                "Doubao browser workflow requires input.question or input.message",
+                error_type="ValueError",
+            )
+            return
+
+        # Isolate every source item in a fresh conversation. Reusing the
+        # active tab can mix a previous answer into the next page snapshot.
+        selected = None
+        created_new = False
+        try:
+            created = await self._doubao_call(
+                task,
+                "call",
+                None,
+                {"method": "tabs.create", "params": {"url": _DOUBAO_URL}},
+            )
+            selected = _tab_from_result(created)
+            if selected is not None:
+                created_new = True
+                selected["origin"] = _DOUBAO_URL
+                await self._wait_for_tab_url(task, selected["tab_id"])
+        except RuntimeInvocationError:
+            tabs = await self._doubao_call(task, "tabs", None, {})
+            records = _tab_records(tabs)
+            selected = _select_doubao_tab(records) or _active_tab(records)
+        if selected is None:
+            raise RuntimeInvocationError(
+                "BBX could not find or create a browser tab for Doubao",
+                "DoubaoTabUnavailable",
+            )
+
+        tab_id = selected["tab_id"]
+        if not _is_doubao_tab(selected):
+            await self._doubao_call(
+                task,
+                "call",
+                tab_id,
+                {"method": "navigation.navigate", "params": {"url": _DOUBAO_URL}},
+            )
+            await self._wait_for_tab_url(task, tab_id)
+        elif not created_new:
+            await self._doubao_call(task, "tab-activate", tab_id, {})
+
+        # A newly created tab can report a complete URL before Doubao has
+        # mounted its editor. Wait for the actual editable node instead of
+        # treating that short navigation window as a missing login session.
+        input_ref = await self._wait_for_doubao_input_ref(task, tab_id)
+        if input_ref is None:
+            page_text = await self._doubao_call(
+                task,
+                "call",
+                tab_id,
+                {"method": "page.get_text", "params": {"textBudget": 1200}},
+            )
+            visible_text = _page_text(page_text)
+            login_required = _looks_like_doubao_login_page(visible_text)
+            await self._close_created_doubao_tab(task, tab_id, created_new)
+            for event in _drain_bbx_events(task):
+                yield event
+            yield event_done(
+                task.task_id,
+                result={
+                    "text": json.dumps(
+                        {
+                            "status": "blocked",
+                            "error_type": (
+                                "doubao_login_required"
+                                if login_required
+                                else "doubao_input_unavailable"
+                            ),
+                            "message": (
+                                "Doubao login session is unavailable; please log in through noVNC."
+                                if login_required
+                                else (
+                                    "Doubao page loaded, but its input editor did not become "
+                                    "available."
+                                )
+                            ),
+                            "answer": "",
+                            "data": [],
+                            "links": [],
+                            "conversation_url": "",
+                            "session_share_data": [],
+                            "suggested_keywords": [],
+                            "page_text": visible_text,
+                        },
+                        ensure_ascii=False,
+                    )
+                },
+            )
+            return
+
+        input_ref = await self._fill_doubao_input(task, tab_id, input_ref, question)
+        send_dom = await self._doubao_call(
+            task,
+            "call",
+            tab_id,
+            {
+                "method": "dom.query",
+                "params": {
+                    "selector": "#flow-end-msg-send",
+                    "maxNodes": 5,
+                    "maxDepth": 2,
+                    "textBudget": 100,
+                },
+            },
+        )
+        send_ref = _clickable_ref(send_dom)
+        if send_ref is not None:
+            try:
+                await self._doubao_call(
+                    task,
+                    "call",
+                    tab_id,
+                    {
+                        "method": "input.click",
+                        "params": {"target": {"elementRef": send_ref}},
+                    },
+                )
+            except RuntimeInvocationError as exc:
+                if not _is_stale_element_error(exc):
+                    raise
+                await asyncio.sleep(0.25)
+                retry_dom = await self._doubao_call(
+                    task,
+                    "call",
+                    tab_id,
+                    {
+                        "method": "dom.query",
+                        "params": {
+                            "selector": "#flow-end-msg-send",
+                            "maxNodes": 5,
+                            "maxDepth": 2,
+                            "textBudget": 100,
+                        },
+                    },
+                )
+                retry_ref = _clickable_ref(retry_dom)
+                if retry_ref is not None:
+                    await self._doubao_call(
+                        task,
+                        "call",
+                        tab_id,
+                        {
+                            "method": "input.click",
+                            "params": {"target": {"elementRef": retry_ref}},
+                        },
+                    )
+                else:
+                    input_ref = await self._query_doubao_input_ref(task, tab_id) or input_ref
+                    await self._press_doubao_enter(task, tab_id, input_ref)
+        else:
+            # Some Doubao layouts omit the send button while composing. Enter
+            # remains a safe fallback for those layouts.
+            await self._press_doubao_enter(task, tab_id, input_ref)
+
+        settle_seconds = _nonnegative_number(task.config.get("settle_seconds"), 5.0)
+        if settle_seconds:
+            await asyncio.sleep(settle_seconds)
+        # Deep-research answers can continue rendering after the initial
+        # settle period.  Keep the browser task bounded, but do not discard a
+        # visible final answer merely because Doubao needed more than a short
+        # chat response window.
+        response_timeout = _nonnegative_number(
+            task.config.get("response_timeout_seconds"), 180.0
+        )
+        deadline = asyncio.get_running_loop().time() + response_timeout
+        page_text_result: dict[str, Any] = {}
+        state: dict[str, Any] = {}
+        extracted: dict[str, Any] = {}
+        value: dict[str, Any] = {}
+        answer_tail = ""
+        previous_answer_tail = ""
+        while True:
+            page_text_result = await self._doubao_call(
+                task,
+                "call",
+                tab_id,
+                {"method": "page.get_text", "params": {"textBudget": 100000}},
+            )
+            state = await self._doubao_call(
+                task,
+                "call",
+                tab_id,
+                {"method": "page.get_state", "params": {}},
+            )
+            extracted = await self._doubao_call(
+                task,
+                "call",
+                tab_id,
+                {
+                    "method": "page.evaluate",
+                    "params": {
+                        "expression": _DOUBAO_EXTRACTION_EXPRESSION,
+                        "returnByValue": True,
+                    },
+                },
+            )
+            value = extracted.get("value") if isinstance(extracted, dict) else {}
+            value = value if isinstance(value, dict) else {}
+            answer_tail = _answer_after_question(_page_text(page_text_result), question)
+            suggested_now = _string_list(value.get("suggested_keywords")) or (
+                _suggested_keywords_from_page_text(_page_text(page_text_result))
+            )
+            if _answer_ready(_string(value.get("answer")), answer_tail, question):
+                if suggested_now or answer_tail == previous_answer_tail:
+                    break
+                previous_answer_tail = answer_tail
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                break
+            await asyncio.sleep(min(2.0, remaining))
+
+        page_text = _page_text(page_text_result)
+        value = extracted.get("value") if isinstance(extracted, dict) else None
+        value = value if isinstance(value, dict) else {}
+        suggestion_deadline = asyncio.get_running_loop().time() + _nonnegative_number(
+            task.config.get("suggested_wait_seconds"), 5.0
+        )
+        suggested_keywords = _string_list(value.get("suggested_keywords"))
+        while not suggested_keywords:
+            suggested_keywords = _suggested_keywords_from_page_text(page_text)
+            remaining = suggestion_deadline - asyncio.get_running_loop().time()
+            if suggested_keywords or remaining <= 0:
+                break
+            await asyncio.sleep(min(1.0, remaining))
+            page_text_result = await self._doubao_call(
+                task,
+                "call",
+                tab_id,
+                {"method": "page.get_text", "params": {"textBudget": 100000}},
+            )
+            page_text = _page_text(page_text_result)
+            answer_tail = _answer_after_question(page_text, question)
+            extracted = await self._doubao_call(
+                task,
+                "call",
+                tab_id,
+                {
+                    "method": "page.evaluate",
+                    "params": {
+                        "expression": _DOUBAO_EXTRACTION_EXPRESSION,
+                        "returnByValue": True,
+                    },
+                },
+            )
+            value = extracted.get("value") if isinstance(extracted, dict) else {}
+            value = value if isinstance(value, dict) else {}
+        answer_tail = _answer_after_question(page_text, question)
+        conversation_url = _string(state.get("url")) or _string(value.get("conversation_url")) or ""
+        links = _links(value.get("links"))
+        share_data = value.get("session_share_data")
+        if not share_data and conversation_url:
+            share_data = {"url": conversation_url, "type": "conversation"}
+        answer = _select_doubao_answer(value.get("answer"), answer_tail)
+        answer = _remove_suggested_keyword_tail(answer, suggested_keywords)
+        if not _answer_ready(answer, answer_tail, question):
+            response = {
+                "status": "blocked",
+                "error_type": "doubao_response_timeout",
+                "message": "Doubao did not show a final answer before the response timeout.",
+                "answer": "",
+                "data": [],
+                "links": links,
+                "conversation_url": conversation_url,
+                "session_share_data": share_data or [],
+                "suggested_keywords": suggested_keywords,
+                "page_text": page_text,
+            }
+            await self._close_created_doubao_tab(task, tab_id, created_new)
+            for event in _drain_bbx_events(task):
+                yield event
+            yield event_done(
+                task.task_id,
+                result={
+                    "text": json.dumps(response, ensure_ascii=False),
+                    "tab_id": tab_id,
+                    "browser_transport": "bbx",
+                },
+            )
+            return
+        response = {
+            "status": "completed",
+            "answer": answer,
+            "data": value.get("data") if isinstance(value.get("data"), list) else [],
+            "links": links,
+            "conversation_url": conversation_url,
+            "session_share_data": share_data or [],
+            "suggested_keywords": suggested_keywords,
+        }
+        await self._close_created_doubao_tab(task, tab_id, created_new)
+        for event in _drain_bbx_events(task):
+            yield event
+        yield event_done(
+            task.task_id,
+            result={
+                "text": json.dumps(response, ensure_ascii=False),
+                "tab_id": tab_id,
+                "browser_transport": "bbx",
+            },
+        )
+
+    async def _query_doubao_input_ref(
+        self, task: AgentTask, tab_id: int | str
+    ) -> str | None:
+        dom = await self._doubao_call(
+            task,
+            "call",
+            tab_id,
+            {
+                "method": "dom.query",
+                "params": {
+                    "selector": _DOUBAO_INPUT_SELECTOR,
+                    "maxNodes": 20,
+                    "maxDepth": 3,
+                    "textBudget": 200,
+                },
+            },
+        )
+        return _editable_ref(dom)
+
+    async def _close_created_doubao_tab(
+        self, task: AgentTask, tab_id: int | str, created_new: bool
+    ) -> None:
+        """Close only tabs opened for this item; preserve the user's session tab."""
+        if not created_new:
+            return
+        try:
+            await self._doubao_call(
+                task,
+                "call",
+                None,
+                {"method": "tabs.close", "params": {"tabId": tab_id}},
+            )
+        except RuntimeInvocationError:
+            # Cleanup must never turn an otherwise valid Doubao answer into a
+            # failed collection item. The next run can still recover the tab.
+            return
+
+    async def _wait_for_doubao_input_ref(
+        self, task: AgentTask, tab_id: int | str
+    ) -> str | None:
+        deadline = asyncio.get_running_loop().time() + _nonnegative_number(
+            task.config.get("input_wait_seconds"), 30.0
+        )
+        while True:
+            try:
+                input_ref = await self._query_doubao_input_ref(task, tab_id)
+            except RuntimeInvocationError as exc:
+                # The DOM can be replaced while Doubao mounts its editor. A
+                # stale reference is transient; keep polling the page instead
+                # of surfacing it as a login or collection failure.
+                if not _is_stale_element_error(exc):
+                    raise
+                input_ref = None
+            if input_ref is not None:
+                return input_ref
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                return None
+            await asyncio.sleep(min(0.5, remaining))
+
+    async def _fill_doubao_input(
+        self,
+        task: AgentTask,
+        tab_id: int | str,
+        input_ref: str,
+        question: str,
+    ) -> str:
+        try:
+            await self._doubao_call(
+                task,
+                "call",
+                tab_id,
+                {
+                    "method": "input.fill",
+                    "params": {"target": {"elementRef": input_ref}, "value": question},
+                },
+            )
+        except RuntimeInvocationError as exc:
+            if not _is_stale_element_error(exc):
+                raise
+            await asyncio.sleep(0.25)
+            fresh_ref = await self._query_doubao_input_ref(task, tab_id)
+            if fresh_ref is None:
+                raise
+            await self._doubao_call(
+                task,
+                "call",
+                tab_id,
+                {
+                    "method": "input.fill",
+                    "params": {"target": {"elementRef": fresh_ref}, "value": question},
+                },
+            )
+            return fresh_ref
+        return input_ref
+
+    async def _press_doubao_enter(
+        self, task: AgentTask, tab_id: int | str, input_ref: str
+    ) -> None:
+        try:
+            await self._doubao_call(
+                task,
+                "call",
+                tab_id,
+                {
+                    "method": "input.press_key",
+                    "params": {"target": {"elementRef": input_ref}, "key": "ENTER"},
+                },
+            )
+        except RuntimeInvocationError as exc:
+            if not _is_stale_element_error(exc):
+                raise
+            await asyncio.sleep(0.25)
+            fresh_ref = await self._query_doubao_input_ref(task, tab_id)
+            if fresh_ref is None:
+                raise
+            await self._doubao_call(
+                task,
+                "call",
+                tab_id,
+                {
+                    "method": "input.press_key",
+                    "params": {"target": {"elementRef": fresh_ref}, "key": "ENTER"},
+                },
+            )
+
+    async def _wait_for_tab_url(self, task: AgentTask, tab_id: int | str) -> dict[str, Any]:
+        """Wait for BBX to materialize a newly-created tab before DOM access."""
+        deadline = asyncio.get_running_loop().time() + 15.0
+        last_error: RuntimeInvocationError | None = None
+        while True:
+            try:
+                state = await self._doubao_call(
+                    task,
+                    "call",
+                    tab_id,
+                    {"method": "page.get_state", "params": {}},
+                )
+            except RuntimeInvocationError as exc:
+                last_error = exc
+            else:
+                if _string(state.get("url")):
+                    return state
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                if last_error is not None:
+                    raise last_error
+                raise RuntimeInvocationError(
+                    "BBX tab did not expose a URL before timeout",
+                    "DoubaoTabUnavailable",
+                )
+            await asyncio.sleep(min(0.5, remaining))
+
+    async def _doubao_call(
+        self,
+        task: AgentTask,
+        command: str,
+        tab_id: int | str | None,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Call one BBX method and emit normalized tool events."""
+        if command == "tabs":
+            method = "tabs.list"
+            params: dict[str, Any] = {}
+            args = ["tabs"]
+        elif command in {"tab-activate", "call"}:
+            method = str(payload.get("method") or command)
+            params = payload.get("params") if isinstance(payload.get("params"), dict) else {}
+            args = [command]
+            if command == "tab-activate":
+                method = "tabs.activate"
+                if tab_id is None:
+                    raise RuntimeInvocationError(
+                        "BBX tab activation requires a tab id", "ValueError"
+                    )
+                args.append(str(tab_id))
+            elif tab_id is not None:
+                args.extend(["--tab", str(tab_id)])
+            if command == "call":
+                args.extend([method, json.dumps(params, separators=(",", ":"), ensure_ascii=False)])
+            elif params:
+                args.append(json.dumps(params, separators=(",", ":"), ensure_ascii=False))
+        else:  # pragma: no cover - private helper guard
+            raise RuntimeInvocationError(f"Unsupported Doubao BBX command: {command}", "ValueError")
+
+        arguments = {"tabId": tab_id, "params": params} if tab_id is not None else params
+        # The helper cannot yield, so callers receive tool events through a
+        # lightweight side channel attached to the task config.
+        task_events = task.config.setdefault("_bbx_events", [])
+        task_events.append(event_tool_call(task.task_id, method, args=arguments))
+        result = await self._run_cli(args, task.config)
+        task_events.append(
+            event_tool_result(
+                task.task_id,
+                method,
+                result=result,
+                is_error=result.get("ok") is False,
+            )
+        )
+        if result.get("ok") is False:
+            raise RuntimeInvocationError(
+                _result_error_message(result, f"BBX method {method!r} failed"),
+                "BbxToolError",
+            )
+        return result
+
     async def _run_cli(
         self,
         args: list[str],
@@ -207,6 +737,292 @@ class BbxRuntimeAdapter(RuntimeAdapter):
                 "BbxCliError",
             )
         return payload
+
+
+_DOUBAO_EXTRACTION_EXPRESSION = r'''(() => {
+  const text = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+  const isNavigationLink = (node) => Boolean(
+    node.closest('nav, [class*="sidebar"], [class*="conversation-item"]')
+  );
+  const links = Array.from(document.querySelectorAll('a[href]'))
+    .filter((node) => !isNavigationLink(node))
+    .map((node) => ({url: node.href, title: text(node.innerText || node.textContent)}))
+    .filter((item) => /^https?:/i.test(item.url) &&
+      !/^https:\/\/www\.doubao\.com\/chat(?:\/|$)/i.test(item.url));
+  const suggested_keywords = Array.from(
+    document.querySelectorAll(
+      'button, [role="button"], a, [class*="suggest-list-item"]'
+    )
+  )
+    .map((node) => ({
+      value: text(node.innerText || node.textContent),
+      className: String(node.className || '')
+    }))
+    .filter((item) => item.value && item.value.length <= 120 &&
+      (item.className.includes('suggest-list-item') ||
+        /推荐|继续问|猜你想问|相关问题|关键词/i.test(item.value)))
+    .map((item) => item.value)
+    .filter((value, index, values) => values.indexOf(value) === index)
+    .slice(-20);
+  const candidates = Array.from(document.querySelectorAll(
+    '[data-message-author-role="assistant"], [data-role="assistant"], [class*="assistant"]'
+  ))
+    .map((node) => String(node.innerText || node.textContent || '').trim())
+    .filter(Boolean);
+  return {
+    answer: candidates.length ? candidates[candidates.length - 1] : '',
+    links,
+    suggested_keywords,
+    session_share_data: links
+      .filter((item) => /分享|share/i.test(item.title))
+      .slice(-10)
+  };
+})()'''
+
+
+def _question_from_task(task: AgentTask) -> str:
+    payload = task.input if isinstance(task.input, dict) else {}
+    for key in ("question", "query", "message"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip().split("\n")[-1].strip() if key == "message" else value.strip()
+    return ""
+
+
+def _tab_records(result: dict[str, Any]) -> list[dict[str, Any]]:
+    for key in ("evidence", "tabs", "items"):
+        value = result.get(key)
+        if isinstance(value, list):
+            return [item for item in value if isinstance(item, dict)]
+    return []
+
+
+def _tab_from_result(result: dict[str, Any]) -> dict[str, Any] | None:
+    records = _tab_records(result)
+    if records:
+        return _normalize_tab(records[0])
+    raw_id = result.get("tabId", result.get("tab_id"))
+    if isinstance(raw_id, (int, str)) and str(raw_id).strip():
+        return {"tab_id": raw_id, "active": True, "origin": ""}
+    return None
+
+
+def _select_doubao_tab(records: list[dict[str, Any]]) -> dict[str, Any] | None:
+    for record in records:
+        normalized = _normalize_tab(record)
+        if _is_doubao_tab(normalized):
+            return normalized
+    return None
+
+
+def _active_tab(records: list[dict[str, Any]]) -> dict[str, Any] | None:
+    for record in records:
+        normalized = _normalize_tab(record)
+        if normalized.get("active") and _is_automatable_tab(normalized):
+            return normalized
+    for record in records:
+        normalized = _normalize_tab(record)
+        if _is_automatable_tab(normalized):
+            return normalized
+    return None
+
+
+def _normalize_tab(record: dict[str, Any]) -> dict[str, Any]:
+    raw_id = record.get("tabId", record.get("tab_id"))
+    return {
+        "tab_id": raw_id,
+        "active": record.get("active") is True,
+        "origin": _string(record.get("origin")) or _string(record.get("url")) or "",
+        "title": _string(record.get("title")) or "",
+    }
+
+
+def _is_doubao_tab(tab: dict[str, Any]) -> bool:
+    return "doubao.com" in (_string(tab.get("origin")) or "").lower()
+
+
+def _is_automatable_tab(tab: dict[str, Any]) -> bool:
+    """Exclude browser-owned pages that Browser Bridge cannot script."""
+    origin = (_string(tab.get("origin")) or "").lower()
+    return not origin.startswith(
+        ("about:", "chrome:", "chrome-extension:", "chrome-search:", "devtools:", "edge:")
+    )
+
+
+def _editable_ref(result: dict[str, Any]) -> str | None:
+    for node in result.get("nodes", []) if isinstance(result, dict) else []:
+        if not isinstance(node, dict):
+            continue
+        ref = _string(node.get("elementRef"))
+        tag = (_string(node.get("tag")) or "").lower()
+        role = (_string(node.get("role")) or "").lower()
+        if ref and (tag in {"textarea", "input"} or role == "textbox"):
+            return ref
+    return None
+
+
+def _clickable_ref(result: dict[str, Any]) -> str | None:
+    for node in result.get("nodes", []) if isinstance(result, dict) else []:
+        if not isinstance(node, dict):
+            continue
+        ref = _string(node.get("elementRef"))
+        tag = (_string(node.get("tag")) or "").lower()
+        role = (_string(node.get("role")) or "").lower()
+        if ref and (tag == "button" or role == "button"):
+            return ref
+    return None
+
+
+def _is_stale_element_error(error: RuntimeInvocationError) -> bool:
+    return "stale" in str(error).casefold()
+
+
+def _looks_like_doubao_login_page(page_text: str) -> bool:
+    """Recognize explicit login UI without treating an empty editor as login."""
+    normalized = " ".join(page_text.split())
+    return any(
+        marker in normalized
+        for marker in (
+            "手机号登录",
+            "扫码登录",
+            "登录/注册",
+            "验证码登录",
+            "请先登录",
+            "请登录后",
+        )
+    )
+
+
+def _clean_doubao_visible_text(value: str) -> str:
+    text = value.strip()
+    footer = re.search(r"(?m)^\s*对话\s*$", text)
+    return text[: footer.start()].strip() if footer else text
+
+
+def _has_answer_content(value: str) -> bool:
+    normalized = " ".join(value.split())
+    if not normalized:
+        return False
+    if normalized in {"正在思考", "正在生成", "生成中", "思考中"}:
+        return False
+    if re.fullmatch(r"搜索\s*\d+\s*个关键词，参考\s*\d+\s*篇资料", normalized):
+        return False
+    return len(normalized) > 5
+
+
+def _select_doubao_answer(answer: object, answer_tail: str) -> str:
+    """Prefer the assistant node extracted by BBX over page chrome."""
+    extracted = _clean_doubao_visible_text(_string(answer) or "")
+    if _has_answer_content(extracted):
+        return extracted
+    fallback = _clean_doubao_visible_text(answer_tail)
+    return fallback if _has_answer_content(fallback) else ""
+
+
+def _answer_after_question(page_text: str, question: str) -> str:
+    if not page_text or not question:
+        return ""
+    position = page_text.rfind(question)
+    if position >= 0:
+        after = _clean_doubao_visible_text(page_text[position + len(question) :])
+        if _has_answer_content(after):
+            return after
+
+    # Doubao may insert whitespace inside a submitted term such as ``DHA``.
+    # Match the last whitespace-tolerant occurrence before extracting the tail.
+    compact_question = [char for char in question if not char.isspace()]
+    if not compact_question:
+        return ""
+    pattern = r"\s*".join(re.escape(char) for char in compact_question)
+    matches = list(re.finditer(pattern, page_text))
+    if matches:
+        after = _clean_doubao_visible_text(page_text[matches[-1].end() :])
+        if _has_answer_content(after):
+            return after
+
+    # Doubao may render the submitted question after the assistant message.
+    # In that layout keep only the answer body and remove the app chrome.
+    before = page_text[:position].strip()
+    marker = before.rfind("豆包 快速")
+    fallback = before[marker + len("豆包 快速") :].strip() if marker >= 0 else ""
+    return fallback if _has_answer_content(fallback) else ""
+
+
+def _answer_ready(answer: str | None, answer_tail: str, question: str) -> bool:
+    question_text = " ".join(question.split())
+    candidate = _clean_doubao_visible_text(answer or "")
+    tail = _clean_doubao_visible_text(answer_tail)
+    if _has_answer_content(tail):
+        return True
+    return bool(_has_answer_content(candidate) and " ".join(candidate.split()) != question_text)
+
+
+def _suggested_keywords_from_page_text(page_text: str) -> list[str]:
+    visible = _clean_doubao_visible_text(page_text)
+    suggestions: list[str] = []
+    for line in reversed([item.strip() for item in visible.splitlines() if item.strip()]):
+        if len(line) <= 120 and line.endswith(("？", "?")):
+            suggestions.append(line)
+            continue
+        if suggestions:
+            break
+    return list(reversed(suggestions[-20:])) if len(suggestions) >= 2 else []
+
+
+def _remove_suggested_keyword_tail(answer: str, suggested_keywords: list[str]) -> str:
+    if not answer or not suggested_keywords:
+        return answer
+    suggestions = set(suggested_keywords)
+    lines = answer.splitlines()
+    while lines and lines[-1].strip() in suggestions:
+        lines.pop()
+    return "\n".join(lines).strip()
+
+
+def _page_text(result: dict[str, Any]) -> str:
+    if not isinstance(result, dict):
+        return ""
+    value = result.get("text", result.get("value"))
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _links(value: object) -> list[dict[str, str]]:
+    if not isinstance(value, list):
+        return []
+    links: list[dict[str, str]] = []
+    for item in value:
+        if isinstance(item, str) and item.startswith(("http://", "https://")):
+            links.append({"url": item})
+        elif isinstance(item, dict):
+            url = _string(item.get("url")) or _string(item.get("href"))
+            if url and url.startswith(("http://", "https://")):
+                link = {"url": url}
+                title = _string(item.get("title"))
+                if title:
+                    link["title"] = title
+                links.append(link)
+    return links
+
+
+def _string_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return [value.strip()] if isinstance(value, str) and value.strip() else []
+    return [item.strip() for item in value if isinstance(item, str) and item.strip()]
+
+
+def _string(value: object) -> str | None:
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def _nonnegative_number(value: object, default: float) -> float:
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0:
+        return float(value)
+    return default
+
+
+def _drain_bbx_events(task: AgentTask) -> list[dict[str, Any]]:
+    events = task.config.pop("_bbx_events", [])
+    return events if isinstance(events, list) else []
 
 
 def _resolve_binary(config: dict[str, Any]) -> str | None:

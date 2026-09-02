@@ -6,6 +6,7 @@ import enum
 import graphlib
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 
@@ -67,3 +68,40 @@ class Workflow:
                 ordered.append(by_name[name])
             sorter.done(*ready)
         return ordered
+
+
+READ_ONLY_READINESS = "builtin.read_only_readiness"
+
+
+def _inspect_runtime_root() -> str:
+    root = Path.cwd().resolve()
+    if not root.is_dir():
+        raise RuntimeError("Agent runtime working directory is unavailable")
+    return str(root)
+
+
+def _verify_runtime_bundle() -> str:
+    module_path = Path(__file__).resolve()
+    if not module_path.is_file():
+        raise RuntimeError("Packaged MiniFlow runtime bundle is unavailable")
+    return module_path.name
+
+
+_READ_ONLY_READINESS_WORKFLOW = Workflow(
+    name="operations-read-only-readiness",
+    steps=[
+        Step(name="inspect-runtime-root", run=_inspect_runtime_root),
+        Step(
+            name="verify-runtime-bundle",
+            run=_verify_runtime_bundle,
+            depends_on=["inspect-runtime-root"],
+        ),
+    ],
+)
+
+
+def get_builtin_workflow(name: str) -> Workflow | None:
+    """Resolve a stable built-in workflow alias without filesystem assumptions."""
+    if name == READ_ONLY_READINESS:
+        return _READ_ONLY_READINESS_WORKFLOW
+    return None

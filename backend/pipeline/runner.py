@@ -168,11 +168,18 @@ async def run_collection_pipeline(
         {k: v for k, v in (agent_config or {}).items() if k != "prompt_template"},
     )
 
-    # ── Phase 3: run pipeline (no session held during collection) ─────────────
-    # Hold a per-domain slot for the run so the fleet stays polite to a site even
-    # when many sources target it (in-process cap; cross-worker would need Redis).
-    from backend.pipeline.domain_limiter import domain_slot
+    # The legacy task runner knows the durable task/run and worker identities.
+    # Source/binding revisions, acquisition execution, runtime, trace, and
+    # artifacts remain null unless an upstream handoff establishes them; this
+    # path deliberately does not infer an acquisition-to-record bridge.
+    from backend.pipeline.sinks.base import CollectionLineage
 
+    collection_lineage = CollectionLineage(
+        task_id=task_id,
+        source_id=source.id,
+        collection_run_id=run_id,
+        worker_id=worker_id,
+    )
     async with domain_slot(source):
         try:
             pipeline_result = await run_pipeline(

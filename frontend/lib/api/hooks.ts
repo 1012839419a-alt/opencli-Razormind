@@ -25,6 +25,9 @@ import type {
   WorkspaceSettingsValues,
 } from "./types";
 
+export type { SystemConfig }
+export type SystemConfigPatch = api.SystemConfigPatch
+
 export function useMyWorkspaces() {
   return useQuery({ queryKey: ["workspaces"], queryFn: api.listMyWorkspaces });
 }
@@ -379,6 +382,29 @@ export function useOperationsAgents(workspaceId: string | null) {
   });
 }
 
+export function useOperationsAgentTeams(workspaceId: string | null) {
+  return useQuery({
+    queryKey: ['operations-agent-teams', workspaceId],
+    queryFn: () => api.listOperationsAgentTeams(workspaceId as string),
+    enabled: !!workspaceId,
+  })
+}
+
+export function useCreateOperationsAgent() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({
+      workspaceId,
+      data,
+    }: {
+      workspaceId: string
+      data: Parameters<typeof api.createOperationsAgent>[1]
+    }) => api.createOperationsAgent(workspaceId, data),
+    onSuccess: (_agent, { workspaceId }) =>
+      queryClient.invalidateQueries({ queryKey: ['operations-agents', workspaceId] }),
+  })
+}
+
 export function useOperationsAgentActivity(workspaceId: string | null) {
   return useQuery({
     queryKey: ["operations-agent-activity", workspaceId],
@@ -509,6 +535,15 @@ export function useInstallAutomationStarters() {
   })
 }
 
+export function useInstallAutomationStarters() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ workspaceId }: { workspaceId: string }) => api.installAutomationStarters(workspaceId),
+    onSuccess: (_result, { workspaceId }) =>
+      queryClient.invalidateQueries({ queryKey: ['automations', workspaceId] }),
+  })
+}
+
 export function useCreateAutomation() {
   const queryClient = useQueryClient();
   return useMutation({
@@ -546,6 +581,16 @@ export function usePatchAutomation() {
     onSuccess: (_result, { workspaceId }) =>
       queryClient.invalidateQueries({ queryKey: ["automations", workspaceId] }),
   });
+}
+
+export function useStartAutomationRun() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ workspaceId, automationId }: { workspaceId: string; automationId: string }) =>
+      api.startAutomationRun(workspaceId, automationId),
+    onSuccess: (_run, { workspaceId }) =>
+      queryClient.invalidateQueries({ queryKey: ['operations-agent-activity', workspaceId] }),
+  })
 }
 
 export function usePatchOperationsAgent() {

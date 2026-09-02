@@ -1,6 +1,5 @@
 import pytest
 
-from backend.channels.base import ChannelFetchError, ChannelResult, FetchContext
 from backend.channels.doubao_research_channel import (
     DoubaoResearchChannel,
     _citations,
@@ -20,6 +19,7 @@ def test_citations_preserve_order_and_strip_punctuation():
     ]
 
 
+# merge marker
 def test_conversation_url_extracts_chat_id():
     status = (
         '[{"Status": "Connected", "Url": '
@@ -37,6 +37,40 @@ def test_conversation_url_ignores_root_chat():
 
 def test_conversation_url_tolerates_garbage():
     assert _conversation_url("not json at all") == ""
+# merge-base marker
+# incoming marker
+def test_structured_response_preserves_share_data_and_keywords():
+    response = _structured_response(
+        "```json\n"
+        '{"answer":"结论", "session_share_data":[{"url":"https://doubao.com/share/1"}], '
+        '"suggested_keywords":["DHA 食物"]}\n```'
+    )
+
+    assert response["answer"] == "结论"
+    assert response["session_share_data"] == [{"url": "https://doubao.com/share/1"}]
+    assert response["suggested_keywords"] == ["DHA 食物"]
+# end marker
+
+
+def test_structured_response_preserves_data_and_links():
+    response = _structured_response(
+        '{"answer":"结论", "data":{"items":["一","二"]}, '
+        '"links":[{"title":"来源","url":"https://example.com/source"}], '
+        '"session_share_data":[], "suggested_keywords":[]}'
+    )
+
+    assert response["data"] == {"items": ["一", "二"]}
+    assert response["links"] == [{"title": "来源", "url": "https://example.com/source"}]
+    assert response["response_data"]["data"] == {"items": ["一", "二"]}
+
+
+def test_structured_response_accepts_doubao_suggested_keys_alias():
+    response = _structured_response(
+        '{"answer":"结论", "session_share_data":"", '
+        '"suggested_keys":["深海鱼", "DHA 鸡蛋"], "citations":[]}'
+    )
+
+    assert response["suggested_keywords"] == ["深海鱼", "DHA 鸡蛋"]
 
 
 def test_structured_response_preserves_share_data_and_keywords():
@@ -84,6 +118,39 @@ async def test_collect_stores_answer_and_citations(monkeypatch):
 
     assert result.success
     assert result.items[0]["title"] == "麻将机"
+    assert result.items[0]["citations"] == [{"url": "https://example.com/source"}]
+
+
+@pytest.mark.asyncio
+async def test_collect_reads_settled_research_answer(monkeypatch):
+    calls = []
+    sleeps = []
+
+    async def fake_run(command):
+        calls.append(command[2])
+        if command[2] == "ask":
+            return 0, '[{"Role":"assistant","Text":"正在理解任务要求"}]', ""
+        return 0, '[{"Role":"assistant","Text":"最终报告 https://example.com/source"}]', ""
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+
+    monkeypatch.setattr("backend.channels.doubao_research_channel._run_doubao_command", fake_run)
+    monkeypatch.setattr("backend.channels.doubao_research_channel.asyncio.sleep", fake_sleep)
+
+    result = await DoubaoResearchChannel().collect(
+        {
+            "question": "测试",
+            "settle_seconds": 35,
+            "capture_conversation_url": False,
+        },
+        {},
+    )
+
+    assert result.success
+    assert calls == ["ask", "read"]
+    assert sleeps == [35]
+    assert result.items[0]["content"] == "最终报告 https://example.com/source"
     assert result.items[0]["citations"] == [{"url": "https://example.com/source"}]
     assert result.metadata["citation_count"] == 1
 
@@ -141,10 +208,14 @@ async def test_collect_captures_conversation_url(monkeypatch):
         if command[2] == "ask":
             return 0, '[{"Role":"assistant","Text":"回答"}]', ""
         if command[2] == "status":
-            return 0, (
-                '[{"Status": "Connected", "Url": '
-                '"https://www.doubao.com/chat/12345", "Title": "t"}]'
-            ), ""
+            return (
+                0,
+                (
+                    '[{"Status": "Connected", "Url": '
+                    '"https://www.doubao.com/chat/12345", "Title": "t"}]'
+                ),
+                "",
+            )
         return 0, "", ""
 
     monkeypatch.setattr("backend.channels.doubao_research_channel._run_doubao_command", fake_run)
@@ -172,10 +243,14 @@ async def test_collect_tolerates_status_failure(monkeypatch):
 @pytest.mark.asyncio
 async def test_collect_classifies_captcha_block(monkeypatch):
     async def fake_run(command):
-        return 1, "", (
-            "ok: false\nerror:\n  code: COMMAND_EXEC\n"
-            "  message: Doubao blocked the request with a verification challenge\n"
-            "  help: 'Detected challenge signal: iframe[src*=\"captcha\"]'"
+        return (
+            1,
+            "",
+            (
+                "ok: false\nerror:\n  code: COMMAND_EXEC\n"
+                "  message: Doubao blocked the request with a verification challenge\n"
+                "  help: 'Detected challenge signal: iframe[src*=\"captcha\"]'"
+            ),
         )
 
     monkeypatch.setattr("backend.channels.doubao_research_channel._run_doubao_command", fake_run)
@@ -183,6 +258,22 @@ async def test_collect_classifies_captcha_block(monkeypatch):
 
     assert not result.success
     assert result.error_type == "captcha_challenge"
+
+
+@pytest.mark.asyncio
+async def test_collect_classifies_adapter_timeout(monkeypatch):
+    async def fake_run(command):
+        raise TimeoutError("adapter timed out")
+
+    monkeypatch.setattr(
+        "backend.channels.doubao_research_channel._run_doubao_command",
+        fake_run,
+    )
+    result = await DoubaoResearchChannel().collect({"question": "测试"}, {})
+
+    assert not result.success
+    assert result.error_type == "TimeoutError"
+    assert result.error == "Doubao request timed out"
 
 
 @pytest.mark.asyncio

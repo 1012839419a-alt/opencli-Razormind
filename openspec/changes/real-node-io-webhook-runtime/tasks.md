@@ -26,7 +26,7 @@
 
 - [x] 4.1 Add backend integration tests for compile, resource resolution, blocked states, webhook ingress, run events, and EvidenceBatch projection.
 - [x] 4.2 Add frontend tests or fixture assertions for catalog projection, inspector binding, mini/full node views, runtime patches, result, and trace.
-- [ ] 4.3 Run `npm run typecheck:frontend` and `npm run lint:frontend` (targeted workflow assertions pass, but the canonical worktree still has unresolved cross-branch TypeScript imports; repository-wide lint is also blocked by generated `frontend/dist` debt).
+- [x] 4.3 Run `npm run typecheck:frontend` and `npm run lint:frontend` (both canonical root commands pass; `frontend/dist` is absent and excluded by `frontend/eslint.config.mjs`; prior cross-branch import blocker is not reproducible in the current worktree).
 - [x] 4.4 Run targeted pytest suites for workflow compile, OpenCLI HDA trace, run events, webhook, and EvidenceBatch APIs.
 - [x] 4.5 Run `openspec validate real-node-io-webhook-runtime --strict`.
 - [x] 4.6 Run Code Intel Pipeline normal mode after implementation and record Sentrux gate/check status (orchestration and doctor pass; Sentrux Pro/rules are available, but the baseline is missing and the pipeline stage hangs without output, so the owned process was stopped after bounded waiting).

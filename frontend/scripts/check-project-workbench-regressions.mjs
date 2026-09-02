@@ -76,7 +76,7 @@ test('project overview exposes Dify-style API access and logs monitoring with re
   assert.match(operationsPage, /useProjectRuntimeTrace/)
   assert.match(operationsPage, /TRACE_PAGE_SIZE/)
   assert.match(operationsPage, /下一批/)
-  assert.match(operationsPage, /事件时间线/)
+  assert.match(operationsPage, /节点状态与事件/)
   assert.match(navigation, /projects\/\$\{projectId\}\/api/)
   assert.match(navigation, /label: 'API \/ MCP'/)
   assert.match(navigation, /projects\/\$\{projectId\}\/operations/)
