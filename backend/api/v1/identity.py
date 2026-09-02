@@ -2,7 +2,7 @@
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
 from backend.config import get_settings
@@ -12,6 +12,7 @@ from backend.security.local_auth import (
     hash_password,
     issue_local_token,
     load_password_hash,
+    login_attempt_limiter,
     password_change_required,
     persist_password_hash,
     verify_password,
@@ -32,7 +33,9 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 
 @router.post("/login", response_model=ApiResponse[dict])
-async def local_login(body: LocalLoginRequest) -> ApiResponse:
+async def local_login(body: LocalLoginRequest, request: Request) -> ApiResponse:
+    client_id = request.client.host if request.client else "unknown"
+    login_attempt_limiter.check(client_id)
     settings = get_settings()
     password_hash = load_password_hash(
         settings.local_admin_password_hash,
@@ -41,7 +44,10 @@ async def local_login(body: LocalLoginRequest) -> ApiResponse:
     if body.username != settings.local_admin_username or not verify_password(
         body.password, password_hash
     ):
+        login_attempt_limiter.record_failure(client_id)
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "用户名或密码错误")
+
+    login_attempt_limiter.reset(client_id)
 
     return ApiResponse.ok(
         {

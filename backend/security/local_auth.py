@@ -8,18 +8,72 @@ import hmac
 import os
 import secrets
 import tempfile
+import time
+from collections import defaultdict, deque
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from threading import Lock
 
+from fastapi import HTTPException, status
 from jose import jwt
+
+_SCRYPT_N = 16384
+_SCRYPT_R = 8
+_SCRYPT_P = 1
+
+
+class LoginAttemptLimiter:
+    """Small per-process guard against rapid password guessing."""
+
+    def __init__(
+        self, max_attempts: int = 10, window_seconds: int = 60, max_clients: int = 1024
+    ) -> None:
+        self.max_attempts = max_attempts
+        self.window_seconds = window_seconds
+        self.max_clients = max_clients
+        self._attempts: dict[str, deque[float]] = defaultdict(deque)
+        self._lock = Lock()
+
+    def check(self, client_id: str) -> None:
+        now = time.monotonic()
+        with self._lock:
+            attempts = self._attempts.get(client_id)
+            if not attempts:
+                return
+            while attempts and now - attempts[0] >= self.window_seconds:
+                attempts.popleft()
+            if not attempts:
+                self._attempts.pop(client_id, None)
+                return
+            if len(attempts) >= self.max_attempts:
+                retry_after = max(1, int(self.window_seconds - (now - attempts[0])))
+                raise HTTPException(
+                    status.HTTP_429_TOO_MANY_REQUESTS,
+                    "Too many authentication attempts",
+                    headers={"Retry-After": str(retry_after)},
+                )
+
+    def record_failure(self, client_id: str) -> None:
+        with self._lock:
+            if client_id not in self._attempts and len(self._attempts) >= self.max_clients:
+                self._attempts.pop(next(iter(self._attempts)))
+            self._attempts[client_id].append(time.monotonic())
+
+    def reset(self, client_id: str) -> None:
+        with self._lock:
+            self._attempts.pop(client_id, None)
+
+
+login_attempt_limiter = LoginAttemptLimiter()
 
 
 def hash_password(password: str) -> str:
     salt = secrets.token_bytes(16)
-    n, r, p = 16384, 8, 1
+    n, r, p = _SCRYPT_N, _SCRYPT_R, _SCRYPT_P
     digest = hashlib.scrypt(password.encode("utf-8"), salt=salt, n=n, r=r, p=p)
     encode = base64.urlsafe_b64encode
     return f"scrypt${n}${r}${p}${encode(salt).decode()}${encode(digest).decode()}"
+
 
 _STATE_MARKER_INITIAL_CONTENT = "opencli-local-auth-state-v1:initial\n"
 _STATE_MARKER_CHANGED_CONTENT = "opencli-local-auth-state-v1:changed\n"
@@ -31,16 +85,20 @@ _VALID_STATE_MARKERS = frozenset(
 def verify_password(password: str, encoded: str) -> bool:
     try:
         scheme, n, r, p, salt_text, digest_text = encoded.split("$", 5)
-        if scheme != "scrypt":
+        if scheme != "scrypt" or (int(n), int(r), int(p)) != (
+            _SCRYPT_N,
+            _SCRYPT_R,
+            _SCRYPT_P,
+        ):
             return False
         salt = base64.urlsafe_b64decode(salt_text.encode("ascii"))
         expected = base64.urlsafe_b64decode(digest_text.encode("ascii"))
         actual = hashlib.scrypt(
             password.encode("utf-8"),
             salt=salt,
-            n=int(n),
-            r=int(r),
-            p=int(p),
+            n=_SCRYPT_N,
+            r=_SCRYPT_R,
+            p=_SCRYPT_P,
             maxmem=64 * 1024 * 1024,
         )
         return hmac.compare_digest(actual, expected)

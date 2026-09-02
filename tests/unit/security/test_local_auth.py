@@ -2,9 +2,11 @@ import os
 import stat
 
 import pytest
+from fastapi import HTTPException
 
 from backend.config import Settings
 from backend.security.local_auth import (
+    LoginAttemptLimiter,
     hash_password,
     initialize_password_hash,
     load_password_hash,
@@ -25,6 +27,32 @@ def test_password_hash_round_trip():
     assert encoded.startswith("scrypt$")
     assert verify_password("new-local-password", encoded)
     assert not verify_password("admin", encoded)
+
+
+def test_password_hash_rejects_noncanonical_scrypt_parameters():
+    encoded = hash_password("parameter-validation-password")
+    parts = encoded.split("$")
+
+    for index, replacement in ((1, "32768"), (2, "16"), (3, "2")):
+        candidate = parts.copy()
+        candidate[index] = replacement
+        assert not verify_password("parameter-validation-password", "$".join(candidate))
+
+
+def test_login_attempt_limiter_is_per_client_and_resettable():
+    limiter = LoginAttemptLimiter(max_attempts=2, window_seconds=60, max_clients=2)
+
+    limiter.check("client-a")
+    limiter.record_failure("client-a")
+    limiter.record_failure("client-a")
+    with pytest.raises(HTTPException) as error:
+        limiter.check("client-a")
+    assert error.value.status_code == 429
+    assert error.value.headers["Retry-After"]
+
+    limiter.check("client-b")
+    limiter.reset("client-a")
+    limiter.check("client-a")
 
 
 def test_password_hash_persists_to_durable_state(tmp_path):
