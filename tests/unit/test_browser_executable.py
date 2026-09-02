@@ -39,6 +39,12 @@ def test_resolver_rejects_unknown_engine():
     assert "webkit" in result.stderr
 
 
+def test_resolver_rejects_empty_engine():
+    result = run_resolver("")
+    assert result.returncode != 0
+    assert result.stdout == ""
+
+
 def test_resolver_does_not_fallback_when_override_missing(tmp_path):
     result = run_resolver(
         "cloakbrowser",

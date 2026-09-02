@@ -3,7 +3,8 @@
 import fs from "node:fs";
 
 const [engineArgument] = process.argv.slice(2);
-const engine = engineArgument || process.env.BROWSER_ENGINE || "chromium";
+const engine =
+  engineArgument === undefined ? process.env.BROWSER_ENGINE || "chromium" : engineArgument;
 
 function redactSecret(message) {
   const licenseKey = process.env.CLOAKBROWSER_LICENSE_KEY;
