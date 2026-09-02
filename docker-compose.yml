@@ -153,13 +153,18 @@ services:
       CELERY_RESULT_BACKEND: redis://redis:6379/1
       REDIS_URL: redis://redis:6379/0
       DEBUG: ${DEBUG:-false}
-      SECRET_KEY: ${SECRET_KEY:-change-me-in-production}
+      SECRET_KEY: ${SECRET_KEY:?Set SECRET_KEY in .env or run scripts/install.sh}
+      LOCAL_AUTH_STATE_PATH: ${LOCAL_AUTH_STATE_PATH:-/data/local-admin-password.hash}
       API_AUTH_TOKEN: ${API_AUTH_TOKEN:?Set API_AUTH_TOKEN in .env or run scripts/install.sh}
-      BOOTSTRAP_ADMIN_TOKEN: ${BOOTSTRAP_ADMIN_TOKEN:-}
+      BOOTSTRAP_ADMIN_TOKEN: ${BOOTSTRAP_ADMIN_TOKEN:?Set BOOTSTRAP_ADMIN_TOKEN in .env or run scripts/install.sh}
       OPENCLI_MCP_ALLOWED_HOSTS: ${OPENCLI_MCP_ALLOWED_HOSTS:-}
       OPENCLI_MCP_ALLOWED_ORIGINS: ${OPENCLI_MCP_ALLOWED_ORIGINS:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      # Internal-only ODP reconciliation transport; service availability is
+      # intentionally optional outside the odp/nas compose profiles.
+      ODP_QUERY_URL: ${ODP_QUERY_URL:-http://odp-query:8042}
+      ODP_QUERY_ADMIN_CREDENTIAL: ${ODP_QUERY_ADMIN_CREDENTIAL:-}
       # Built-in interactive browser endpoint.
       # For COLLECTION_MODE=local this is pre-loaded into the browser pool.
       OPENCLI_CDP_ENDPOINT: ${OPENCLI_CDP_ENDPOINT:-http://agent-1:19222}
@@ -178,6 +183,9 @@ services:
       COLLECTION_ORCHESTRATOR: ${COLLECTION_ORCHESTRATOR:-admin}
       ODP_INGEST_URL: ${ODP_INGEST_URL:-}
       III_URL: ${III_URL:-}
+      III_LIFECYCLE_URL: ${III_LIFECYCLE_URL:-}
+      III_LIFECYCLE_TOKEN: ${III_LIFECYCLE_TOKEN:-}
+      III_INGRESS_RECEIPT_SECRET: ${III_INGRESS_RECEIPT_SECRET:-}
       DIFY_GRAPHON_RUNTIME_URL: ${DIFY_GRAPHON_RUNTIME_URL:-http://dify-graphon-runtime:8095}
       KATS_RUNTIME_URL: ${KATS_RUNTIME_URL:-http://kats-runtime:8096}
       INVOKEAI_ENABLED: ${INVOKEAI_ENABLED:-false}
@@ -201,10 +209,6 @@ services:
       timeout: 5s
       retries: 5
       start_period: 20s
-    depends_on:
-      agent-1:
-        condition: service_healthy
-
   # ── Next.js operator console ─────────────────────────────────────────────
   frontend:
     image: ${DOCKER_REGISTRY:-ghcr.io/}${DOCKER_IMAGE_NAMESPACE:-2233admin}/opencli-admin-frontend:${IMAGE_TAG:-0.4.1}
@@ -238,7 +242,7 @@ services:
       CELERY_RESULT_BACKEND: redis://redis:6379/1
       REDIS_URL: redis://redis:6379/0
       RUN_MIGRATIONS: "false"
-      SECRET_KEY: ${SECRET_KEY:-change-me-in-production}
+      SECRET_KEY: ${SECRET_KEY:?Set SECRET_KEY in .env or run scripts/install.sh}
       API_AUTH_TOKEN: ${API_AUTH_TOKEN:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
@@ -299,7 +303,7 @@ services:
       CELERY_RESULT_BACKEND: redis://redis:6379/1
       REDIS_URL: redis://redis:6379/0
       RUN_MIGRATIONS: "false"
-      SECRET_KEY: ${SECRET_KEY:-change-me-in-production}
+      SECRET_KEY: ${SECRET_KEY:?Set SECRET_KEY in .env or run scripts/install.sh}
       API_AUTH_TOKEN: ${API_AUTH_TOKEN:-}
     depends_on:
       redis:
@@ -313,6 +317,8 @@ services:
     image: ${DOCKER_REGISTRY:-ghcr.io/}${DOCKER_IMAGE_NAMESPACE:-2233admin}/opencli-admin-chrome:${IMAGE_TAG:-0.4.1}
     environment:
       CHROME_HOSTNAME: agent-1
+      BROWSER_RUNTIME_BUNDLE_ROOT: /opt/browser-runtime-bundles
+      BROWSER_RUNTIME_BUNDLE_MANIFEST: /opt/browser-runtime-bundles/opencli-default/2/manifest.json
     volumes:
       - agent_profile_1:/home/chrome/.config/chromium
     ports:
@@ -335,6 +341,10 @@ services:
   #   docker run -d --restart=unless-stopped \
   #     -e CENTRAL_API_URL=http://<center-ip>:8031 \
   #     -e AGENT_REGISTER=ws \
+  #     -e AGENT_CODEX_ISOLATED_RUNNER=/opt/opencli/codex-isolated-runner \
+  #     -e 'AGENT_CODEX_ALLOWED_ROOTS=["/workspaces"]' \
+  #     -v /host/opencli/codex-isolated-runner:/opt/opencli/codex-isolated-runner:ro \
+  #     -v /host/workspaces:/workspaces \
   #     -p 19823:19823 \
   #     ghcr.io/2233admin/opencli-admin-agent:0.4.1
   #
@@ -351,10 +361,14 @@ services:
       AGENT_LABEL: ${AGENT_LABEL:-}
       AGENT_REGISTER: ${AGENT_REGISTER:-http}
       OPENCLI_TIMEOUT: ${OPENCLI_TIMEOUT:-120}
+      AGENT_CODEX_ISOLATED_RUNNER: ${AGENT_CODEX_ISOLATED_RUNNER:-}
+      AGENT_CODEX_ALLOWED_ROOTS: ${AGENT_CODEX_ALLOWED_ROOTS:-}
       API_AUTH_TOKEN: ${API_AUTH_TOKEN:-}
       AGENT_API_TOKEN: ${AGENT_API_TOKEN:-}
       HTTP_PROXY: ${HTTP_PROXY:-}
       HTTPS_PROXY: ${HTTPS_PROXY:-}
+      BROWSER_RUNTIME_BUNDLE_ROOT: /opt/browser-runtime-bundles
+      BROWSER_RUNTIME_BUNDLE_MANIFEST: /opt/browser-runtime-bundles/opencli-default/2/manifest.json
     volumes:
       - agent_profile:/home/agent/.config/chromium
     ports:
@@ -372,6 +386,8 @@ services:
       ODP_INGEST_PORT: 8040
       ODP_REDIS_URL: redis://redis:6379/2
       RUST_LOG: info,odp_ingest=debug
+      ODP_INGRESS_RECEIPT_SECRET: ${III_INGRESS_RECEIPT_SECRET:-}
+      ODP_INGRESS_RECEIPT_KEY_ID: ${ODP_INGRESS_RECEIPT_KEY_ID:-odp-ingest-v1}
     ports:
       - "${ODP_INGEST_PORT:-8040}:8040"
     healthcheck:
@@ -390,7 +406,7 @@ services:
     build:
       context: ./odp-rs
       dockerfile: Dockerfile.store
-    environment:
+    environment: &odp-database-environment
       ODP_REDIS_URL: redis://redis:6379/2
       ODP_DATABASE_URL: postgresql://${POSTGRES_USER:-opencli}:${POSTGRES_PASSWORD:-opencli_secret}@postgres:5432/${POSTGRES_DB:-opencli_admin}
       ODP_STORE_BATCH_SIZE: ${ODP_STORE_BATCH_SIZE:-500}
@@ -410,6 +426,31 @@ services:
       postgres:
         condition: service_healthy
       odp-ingest:
+        condition: service_healthy
+    restart: unless-stopped
+
+  odp-query:
+    profiles: ["odp", "nas"]
+    build:
+      context: ./odp-rs
+      dockerfile: Dockerfile.query
+    environment:
+      ODP_QUERY_HOST: 0.0.0.0
+      ODP_QUERY_PORT: 8042
+      <<: *odp-database-environment
+      ODP_QUERY_ADMIN_CREDENTIAL: ${ODP_QUERY_ADMIN_CREDENTIAL:-}
+      ODP_QUERY_CURSOR_SECRET: ${ODP_QUERY_CURSOR_SECRET:-}
+      RUST_LOG: info,odp_query=debug
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8042/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      odp-store:
         condition: service_healthy
     restart: unless-stopped
 
@@ -436,6 +477,9 @@ services:
     environment:
       III_URL: ws://iii-engine:49134
       ODP_INGEST_URL: http://odp-ingest:8040
+      ADMIN_III_LIFECYCLE_URL: ${III_LIFECYCLE_URL:-}
+      ADMIN_III_LIFECYCLE_TOKEN: ${III_LIFECYCLE_TOKEN:-}
+      API_AUTH_TOKEN: ${API_AUTH_TOKEN:-}
     depends_on:
       iii-engine:
         condition: service_started
@@ -470,6 +514,9 @@ services:
       OPENCLI_DAEMON_HOST: agent-1
       OPENCLI_DAEMON_PORT: ${OPENCLI_DAEMON_PORT:-19825}
       OPENCLI_TIMEOUT: ${OPENCLI_TIMEOUT:-120}
+      ADMIN_III_LIFECYCLE_URL: ${III_LIFECYCLE_URL:-}
+      ADMIN_III_LIFECYCLE_TOKEN: ${III_LIFECYCLE_TOKEN:-}
+      API_AUTH_TOKEN: ${API_AUTH_TOKEN:-}
     depends_on:
       iii-engine:
         condition: service_started

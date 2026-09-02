@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { Suspense, useState } from 'react'
 
 import { AppRouteTransition } from '@/components/motion/app-route-transition'
 import { AppHeader } from '@/components/shell/app-header'
@@ -25,7 +25,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </div>
       </SidebarInset>
       <CommandPalette open={commandOpen} onOpenChange={setCommandOpen} />
-      <GlobalAgentDock open={agentOpen} onOpenChange={setAgentOpen} />
+      <Suspense fallback={null}>
+        <GlobalAgentDock open={agentOpen} onOpenChange={setAgentOpen} />
+      </Suspense>
     </SidebarProvider>
   )
 }

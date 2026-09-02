@@ -254,11 +254,10 @@ def test_get_runtime_unknown_raises_value_error():
         get_runtime("does-not-exist")
 
 
-def test_pi_adapter_registered_by_default_discovery():
-    """_load_all_runtimes() at import time registers the pi adapter."""
-    assert "pi" in list_runtime_types()
+def test_coding_adapters_registered_by_default_discovery():
+    """Default registry discovery exposes both supported coding adapters."""
+    assert get_runtime("codex").runtime_type == "codex"
     assert get_runtime("pi").runtime_type == "pi"
-    assert "miniflow" in list_runtime_types()
     assert get_runtime("miniflow").runtime_type == "miniflow"
 
 

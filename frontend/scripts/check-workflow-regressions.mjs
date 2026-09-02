@@ -542,7 +542,7 @@ test('node workflow lives inside a project shell while the legacy canvas route r
 test('studio creation is transactional and the editor anchors to the project primary workflow', async () => {
   const [types, endpoints, hooks, studio, templates, newProject, session, lifecycle] = await Promise.all([
     readSource('lib/api/types.ts'),
-    readSource('lib/api/endpoints.ts'),
+    readSource('lib/api/workspace-endpoints.ts'),
     readSource('lib/api/hooks.ts'),
     readSource('app/(app)/studio/page.tsx'),
     readSource('app/(app)/studio/templates/page.tsx'),
@@ -1403,7 +1403,11 @@ test('the right inspector uses graph contracts instead of manual keys and field 
   assert.match(inspector, /onReconnect\(currentEdge, connection\)/)
   assert.match(inspector, /connectNodes\(connection\)/)
   assert.match(inspector, /removeEdgesByIds\(currentEdges\.map\(\(edge\) => edge\.id\)\)/)
-  assert.match(inspector, /value === UNBOUND_INPUT_VALUE[\s\S]{0,120}copy\.inputUnbound/)
+  assert.match(
+    inspector,
+    /<SelectValue>[\s\S]{0,500}value === UNBOUND_INPUT_VALUE[\s\S]{0,500}copy\.inputUnbound[\s\S]{0,500}options\.find/,
+  )
+  assert.match(inspector, /<SelectItem value=\{UNBOUND_INPUT_VALUE\}>\{copy\.inputUnbound\}<\/SelectItem>/)
   assert.doesNotMatch(inspector, /placeholder=["']data\.source["']/)
   assert.doesNotMatch(inspector, /placeholder=["']data\.target["']/)
   assert.doesNotMatch(parameterInterface, /Config \(JSON\)/)

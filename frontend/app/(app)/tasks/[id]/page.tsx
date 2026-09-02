@@ -12,14 +12,26 @@ import { Badge } from '@/components/ui/badge'
 import { buttonVariants } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { getSource, getTask, listRunEvents, listTaskRuns } from '@/lib/api/endpoints'
+import { useRecoverTask } from '@/lib/api/hooks'
 import { formatDateTime, formatDuration, formatNumber, formatRelative } from '@/lib/format'
+import { normalizeTaskReturnPath } from '@/lib/tasks/query'
 import { cn } from '@/lib/utils'
 
 const TERMINAL_STATES = new Set(['completed', 'failed', 'cancelled'])
 
-export default function TaskDetailPage({ params }: { params: Promise<{ id: string }> }) {
+export default function TaskDetailPage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ id: string }>
+  searchParams: Promise<{ returnTo?: string | string[] }>
+}) {
   const { id } = use(params)
+  const query = use(searchParams)
+  const returnTo = normalizeTaskReturnPath(typeof query.returnTo === 'string' ? query.returnTo : null)
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null)
+  const [recoveryReason, setRecoveryReason] = useState('重新采集失败任务')
+  const recovery = useRecoverTask(id)
   const task = useQuery({ queryKey: ['tasks', id], queryFn: () => getTask(id), refetchInterval: 10_000 })
   const source = useQuery({
     queryKey: ['sources', task.data?.source_id],
@@ -56,7 +68,7 @@ export default function TaskDetailPage({ params }: { params: Promise<{ id: strin
       title={source.data?.name ?? item?.source_name ?? `工作项 ${id.slice(0, 8)}`}
       description={item ? `${item.trigger_type} 触发 · 创建于 ${formatRelative(item.created_at)}` : '查看工作上下文、运行记录、事件与成果。'}
       actions={
-        <Link href="/tasks" className={cn(buttonVariants({ variant: 'outline', size: 'sm' }))}>
+        <Link href={returnTo} className={cn(buttonVariants({ variant: 'outline', size: 'sm' }))}>
           <ArrowLeft className="size-4" />
           返回工作项
         </Link>
@@ -169,6 +181,37 @@ export default function TaskDetailPage({ params }: { params: Promise<{ id: strin
                   <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-3">
                     <div className="flex items-center gap-2 text-sm font-medium text-destructive"><AlertTriangle className="size-4" />需要处理</div>
                     <p className="mt-2 text-xs leading-5 text-muted-foreground">{item.error_message}</p>
+                    {item.status === 'failed' && !item.retry_of_task_id ? (
+                      <div className="mt-3 space-y-2 border-t border-destructive/20 pt-3">
+                        <label htmlFor="recovery-reason" className="text-xs font-medium text-foreground">恢复原因</label>
+                        <textarea
+                          id="recovery-reason"
+                          value={recoveryReason}
+                          onChange={(event) => setRecoveryReason(event.target.value)}
+                          rows={2}
+                          maxLength={2000}
+                          className="w-full rounded-md border bg-background px-2 py-1.5 text-xs"
+                        />
+                        <button
+                          type="button"
+                          disabled={recovery.isPending || !recoveryReason.trim()}
+                          onClick={() => recovery.mutate({
+                            idempotency_key: crypto.randomUUID(),
+                            reason: recoveryReason.trim(),
+                            mode: 'recollect',
+                          })}
+                          className={cn(buttonVariants({ variant: 'destructive', size: 'sm' }))}
+                        >
+                          {recovery.isPending ? '正在发起恢复…' : '受控恢复（仅重新采集）'}
+                        </button>
+                        {recovery.isError ? <p className="text-xs text-destructive">{(recovery.error as Error)?.message ?? '恢复发起失败'}</p> : null}
+                        {recovery.data ? (
+                          <p className="text-xs text-success">
+                            恢复任务已创建：<Link className="underline" href={`/tasks/${recovery.data.task_id}`}>查看新任务</Link>
+                          </p>
+                        ) : null}
+                      </div>
+                    ) : null}
                   </div>
                 ) : item.status === 'completed' ? (
                   <div className="rounded-lg border border-success/30 bg-success/5 p-3 text-sm text-success">

@@ -16,11 +16,31 @@ intentionally tiny and closed —
 that is what prevents typos in ``type`` strings and missing ``task_id`` fields
 from ever reaching a caller.
 """
-
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
+
+
+@dataclass(frozen=True)
+class RuntimeReadiness:
+    """Safe, typed evidence used before dispatching a runtime task.
+
+    Readiness is intentionally separate from ``RuntimeCapabilities``: a
+    registered adapter may be known to the node while its executable or
+    working directory is unavailable.  Implementations MUST keep secrets out
+    of this structure; it is suitable for Fleet diagnostics and wire output.
+    """
+
+    runtime: str
+    capability_id: str
+    status: Literal["ready", "blocked"]
+    binary_present: bool
+    version: str | None = None
+    permitted_project_root: str | None = None
+    working_directory: str | None = None
+    reason_code: str | None = None
+    reason: str | None = None
 
 #: Closed tagged-union of runtime event types. Adapters MUST NOT emit any
 #: `type` outside this set — an unrecognized native event from the underlying
@@ -150,6 +170,24 @@ class RuntimeAdapter(ABC):
     async def health(self) -> bool:
         """Cheap liveness check for this runtime (binary present, sidecar
         reachable, ...). Does not run a task."""
+
+    async def readiness(self, config: dict[str, Any] | None = None) -> RuntimeReadiness:
+        """Return safe pre-dispatch evidence for this runtime.
+
+        Adapters with richer checks override this method.  The default keeps
+        existing adapters source-compatible while giving callers a typed
+        readiness shape.
+        """
+        ready = await self.health()
+        return RuntimeReadiness(
+            runtime=self.runtime_type,
+            capability_id=f"runtime.{self.runtime_type}",
+            status="ready" if ready else "blocked",
+            binary_present=ready,
+            reason_code=None if ready else "unavailable",
+            reason=None if ready else f"runtime {self.runtime_type!r} is unavailable",
+        )
+
 
     @abstractmethod
     def validate_config(self, config: dict[str, Any]) -> list[str]:

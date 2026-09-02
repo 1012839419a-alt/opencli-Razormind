@@ -90,9 +90,8 @@ patch(
 
 // ── 3. browser/bridge.js: skip local auto-spawn when daemon is remote ────────
 // v1.7.0+: _ensureDaemon moved from mcp.js to browser/bridge.js.
-// When OPENCLI_DAEMON_HOST is set to a remote address, we must NOT try to
-// spawn a local daemon process — throw immediately so the caller surfaces a
-// clear error rather than silently starting a useless local daemon.
+// When OPENCLI_DAEMON_HOST is set to a remote address, probe that daemon
+// instead of spawning a process inside the caller's container.
 patch(
   path.join(pkgDir, 'dist', 'src', 'browser', 'bridge.js'),
   "import { ensureBrowserBridgeReady } from './daemon-lifecycle.js';",
@@ -102,13 +101,38 @@ patch(
 
 patch(
   path.join(pkgDir, 'dist', 'src', 'browser', 'bridge.js'),
-  '    async _ensureDaemon(timeoutSeconds, contextId) {\n        const result = await ensureBrowserBridgeReady({',
-  "    // OPENCLI_ADMIN_REMOTE_DAEMON_ROUTE_V1\n    async _ensureDaemon(timeoutSeconds, contextId) {\n        const _dHost = process.env.OPENCLI_DAEMON_HOST;\n        if (_dHost && _dHost !== '127.0.0.1' && _dHost !== 'localhost') {\n            const remoteStatus = await fetchDaemonStatus({ timeout: (timeoutSeconds ?? 10) * 1000, contextId });\n            if (!remoteStatus) {\n                throw new Error('Remote Browser Bridge daemon at ' + _dHost + ' is not reachable. Ensure BROWSER_BRIDGE_ENABLED=true on the chrome container.');\n            }\n            return;\n        }\n        const result = await ensureBrowserBridgeReady({",
-  'browser/bridge.js: skip local spawn for remote daemon'
+  `    async _ensureDaemon(timeoutSeconds, contextId, preferredContextId) {
+        await ensureBrowserBridgeReady({
+            timeoutSeconds: timeoutSeconds ?? Math.ceil(DAEMON_SPAWN_TIMEOUT / 1000),
+            contextId,
+            preferredContextId,
+        });
+    }`,
+  `    // OPENCLI_ADMIN_REMOTE_DAEMON_ROUTE_V2
+    async _ensureDaemon(timeoutSeconds, contextId, preferredContextId) {
+        const daemonHost = process.env.OPENCLI_DAEMON_HOST;
+        if (daemonHost && daemonHost !== '127.0.0.1' && daemonHost !== 'localhost') {
+            const remoteStatus = await fetchDaemonStatus({
+                timeout: (timeoutSeconds ?? Math.ceil(DAEMON_SPAWN_TIMEOUT / 1000)) * 1000,
+                contextId,
+                preferredContextId,
+            });
+            if (!remoteStatus) {
+                throw new Error('Remote Browser Bridge daemon at ' + daemonHost + ' is not reachable. Ensure BROWSER_BRIDGE_ENABLED=true on the chrome container.');
+            }
+            return;
+        }
+        await ensureBrowserBridgeReady({
+            timeoutSeconds: timeoutSeconds ?? Math.ceil(DAEMON_SPAWN_TIMEOUT / 1000),
+            contextId,
+            preferredContextId,
+        });
+    }`,
+  'browser/bridge.js: route remote daemon health checks'
 );
 
 // ── 4. execution.js: honour explicit CDP endpoint for web adapters ──────────
-// opencli 1.8.6 only reads OPENCLI_CDP_ENDPOINT inside the Electron branch.
+// OpenCLI 1.8.7 only reads OPENCLI_CDP_ENDPOINT inside the Electron branch.
 // A normal web adapter therefore silently falls back to Browser Bridge and can
 // escape Admin's selected profile. Managed acquisition must fail closed at the
 // requested endpoint instead.
@@ -215,9 +239,11 @@ export function getBrowserFactory(site, opts = {}) {
 
 const executionSource = fs.readFileSync(path.join(pkgDir, 'dist', 'src', 'execution.js'), 'utf8');
 const runtimeSource = fs.readFileSync(path.join(pkgDir, 'dist', 'src', 'runtime.js'), 'utf8');
+const bridgeSource = fs.readFileSync(path.join(pkgDir, 'dist', 'src', 'browser', 'bridge.js'), 'utf8');
 if (!executionSource.includes('OPENCLI_ADMIN_MANAGED_CDP_ROUTING_V2') ||
     !executionSource.includes('OPENCLI_ADMIN_FACTORY_SELECTION_V1') ||
-    !runtimeSource.includes('OPENCLI_ADMIN_RUNTIME_FACTORY_V1')) {
+    !runtimeSource.includes('OPENCLI_ADMIN_RUNTIME_FACTORY_V1') ||
+    !bridgeSource.includes('OPENCLI_ADMIN_REMOTE_DAEMON_ROUTE_V2')) {
   throw new Error('Managed CDP routing patch verification failed');
 }
 

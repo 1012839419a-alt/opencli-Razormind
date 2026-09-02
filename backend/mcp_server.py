@@ -335,10 +335,7 @@ async def run_published_workflow(
 
     return await _request(
         "POST",
-        (
-            f"/api/v1/workspaces/{workspace_id}/projects/{project_id}"
-            f"/workflows/{workflow_id}/runs"
-        ),
+        (f"/api/v1/workspaces/{workspace_id}/projects/{project_id}/workflows/{workflow_id}/runs"),
         headers={"Idempotency-Key": idempotency_key},
         json={"inputs": inputs, "response_mode": "async", "user": user},
     )

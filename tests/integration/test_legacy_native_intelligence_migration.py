@@ -52,20 +52,14 @@ def test_legacy_plugin_head_rejoins_native_intelligence_head(tmp_path: Path) -> 
     assert upgraded.returncode == 0, upgraded.stdout + upgraded.stderr
 
     with sqlite3.connect(database_path) as connection:
-        revision = connection.execute(
-            "SELECT version_num FROM alembic_version"
-        ).fetchone()
-        marker = connection.execute(
-            "SELECT id, name FROM legacy_workspace_marker"
-        ).fetchone()
+        revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()
+        marker = connection.execute("SELECT id, name FROM legacy_workspace_marker").fetchone()
         tables = {
             str(row[0])
-            for row in connection.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'table'"
-            )
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
         }
 
-    assert revision == ("l0m1n2o3p4q5",)
+    assert revision == ("p0q1r2s3t4u5",)
     assert marker == ("workspace-1", "native-intelligence-workspace")
     assert "intelligence_sessions" in tables
     assert "intelligence_artifacts" in tables

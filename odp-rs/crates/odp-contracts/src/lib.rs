@@ -35,6 +35,8 @@ pub struct RecordEvent {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IngestBatchRequest {
     pub events: Vec<RecordEvent>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receipt_context: Option<IngressReceiptContextV1>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -43,6 +45,10 @@ pub struct IngestBatchResponse {
     pub duplicates: usize,
     pub rejected: usize,
     pub errors: Vec<IngestReject>,
+    #[serde(default)]
+    pub outcomes: Vec<IngressOutcomeV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ingress_receipt: Option<ODPIngressOutcomeReceiptV1>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -50,6 +56,62 @@ pub struct IngestReject {
     pub index: usize,
     pub event_id: Option<String>,
     pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IngressReceiptContextV1 {
+    pub workspace_id: String,
+    pub project_id: String,
+    pub workflow_id: String,
+    pub studio_workflow_version_id: String,
+    pub run_id: String,
+    pub node_id: String,
+    pub command_id: String,
+    pub attempt_id: String,
+    pub attempt_number: u32,
+    pub task_id: String,
+    pub trace_id: String,
+    pub source_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_binding_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_binding_revision_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_binding_revision_number: Option<u32>,
+    pub payload_sha256: String,
+    pub expected_key_set_sha256: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IngressOutcomeV1 {
+    pub source_id: String,
+    pub event_id: String,
+    pub outcome: IngressOutcomeKindV1,
+    #[serde(default)]
+    pub rejection_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IngressOutcomeKindV1 {
+    Accepted,
+    Duplicate,
+    Rejected,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ODPIngressOutcomeReceiptV1 {
+    pub version: String,
+    pub receipt_id: String,
+    pub idempotency_key: String,
+    pub producer_id: String,
+    pub producer_key_id: String,
+    #[serde(flatten)]
+    pub context: IngressReceiptContextV1,
+    pub outcomes: Vec<IngressOutcomeV1>,
+    pub issued_at: DateTime<Utc>,
+    pub receipt_hash: String,
+    pub signature: String,
 }
 
 #[derive(Debug, thiserror::Error)]
