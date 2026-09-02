@@ -1,4 +1,5 @@
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -52,3 +53,53 @@ def test_resolver_does_not_fallback_when_override_missing(tmp_path):
     )
     assert result.returncode != 0
     assert "fallback" not in result.stderr.lower()
+
+
+def _read_entrypoint(name: str) -> str:
+    return (ROOT / name / "entrypoint.sh").read_text(encoding="utf-8")
+
+
+def _start_chrome_body(entrypoint: str) -> str:
+    match = re.search(
+        r"start_chrome\(\)\s*\{(?P<body>.*?)\n[ \t]*\}", entrypoint, re.DOTALL
+    )
+    assert match is not None
+    return match.group("body")
+
+
+def test_entrypoints_resolve_browser_engine_with_shared_resolver():
+    for name in ("chrome", "agent"):
+        entrypoint = _read_entrypoint(name)
+        assert 'BROWSER_ENGINE="${BROWSER_ENGINE:-chromium}"' in entrypoint
+        assert (
+            'CHROME_BIN="$(node /usr/local/bin/resolve-browser-executable.mjs '
+            '"$BROWSER_ENGINE")" || {'
+        ) in entrypoint
+
+
+def test_agent_resolver_is_gated_by_embedded_chrome_flag():
+    entrypoint = _read_entrypoint("agent")
+    assert (
+        'if [ "${AGENT_HAS_CHROME:-false}" = "true" ]; then HAVE_CHROME=true; fi'
+        in entrypoint
+    )
+    embedded_branch = entrypoint.index('if [ "$HAVE_CHROME" = "true" ]; then')
+    resolver_call = entrypoint.index(
+        "node /usr/local/bin/resolve-browser-executable.mjs", embedded_branch
+    )
+    host_branch = entrypoint.index("\nelse\n", embedded_branch)
+    assert embedded_branch < resolver_call < host_branch
+
+
+def test_entrypoints_start_chrome_with_resolved_binary_and_cdp_port():
+    for name in ("chrome", "agent"):
+        body = _start_chrome_body(_read_entrypoint(name))
+        assert '"$CHROME_BIN" --remote-debugging-port=9222' in body
+        assert not re.search(r"^\s*chromium(?:\s|$)", body, re.MULTILINE)
+
+
+def test_entrypoints_do_not_interpolate_license_key_in_logs():
+    for name in ("chrome", "agent"):
+        for line in _read_entrypoint(name).splitlines():
+            if re.search(r"\b(?:echo|printf)\b", line):
+                assert "CLOAKBROWSER_LICENSE_KEY" not in line
