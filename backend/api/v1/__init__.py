@@ -56,6 +56,7 @@ from backend.api.v1 import (
 v1_router = APIRouter(prefix="/api/v1")
 
 v1_router.include_router(agents.router)
+v1_router.include_router(agent_conversations.router)
 v1_router.include_router(geo_acquisition.router)
 v1_router.include_router(iii_collections.router)
 v1_router.include_router(automations.router)

@@ -29,9 +29,8 @@ import {
 import { apiClient } from '@/lib/api/client'
 import { ROUTE_LABELS } from '@/lib/navigation'
 
-type AgentMessage = {
-  role: 'user' | 'assistant'
-  content: string
+function getSessionStorageKey(workspaceId: string) {
+  return `opencli:agent-session:${workspaceId}`
 }
 
 type AgentProposal = AgentConversationProposal
@@ -98,9 +97,9 @@ export function GlobalAgentDock({
   const [loadedWorkspaceId, setLoadedWorkspaceId] = useState<string | null>(null)
   const [messages, setMessages] = useState<AgentMessage[]>([])
   const [input, setInput] = useState('')
-  const [proposal, setProposal] = useState<AgentProposal | null>(null)
+  const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null)
+  const [dismissedProposalSequence, setDismissedProposalSequence] = useState<number | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [sending, setSending] = useState(false)
   const [confirming, setConfirming] = useState(false)
   const [loadingSessions, setLoadingSessions] = useState(false)
   const [loadingConversation, setLoadingConversation] = useState(false)
@@ -219,6 +218,47 @@ export function GlobalAgentDock({
     }
   }
 
+  const workspaces = useMyWorkspaces()
+  const explicitWorkspaceId = searchParams.get('workspace')
+  const workspaceId = explicitWorkspaceId ?? (workspaces.data?.length === 1 ? workspaces.data[0].id : null)
+  const workspaceIsAmbiguous = !explicitWorkspaceId && !workspaces.isLoading && (workspaces.data?.length ?? 0) !== 1
+  const context = useMemo<AgentConversationContext>(() => ({
+    project_id: searchParams.get('project') ?? pathname.match(/^\/studio\/projects\/([^/]+)/)?.[1] ?? null,
+    workflow_id: searchParams.get('workflow'),
+    run_id: searchParams.get('run'),
+    source_id: searchParams.get('source') ?? pathname.match(/^\/sources\/([^/]+)/)?.[1] ?? null,
+    surface: ROUTE_LABELS[pathname] ?? pathname,
+  }), [pathname, searchParams])
+
+  const conversations = useAgentConversations(workspaceId, open && !workspaceIsAmbiguous)
+  const conversation = useAgentConversation(selectedConversationId, open && !workspaceIsAmbiguous)
+  const createConversation = useCreateAgentConversation()
+  const sendMessageMutation = useSendAgentConversationMessage()
+  const closeConversation = useCloseAgentConversation()
+  const sending = createConversation.isPending || sendMessageMutation.isPending
+
+  // The API owns all data. localStorage holds only a Workspace-scoped UUID pointer.
+  useEffect(() => {
+    if (!workspaceId || !conversations.data) return
+    const storedId = window.localStorage.getItem(getSessionStorageKey(workspaceId))
+    const nextId = conversations.data.some((item) => item.id === storedId) ? storedId : conversations.data[0]?.id ?? null
+    setSelectedConversationId(nextId)
+    setDismissedProposalSequence(null)
+  }, [workspaceId, conversations.data])
+
+  useEffect(() => {
+    if (!workspaceId) return
+    const key = getSessionStorageKey(workspaceId)
+    if (selectedConversationId) window.localStorage.setItem(key, selectedConversationId)
+    else window.localStorage.removeItem(key)
+  }, [selectedConversationId, workspaceId])
+
+  const pendingProposal = conversation.data?.turns.slice().reverse().find((turn) => (
+    turn.status === 'proposal' && turn.response?.proposal && turn.sequence !== dismissedProposalSequence
+  ))
+  const proposal = pendingProposal?.response?.proposal as AgentProposal | undefined
+  const isClosed = conversation.data?.status === 'closed'
+
   async function sendMessage(event?: FormEvent) {
     event?.preventDefault()
     const content = input.trim()
@@ -230,7 +270,6 @@ export function GlobalAgentDock({
 
     setInput('')
     setError(null)
-    setSending(true)
     try {
       let activeSessionId = sessionId
       if (!activeSessionId) {
@@ -265,36 +304,48 @@ export function GlobalAgentDock({
           { role: 'assistant', content: reply?.content?.trim() || '没有返回内容。' },
         ])
       }
+      await sendMessageMutation.mutateAsync({ conversationId, data: { request_id: createRequestId(), content, context } })
+      await queryClient.invalidateQueries({ queryKey: ['agent-conversation', conversationId] })
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Agent 暂时不可用')
-    } finally {
-      setSending(false)
     }
   }
 
   async function confirmProposal() {
-    if (!proposal || confirming) return
+    if (!proposal || !pendingProposal || confirming) return
     setError(null)
     setConfirming(true)
     try {
       await apiClient.post('/chat/confirm', { proposal })
-      setMessages((current) => [
-        ...current,
-        { role: 'assistant', content: `已执行：${proposal.summary}` },
-      ])
-      setProposal(null)
+      setDismissedProposalSequence(pendingProposal.sequence)
       await queryClient.invalidateQueries()
     } catch (reason) {
       const status = reason instanceof Error && 'status' in reason ? reason.status : undefined
       const message = reason instanceof Error ? reason.message : '操作执行失败'
-      setError(
-        status === 409
-          ? `提案已失效或目标已变化：${message}。请拒绝后重新发起。`
-          : message,
-      )
+      setError(status === 409 ? `提案已失效或目标已变化：${message}。请拒绝后重新发起。` : message)
     } finally {
       setConfirming(false)
     }
+  }
+
+  async function handleCloseConversation() {
+    if (!selectedConversationId || closeConversation.isPending) return
+    setError(null)
+    try {
+      await closeConversation.mutateAsync(selectedConversationId)
+      if (workspaceId) window.localStorage.removeItem(getSessionStorageKey(workspaceId))
+      setSelectedConversationId(null)
+      setDismissedProposalSequence(null)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '关闭会话失败')
+    }
+  }
+
+  function handleNewConversation() {
+    if (workspaceId) window.localStorage.removeItem(getSessionStorageKey(workspaceId))
+    setSelectedConversationId(null)
+    setDismissedProposalSequence(null)
+    setError(null)
   }
 
   function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {

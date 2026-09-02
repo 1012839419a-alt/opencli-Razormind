@@ -29,6 +29,54 @@ export function useMyWorkspaces() {
   return useQuery({ queryKey: ["workspaces"], queryFn: api.listMyWorkspaces });
 }
 
+export function useAgentConversations(workspaceId: string | null, enabled = true) {
+  return useQuery({
+    queryKey: ['agent-conversations', workspaceId],
+    queryFn: () => api.listAgentConversations(workspaceId as string),
+    enabled: enabled && !!workspaceId,
+  })
+}
+
+export function useAgentConversation(conversationId: string | null, enabled = true) {
+  return useQuery({
+    queryKey: ['agent-conversation', conversationId],
+    queryFn: () => api.getAgentConversation(conversationId as string),
+    enabled: enabled && !!conversationId,
+  })
+}
+
+export function useCreateAgentConversation() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: api.createAgentConversation,
+    onSuccess: (conversation) =>
+      queryClient.invalidateQueries({ queryKey: ['agent-conversations', conversation.workspace_id] }),
+  })
+}
+
+export function useSendAgentConversationMessage() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ conversationId, data }: {
+      conversationId: string
+      data: Parameters<typeof api.sendAgentConversationMessage>[1]
+    }) => api.sendAgentConversationMessage(conversationId, data),
+    onSuccess: (result) =>
+      queryClient.invalidateQueries({ queryKey: ['agent-conversation', result.conversation_id] }),
+  })
+}
+
+export function useCloseAgentConversation() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: api.closeAgentConversation,
+    onSuccess: (conversation) => {
+      void queryClient.invalidateQueries({ queryKey: ['agent-conversations', conversation.workspace_id] })
+      queryClient.invalidateQueries({ queryKey: ['agent-conversation', conversation.id] })
+    },
+  })
+}
+
 export function useWorkspaceProjects(workspaceId: string | null) {
   return useQuery({
     queryKey: ["workspace-projects", workspaceId],

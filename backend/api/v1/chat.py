@@ -14,6 +14,7 @@ v1 薄闭环: 唯一写动作 = 启停 source。验证通后按同模式扩 trig
 import json
 import logging
 import re
+from dataclasses import dataclass
 from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -43,7 +44,8 @@ SYSTEM_PROMPT = """你是 opencli-admin 的全局操作助手。用户可能位�
 规则:
 - 需要知道有哪些数据源时, 调 list_sources。
 - 用户要启用/停用某个数据源时, 调 toggle_source。这是写操作, 系统不会立即执行, 会先让用户确认。
-- 用户要配置 AI 处理(富化)阶段时(换模型 / 开关 AI), 先 list_providers 看现有提供商, 再 update_provider。
+- 用户要配置 AI 处理(富化)阶段时(换模型 / 开关 AI), 先 list_providers 看现有提供商,
+  再 update_provider。
   启用一个 provider = 采集成功后自动用它跑 AI 富化; 全部停用 = 不跑 AI。换模型改 default_model。
 - 不要编造 id; 先用 list_* 拿到真实 id 再做写操作。
 - 用中文简洁回答。"""
@@ -55,7 +57,7 @@ TOOLS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "list_sources",
-            "description": "列出所有采集数据源 (返回 id / name / channel_type / enabled)。只读, 立即执行。",
+            "description": "列出所有采集数据源 (返回 id / name / channel_type / enabled)。只读, 立即执行。",  # noqa: E501
             "parameters": {"type": "object", "properties": {}},
         },
     },
@@ -63,7 +65,7 @@ TOOLS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "toggle_source",
-            "description": "启用或停用一个采集数据源。写操作, 不会立即生效, 会生成待用户确认的改动。",
+            "description": "启用或停用一个采集数据源。写操作, 不会立即生效, 会生成待用户确认的改动。",  # noqa: E501
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -78,7 +80,7 @@ TOOLS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "list_schedules",
-            "description": "列出所有定时调度计划 (返回 id / name / cron_expression / enabled / source_id)。只读, 立即执行。",
+            "description": "列出所有定时调度计划 (返回 id / name / cron_expression / enabled / source_id)。只读, 立即执行。",  # noqa: E501
             "parameters": {"type": "object", "properties": {}},
         },
     },
@@ -86,7 +88,7 @@ TOOLS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "list_tasks",
-            "description": "列出最近的采集任务 (返回 id / source_id / status / trigger_type)。只读, 立即执行。",
+            "description": "列出最近的采集任务 (返回 id / source_id / status / trigger_type)。只读, 立即执行。",  # noqa: E501
             "parameters": {"type": "object", "properties": {}},
         },
     },
@@ -94,7 +96,7 @@ TOOLS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "trigger_task",
-            "description": "对某个数据源立即触发一次采集运行。写操作, 需用户确认。source 必须已启用。",
+            "description": "对某个数据源立即触发一次采集运行。写操作, 需用户确认。source 必须已启用。",  # noqa: E501
             "parameters": {
                 "type": "object",
                 "properties": {"source_id": {"type": "string", "description": "数据源 id"}},
@@ -122,7 +124,7 @@ TOOLS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "list_providers",
-            "description": "列出所有模型提供商 (返回 id / name / provider_type / default_model / base_url / enabled)。AI 富化阶段用哪个模型由 provider 决定。只读, 立即执行。",
+            "description": "列出所有模型提供商 (返回 id / name / provider_type / default_model / base_url / enabled)。AI 富化阶段用哪个模型由 provider 决定。只读, 立即执行。",  # noqa: E501
             "parameters": {"type": "object", "properties": {}},
         },
     },
@@ -130,12 +132,15 @@ TOOLS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "update_provider",
-            "description": "配置 AI 处理阶段: 改某个模型提供商的默认模型, 或启用/停用它。启用一个 provider 后, 采集成功会自动用它跑 AI 富化; 全部停用则不跑 AI。写操作, 需用户确认。",
+            "description": "配置 AI 处理阶段: 改某个模型提供商的默认模型, 或启用/停用它。启用一个 provider 后, 采集成功会自动用它跑 AI 富化; 全部停用则不跑 AI。写操作, 需用户确认。",  # noqa: E501
             "parameters": {
                 "type": "object",
                 "properties": {
                     "provider_id": {"type": "string", "description": "模型提供商 id"},
-                    "default_model": {"type": "string", "description": "默认模型名 (可选, 如 qwen3:4b)"},
+                    "default_model": {
+                        "type": "string",
+                        "description": "默认模型名 (可选, 如 qwen3:4b)",
+                    },
                     "enabled": {"type": "boolean", "description": "启用/停用 (可选)"},
                 },
                 "required": ["provider_id"],
@@ -176,7 +181,7 @@ class ChatRequest(BaseModel):
     # Agent Control's Workspace resolution.
     workspace_id: Optional[str] = None
     # 当前页面、项目或选中对象上下文，注入给 agent 当指代背景
-    context: Optional[dict[str, Any]] = None
+    context: dict[str, Any] | None = None
 
 
 class Proposal(BaseModel):
@@ -184,15 +189,21 @@ class Proposal(BaseModel):
     args: dict[str, Any]
     summary: str
     diff: str
-    work_item_id: Optional[str] = None
-    workspace_id: Optional[str] = None
-    proposal_version: Optional[str] = None
+    work_item_id: str | None = None
+    workspace_id: str | None = None
+    proposal_version: str | None = None
 
 
 class ChatReply(BaseModel):
     type: Literal["message", "proposal"]
-    content: Optional[str] = None
-    proposal: Optional[Proposal] = None
+    content: str | None = None
+    proposal: Proposal | None = None
+
+
+@dataclass(frozen=True)
+class ChatExecution:
+    reply: ChatReply
+    tool_trace: list[dict[str, Any]]
 
 
 class ConfirmRequest(BaseModel):
@@ -200,18 +211,22 @@ class ConfirmRequest(BaseModel):
 
 
 # ── provider → AsyncOpenAI client ───────────────────────────────────────────
-async def _pick_provider(db: AsyncSession, provider_id: Optional[str]) -> ModelProvider:
+async def _pick_provider(db: AsyncSession, provider_id: str | None) -> ModelProvider:
     if provider_id:
         provider = await db.get(ModelProvider, provider_id)
         if not provider or not provider.enabled:
             raise HTTPException(status_code=400, detail="指定的模型 provider 不存在或未启用")
         return provider
     result = await db.execute(
-        select(ModelProvider).where(ModelProvider.enabled.is_(True)).order_by(ModelProvider.created_at.asc())
+        select(ModelProvider)
+        .where(ModelProvider.enabled.is_(True))
+        .order_by(ModelProvider.created_at.asc())
     )
     provider = result.scalars().first()
     if not provider:
-        raise HTTPException(status_code=400, detail="没有可用的模型 provider, 先在「模型提供商」里配置一个并启用")
+        raise HTTPException(
+            status_code=400, detail="没有可用的模型 provider, 先在「模型提供商」里配置一个并启用"
+        )
     return provider
 
 
@@ -273,21 +288,36 @@ async def _run_read_tool(db: AsyncSession, name: str, args: dict[str, Any]) -> A
     if name == "list_schedules":
         schedules, _ = await schedule_service.list_schedules(db, page=1, limit=100)
         return [
-            {"id": s.id, "name": s.name, "cron_expression": s.cron_expression, "enabled": s.enabled, "source_id": s.source_id}
+            {
+                "id": s.id,
+                "name": s.name,
+                "cron_expression": s.cron_expression,
+                "enabled": s.enabled,
+                "source_id": s.source_id,
+            }
             for s in schedules
         ]
     if name == "list_tasks":
         tasks, _ = await task_service.list_tasks(db, page=1, limit=30)
         return [
-            {"id": t.id, "source_id": t.source_id, "status": t.status, "trigger_type": t.trigger_type}
+            {
+                "id": t.id,
+                "source_id": t.source_id,
+                "status": t.status,
+                "trigger_type": t.trigger_type,
+            }
             for t in tasks
         ]
     if name == "list_providers":
         result = await db.execute(select(ModelProvider).order_by(ModelProvider.created_at.asc()))
         return [
             {
-                "id": p.id, "name": p.name, "provider_type": p.provider_type,
-                "default_model": p.default_model, "base_url": p.base_url, "enabled": p.enabled,
+                "id": p.id,
+                "name": p.name,
+                "provider_type": p.provider_type,
+                "default_model": p.default_model,
+                "base_url": p.base_url,
+                "enabled": p.enabled,
             }
             for p in result.scalars().all()
         ]
@@ -372,11 +402,26 @@ async def _chat_with_client(
     if body.context:
         system += f"\n\n当前用户操作上下文 (JSON): {json.dumps(body.context, ensure_ascii=False)}"
 
+    execution = await _chat_with_client(client, model, system, body, db, identity)
+    return ApiResponse.ok(execution.reply)
+
+
+async def _chat_with_client(
+    client: Any,
+    model: str,
+    system: str,
+    body: ChatRequest,
+    db: AsyncSession,
+    identity: RequestIdentity | None,
+) -> ChatExecution:
+    """Run either provider protocol while returning a persistence-safe tool trace."""
+
     if _is_xml_tool_model(model):
         return await _chat_xml(client, model, system, body, db, identity, tool_trace=tool_trace)
 
     messages: list[dict[str, Any]] = [{"role": "system", "content": system}]
     messages += [{"role": m.role, "content": m.content} for m in body.messages]
+    tool_trace: list[dict[str, Any]] = []
 
     for _step in range(MAX_TOOL_STEPS):
         # End any read-only transaction before an outbound model call. The
@@ -399,7 +444,7 @@ async def _chat_with_client(
         tool_calls = msg.tool_calls or []
 
         if not tool_calls:
-            return ApiResponse.ok(ChatReply(type="message", content=msg.content or ""))
+            return ChatExecution(ChatReply(type="message", content=msg.content or ""), tool_trace)
 
         # 写工具命中 → 立即返回 proposal (不执行, 不继续推理)
         for tc in tool_calls:
@@ -421,7 +466,15 @@ async def _chat_with_client(
                     identity=_require_write_identity(identity),
                     workspace_id=body.workspace_id or _workspace_id(body.context),
                 )
-                return ApiResponse.ok(ChatReply(type="proposal", proposal=proposal))
+                tool_trace.append(
+                    {
+                        "name": tc.function.name,
+                        "kind": "write",
+                        "status": "proposed",
+                        "argument_keys": sorted(args),
+                    }
+                )
+                return ChatExecution(ChatReply(type="proposal", proposal=proposal), tool_trace)
 
         # 只读工具 → 执行, 喂回结果, 继续循环
         messages.append(
@@ -450,10 +503,16 @@ async def _chat_with_client(
                 )
             result = await _run_read_tool(db, tc.function.name, _safe_json(tc.function.arguments))
             messages.append(
-                {"role": "tool", "tool_call_id": tc.id, "content": json.dumps(result, ensure_ascii=False)}
+                {
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "content": json.dumps(result, ensure_ascii=False),
+                }
             )
 
-    return ApiResponse.ok(ChatReply(type="message", content="(达到工具调用步数上限, 请换个说法再试)"))
+    return ChatExecution(
+        ChatReply(type="message", content="(达到工具调用步数上限, 请换个说法再试)"), tool_trace
+    )
 
 
 async def _chat_single_provider(
@@ -582,7 +641,7 @@ XML_TOOL_TEXT = (
     "- trigger_task(source_id): 立即触发一次采集 (写)。\n"
     "- update_schedule(schedule_id, cron_expression?, enabled?): 改调度 cron 或启停 (写)。\n"
     "- list_providers(): 列出模型提供商 (id/name/default_model/enabled)。\n"
-    "- update_provider(provider_id, default_model?, enabled?): 配置 AI 富化阶段的模型提供商, 改模型或启停 (写)。\n"
+    "- update_provider(provider_id, default_model?, enabled?): 配置 AI 富化阶段的模型提供商, 改模型或启停 (写)。\n"  # noqa: E501
     '需要调用工具时, 严格输出 XML: <tool_use name="工具名" id="toolu_1">{json 参数}</tool_use>\n'
     "先用 list_* 拿到真实 id 再做写操作。不要用 markdown 代码块。"
 )
@@ -601,6 +660,7 @@ async def _chat_xml(
     """Tool loop for XML-style models (parse <tool_use> from content, feed results back as text)."""
     messages: list[dict[str, Any]] = [{"role": "system", "content": system + XML_TOOL_TEXT}]
     messages += [{"role": m.role, "content": m.content} for m in body.messages]
+    tool_trace: list[dict[str, Any]] = []
 
     for _step in range(MAX_TOOL_STEPS):
         await db.commit()
@@ -619,7 +679,7 @@ async def _chat_xml(
 
         if not calls:
             clean = _THINK_RE.sub("", content).strip()
-            return ApiResponse.ok(ChatReply(type="message", content=clean or "(无内容)"))
+            return ChatExecution(ChatReply(type="message", content=clean or "(无内容)"), tool_trace)
 
         # write tool hit → return proposal immediately
         for name, args in calls:
@@ -640,7 +700,15 @@ async def _chat_xml(
                     identity=_require_write_identity(identity),
                     workspace_id=body.workspace_id or _workspace_id(body.context),
                 )
-                return ApiResponse.ok(ChatReply(type="proposal", proposal=proposal))
+                tool_trace.append(
+                    {
+                        "name": name,
+                        "kind": "write",
+                        "status": "proposed",
+                        "argument_keys": sorted(args),
+                    }
+                )
+                return ChatExecution(ChatReply(type="proposal", proposal=proposal), tool_trace)
 
         # read tools → execute, feed results back as <tool_result> text, loop
         messages.append({"role": "assistant", "content": content})
@@ -655,8 +723,19 @@ async def _chat_xml(
                     }
                 )
             result = await _run_read_tool(db, name, args)
+            tool_trace.append(
+                {"name": name, "kind": "read", "status": "completed", "argument_keys": sorted(args)}
+            )
             messages.append(
-                {"role": "user", "content": f'<tool_result name="{name}">{json.dumps(result, ensure_ascii=False)}</tool_result>'}
+                {
+                    "role": "user",
+                    "content": (
+                        f'<tool_result name="{name}">'
+                        f"{json.dumps(result, ensure_ascii=False)}</tool_result>"
+                    ),
+                }
             )
 
-    return ApiResponse.ok(ChatReply(type="message", content="(达到工具调用步数上限, 请换个说法再试)"))
+    return ChatExecution(
+        ChatReply(type="message", content="(达到工具调用步数上限, 请换个说法再试)"), tool_trace
+    )

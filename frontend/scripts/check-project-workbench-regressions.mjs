@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict'
+import { existsSync, readFileSync } from 'node:fs'
 import { access, readFile } from 'node:fs/promises'
 import path from 'node:path'
+import { registerHooks, stripTypeScriptTypes } from 'node:module'
 import test from 'node:test'
-import { fileURLToPath } from 'node:url'
-
+import { fileURLToPath, pathToFileURL } from 'node:url'
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const source = (file) => readFile(path.join(root, file), 'utf8')
 

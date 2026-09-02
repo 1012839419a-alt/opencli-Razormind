@@ -82,7 +82,6 @@ if [ -z "$credential_encryption_key" ]; then
   exit 1
 fi
 replace_env API_AUTH_TOKEN "$api_token"
-replace_env BOOTSTRAP_ADMIN_TOKEN "$bootstrap_token"
 replace_env SECRET_KEY "$(random_hex 32)"
 replace_env CREDENTIAL_ENCRYPTION_KEY "$credential_encryption_key"
 replace_env COMPOSE_PROJECT_NAME "$compose_project_name"

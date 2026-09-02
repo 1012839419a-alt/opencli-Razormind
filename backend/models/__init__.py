@@ -1,5 +1,6 @@
 from backend.models.acquisition import AcquisitionExecution, AcquisitionExecutionStatus
 from backend.models.agent import AIAgent
+from backend.models.agent_conversation import AgentConversation, AgentConversationTurn
 from backend.models.automation import Automation
 from backend.models.agent_conversation import (
     AgentConversation,
@@ -133,6 +134,8 @@ __all__ = [
     "TimestampMixin",
     "AcquisitionExecution",
     "AcquisitionExecutionStatus",
+    "AgentConversation",
+    "AgentConversationTurn",
     "AIAgent",
     "AgentConversation",
     "AgentConversationStatus",

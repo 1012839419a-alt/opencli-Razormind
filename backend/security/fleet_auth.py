@@ -89,6 +89,10 @@ CONTROLLED_RECEIVER_V2_PREFIX = "/api/v1/controlled-receiver/v2/"
 # user has a local bearer session, the identity dependency authenticates it.
 PUBLIC_PATHS = frozenset({"/api/v1/auth/login"})
 
+# Local login is intentionally the only unauthenticated API route. Once the
+# user has a local bearer session, the identity dependency authenticates it.
+PUBLIC_PATHS = frozenset({"/api/v1/auth/login"})
+
 _LOCALHOST_HOSTS = frozenset({"localhost", "::1"})
 
 
@@ -132,6 +136,17 @@ def enforce_bind_guard(host: str, token: str) -> None:
         "local development."
     )
 
+def _is_local_session(credential: str) -> bool:
+    try:
+        claims = jwt.decode(
+            credential,
+            get_settings().secret_key,
+            algorithms=["HS256"],
+        )
+    except JWTError:
+        return False
+    return claims.get("auth_method") == "local" and claims.get("sub") == "local-admin"
+
 
 def _is_local_session(credential: str) -> bool:
     try:
@@ -170,6 +185,7 @@ class FleetAuthMiddleware:
     the websocket credential channels, the 4401 close code, and the
     /health exemption rationale.
     """
+
 
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
