@@ -5,7 +5,7 @@ Revises: ab2c3d4e5f6a
 """
 
 import sqlalchemy as sa
-from alembic import op
+from alembic import context, op
 
 revision = "bc3d4e5f6a7b"
 down_revision = "ab2c3d4e5f6a"
@@ -14,14 +14,21 @@ depends_on = None
 
 
 def upgrade() -> None:
+    offline = context.is_offline_mode()
     bind = op.get_bind()
-    is_sqlite = bind.dialect.name == "sqlite"
-    tables = set(sa.inspect(bind).get_table_names())
+    is_sqlite = not offline and bind.dialect.name == "sqlite"
+    tables = (
+        {"automations", "operations_agent_runs"}
+        if offline
+        else set(sa.inspect(bind).get_table_names())
+    )
     if not tables.intersection({"automations", "operations_agent_runs"}):
         return
 
     def has_column(table: str, column: str) -> bool:
         if table not in tables:
+            return False
+        if offline:
             return False
         return column in {
             item["name"] for item in sa.inspect(bind).get_columns(table)
@@ -29,6 +36,8 @@ def upgrade() -> None:
 
     def has_index(table: str, index: str) -> bool:
         if table not in tables:
+            return False
+        if offline:
             return False
         return index in {
             item["name"] for item in sa.inspect(bind).get_indexes(table)

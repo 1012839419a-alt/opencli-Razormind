@@ -269,6 +269,8 @@ function AgentDeliveryPanel({
   logsLoading: boolean
   rulesLoading: boolean
 }) {
+  const delivered = delivery.confirmed + delivery.ack_not_required
+  const failed = delivery.ack_failed + delivery.submission_failed
   const enabledAgents = agents.filter((agent) => agent.enabled)
 
   return (

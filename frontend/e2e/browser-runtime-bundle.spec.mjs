@@ -136,6 +136,7 @@ test("浏览器管理展示 Bundle 期望态、加载态和 Act Pack 关联", as
       response.url().endsWith("/api/v1/browsers/runtime-bundles") &&
       response.request().method() === "GET",
   );
+  await page.goto("/browsers");
   await bundleResponse;
 
   await expect(page.getByText("Browser Runtime Bundles")).toBeVisible();

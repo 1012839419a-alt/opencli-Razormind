@@ -46,11 +46,17 @@ on_exit() {
   exit "$status"
 }
 trap on_exit EXIT
+stage() {
+  echo "[daemon-gate] $1"
+}
+
+stage "resolve compose containers"
 
 for service in "${services[@]}"; do
   container_ids[$service]="$("${compose[@]}" ps -q "$service")"
   [[ -n "${container_ids[$service]}" ]]
 done
+stage "read database sentinel"
 
 api_id="${container_ids[api]}"
 agent_id="${container_ids[agent-1]}"
@@ -62,6 +68,7 @@ db_revision_before="$(
   docker exec "$api_id" python -c \
     'import sqlite3; db=sqlite3.connect("/data/opencli_admin.db"); print(db.execute("SELECT version_num FROM alembic_version").fetchone()[0])'
 )"
+stage "initialize authentication sentinel"
 docker exec "$api_id" python -c \
   'from pathlib import Path; import sys; Path("/data/.ci-daemon-restart-sentinel").write_text(sys.argv[1], encoding="utf-8")' \
   "$sentinel"
@@ -70,10 +77,12 @@ docker exec "$api_id" python -c \
 # the public installers, verify it once, and compare the file after restart.
 printf '%s' "$local_password" | "${compose[@]}" exec -T api python -c \
   'import sys; from backend.security.local_auth import hash_password, initialize_password_hash; initialize_password_hash(hash_password(sys.stdin.read().strip()), "/data/local-admin-password.hash")'
+stage "hash authentication sentinel"
 auth_digest_before="$(
   docker exec "$api_id" python -c \
     'from hashlib import sha256; from pathlib import Path; state=Path("/data/local-admin-password.hash"); marker=Path("/data/local-admin-password.hash.initialized"); print(f"{sha256(state.read_bytes()).hexdigest()}:{sha256(marker.read_bytes()).hexdigest()}")'
 )"
+stage "verify local login"
 
 login_token="$(
   curl --fail --silent --show-error \
@@ -83,10 +92,12 @@ login_token="$(
     http://localhost:8031/api/v1/auth/login |
     python -c 'import json,sys; print(json.load(sys.stdin)["data"]["access_token"])'
 )"
+stage "verify authenticated identity"
 curl --fail --silent --show-error \
   -H "Authorization: Bearer $login_token" \
   -H "X-API-Token: $api_token" \
   http://localhost:8031/api/v1/auth/me >/dev/null
+stage "inspect browser profile volume"
 
 # Browser-profile sentinel: write through the running container into the
 # agent_profile_1 named volume, then read the same marker after daemon restart.
@@ -96,11 +107,13 @@ agent_profile_volume_before="$(
     "$agent_id"
 )"
 [[ -n "$agent_profile_volume_before" ]]
+stage "write browser profile sentinel"
 docker exec "$agent_id" sh -c \
   'test -d /home/chrome/.config/chromium && test -r /home/chrome/.config/chromium && test -w /home/chrome/.config/chromium'
 docker exec "$agent_id" sh -c \
   'mkdir -p /home/chrome/.config/chromium && printf %s "$1" > /home/chrome/.config/chromium/.ci-daemon-restart-sentinel' \
   sh "$sentinel"
+stage "restart Docker daemon"
 
 echo "Restarting the Docker daemon; no Compose recovery command will be run."
 sudo systemctl restart docker

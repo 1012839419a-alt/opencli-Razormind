@@ -138,7 +138,7 @@ function AddBindingDialog() {
 
 export function BrowserBindingsPanel() {
   const { data, isLoading, isError, error } = useBrowserBindings()
-  const bindings = data?.data ?? []
+  const bindings = data ?? []
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
   const deleteMutation = useDeleteBrowserBinding()
 

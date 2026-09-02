@@ -11,7 +11,7 @@ from typing import Any
 
 import httpx
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.models.delivery_authorization import (
@@ -284,13 +284,25 @@ async def _validated_target(
     return target, endpoint
 
 
-async def _claim(db: AsyncSession, scope: DeliveryAuthorizationScope, decision: DeliveryAuthorizationDecisionV1) -> DeliveryExecution:
+async def _claim(
+    db: AsyncSession,
+    scope: DeliveryAuthorizationScope,
+    decision: DeliveryAuthorizationDecisionV1,
+    *,
+    allow_existing_pending: bool = False,
+) -> tuple[DeliveryExecution, bool]:
     binding = _binding(decision)
-    existing = await db.scalar(select(DeliveryExecution).where(DeliveryExecution.decision_id == decision.id).with_for_update())
+    existing = await db.scalar(
+        select(DeliveryExecution)
+        .where(DeliveryExecution.decision_id == decision.id)
+        .with_for_update()
+    )
     if existing is not None:
         if existing.execution_binding_hash != binding:
-            raise DeliveryExecutionConflictError("Execution binding conflicts with existing frozen decision execution")
-        return existing
+            raise DeliveryExecutionConflictError(
+                "Execution binding conflicts with existing frozen decision execution"
+            )
+        return existing, allow_existing_pending
     execution = DeliveryExecution(
         decision_id=decision.id,
         target_revision_id=decision.target_revision_id,
@@ -309,12 +321,27 @@ async def _claim(db: AsyncSession, scope: DeliveryAuthorizationScope, decision: 
         async with db.begin_nested():
             db.add(execution)
             await db.flush()
+    except OperationalError as exc:
+        if "locked" not in str(exc).lower():
+            raise
+        await db.rollback()
+        existing = await db.scalar(
+            select(DeliveryExecution).where(DeliveryExecution.decision_id == decision.id)
+        )
+        if existing is None or existing.execution_binding_hash != binding:
+            raise DeliveryExecutionConflictError(
+                "Concurrent execution claim was not recoverable"
+            ) from exc
+        await db.refresh(existing)
+        return existing, False
     except IntegrityError:
-        existing = await db.scalar(select(DeliveryExecution).where(DeliveryExecution.decision_id == decision.id))
+        existing = await db.scalar(
+            select(DeliveryExecution).where(DeliveryExecution.decision_id == decision.id)
+        )
         if existing is None or existing.execution_binding_hash != binding:
             raise DeliveryExecutionConflictError("Concurrent execution claim conflicts")
-        return existing
-    return execution
+        return existing, False
+    return execution, True
 
 
 async def _record(
@@ -362,12 +389,28 @@ async def _before_send_start(*, execution_id: str, attempt: int) -> None:
 
 
 
-async def execute_delivery(db: AsyncSession, *, scope: DeliveryAuthorizationScope, decision_id: str) -> DeliveryExecutionReadV1:
+async def execute_delivery(
+    db: AsyncSession,
+    *,
+    scope: DeliveryAuthorizationScope,
+    decision_id: str,
+    _allow_existing_pending: bool = False,
+) -> DeliveryExecutionReadV1:
     decision = await _scoped_decision(db, scope, decision_id)
     payload = _payload(decision)
     timeout, max_attempts = _retry_policy(decision.policy_snapshot)
-    execution = await _claim(db, scope, decision)
+    execution, owns_claim = await _claim(
+        db,
+        scope,
+        decision,
+        allow_existing_pending=_allow_existing_pending,
+    )
     prior = await _results(db, execution.id)
+    if not owns_claim:
+        if execution.final_outcome is not None or not execution.lease_token:
+            read = _read(execution, prior)
+            await db.commit()
+            return read
     if execution.final_outcome is not None:
         return _read(execution, prior)
     if execution.lease_token:
@@ -380,7 +423,12 @@ async def execute_delivery(db: AsyncSession, *, scope: DeliveryAuthorizationScop
                 execution.state = "pending"
                 execution.lease_token, execution.lease_acquired_at, execution.reserved_attempt_number = None, None, None
                 await db.commit()
-                return await execute_delivery(db, scope=scope, decision_id=decision_id)
+                return await execute_delivery(
+                    db,
+                    scope=scope,
+                    decision_id=decision_id,
+                    _allow_existing_pending=True,
+                )
             result = await _record(
                 db, execution, attempt=reserved, transport="crash-ambiguous", http_status=None,
                 receipt="missing", protocol="unknown", outcome="unknown",
@@ -388,8 +436,10 @@ async def execute_delivery(db: AsyncSession, *, scope: DeliveryAuthorizationScop
             execution.state, execution.final_outcome, execution.final_result_id = "blocked", "unknown", result.id
             execution.lease_token, execution.lease_acquired_at, execution.send_started_at, execution.reserved_attempt_number = None, None, None, None
             await db.flush()
-            return _read(execution, await _results(db, execution.id))
-        return _read(execution, prior)
+        read = _read(execution, await _results(db, execution.id))
+        if not owns_claim:
+            await db.commit()
+        return read
     if execution.cancel_requested_at:
         execution.state, execution.final_outcome = "cancelled", "unknown"
         await db.flush()

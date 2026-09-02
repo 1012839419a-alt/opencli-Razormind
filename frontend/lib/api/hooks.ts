@@ -537,14 +537,6 @@ export function useInstallAutomationStarters() {
   })
 }
 
-export function useInstallAutomationStarters() {
-  const queryClient = useQueryClient()
-  return useMutation({
-    mutationFn: ({ workspaceId }: { workspaceId: string }) => api.installAutomationStarters(workspaceId),
-    onSuccess: (_result, { workspaceId }) =>
-      queryClient.invalidateQueries({ queryKey: ['automations', workspaceId] }),
-  })
-}
 
 export function useCreateAutomation() {
   const queryClient = useQueryClient();
@@ -558,6 +550,8 @@ export function useCreateAutomation() {
         Automation,
         | "id"
         | "workspace_id"
+        | "starter_key"
+        | "revision"
         | "created_by_user_id"
         | "created_at"
         | "updated_at"
@@ -1716,7 +1710,7 @@ export function useWsAgentStatus() {
 export function useUpdateSystemConfig() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (data: Partial<SystemConfig>) => api.updateSystemConfig(data),
+    mutationFn: (data: SystemConfigPatch) => api.updateSystemConfig(data),
     onSuccess: (result) => queryClient.setQueryData(["system-config"], result),
   });
 }

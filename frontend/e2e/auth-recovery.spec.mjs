@@ -27,6 +27,7 @@ const systemConfig = {
   netbird_mode: 'off',
   opencli_cdp_endpoint: 'http://127.0.0.1:9222',
   agent_pool_endpoints: [],
+  effective_cdp_endpoints: [],
   llm_request_timeout_seconds: 60,
   llm_max_concurrency: 2,
   control_mode: 'advisory',
@@ -97,7 +98,7 @@ test('mounted auth recovery retains the token and returns to the requested route
   await page.goto('/system')
   await expect(page.getByText('API 服务正在恢复')).toBeVisible()
   await expect(page.getByRole('heading', { name: '系统设置' })).toBeVisible()
-  expect(identityCalls).toBe(2)
+  await expect.poll(() => identityCalls).toBe(2)
   await expect
     .poll(() => page.evaluate((key) => sessionStorage.getItem(key), TOKEN_KEY))
     .toBe('retained-test-token')

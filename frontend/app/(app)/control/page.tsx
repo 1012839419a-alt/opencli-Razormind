@@ -555,6 +555,7 @@ export default function ControlCenterPage() {
           <CardTitle className="text-base">咨询报告（Advisory Report）</CardTitle>
           <CardDescription>
             control_actions 证据台账的收敛/恢复统计。这里仅展示 advisory 证据，不在前端自行推断是否可自动化；automatic 是否允许由服务端配置门禁统一判定。
+          </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
           {advisory.isLoading ? (

@@ -1,6 +1,8 @@
 """Collect a cited Doubao research answer through the installed OpenCLI adapter."""
 
+import asyncio
 import json
+import math
 import os
 import re
 from typing import Any
@@ -65,7 +67,6 @@ def _answer(rows: list[dict[str, Any]]) -> str:
 
 
 def _structured_response(text: str) -> dict[str, Any]:
-    # merge marker
     """Decode Doubao JSON while retaining the complete provider response."""
     raw = text.strip()
     candidates = [raw]
@@ -316,7 +317,7 @@ class DoubaoResearchChannel(AbstractChannel):
             settle_seconds = float(config.get("settle_seconds", 0))
         except (TypeError, ValueError):
             return ChannelResult.fail("'settle_seconds' must be a non-negative number")
-        if settle_seconds < 0:
+        if not math.isfinite(settle_seconds) or settle_seconds < 0:
             return ChannelResult.fail("'settle_seconds' must be a non-negative number")
         site_session = str(config.get("site_session", "ephemeral"))
         # Prompt wording belongs to the research brief.  Appending a fixed
@@ -355,6 +356,28 @@ class DoubaoResearchChannel(AbstractChannel):
                 f"opencli doubao ask exited with code {returncode}: {stderr[:500]}",
                 error_type=error_type,
             )
+        if settle_seconds:
+            await asyncio.sleep(settle_seconds)
+            read_command = [
+                _opencli_binary(),
+                "doubao",
+                "read",
+                "-f",
+                "json",
+                "--site-session",
+                site_session,
+            ]
+            try:
+                returncode, stdout, stderr = await _run_doubao_command(read_command)
+            except Exception as exc:
+                return ChannelResult.fail(
+                    f"Doubao read failed: {exc}", error_type=type(exc).__name__
+                )
+            if returncode:
+                return ChannelResult.fail(
+                    f"opencli doubao read exited with code {returncode}: {stderr[:500]}",
+                    error_type="ConnectionError" if _is_transient_cdp_fault(stderr, stdout) else None,
+                )
         try:
             response_rows = _parse_opencli_rows(stdout)
             answer = _answer(response_rows)
@@ -424,8 +447,6 @@ class DoubaoResearchChannel(AbstractChannel):
 
     async def fetch(self, ctx: FetchContext) -> FetchResult:
         """Run the subprocess collector with bounded retry for transient failures."""
-        import asyncio
-
         from backend.pipeline.error_taxonomy import is_retryable
 
         max_retries = int(ctx.config.get("max_retries", 3))

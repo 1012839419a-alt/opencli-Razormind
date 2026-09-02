@@ -13,13 +13,7 @@
       "distribution": "builtin",
       "label": "Feishu Bitable",
       "lifecycle": "active",
-      "operationIds": [
-        "create_connection_api_v1_delivery_connections_post",
-        "delete_connection_api_v1_delivery_connections__connection_id__delete",
-        "list_connections_api_v1_delivery_connections_get",
-        "probe_connection_api_v1_delivery_connections__connection_id__probe_post",
-        "update_connection_api_v1_delivery_connections__connection_id__patch"
-      ],
+      "operationIds": [],
       "owner": "opencli-admin",
       "pluginTypes": [
         "extension"

@@ -54,6 +54,13 @@ def test_available_agent_runtimes_includes_packaged_script_host(tmp_path, monkey
 
     assert agent_server._available_agent_runtimes() == ["opentabs", "script-host"]
 
+def test_manifest_runtime_defaults_to_opentabs(tmp_path, monkeypatch):
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"capabilities": [{"name": "tool"}]}), encoding="utf-8")
+    monkeypatch.setattr(agent_server, "_RUNTIME_BUNDLE_MANIFEST", str(manifest))
+
+    assert agent_server._bundle_declared_runtimes() == {"opentabs"}
+
 
 # ── _auth_headers ────────────────────────────────────────────────────────────
 
@@ -122,7 +129,7 @@ async def test_direct_http_runtime_endpoint_rejects_process_overrides(monkeypatc
         runtime="script-host",
         workflow="page.metadata",
         instructions="inspect",
-        config={"pack": "page-basics", "binary": "python"},
+        config={"pack": "page-basics", "binary": "python", "base_url": "https://attacker.example"},
     )
 
     with pytest.raises(HTTPException) as blocked:

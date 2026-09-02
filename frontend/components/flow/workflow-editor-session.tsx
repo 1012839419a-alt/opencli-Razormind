@@ -17,16 +17,14 @@ import type { WorkflowAssetSummary } from '@/lib/api/types'
 import { useFlowStore } from '@/lib/flow/store'
 import { resolveYjsUrl, useSettingsStore } from '@/lib/flow/settings-store'
 import { IMAGE_ASSET_CATALOG_ID } from '@/lib/workflow/node-catalog'
-import { persistableWorkflowProject } from '@/lib/workflow/persistence'
-import { parseWorkflowProject, type WorkflowProject } from '@/lib/workflow/schema'
+import { preparePersistableWorkflowDraft, workflowDraftFingerprint } from '@/lib/workflow/draft-persistence'
+import { parseWorkflowProject } from '@/lib/workflow/schema'
 import { studioGraphForTemplate } from '@/lib/workflow/studio-templates'
 import { useWorkflowCapabilities } from '@/lib/workflow/use-workflow-capabilities'
 
 import { WorkflowEditor } from './workflow-editor'
 
 
-const projectFingerprint = (project: WorkflowProject) =>
-  JSON.stringify(persistableWorkflowProject(project))
 
 type WorkflowEditorSessionProps = {
   forceStandalone?: boolean
@@ -95,15 +93,25 @@ export function WorkflowEditorSession({ forceStandalone = false }: WorkflowEdito
 
   const saveDraft = useCallback(
     async (graph: typeof workflowProject) => {
-      if (!workspaceId || !projectId || !workflowId || revision.current === null || saveBlocked.current) throw new Error('草稿尚未就绪')
-      const persistableGraph = persistableWorkflowProject(graph)
-      if (lastSavedFingerprint.current === projectFingerprint(persistableGraph)) return
+      if (!workspaceId || !projectId || !workflowId || revision.current === null || saveBlocked.current) {
+        throw new Error('草稿尚未就绪')
+      }
+      const preparedDraft = preparePersistableWorkflowDraft(graph)
+      if (lastSavedFingerprint.current === preparedDraft.fingerprint) return
       if (yjsEnabled) {
         const latestDraft = await getProjectWorkflowDraft(workspaceId, projectId, workflowId)
         revision.current = latestDraft.revision
         setSavedRevision(latestDraft.revision)
       }
-      pendingGraph.current = persistableGraph
+      const queue = saveQueue.current ?? {
+        session: saveSession.current,
+        target: { workspaceId, projectId, workflowId },
+        revision: revision.current,
+        pending: null,
+        promise: null,
+      }
+      saveQueue.current = queue
+      queue.pending = preparedDraft
       setDocumentState('saving')
       if (!queue.promise) {
         const activeQueue = queue
@@ -147,9 +155,9 @@ export function WorkflowEditorSession({ forceStandalone = false }: WorkflowEdito
     },
     [projectId, workflowId, workspaceId, yjsEnabled],
   )
-
   useEffect(() => {
     if (!workspaceId || !projectId) return
+    saveSession.current += 1
     if (primaryWorkflowPending) return
     useSettingsStore.getState().patch({ collabProvider: 'off', yjsEnabled: false, yjsConnected: false })
     let active = true
@@ -163,10 +171,6 @@ export function WorkflowEditorSession({ forceStandalone = false }: WorkflowEdito
     setLoadState('loading')
     setLoadError(null)
     setCreationError(null)
-    setDocumentState('loading')
-    setLoadError(null)
-    if (primaryWorkflowPending) return
-    let active = true
     ;(async () => {
       try {
         if (!requestedWorkflowId && workspaceProjects.isError) {
@@ -228,7 +232,7 @@ export function WorkflowEditorSession({ forceStandalone = false }: WorkflowEdito
 
   useEffect(() => {
     if (!loaded.current || !workspaceId || !projectId || !workflowId || !yjsConnected) return
-    const fingerprint = projectFingerprint(workflowProject)
+    const fingerprint = workflowDraftFingerprint(workflowProject)
     if (lastSavedFingerprint.current === fingerprint) return
     const expectedRevision = revision.current ?? 0
     setDocumentState('saving')

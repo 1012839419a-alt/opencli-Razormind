@@ -1,4 +1,6 @@
-from sqlalchemy import JSON, ForeignKey, String, Text, UniqueConstraint
+import hashlib
+
+from sqlalchemy import JSON, ForeignKey, String, Text, UniqueConstraint, event
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.models.base import TimestampMixin
@@ -54,6 +56,15 @@ class BrowserInstance(TimestampMixin):
     resource_class: Mapped[str] = mapped_column(String(100), nullable=False, default="standard")
     startup_pages: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     network_policy: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+
+
+@event.listens_for(BrowserInstance, "before_insert")
+def _default_profile_name(_mapper, _connection, target: BrowserInstance) -> None:
+    if not target.profile_name:
+        if len(target.endpoint) <= 100:
+            target.profile_name = target.endpoint
+        else:
+            target.profile_name = f"endpoint-{hashlib.sha256(target.endpoint.encode()).hexdigest()[:64]}"
 
 
 class BrowserRuntimeDeployment(TimestampMixin):

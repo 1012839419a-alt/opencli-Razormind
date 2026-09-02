@@ -82,7 +82,7 @@ def _executor_fixture(monkeypatch, statuses: list[int], *, header_failure: bool 
         return decision
 
     async def claim(*_args, **_kwargs):
-        return execution
+        return execution, True
 
     async def result_rows(*_args, **_kwargs):
         return results

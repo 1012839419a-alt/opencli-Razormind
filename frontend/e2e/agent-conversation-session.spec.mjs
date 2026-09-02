@@ -19,7 +19,7 @@ test('agent conversation session sends, restores, continues, and confirms a prop
     if (url.pathname.endsWith('/chat/sessions') && route.request().method() === 'GET') return reply(created ? [conversation] : [])
     if (url.pathname.endsWith('/chat/sessions') && route.request().method() === 'POST') {
       created = true
-      return reply({ conversation_id: conversation.id, session: conversation })
+      return reply(conversation)
     }
     if (url.pathname.endsWith('/chat/sessions/conversation-a') && route.request().method() === 'GET') return reply({ ...conversation, turns })
     if (url.pathname.endsWith('/chat/sessions/conversation-a/messages')) {

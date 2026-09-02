@@ -154,6 +154,9 @@ jobs:
         with:
           python-version-file: ".python-version"
 
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v7
+
       - name: Setup pnpm for frontend contract checks
         uses: pnpm/action-setup@v4
         with:
@@ -277,8 +280,8 @@ jobs:
       # rot (dropped columns with no re-add, wrong op order, etc.).
       - name: alembic downgrade/upgrade smoke test
         run: |
-          alembic downgrade p3q4r5s6t7u8
-          alembic upgrade head
+          uv run alembic downgrade p3q4r5s6t7u8
+          uv run alembic upgrade head
 
       - name: Native intelligence and event spine PostgreSQL conformance
         run: >-

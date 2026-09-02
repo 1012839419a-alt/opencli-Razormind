@@ -138,6 +138,9 @@ def test_event_types_is_exactly_the_documented_set():
         "tool_call",
         "tool_result",
         "state",
+        "artifact",
+        "evidence",
+        "audit",
         "done",
         "error",
     }

@@ -9,7 +9,7 @@ import type {
 export const listBrowserBindings = () =>
   apiClient
     .get<ApiResponse<BrowserBinding[]>>("/browsers/bindings")
-    .then((r) => r.data);
+    .then((r) => r.data.data);
 
 export const createBrowserBinding = (data: {
   browser_endpoint: string;

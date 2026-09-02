@@ -165,6 +165,46 @@ async def test_stale_pending_attempt_can_retry_after_reservation_crash(db_sessio
     assert retried.status == "succeeded"
     assert retried.remote_record_id == "remote-1"
     create.assert_awaited_once()
+@pytest.mark.asyncio
+async def test_stale_pending_attempt_rejects_changed_payload(db_session):
+    connection = DeliveryConnection(
+        name="Feishu", app_id="cli_test", app_secret="secret", enabled=True
+    )
+    db_session.add(connection)
+    await db_session.flush()
+    db_session.add(
+        DeliveryAttempt(
+            connection_id=connection.id,
+            app_token="app_token",
+            table_id="table",
+            record_id="record-1",
+            workflow_run_id="run-1",
+            evidence_digest="a" * 64,
+            field_map={"recordId": "Record ID"},
+            status="pending",
+            updated_at=datetime.now(timezone.utc) - timedelta(minutes=10),
+        )
+    )
+    await db_session.commit()
+
+    with patch(
+        "backend.services.feishu_bitable_delivery.create_record",
+        new=AsyncMock(return_value="remote-1"),
+    ) as create:
+        with pytest.raises(FeishuDeliveryError, match="idempotency_conflict"):
+            await deliver_record_once(
+                db_session,
+                connection=connection,
+                app_token="app_token",
+                table_id="table",
+                record_id="record-1",
+                workflow_run_id="run-2",
+                evidence_digest="b" * 64,
+                fields={"Record ID": "record-1"},
+                field_map={"recordId": "Record ID"},
+            )
+    create.assert_not_awaited()
+
 
 @pytest.mark.asyncio
 async def test_probe_bitable_uses_official_host_and_counts_fields():

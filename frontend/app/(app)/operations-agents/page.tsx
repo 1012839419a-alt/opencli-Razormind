@@ -6,14 +6,16 @@ import { toast } from 'sonner'
 
 import AgentAvatar from '@/components/smoothui/agent-avatar'
 import SwitchboardCard from '@/components/smoothui/switchboard-card'
-import { useAutomations, useCreateAutomation, useGovernedWorkspaces, useInstallAutomationStarters, useOperationsAgentActivity, useOperationsAgentDraft, useOperationsAgents, useOperationsAgentVersion, useOperationsAgentVersions, usePatchAutomation, usePublishOperationsAgentVersion, useStartOperationsAgentRun, useUpdateOperationsAgentDraft } from '@/lib/api/hooks'
-import type { AgentRuntimeBindingV2, Automation, OperationsAgent, OperationsAgentMode } from '@/lib/api/types'
+import { useAutomations, useCreateAutomation, useCreateOperationsAgent, useGovernedWorkspaces, useInstallAutomationStarters, useNodes, useOperationsAgentActivity, useOperationsAgentDraft, useOperationsAgents, useOperationsAgentTeams, useOperationsAgentVersion, useOperationsAgentVersions, usePatchAutomation, usePublishOperationsAgentVersion, useStartAutomationRun, useStartOperationsAgentRun, useUpdateOperationsAgentDraft } from '@/lib/api/hooks'
+import type { AgentQualityGateV1, AgentRuntimeBindingV2, Automation, OperationsAgent, OperationsAgentMode } from '@/lib/api/types'
 import { cn } from '@/lib/utils'
 import { BACKEND_HINT, EmptyState, ErrorState, LoadingState } from '@/components/shell/data-states'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
+import { automationExecutorMeta as executorMeta } from '@/lib/automations/executors'
+import { AUTOMATION_APPROVALS as APPROVALS } from '@/lib/automations/approval'
 
 const SUGGESTIONS = [
   { name: '每日运行简报', prompt: '汇总过去一天的运行、失败和待批准事项，给出需要关注的下一步。', icon: Bell, color: 'text-indigo-400', schedule: 'daily@08:00' },
@@ -55,20 +57,8 @@ type AgentStarterInput = {
   executor?: string
 }
 
-const EXECUTORS = [
-  { id: 'codex', name: 'Codex', icon: Code2, color: 'text-sky-400' },
-  { id: 'claude', name: 'Claude', icon: Sparkles, color: 'text-orange-400' },
-  { id: 'chatcloud', name: 'ChatCloud', icon: Cloud, color: 'text-violet-400' },
-  { id: 'custom', name: '自定义', icon: Terminal, color: 'text-emerald-400' },
-] as const
 
-type AgentStarterInput = {
-  name: string
-  prompt: string
-  schedule: string
-}
-
-function scheduleText(value: string) {
+function automationScheduleText(value: string) {
   const [kind, qualifier, time] = value.split('@')
   if (kind === 'on_anomaly') return '检测到异常时'
   if (kind === 'weekly') {
@@ -89,16 +79,22 @@ function parseJsonObject(value: string, label: string) {
   return parsed as Record<string, unknown>
 }
 
-function parseJsonArray(value: string, label: string) {
+function parseJsonArray<T>(value: string, label: string) {
   const parsed = JSON.parse(value)
   if (!Array.isArray(parsed) || parsed.some((item) => !item || Array.isArray(item) || typeof item !== 'object')) {
     throw new Error(`${label} 必须是 JSON 对象数组`)
   }
-  return parsed as Array<Record<string, unknown>>
+  return parsed as T[]
 }
 
 function parseIdentifierList(value: string) {
   return [...new Set(value.split(',').map((item) => item.trim()).filter(Boolean))]
+}
+
+function publicRunSummary(payload: Record<string, unknown> | null) {
+  if (!payload) return null
+  const summary = payload.summary ?? payload.message ?? payload.result
+  return typeof summary === 'string' ? summary : null
 }
 
 function ContractEditor({ workspaceId, agent }: { workspaceId: string; agent: OperationsAgent }) {
@@ -157,6 +153,10 @@ function ContractEditor({ workspaceId, agent }: { workspaceId: string; agent: Op
     setWorkflow(binding?.workflow ?? '')
     setDispatchTimeout(binding?.dispatch_timeout_seconds ?? 1800)
     setRuntimeConfig(JSON.stringify(binding?.config ?? { timeout_seconds: 1800 }, null, 2))
+    const modelBinding = binding?.model_binding
+    setProvider(modelBinding?.provider ?? '')
+    setModel(modelBinding?.model ?? '')
+    setAuthProfile(modelBinding?.auth_profile ?? '')
   }, [draft.data])
 
 
@@ -167,7 +167,6 @@ function ContractEditor({ workspaceId, agent }: { workspaceId: string; agent: Op
       return
     }
     try {
-      const binding = draft.data.model_configuration.runtime_binding
       await updateDraft.mutateAsync({
         workspaceId,
         agentId: agent.id,
@@ -185,7 +184,7 @@ function ContractEditor({ workspaceId, agent }: { workspaceId: string; agent: Op
               required_capabilities: parseIdentifierList(requiredCapabilities),
               tool_policy: parseJsonObject(toolPolicy, 'Tool policy'),
               budget: parseJsonObject(budget, 'Budget'),
-              quality_gates: parseJsonArray(qualityGates, 'Quality gates'),
+              quality_gates: parseJsonArray<AgentQualityGateV1>(qualityGates, 'Quality gates'),
               evidence_requirements: parseIdentifierList(evidenceRequirements),
             },
             runtime_binding: {
@@ -308,6 +307,7 @@ export default function OperationsAgentsPage() {
   const activity = useOperationsAgentActivity(workspaceId)
   const installStarterPack = useInstallAutomationStarters()
   const createAutomation = useCreateAutomation()
+  const createOperationsAgent = useCreateOperationsAgent()
   const patchAutomation = usePatchAutomation()
   const startAutomationRun = useStartAutomationRun()
   const startRunMutation = useStartOperationsAgentRun()
@@ -330,6 +330,27 @@ export default function OperationsAgentsPage() {
   const [runInput, setRunInput] = useState('{}')
   const [runState, setRunState] = useState('{}')
   const [runTargetType, setRunTargetType] = useState('manual')
+  const [executor, setExecutor] = useState('codex')
+  const [agentName, setAgentName] = useState('')
+  const [agentDescription, setAgentDescription] = useState('')
+  const [owningTeamId, setOwningTeamId] = useState('')
+  const [agentCreateOpen, setAgentCreateOpen] = useState(false)
+  const [automationToRun, setAutomationToRun] = useState<Automation | null>(null)
+  const [automationToBind, setAutomationToBind] = useState<Automation | null>(null)
+  const [bindingAgentId, setBindingAgentId] = useState('')
+  const runnableAgents = useMemo(
+    () => (agents.data ?? []).filter(
+      (agent) =>
+        !agent.disabled &&
+        agent.current_published_version !== null &&
+        agent.current_profile.mode !== 'low_risk_automatic',
+    ),
+    [agents.data],
+  )
+  const compatibleAgents = useMemo(
+    () => runnableAgents.filter((agent) => agent.current_profile.mode === approvalMode),
+    [approvalMode, runnableAgents],
+  )
   const latestRun = useMemo(() => new Map(activity.data?.map((run) => [run.operations_agent_id, run]) ?? []), [activity.data])
 
   useEffect(() => {

@@ -439,7 +439,7 @@ export async function startWorkflowRun(
       ...(!questionBankBody ? { "Content-Type": "application/json" } : {}),
       ...(options.authorization ? { Authorization: options.authorization } : {}),
     },
-    body: JSON.stringify({
+    body: questionBankBody ?? JSON.stringify({
       project,
       ...(options.runId ? { runId: options.runId } : {}),
       ...(options.traceId ? { traceId: options.traceId } : {}),

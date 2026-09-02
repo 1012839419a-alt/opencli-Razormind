@@ -54,7 +54,8 @@ services:
 
   agent-1:
     <<: *agent-build
-
+    volumes:
+      - agent_profile_1:/home/agent/.config/chromium
   # Remote edge agent: same image, same default (no embedded Chrome).
   agent:
     <<: *agent-build

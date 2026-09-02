@@ -232,10 +232,26 @@ async def list_spaces(
 async def create_space(
     db: AsyncSession,
     workspace_id: str,
-    body: Any,
+    body: Any | None = None,
     identity: RequestIdentity | None = None,
+    *,
+    browser_instance_id: str | None = None,
+    owner_type: str | None = None,
+    owner_id: str | None = None,
+    granted_capabilities: list[str] | None = None,
+    binding_id: str | None = None,
 ) -> BrowserSpace:
-    values = _body_values(body)
+    values = (
+        _body_values(body)
+        if body is not None
+        else {
+            "browser_instance_id": browser_instance_id,
+            "owner_type": owner_type,
+            "owner_id": owner_id,
+            "granted_capabilities": granted_capabilities,
+            "binding_id": binding_id,
+        }
+    )
     owner_type = str(values.get("owner_type") or "")
     owner_id = str(values.get("owner_id") or "")
     instance_id = str(values.get("browser_instance_id") or "")
@@ -401,13 +417,25 @@ async def submit_task(
     db: AsyncSession,
     workspace_id: str,
     space_id: str,
-    body: Any,
+    body: Any | None = None,
     identity: RequestIdentity | None = None,
-    executor: BrowserSpaceExecutor | None = None,
+    executor: BrowserSpaceExecutor | Any | None = None,
     *,
     execute: bool = True,
-) -> tuple[BrowserSpaceTask, bool]:
-    values = _body_values(body)
+    request_id: str | None = None,
+    capability: str | None = None,
+    args: dict[str, Any] | None = None,
+) -> tuple[BrowserSpaceTask, bool] | BrowserSpaceTask:
+    legacy_call = body is None
+    values = (
+        _body_values(body)
+        if body is not None
+        else {
+            "request_id": request_id,
+            "capability": capability,
+            "args": args,
+        }
+    )
     request_id = str(values.get("request_id") or "")
     capability = str(values.get("capability") or "")
     args = values.get("args") or {}
@@ -433,7 +461,7 @@ async def submit_task(
         if existing is not None:
             if existing.request_fingerprint != fingerprint:
                 raise BrowserSpaceError("idempotency_conflict", "request_id was already used", 409)
-            return existing, False
+            return (existing if legacy_call else (existing, False))
         if space.status == BrowserSpaceStatus.CLOSED.value:
             raise BrowserSpaceError("closed_space", "closed browser space rejects new tasks", 409)
         if capability not in set(space.granted_capabilities or []):
@@ -475,15 +503,17 @@ async def submit_task(
                 )
             )
             if existing is not None and existing.request_fingerprint == fingerprint:
-                return existing, False
+                return (existing if legacy_call else (existing, False))
             raise BrowserSpaceError(
                 "space_task_in_progress", "browser space already has an active task", 409
             ) from exc
         task._created = True
         created = True
 
+    if legacy_call:
+        execute = executor is not None
     if not execute:
-        return task, created
+        return task if legacy_call else (task, created)
 
     runtime_session = await _new_session(db)
     if runtime_session is None:
@@ -503,7 +533,7 @@ async def submit_task(
         finally:
             await runtime_session.close()
         await db.refresh(task)
-    return task, created
+    return task if legacy_call else (task, created)
 
 
 async def execute_task_in_background(
@@ -529,12 +559,24 @@ async def execute_task_in_background(
 
 async def execute_task(
     db: AsyncSession,
-    task: BrowserSpaceTask,
-    raw_args: dict[str, Any],
+    task: BrowserSpaceTask | None = None,
+    raw_args: dict[str, Any] | None = None,
     timeout_seconds: int = 60,
     *,
-    executor: BrowserSpaceExecutor | None = None,
+    executor: BrowserSpaceExecutor | Any | None = None,
+    task_id: str | None = None,
+    invocation_args: dict[str, Any] | None = None,
 ) -> BrowserSpaceTask:
+    if task is None:
+        if task_id is None:
+            raise BrowserSpaceError("invalid_request", "task is required", 422)
+        task = await db.get(BrowserSpaceTask, task_id)
+        if task is None:
+            raise BrowserSpaceError("not_found", "browser space task not found", 404)
+        raw_args = invocation_args if invocation_args is not None else task.args
+    if raw_args is None:
+        raw_args = {}
+
     started_at = datetime.now(UTC)
     claim = await db.execute(
         update(BrowserSpaceTask)
@@ -577,16 +619,18 @@ async def execute_task(
     await db.commit()
     runner = executor or CapabilityExecutor()
     try:
-        result = await asyncio.wait_for(
-            runner.execute(
+        invocation = (
+            runner(instance, task.capability, raw_args)
+            if callable(runner)
+            else runner.execute(
                 instance=instance,
                 capability=task.capability,
                 args=raw_args,
                 timeout_seconds=timeout_seconds,
                 task_id=task.id,
-            ),
-            timeout=timeout_seconds,
+            )
         )
+        result = await asyncio.wait_for(invocation, timeout=timeout_seconds)
     except TimeoutError:
         await _finish_task(
             db,

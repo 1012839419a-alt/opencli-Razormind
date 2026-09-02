@@ -2,6 +2,13 @@ import { apiClient, rootClient } from "./client";
 import { API_HEALTH_REQUEST_TIMEOUT_MS } from "./recovery";
 import type { ApiHealthSnapshot } from "./restart-orchestration";
 import type {
+  AgentConversation,
+  AgentConversationDetail,
+  AgentConversationMessageResult,
+  CreateAgentConversationInput,
+  SendAgentConversationMessageInput,
+} from "./agent-conversations";
+import type {
   AIAgent,
   AdvisoryReport,
   ApiResponse,
@@ -22,6 +29,7 @@ import type {
   FeedProviderInput,
   FeedProviderWorkflowNode,
   FeedProviderWorkflowNodeInput,
+  GovernedProjectSummary,
   KillSwitchState,
   ModelDefaultCandidate,
   ModelDefaultRead,
@@ -45,6 +53,9 @@ import type {
   RssCatalogImportResult,
   Skill,
   SkillBrief,
+  SourceBinding,
+  SourceBindingInput,
+  SourceBindingRevision,
   SourceControlState,
   SourceMeasurementRecord,
   SystemConfig,
@@ -78,11 +89,16 @@ import type {
   DeliveryConnectionInput,
   FeishuBitableProbeInput,
   FeishuBitableProbeResult,
-} from './types'
-import type { WorkflowProject } from '@/lib/workflow/schema'
+} from "./types";
+import type { WorkflowProject } from "@/lib/workflow/schema";
+
 export * from "./workspace-endpoints";
 export * from "./browser-endpoints";
 export * from "./workbench-endpoints";
+
+export type SystemConfigPatch = Partial<Omit<SystemConfig, "agent_pool_endpoints" | "effective_cdp_endpoints">> & {
+  agent_pool_endpoints?: string;
+};
 
 export const loginWithPassword = (username: string, password: string) =>
   apiClient
@@ -104,29 +120,12 @@ export const changeLocalPassword = (
       current_password: currentPassword,
       new_password: newPassword,
     })
-    .then((r) => r.data.data)
-
-export const loginWithPassword = (username: string, password: string) =>
-  apiClient
-    .post<
-      ApiResponse<{
-        access_token: string
-        token_type: 'bearer'
-        using_default_password: boolean
-      }>
-    >('/auth/login', { username, password })
-    .then((r) => r.data.data)
-
-export const changeLocalPassword = (currentPassword: string, newPassword: string) =>
-  apiClient
-    .post<ApiResponse<{ message: string }>>('/auth/password', {
-      current_password: currentPassword,
-      new_password: newPassword,
-    })
-    .then((r) => r.data.data)
+    .then((r) => r.data.data);
 
 export const listMyWorkspaces = () =>
-  apiClient.get<ApiResponse<WorkspaceSummary[]>>('/workspaces').then((r) => r.data.data)
+  apiClient
+    .get<ApiResponse<WorkspaceSummary[]>>("/workspaces")
+    .then((r) => r.data.data);
 
 export const listAgentConversations = (workspaceId: string, limit = 20) =>
   apiClient
@@ -155,7 +154,7 @@ export const sendAgentConversationMessage = (
   data: SendAgentConversationMessageInput,
 ) =>
   apiClient
-    .post<ApiResponse<SendAgentConversationMessageResult>>(`/chat/sessions/${conversationId}/messages`, data)
+    .post<ApiResponse<AgentConversationMessageResult>>(`/chat/sessions/${conversationId}/messages`, data)
     .then((r) => r.data.data)
 
 export const closeAgentConversation = (conversationId: string) =>
@@ -400,7 +399,7 @@ export const installAutomationStarters = (workspaceId: string) =>
 
 export const createAutomation = (
   workspaceId: string,
-  data: Omit<Automation, 'id' | 'workspace_id' | 'revision' | 'created_by_user_id' | 'created_at' | 'updated_at'>,
+  data: Omit<Automation, 'id' | 'workspace_id' | 'starter_key' | 'revision' | 'created_by_user_id' | 'created_at' | 'updated_at'>,
 ) =>
   apiClient.post<ApiResponse<Automation>>(`/workspaces/${workspaceId}/automations`, data).then((r) => r.data.data)
 
@@ -1039,7 +1038,7 @@ export const getSystemConfig = () =>
     .get<ApiResponse<SystemConfig>>("/system/config")
     .then((r) => r.data.data);
 
-export const updateSystemConfig = (data: Partial<SystemConfig>) =>
+export const updateSystemConfig = (data: SystemConfigPatch) =>
   apiClient
     .patch<ApiResponse<SystemConfig>>("/system/config", data)
     .then((r) => r.data.data);
