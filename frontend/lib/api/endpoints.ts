@@ -265,6 +265,22 @@ export const getTask = (id: string) =>
     .get<ApiResponse<CollectionTask>>(`/tasks/${id}`)
     .then((r) => r.data.data);
 
+export const recoverTask = (
+  id: string,
+  data: {
+    idempotency_key: string;
+    reason: string;
+    mode?: "recollect";
+    initiating_actor?: string;
+  },
+) =>
+  apiClient
+    .post<ApiResponse<{ task_id: string; retry_of_task_id: string; status: string; recovery_mode: string; idempotency_replayed: boolean }>>(
+      `/tasks/${id}/recover`,
+      data,
+    )
+    .then((r) => r.data.data);
+
 export const listTaskRuns = (task_id: string) =>
   apiClient
     .get<ApiResponse<TaskRun[]>>(`/tasks/${task_id}/runs`)
@@ -419,10 +435,15 @@ export const deleteSchedule = (id: string) =>
   apiClient.delete<ApiResponse<null>>(`/schedules/${id}`).then((r) => r.data);
 
 // ── Notifications ──────────────────────────────────────────────────────────────
-export const listNotificationRules = () =>
+export const listNotificationRules = (params?: { page?: number; limit?: number }) =>
   apiClient
-    .get<ApiResponse<NotificationRule[]>>("/notifications/rules")
-    .then((r) => r.data);
+    .get<ApiResponse<NotificationRule[]>>('/notifications/rules', { params })
+    .then((r) => r.data)
+
+export const getNotificationRule = (id: string) =>
+  apiClient
+    .get<ApiResponse<NotificationRule>>(`/notifications/rules/${id}`)
+    .then((r) => r.data.data)
 
 export const createNotificationRule = (data: NotificationRuleInput) =>
   apiClient

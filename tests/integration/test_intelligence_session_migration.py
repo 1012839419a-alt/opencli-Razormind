@@ -79,6 +79,27 @@ def test_intelligence_migration_renders_postgresql_offline_sql(tmp_path):
     assert "CREATE TABLE intelligence_artifact_references" in result.stdout
 
 
+def test_task_recovery_migration_renders_sqlite_offline_sql():
+    database_url = "sqlite+aiosqlite:///:memory:"
+    upgraded = _run_alembic(
+        database_url,
+        "upgrade",
+        "q4r5s6t7u8v9:r5s6t7u8v9w0",
+        "--sql",
+    )
+    assert upgraded.returncode == 0, upgraded.stderr
+    assert "CREATE TABLE _alembic_tmp_collection_tasks" in upgraded.stdout
+
+    downgraded = _run_alembic(
+        database_url,
+        "downgrade",
+        "r5s6t7u8v9w0:q4r5s6t7u8v9",
+        "--sql",
+    )
+    assert downgraded.returncode == 0, downgraded.stderr
+    assert "DROP INDEX ix_collection_tasks_retry_of_task_id" in downgraded.stdout
+
+
 async def _postgres_tables(database_url: str) -> set[str]:
     engine = create_async_engine(database_url)
     try:

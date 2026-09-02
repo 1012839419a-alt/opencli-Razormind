@@ -287,6 +287,10 @@ export interface CollectionTask {
   priority: number;
   status: "pending" | "running" | "completed" | "failed" | "cancelled";
   error_message?: string;
+  retry_of_task_id?: string | null;
+  recovery_mode?: string | null;
+  recovery_reason?: string | null;
+  initiating_actor?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -485,6 +489,18 @@ export interface DashboardStats {
     success_rate: number;
   };
   records: { total: number; ai_processed: number };
+  delivery: {
+    attempts: number;
+    submitted: number;
+    awaiting_ack: number;
+    confirmed: number;
+    ack_failed: number;
+    submission_failed: number;
+    ack_not_required: number;
+    window: string;
+    since?: string | null;
+    until?: string | null;
+  };
   recent_runs: Array<{
     id: string;
     task_id: string;

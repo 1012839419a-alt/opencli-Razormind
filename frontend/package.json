@@ -12,6 +12,7 @@
     "check:image-studio": "node --test scripts/check-image-studio-contract.mjs",
     "check:navigation-transitions": "node --test scripts/check-navigation-transition-regressions.mjs",
     "check:control-plane": "node --test scripts/check-control-plane-regressions.mjs scripts/check-dashboard-regressions.mjs scripts/check-inbox-regressions.mjs scripts/check-visualization-regressions.mjs",
+    "check:task-triage": "node --experimental-strip-types --test scripts/task-list-query.test.mjs scripts/task-grouping.test.mjs scripts/check-dashboard-regressions.mjs",
     "check:agent-conversations": "node --test scripts/check-agent-conversation-regressions.mjs",
     "check:dify-p0": "node --test scripts/check-dify-p0-regressions.mjs",
     "check:node-capabilities": "node --test scripts/check-node-capability-catalog-regressions.mjs scripts/check-tool-capability-catalog-regressions.mjs",

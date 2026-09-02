@@ -26,6 +26,9 @@ test('dashboard restores the real signal chain and makes Agent delivery visible'
     assert.match(dashboard, new RegExp(label))
   }
   assert.match(dashboard, /<AgentDeliveryPanel/)
+  assert.match(dashboard, /已提交（\{delivery\.attempts\} 次尝试）/)
+  assert.match(dashboard, /已确认回执/)
+  assert.match(dashboard, /提交成功不等于已确认送达/)
   assert.match(dashboard, /发送目标由通知规则决定，不预设为某一个平台/)
   assert.match(dashboard, /notificationChannels=\{activeDeliveryChannels\}/)
   assert.match(dashboard, /deliveryChannels=\{activeDeliveryChannels\.length\}/)
@@ -56,6 +59,7 @@ test('dashboard keeps existing real operational views after the action layer', a
 
   assert.match(dashboard, /<TaskStream tasks=\{stream\}/)
   assert.match(dashboard, /<FailureFeed failures=\{failures\}/)
+  assert.match(dashboard, /<FailureFeed failures=\{failures\} totalFailed=\{s\.tasks\.failed\} \/>/)
   assert.match(dashboard, /<ThroughputChart data=\{throughput\} daily/)
   assert.match(dashboard, /<WorkerAllocation workers=\{workers\}/)
   assert.match(dashboard, /<OpinionMonitorPanel/)
@@ -84,7 +88,7 @@ test('dashboard treats failures as a compact state layer above the full-width ru
   assert.match(taskStream, /同类失败 ×/)
   assert.match(taskStream, /aria-label="失败与重试"/)
   assert.match(taskStream, /最近运行未发现需要重试或人工处理的异常/)
-  assert.match(taskStream, /href="\/tasks"/)
+  assert.match(taskStream, /查看运行历史/)
   assert.match(taskStream, /divide-y divide-border/)
   assert.doesNotMatch(taskStream, /rounded-lg border border-border p-3/)
 })
@@ -128,4 +132,40 @@ test('dashboard restores the next schedule countdown from backend next_run_at', 
     hooks,
     /queryKey:\s*\[["']schedules["'],\s*params\][\s\S]*?refetchInterval:\s*30_000/,
   )
+})
+
+test('failure triage deep-links from dashboard to filtered and authoritative task context', async () => {
+  const [dashboard, taskStream, taskGrouping, tasksPage, taskDetailPage] = await Promise.all([
+    read('app/(app)/dashboard/page.tsx'),
+    read('components/monitor/task-stream.tsx'),
+    read('lib/monitor/task-grouping.ts'),
+    read('app/(app)/tasks/page.tsx'),
+    read('app/(app)/tasks/[id]/page.tsx'),
+  ])
+
+  assert.match(dashboard, /href: `\/tasks\/\$\{r\.task_id\}`/)
+  assert.match(dashboard, /href: task\.href/)
+  assert.match(dashboard, /hasAttention \? '\/tasks\?status=failed' : '\/tasks'/)
+  assert.match(taskStream, /href="\/tasks\?status=failed"/)
+  assert.match(taskStream, /hasUnlistedFailures = totalFailed > 0/)
+  assert.match(taskStream, /这些任务不在最近 10 条运行中/)
+  assert.match(taskStream, /hasUnlistedFailures \? '\/tasks\?status=failed' : '\/tasks'/)
+  assert.match(taskStream, /<Link href=\{t\.href\}/)
+  assert.match(taskStream, /<Link href=\{f\.href\}/)
+  assert.match(taskGrouping, /\[task\.href \?\? '', task\.title, task\.lane, task\.workerName, task\.phase\]/)
+  assert.match(taskGrouping, /\[failure\.href \?\? '', failure\.title, failure\.workerName, failure\.error\]/)
+  assert.match(tasksPage, /useSearchParams\(\)/)
+  assert.match(tasksPage, /normalizeTaskStatus\(searchParams\.get\('status'\)\)/)
+  assert.match(tasksPage, /queryForTaskStatus\(searchParams\.toString\(\), nextStatus\)/)
+  assert.match(tasksPage, /router\.replace\(pathWithQuery\(pathname, query\), \{ scroll: false \}\)/)
+  assert.match(tasksPage, /useTasks\(\{[\s\S]*page,[\s\S]*limit: TASKS_PER_PAGE/)
+  assert.match(tasksPage, /aria-pressed=\{status === f\.key\}/)
+  assert.match(tasksPage, /暂无\$\{activeFilter\.label\}任务/)
+  assert.match(tasksPage, /normalizeTaskPage\(searchParams\.get\('page'\)\)/)
+  assert.match(tasksPage, /queryForTaskPage\(searchParams\.toString\(\), nextPage\)/)
+  assert.match(tasksPage, /aria-label="任务分页"/)
+  assert.match(tasksPage, /disabled=\{currentPage >= totalPages\}/)
+  assert.match(tasksPage, /taskDetailPath\(t\.id, returnTo\)/)
+  assert.match(taskDetailPage, /normalizeTaskReturnPath\(typeof query\.returnTo === 'string' \? query\.returnTo : null\)/)
+  assert.match(taskDetailPage, /<Link href=\{returnTo\}/)
 })
