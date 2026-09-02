@@ -177,7 +177,10 @@ async def dispatch_operations_agent_run(run_id: str) -> None:
                 # deep-run profile. Binding validation supplies the hard
                 # ceiling; this fills/raises the inner timeout to that profile.
                 runtime_config["timeout_seconds"] = binding.dispatch_timeout_seconds
-            runtime_config["permission_mode"] = profile.mode
+            runtime_config["permission_mode"] = _runtime_permission_mode(
+                selection["runtime"], profile.mode
+            )
+            permissions = contract.tool_policy
 
         state_contract_error: str | None = None
 
