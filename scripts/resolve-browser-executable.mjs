@@ -29,7 +29,6 @@ function printExecutable(executable) {
 }
 
 function isExecutableFile(filePath) {
-  if (!fs.existsSync(filePath)) return false;
   try {
     return (
       fs.statSync(filePath).isFile() &&
