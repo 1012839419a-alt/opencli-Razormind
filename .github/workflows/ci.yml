@@ -152,7 +152,7 @@ jobs:
       - name: Setup Node for frontend contract checks
         uses: actions/setup-node@v6
         with:
-          node-version-file: frontend/.nvmrc
+          node-version: "22"
           cache: pnpm
           cache-dependency-path: frontend/pnpm-lock.yaml
 
