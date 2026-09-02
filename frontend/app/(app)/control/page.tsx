@@ -9,6 +9,7 @@ import {
   useKillSwitch,
   useOdpState,
   useSetKillSwitch,
+  useSystemConfig,
 } from '@/lib/api/hooks'
 import { BACKEND_HINT, EmptyState, ErrorState, LoadingState } from '@/components/shell/data-states'
 import { StatusBadge } from '@/components/shell/status-badge'
@@ -224,9 +225,12 @@ function OdpGrid({ state }: { state: OdpSystemState }) {
               ? '—'
               : `${state.store.heartbeat_age_seconds}s`}
           </span>
-          {state.store.note ? (
-            <span className="truncate text-3xs text-muted-foreground" title={state.store.note}>
-              {state.store.note}
+          {state.store.note ?? state.store.error ? (
+            <span
+              className="truncate text-3xs text-muted-foreground"
+              title={state.store.note ?? state.store.error ?? undefined}
+            >
+              {state.store.note ?? state.store.error}
             </span>
           ) : null}
         </OdpCell>
@@ -234,9 +238,12 @@ function OdpGrid({ state }: { state: OdpSystemState }) {
           <span className="font-mono text-xs">
             {state.outbox.unpublished == null ? '—' : formatNum(state.outbox.unpublished)}
           </span>
-          {state.outbox.note ? (
-            <span className="truncate text-3xs text-muted-foreground" title={state.outbox.note}>
-              {state.outbox.note}
+          {state.outbox.note ?? state.outbox.error ? (
+            <span
+              className="truncate text-3xs text-muted-foreground"
+              title={state.outbox.note ?? state.outbox.error ?? undefined}
+            >
+              {state.outbox.note ?? state.outbox.error}
             </span>
           ) : null}
         </OdpCell>
@@ -246,17 +253,6 @@ function OdpGrid({ state }: { state: OdpSystemState }) {
       </span>
     </div>
   )
-}
-
-/* ────────────────────────────────────────────────────────────────
- * Advisory report — the automation-gate data. Buckets carry a gate
- * badge: mostly-recovered buckets must NOT be automated, mostly-
- * persisted ones qualify.
- * ──────────────────────────────────────────────────────────────── */
-
-function gateEligible(bucket: AdvisoryReport['buckets'][number]): boolean {
-  if (bucket.recovery_rate == null) return false
-  return bucket.recovery_rate < 0.8 && bucket.persisted > 0
 }
 
 function AdvisoryTotalsRow({ report }: { report: AdvisoryReport }) {
@@ -413,6 +409,7 @@ export default function ControlCenterPage() {
   const setKill = useSetKillSwitch()
   const advisory = useAdvisoryReport({ refetchInterval: 60_000 })
   const odp = useOdpState({ refetchInterval: 15_000 })
+  const config = useSystemConfig()
   const ledger = useControlActions({ page: 1, limit: PAGE_SIZE })
   const [confirmOpen, setConfirmOpen] = useState(false)
   const [killFeedback, setKillFeedback] = useState<{
@@ -460,7 +457,15 @@ export default function ControlCenterPage() {
   const odpAvailable = odp.data
     ? [odp.data.ingest.available, odp.data.stream.available, odp.data.dlq.available, odp.data.store.available, odp.data.outbox.available].filter(Boolean).length
     : null
-  const qualifiedBuckets = advisory.data?.buckets.filter(gateEligible).length ?? null
+  const automationGateLabel = config.data
+    ? config.data.control_mode === 'automatic'
+      ? kill.data?.engaged
+        ? '自动模式 · 熔断阻断'
+        : '自动模式 · 配置门禁'
+      : '建议模式 · 仅咨询'
+    : advisory.data
+      ? 'Advisory 证据 · 配置门禁'
+      : '—'
   const ledgerTotal = ledger.data?.meta?.total ?? null
 
   return (
@@ -481,8 +486,9 @@ export default function ControlCenterPage() {
         />
         <StripCell
           label="自动化门禁"
-          value={qualifiedBuckets == null ? '—' : `${qualifiedBuckets} 类可自动化`}
-          dotTone={qualifiedBuckets && qualifiedBuckets > 0 ? 'warn' : 'muted'}
+          value={automationGateLabel}
+          dot
+          dotTone={kill.data?.engaged ? 'bad' : advisory.data ? 'warn' : 'muted'}
         />
         <StripCell
           label="ODP 数据面"
@@ -548,8 +554,7 @@ export default function ControlCenterPage() {
         <CardHeader>
           <CardTitle className="text-base">咨询报告（Advisory Report）</CardTitle>
           <CardDescription>
-            control_actions 证据台账的收敛/恢复统计。某 (state, action_type) 组合的建议大多「已恢复」说明过度建议，不应自动化；大多「已固化」才具备翻转 automatic 的门禁资格。读取时自动完成一次懒评估。
-          </CardDescription>
+            control_actions 证据台账的收敛/恢复统计。这里仅展示 advisory 证据，不在前端自行推断是否可自动化；automatic 是否允许由服务端配置门禁统一判定。
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
           {advisory.isLoading ? (
@@ -598,13 +603,7 @@ export default function ControlCenterPage() {
                             {b.recovery_rate == null ? '—' : `${(b.recovery_rate * 100).toFixed(1)}%`}
                           </TableCell>
                           <TableCell>
-                            {gateEligible(b) ? (
-                              <Badge variant="outline" className="text-success">
-                                可自动化
-                              </Badge>
-                            ) : (
-                              <span className="text-3xs text-muted-foreground">不宜自动化</span>
-                            )}
+                            <Badge variant="outline">服务端配置门禁</Badge>
                           </TableCell>
                         </TableRow>
                       ))}
