@@ -1925,7 +1925,7 @@ operations:
   path: /api/v1/workspaces/{workspace_id}/browser-spaces
   operation_id: list_browser_spaces_api_v1_workspaces__workspace_id__browser_spaces_get
   disposition: operator_ui
-  frontend_route: /workspaces
+  frontend_route: /browsers
   wrapper: null
   decision: Expose browser-space lifecycle through the existing workspace operator surface.
   target_epic: Epic 2
@@ -1934,7 +1934,7 @@ operations:
   path: /api/v1/workspaces/{workspace_id}/browser-spaces/{space_id}
   operation_id: get_browser_space_api_v1_workspaces__workspace_id__browser_spaces__space_id__get
   disposition: operator_ui
-  frontend_route: /workspaces
+  frontend_route: /browsers
   wrapper: null
   decision: Expose browser-space lifecycle through the existing workspace operator surface.
   target_epic: Epic 2
@@ -1943,7 +1943,7 @@ operations:
   path: /api/v1/workspaces/{workspace_id}/browser-spaces/{space_id}/events
   operation_id: replay_browser_space_events_api_v1_workspaces__workspace_id__browser_spaces__space_id__events_get
   disposition: operator_ui
-  frontend_route: /workspaces
+  frontend_route: /browsers
   wrapper: null
   decision: Expose browser-space lifecycle through the existing workspace operator surface.
   target_epic: Epic 2
@@ -1952,7 +1952,7 @@ operations:
   path: /api/v1/workspaces/{workspace_id}/browser-spaces
   operation_id: create_browser_space_api_v1_workspaces__workspace_id__browser_spaces_post
   disposition: operator_ui
-  frontend_route: /workspaces
+  frontend_route: /browsers
   wrapper: null
   decision: Expose browser-space lifecycle through the existing workspace operator surface.
   target_epic: Epic 2
@@ -1961,7 +1961,7 @@ operations:
   path: /api/v1/workspaces/{workspace_id}/browser-spaces/{space_id}/cancel
   operation_id: cancel_browser_space_api_v1_workspaces__workspace_id__browser_spaces__space_id__cancel_post
   disposition: operator_ui
-  frontend_route: /workspaces
+  frontend_route: /browsers
   wrapper: null
   decision: Expose browser-space lifecycle through the existing workspace operator surface.
   target_epic: Epic 2
@@ -1970,7 +1970,7 @@ operations:
   path: /api/v1/workspaces/{workspace_id}/browser-spaces/{space_id}/close
   operation_id: close_browser_space_api_v1_workspaces__workspace_id__browser_spaces__space_id__close_post
   disposition: operator_ui
-  frontend_route: /workspaces
+  frontend_route: /browsers
   wrapper: null
   decision: Expose browser-space lifecycle through the existing workspace operator surface.
   target_epic: Epic 2
@@ -1979,7 +1979,7 @@ operations:
   path: /api/v1/workspaces/{workspace_id}/browser-spaces/{space_id}/tasks
   operation_id: submit_browser_space_task_api_v1_workspaces__workspace_id__browser_spaces__space_id__tasks_post
   disposition: operator_ui
-  frontend_route: /workspaces
+  frontend_route: /browsers
   wrapper: null
   decision: Expose browser-space lifecycle through the existing workspace operator surface.
   target_epic: Epic 2
