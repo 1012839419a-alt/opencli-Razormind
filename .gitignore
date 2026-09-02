@@ -33,6 +33,7 @@ coverage.xml
 .env
 .env.local
 .env.*.local
+/.local-admin-password
 .mcp.json
 
 # Alembic versions (keep the folder, ignore generated files optionally)
@@ -88,6 +89,5 @@ odp-rs/target/
 .repowise/
 .understand-anything/
 .codex/
-.sentrux/agent-sessions/
-.sentrux/baseline.json
+.sentrux/
 artifacts/

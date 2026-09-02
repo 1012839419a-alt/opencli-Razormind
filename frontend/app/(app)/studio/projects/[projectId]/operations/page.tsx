@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
 import { use, useDeferredValue, useEffect, useState, type ReactNode } from 'react'
 
+import AITaskList from '@/components/smoothui/ai-task-list'
 import { EmptyState, ErrorState, LoadingState } from '@/components/shell/data-states'
 import { PageContainer } from '@/components/shell/page-container'
 import { ProjectNavigation } from '@/components/studio/project-navigation'
@@ -18,6 +19,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { useProjectRuntimeLogs, useProjectRuntimeSummary, useProjectRuntimeTrace, useProjectWorkflows, useWorkspaceProjects } from '@/lib/api/hooks'
 import type { ProjectRuntimeLog } from '@/lib/api/types'
 import { formatDateTime, formatRelative } from '@/lib/format'
+import { buildOperationsNodeTasks } from '@/lib/studio/operations-task-model'
 import { cn } from '@/lib/utils'
 
 const PAGE_SIZE = 20
@@ -75,6 +77,10 @@ export default function ProjectOperationsPage({
   const traceNextCursor = traceQuery.data?.trace.nextAfterSequence ?? traceCursor
   const traceTotalEvents = traceQuery.data?.trace.projection.eventCount ?? selectedLog?.event_count ?? 0
   const traceHasNextPage = traceNextCursor > traceCursor && traceNextCursor < traceTotalEvents
+  const traceStatus = traceQuery.data?.trace.projection.status ?? selectedLog?.status ?? 'queued'
+  const traceNodeTasks = buildOperationsNodeTasks(
+    traceQuery.data?.trace.projection.nodeStates ?? [],
+  )
 
   useEffect(() => {
     setPage(1)
@@ -187,7 +193,7 @@ export default function ProjectOperationsPage({
                 <div className="grid gap-2 sm:grid-cols-4">
                   <TraceMetric label="状态"><StatusBadge status={traceQuery.data?.trace.projection.status ?? selectedLog.status} /></TraceMetric>
                   <TraceMetric label="版本" value={traceQuery.data?.workflow_version ? `Published v${traceQuery.data.workflow_version}` : 'Draft'} />
-                  <TraceMetric label="用户" value={traceQuery.data?.user ?? 'operator'} />
+                  <TraceMetric label="用户" value={traceQuery.data?.user?.trim() || '未提供'} />
                   <TraceMetric label="事件" value={String(traceQuery.data?.trace.projection.eventCount ?? selectedLog.event_count)} />
                 </div>
 
@@ -197,35 +203,68 @@ export default function ProjectOperationsPage({
                 </div>
 
                 <div>
-                  <div className="mb-2 flex items-center gap-2 text-sm font-medium"><Workflow className="size-4" />事件时间线</div>
+                  <div className="mb-2 flex items-center gap-2 text-sm font-medium"><Workflow className="size-4" />节点状态与事件</div>
                   {traceQuery.isLoading ? <LoadingState rows={5} /> : traceQuery.isError ? (
                     <ErrorState message={traceQuery.error?.message ?? 'Trace 加载失败'} hint="确认该运行仍属于当前项目和工作流。" />
-                  ) : traceEvents.length === 0 ? (
-                    <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">这个运行还没有持久化事件。</div>
                   ) : (
-                    <div className="space-y-2">
-                      {traceEvents.map((event) => (
-                        <div key={event.id} className="grid gap-3 rounded-lg border p-3 sm:grid-cols-[2.5rem_minmax(0,1fr)_8rem]">
-                          <div className="font-mono text-xs text-muted-foreground">#{event.sequence}</div>
-                          <div className="min-w-0">
-                            <div className="flex flex-wrap items-center gap-2"><StatusBadge status={event.eventType} /><span className="truncate font-mono text-xs">{event.nodeId}</span></div>
-                            {event.message ? <p className="mt-2 text-xs leading-5 text-muted-foreground">{event.message}</p> : null}
-                            {Object.keys(event.details ?? {}).length ? <pre className="mt-2 max-h-32 overflow-auto rounded border bg-muted/25 p-2 font-mono text-[10px] leading-4">{JSON.stringify(event.details, null, 2)}</pre> : null}
+                    <div className="space-y-3">
+                      {traceNodeTasks.length ? (
+                        <AITaskList
+                          label={`节点执行状态 · ${traceStatus}`}
+                          tasks={traceNodeTasks}
+                          className="bg-card"
+                        />
+                      ) : (
+                        <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">这个运行还没有节点状态投影。</div>
+                      )}
+
+                      {traceEvents.length ? (
+                        <details className="rounded-xl border bg-card">
+                          <summary className="cursor-pointer px-3 py-2.5 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                            当前批次事件详情 · {traceEvents.length}
+                          </summary>
+                          <div className="space-y-2 border-t p-3">
+                            {traceEvents.map((event) => (
+                              <article key={event.id} className="grid gap-3 rounded-lg border p-3 sm:grid-cols-[2.5rem_minmax(0,1fr)_8rem]">
+                                <div className="font-mono text-xs text-muted-foreground">#{event.sequence}</div>
+                                <div className="min-w-0">
+                                  <div className="flex flex-wrap items-start gap-2">
+                                    <StatusBadge status={event.eventType} />
+                                    <span className="min-w-0 font-mono text-xs [overflow-wrap:anywhere]">{event.nodeId}</span>
+                                  </div>
+                                  {event.message ? <p className="mt-2 text-xs leading-5 text-muted-foreground">{event.message}</p> : null}
+                                  {event.blockReason ? (
+                                    <div className="mt-2 rounded border border-warning/30 bg-warning/5 p-2 text-xs text-warning">
+                                      {event.blockReason.code} · {event.blockReason.message}
+                                    </div>
+                                  ) : null}
+                                  {Object.keys(event.details ?? {}).length ? (
+                                    <details className="mt-2 rounded border bg-muted/25">
+                                      <summary className="cursor-pointer px-2 py-1.5 text-xs font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">原始事件详情</summary>
+                                      <pre className="max-h-40 overflow-auto border-t p-2 font-mono text-[10px] leading-4">{JSON.stringify(event.details, null, 2)}</pre>
+                                    </details>
+                                  ) : null}
+                                </div>
+                                <time className="text-left text-[10px] text-muted-foreground sm:text-right" dateTime={event.createdAt}>{formatDateTime(event.createdAt)}</time>
+                              </article>
+                            ))}
                           </div>
-                          <div className="text-right text-[10px] text-muted-foreground">{formatDateTime(event.createdAt)}</div>
+                        </details>
+                      ) : (
+                        <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">当前批次没有持久化事件。</div>
+                      )}
+
+                      {traceQuery.data ? (
+                        <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
+                          <span>{traceEvents.length ? `事件 #${traceEvents[0]?.sequence}–#${traceEvents.at(-1)?.sequence}` : '当前批次无事件'} · 共 {traceTotalEvents} 条</span>
+                          <div className="flex gap-2">
+                            <Button type="button" size="sm" variant="outline" disabled={traceCursorHistory.length === 1} onClick={() => setTraceCursorHistory((history) => history.slice(0, -1))}>上一批</Button>
+                            <Button type="button" size="sm" variant="outline" disabled={!traceHasNextPage} onClick={() => setTraceCursorHistory((history) => [...history, traceNextCursor])}>下一批</Button>
+                          </div>
                         </div>
-                      ))}
+                      ) : null}
                     </div>
                   )}
-                  {!traceQuery.isLoading && !traceQuery.isError && traceQuery.data ? (
-                    <div className="mt-3 flex items-center justify-between gap-3 text-xs text-muted-foreground">
-                      <span>{traceEvents.length ? `事件 #${traceEvents[0]?.sequence}–#${traceEvents.at(-1)?.sequence}` : '当前批次无事件'} · 共 {traceTotalEvents} 条</span>
-                      <div className="flex gap-2">
-                        <Button type="button" size="sm" variant="outline" disabled={traceCursorHistory.length === 1} onClick={() => setTraceCursorHistory((history) => history.slice(0, -1))}>上一批</Button>
-                        <Button type="button" size="sm" variant="outline" disabled={!traceHasNextPage} onClick={() => setTraceCursorHistory((history) => [...history, traceNextCursor])}>下一批</Button>
-                      </div>
-                    </div>
-                  ) : null}
                 </div>
               </div>
             </>

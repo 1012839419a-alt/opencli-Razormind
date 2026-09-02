@@ -15,8 +15,8 @@ import asyncio
 import json
 import logging
 import re
-from contextvars import ContextVar
-from typing import Any, Awaitable, Callable, Literal, Optional
+from dataclasses import dataclass
+from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -90,7 +90,8 @@ SYSTEM_PROMPT = """你是 opencli-admin 的全局操作助手。用户可能位�
 规则:
 - 需要知道有哪些数据源时, 调 list_sources。
 - 用户要启用/停用某个数据源时, 调 toggle_source。这是写操作, 系统不会立即执行, 会先让用户确认。
-- 用户要配置 AI 处理(富化)阶段时(换模型 / 开关 AI), 先 list_providers 看现有提供商, 再 update_provider。
+- 用户要配置 AI 处理(富化)阶段时(换模型 / 开关 AI), 先 list_providers 看现有提供商,
+  再 update_provider。
   启用一个 provider = 采集成功后自动用它跑 AI 富化; 全部停用 = 不跑 AI。换模型改 default_model。
 - 不要编造 id; 先用 list_* 拿到真实 id 再做写操作。
 - 用中文简洁回答。"""
@@ -102,7 +103,7 @@ TOOLS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "list_sources",
-            "description": "列出所有采集数据源 (返回 id / name / channel_type / enabled)。只读, 立即执行。",
+            "description": "列出所有采集数据源 (返回 id / name / channel_type / enabled)。只读, 立即执行。",  # noqa: E501
             "parameters": {"type": "object", "properties": {}},
         },
     },
@@ -110,7 +111,7 @@ TOOLS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "toggle_source",
-            "description": "启用或停用一个采集数据源。写操作, 不会立即生效, 会生成待用户确认的改动。",
+            "description": "启用或停用一个采集数据源。写操作, 不会立即生效, 会生成待用户确认的改动。",  # noqa: E501
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -125,7 +126,7 @@ TOOLS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "list_schedules",
-            "description": "列出所有定时调度计划 (返回 id / name / cron_expression / enabled / source_id)。只读, 立即执行。",
+            "description": "列出所有定时调度计划 (返回 id / name / cron_expression / enabled / source_id)。只读, 立即执行。",  # noqa: E501
             "parameters": {"type": "object", "properties": {}},
         },
     },
@@ -133,7 +134,7 @@ TOOLS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "list_tasks",
-            "description": "列出最近的采集任务 (返回 id / source_id / status / trigger_type)。只读, 立即执行。",
+            "description": "列出最近的采集任务 (返回 id / source_id / status / trigger_type)。只读, 立即执行。",  # noqa: E501
             "parameters": {"type": "object", "properties": {}},
         },
     },
@@ -141,7 +142,7 @@ TOOLS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "trigger_task",
-            "description": "对某个数据源立即触发一次采集运行。写操作, 需用户确认。source 必须已启用。",
+            "description": "对某个数据源立即触发一次采集运行。写操作, 需用户确认。source 必须已启用。",  # noqa: E501
             "parameters": {
                 "type": "object",
                 "properties": {"source_id": {"type": "string", "description": "数据源 id"}},
@@ -169,7 +170,7 @@ TOOLS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "list_providers",
-            "description": "列出所有模型提供商 (返回 id / name / provider_type / default_model / base_url / enabled)。AI 富化阶段用哪个模型由 provider 决定。只读, 立即执行。",
+            "description": "列出所有模型提供商 (返回 id / name / provider_type / default_model / base_url / enabled)。AI 富化阶段用哪个模型由 provider 决定。只读, 立即执行。",  # noqa: E501
             "parameters": {"type": "object", "properties": {}},
         },
     },
@@ -177,12 +178,15 @@ TOOLS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "update_provider",
-            "description": "配置 AI 处理阶段: 改某个模型提供商的默认模型, 或启用/停用它。启用一个 provider 后, 采集成功会自动用它跑 AI 富化; 全部停用则不跑 AI。写操作, 需用户确认。",
+            "description": "配置 AI 处理阶段: 改某个模型提供商的默认模型, 或启用/停用它。启用一个 provider 后, 采集成功会自动用它跑 AI 富化; 全部停用则不跑 AI。写操作, 需用户确认。",  # noqa: E501
             "parameters": {
                 "type": "object",
                 "properties": {
                     "provider_id": {"type": "string", "description": "模型提供商 id"},
-                    "default_model": {"type": "string", "description": "默认模型名 (可选, 如 qwen3:4b)"},
+                    "default_model": {
+                        "type": "string",
+                        "description": "默认模型名 (可选, 如 qwen3:4b)",
+                    },
                     "enabled": {"type": "boolean", "description": "启用/停用 (可选)"},
                 },
                 "required": ["provider_id"],
@@ -218,9 +222,12 @@ class ChatMessage(BaseModel):
 class ChatRequest(BaseModel):
     messages: list[ChatMessage]
     provider_id: Optional[str] = None
+    # Persistent conversation callers set this from the already-authorized
+    # conversation row. Direct chat callers may provide it to disambiguate
+    # Agent Control's Workspace resolution.
+    workspace_id: Optional[str] = None
     # 当前页面、项目或选中对象上下文，注入给 agent 当指代背景
-    context: Optional[dict[str, Any]] = None
-    session_id: Optional[str] = None
+    context: dict[str, Any] | None = None
 
 
 class Proposal(BaseModel):
@@ -228,15 +235,21 @@ class Proposal(BaseModel):
     args: dict[str, Any]
     summary: str
     diff: str
-    work_item_id: Optional[str] = None
-    workspace_id: Optional[str] = None
-    proposal_version: Optional[str] = None
+    work_item_id: str | None = None
+    workspace_id: str | None = None
+    proposal_version: str | None = None
 
 
 class ChatReply(BaseModel):
     type: Literal["message", "proposal"]
-    content: Optional[str] = None
-    proposal: Optional[Proposal] = None
+    content: str | None = None
+    proposal: Proposal | None = None
+
+
+@dataclass(frozen=True)
+class ChatExecution:
+    reply: ChatReply
+    tool_trace: list[dict[str, Any]]
 
 
 class ConfirmRequest(BaseModel):
@@ -395,18 +408,22 @@ async def _persist_writer_failure(
 
 
 # ── provider → AsyncOpenAI client ───────────────────────────────────────────
-async def _pick_provider(db: AsyncSession, provider_id: Optional[str]) -> ModelProvider:
+async def _pick_provider(db: AsyncSession, provider_id: str | None) -> ModelProvider:
     if provider_id:
         provider = await db.get(ModelProvider, provider_id)
         if not provider or not provider.enabled:
             raise HTTPException(status_code=400, detail="指定的模型 provider 不存在或未启用")
         return provider
     result = await db.execute(
-        select(ModelProvider).where(ModelProvider.enabled.is_(True)).order_by(ModelProvider.created_at.asc())
+        select(ModelProvider)
+        .where(ModelProvider.enabled.is_(True))
+        .order_by(ModelProvider.created_at.asc())
     )
     provider = result.scalars().first()
     if not provider:
-        raise HTTPException(status_code=400, detail="没有可用的模型 provider, 先在「模型提供商」里配置一个并启用")
+        raise HTTPException(
+            status_code=400, detail="没有可用的模型 provider, 先在「模型提供商」里配置一个并启用"
+        )
     return provider
 
 
@@ -468,21 +485,36 @@ async def _run_read_tool(db: AsyncSession, name: str, args: dict[str, Any]) -> A
     if name == "list_schedules":
         schedules, _ = await schedule_service.list_schedules(db, page=1, limit=100)
         return [
-            {"id": s.id, "name": s.name, "cron_expression": s.cron_expression, "enabled": s.enabled, "source_id": s.source_id}
+            {
+                "id": s.id,
+                "name": s.name,
+                "cron_expression": s.cron_expression,
+                "enabled": s.enabled,
+                "source_id": s.source_id,
+            }
             for s in schedules
         ]
     if name == "list_tasks":
         tasks, _ = await task_service.list_tasks(db, page=1, limit=30)
         return [
-            {"id": t.id, "source_id": t.source_id, "status": t.status, "trigger_type": t.trigger_type}
+            {
+                "id": t.id,
+                "source_id": t.source_id,
+                "status": t.status,
+                "trigger_type": t.trigger_type,
+            }
             for t in tasks
         ]
     if name == "list_providers":
         result = await db.execute(select(ModelProvider).order_by(ModelProvider.created_at.asc()))
         return [
             {
-                "id": p.id, "name": p.name, "provider_type": p.provider_type,
-                "default_model": p.default_model, "base_url": p.base_url, "enabled": p.enabled,
+                "id": p.id,
+                "name": p.name,
+                "provider_type": p.provider_type,
+                "default_model": p.default_model,
+                "base_url": p.base_url,
+                "enabled": p.enabled,
             }
             for p in result.scalars().all()
         ]
@@ -545,8 +577,10 @@ async def _build_proposal(
 @router.post("", response_model=ApiResponse[ChatReply])
 async def chat(
     body: ChatRequest,
-    identity: RequestIdentity | None = Depends(_optional_request_identity),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession,
+    identity: RequestIdentity | None,
+    *,
+    tool_trace: list[dict[str, Any]] | None = None,
 ) -> ApiResponse:
     await _emit_activity(
         "phase.changed",
@@ -568,20 +602,32 @@ async def chat(
     if body.context:
         system += f"\n\n当前用户操作上下文 (JSON): {json.dumps(body.context, ensure_ascii=False)}"
 
+    execution = await _chat_with_client(client, model, system, body, db, identity)
+    return ApiResponse.ok(execution.reply)
+
+
+async def _chat_with_client(
+    client: Any,
+    model: str,
+    system: str,
+    body: ChatRequest,
+    db: AsyncSession,
+    identity: RequestIdentity | None,
+) -> ChatExecution:
+    """Run either provider protocol while returning a persistence-safe tool trace."""
+
     if _is_xml_tool_model(model):
-        return await _chat_xml(client, model, system, body, db, identity)
+        return await _chat_xml(client, model, system, body, db, identity, tool_trace=tool_trace)
 
     messages: list[dict[str, Any]] = [{"role": "system", "content": system}]
     messages += [{"role": m.role, "content": m.content} for m in body.messages]
+    tool_trace: list[dict[str, Any]] = []
 
     for _step in range(MAX_TOOL_STEPS):
-        await _emit_activity(
-            "phase.changed",
-            "分析当前状态",
-            "正在根据已获得的信息决定下一步。",
-            state="active",
-        )
-        await _flush_activity()
+        # End any read-only transaction before an outbound model call. The
+        # persistent conversation service commits its running turn separately;
+        # this boundary prevents a model call from holding that transaction.
+        await db.commit()
         try:
             response = await client.chat.completions.create(
                 model=model, messages=messages, tools=TOOLS, tool_choice="auto"
@@ -594,41 +640,37 @@ async def chat(
         tool_calls = msg.tool_calls or []
 
         if not tool_calls:
-            await _emit_activity(
-                "run.completed",
-                "处理完成",
-                "已生成基于本次执行信息的结果摘要。",
-                state="completed",
-            )
-            return ApiResponse.ok(ChatReply(type="message", content=msg.content or ""))
+            return ChatExecution(ChatReply(type="message", content=msg.content or ""), tool_trace)
 
         # 写工具命中 → 立即返回 proposal (不执行, 不继续推理)
         for tc in tool_calls:
             if tc.function.name in WRITE_TOOLS:
                 args = _safe_json(tc.function.arguments)
-                label, target_type, target_id = _tool_public_description(tc.function.name, args)
-                await _emit_activity(
-                    "tool.completed",
-                    label,
-                    "已定位目标并准备变更方案。",
-                    state="completed",
-                    target={"type": target_type, "id": target_id},
-                )
+                if tool_trace is not None:
+                    tool_trace.append(
+                        {
+                            "name": tc.function.name,
+                            "kind": "write",
+                            "status": "proposal",
+                            "argument_keys": sorted(args),
+                        }
+                    )
                 proposal = await _build_proposal(
                     db,
                     tc.function.name,
                     args,
                     identity=_require_write_identity(identity),
-                    workspace_id=_workspace_id(body.context),
+                    workspace_id=body.workspace_id or _workspace_id(body.context),
                 )
-                await _emit_activity(
-                    "approval.required",
-                    "等待确认",
-                    proposal.summary,
-                    state="attention",
-                    target={"type": target_type, "id": target_id},
+                tool_trace.append(
+                    {
+                        "name": tc.function.name,
+                        "kind": "write",
+                        "status": "proposed",
+                        "argument_keys": sorted(args),
+                    }
                 )
-                return ApiResponse.ok(ChatReply(type="proposal", proposal=proposal))
+                return ChatExecution(ChatReply(type="proposal", proposal=proposal), tool_trace)
 
         # 只读工具 → 执行, 喂回结果, 继续循环
         messages.append(
@@ -646,155 +688,85 @@ async def chat(
             }
         )
         for tc in tool_calls:
-            args = _safe_json(tc.function.arguments)
-            label, target_type, target_id = _tool_public_description(tc.function.name, args)
-            await _emit_activity(
-                "tool.started",
-                label,
-                f"正在读取{target_type}的当前状态。",
-                state="active",
-                target={"type": target_type, "id": target_id},
-            )
-            await _flush_activity()
-            result = await _run_read_tool(db, tc.function.name, args)
-            await _emit_activity(
-                "tool.completed",
-                label,
-                _result_public_summary(result),
-                state="completed",
-                target={"type": target_type, "id": target_id},
-            )
+            if tool_trace is not None:
+                tool_trace.append(
+                    {
+                        "name": tc.function.name,
+                        "kind": "read",
+                        "status": "completed",
+                        "argument_keys": sorted(_safe_json(tc.function.arguments)),
+                    }
+                )
+            result = await _run_read_tool(db, tc.function.name, _safe_json(tc.function.arguments))
             messages.append(
-                {"role": "tool", "tool_call_id": tc.id, "content": json.dumps(result, ensure_ascii=False)}
+                {
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "content": json.dumps(result, ensure_ascii=False),
+                }
             )
 
-    return ApiResponse.ok(ChatReply(type="message", content="(达到工具调用步数上限, 请换个说法再试)"))
-
-
-@router.post("/stream")
-async def chat_stream(
-    body: ChatRequest,
-    identity: RequestIdentity | None = Depends(_optional_request_identity),
-    db: AsyncSession = Depends(get_db),
-) -> StreamingResponse:
-    """Stream public execution facts as NDJSON while the existing chat run executes.
-
-    Events deliberately contain no model reasoning, raw tool arguments, credentials, or
-    unbounded tool results. The terminal ``reply`` event preserves the established ChatReply
-    contract so confirmation continues through the governed endpoint.
-    """
-
-    durable_run = await _create_durable_run(body, identity)
-
-    async def event_source():
-        queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
-
-        async def produce() -> None:
-            try:
-                async with _RunScopedDurableEventWriter(durable_run.id, queue) as writer:
-                    sink_token = _activity_sink.set(writer.emit)
-                    flusher_token = _activity_flusher.set(writer.flush)
-                    try:
-                        writer.mark_running()
-                        await writer.emit(
-                            {
-                                "type": "run.started",
-                                "label": "开始处理",
-                                "detail": "已接收请求，正在建立执行上下文。",
-                                "state": "active",
-                            }
-                        )
-                        await writer.flush()
-                        async with AsyncSessionLocal() as run_db:
-                            response = await chat(body, identity, run_db)
-                            if response.data.type == "proposal":
-                                await run_db.commit()
-                        reply = response.data.model_dump(mode="json")
-                        await writer.emit(
-                            {
-                                "type": "reply",
-                                "label": "结果已就绪",
-                                "detail": "本次处理已返回结果。",
-                                "state": "completed",
-                                "reply": reply,
-                            }
-                        )
-                        await writer.finish(reply=reply)
-                    except _DurableEventPersistenceError:
-                        raise
-                    except HTTPException as exc:
-                        await writer.emit(
-                            {
-                                "type": "run.failed",
-                                "label": "处理未完成",
-                                "detail": str(exc.detail),
-                                "state": "failed",
-                                "status": exc.status_code,
-                                "recovery": "检查连接或目标状态后重试。",
-                            }
-                        )
-                        await writer.finish(error=str(exc.detail))
-                    except Exception:
-                        logger.exception("chat stream failed")
-                        await writer.emit(
-                            {
-                                "type": "run.failed",
-                                "label": "处理未完成",
-                                "detail": "Agent 暂时无法完成这项任务。",
-                                "state": "failed",
-                                "status": 500,
-                                "recovery": "稍后重试，或调整请求后继续。",
-                            }
-                        )
-                        await writer.finish(error="Agent run failed")
-                    finally:
-                        _activity_flusher.reset(flusher_token)
-                        _activity_sink.reset(sink_token)
-            except _DurableEventPersistenceError:
-                logger.exception("chat durable event persistence failed")
-                try:
-                    await _persist_writer_failure(durable_run.id, queue)
-                except Exception:
-                    logger.exception("chat durable failure fallback failed")
-            except Exception:
-                logger.exception("chat durable event writer failed")
-            finally:
-                await queue.put(None)
-
-        task = asyncio.create_task(produce())
-        _background_runs.add(task)
-        task.add_done_callback(_background_runs.discard)
-        try:
-            while True:
-                event = await queue.get()
-                if event is None:
-                    break
-                yield json.dumps(event, ensure_ascii=False) + "\n"
-        finally:
-            # A disconnected client can replay the persisted events; do not cancel work.
-            pass
-
-    return StreamingResponse(
-        event_source(),
-        media_type="application/x-ndjson",
-        headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no", "X-Agent-Run-Id": durable_run.id, "X-Agent-Session-Id": durable_run.session_id},
+    return ChatExecution(
+        ChatReply(type="message", content="(达到工具调用步数上限, 请换个说法再试)"), tool_trace
     )
 
 
-@router.get("/runs/{run_id}", response_model=ApiResponse[dict[str, Any]])
-async def get_chat_run(run_id: str, db: AsyncSession = Depends(get_db)) -> ApiResponse:
-    run = await db.get(AgentRun, run_id)
-    if run is None:
-        raise HTTPException(status_code=404, detail="Agent run not found")
-    return ApiResponse.ok({"id": run.id, "session_id": run.session_id, "status": run.status, "goal": run.goal, "reply": run.reply_payload, "error": run.error_message, "created_at": run.created_at, "updated_at": run.updated_at})
+async def _chat_single_provider(
+    db: AsyncSession,
+    body: ChatRequest,
+    identity: RequestIdentity | None,
+    provider_id: Optional[str],
+    *,
+    tool_trace: list[dict[str, Any]] | None = None,
+) -> ApiResponse:
+    """Legacy pre-failover chat path (issue #55): one provider — the
+    explicit ``provider_id`` or the first enabled one — no candidate
+    failover.
+    """
+    provider = await _pick_provider(db, provider_id)
+    client = await _build_client(provider)
+    model = provider.default_model or "gpt-4o-mini"
+    return await _chat_with_client(client, model, body, db, identity, tool_trace=tool_trace)
 
 
-@router.get("/runs/{run_id}/events", response_model=ApiResponse[list[dict[str, Any]]])
-async def get_chat_run_events(run_id: str, after_sequence: int = 0, db: AsyncSession = Depends(get_db)) -> ApiResponse:
-    if await db.get(AgentRun, run_id) is None:
-        raise HTTPException(status_code=404, detail="Agent run not found")
-    events = (await db.scalars(select(AgentRunEvent).where(AgentRunEvent.run_id == run_id).where(AgentRunEvent.sequence > after_sequence).order_by(AgentRunEvent.sequence))).all()
-    return ApiResponse.ok([event.payload for event in events])
+async def run_chat_request(
+    db: AsyncSession,
+    body: ChatRequest,
+    identity: RequestIdentity | None,
+    *,
+    tool_trace: list[dict[str, Any]] | None = None,
+) -> ApiResponse:
+    """Execute the existing chat provider/tool loop for persistent sessions."""
+    if body.provider_id or not await resolver.has_candidates(db, "chat"):
+        return await _chat_single_provider(
+            db, body, identity, body.provider_id, tool_trace=tool_trace
+        )
+
+    async def operation(adapter: Any, model_id: str) -> ApiResponse:
+        provider = adapter.provider
+        client = await _build_client(provider)
+        model = model_id or provider.default_model or "gpt-4o-mini"
+        return await _chat_with_client(
+            client, model, body, db, identity, tool_trace=tool_trace
+        )
+
+    return await resolver.resolve_with_fallback(db, "chat", operation)
+
+
+@router.post("", response_model=ApiResponse[ChatReply])
+async def chat(
+    body: ChatRequest,
+    identity: RequestIdentity | None = Depends(_optional_request_identity),
+    db: AsyncSession = Depends(get_db),
+) -> ApiResponse:
+    """Agent dock chat, preserving the legacy unauthenticated read path."""
+    try:
+        return await run_chat_request(db, body, identity)
+    except (LlmAdapterError, ResolverError) as exc:
+        # Business-level failure or every candidate skipped/failed. Keep the
+        # existing HTTP boundary and sanitized provider error behavior.
+        logger.error("chat failover | %s", exc)
+        raise HTTPException(status_code=502, detail=f"模型调用失败: {exc}") from exc
 
 
 @router.post("/confirm", response_model=ApiResponse[dict])
@@ -865,7 +837,7 @@ XML_TOOL_TEXT = (
     "- trigger_task(source_id): 立即触发一次采集 (写)。\n"
     "- update_schedule(schedule_id, cron_expression?, enabled?): 改调度 cron 或启停 (写)。\n"
     "- list_providers(): 列出模型提供商 (id/name/default_model/enabled)。\n"
-    "- update_provider(provider_id, default_model?, enabled?): 配置 AI 富化阶段的模型提供商, 改模型或启停 (写)。\n"
+    "- update_provider(provider_id, default_model?, enabled?): 配置 AI 富化阶段的模型提供商, 改模型或启停 (写)。\n"  # noqa: E501
     '需要调用工具时, 严格输出 XML: <tool_use name="工具名" id="toolu_1">{json 参数}</tool_use>\n'
     "先用 list_* 拿到真实 id 再做写操作。不要用 markdown 代码块。"
 )
@@ -878,13 +850,16 @@ async def _chat_xml(
     body: ChatRequest,
     db: AsyncSession,
     identity: RequestIdentity | None,
+    *,
+    tool_trace: list[dict[str, Any]] | None = None,
 ) -> ApiResponse:
     """Tool loop for XML-style models (parse <tool_use> from content, feed results back as text)."""
     messages: list[dict[str, Any]] = [{"role": "system", "content": system + XML_TOOL_TEXT}]
     messages += [{"role": m.role, "content": m.content} for m in body.messages]
+    tool_trace: list[dict[str, Any]] = []
 
     for _step in range(MAX_TOOL_STEPS):
-        await _flush_activity()
+        await db.commit()
         try:
             response = await client.chat.completions.create(model=model, messages=messages, max_tokens=1024)
         except Exception as exc:
@@ -896,26 +871,63 @@ async def _chat_xml(
 
         if not calls:
             clean = _THINK_RE.sub("", content).strip()
-            return ApiResponse.ok(ChatReply(type="message", content=clean or "(无内容)"))
+            return ChatExecution(ChatReply(type="message", content=clean or "(无内容)"), tool_trace)
 
         # write tool hit → return proposal immediately
         for name, args in calls:
             if name in WRITE_TOOLS:
+                if tool_trace is not None:
+                    tool_trace.append(
+                        {
+                            "name": name,
+                            "kind": "write",
+                            "status": "proposal",
+                            "argument_keys": sorted(args),
+                        }
+                    )
                 proposal = await _build_proposal(
                     db,
                     name,
                     args,
                     identity=_require_write_identity(identity),
-                    workspace_id=_workspace_id(body.context),
+                    workspace_id=body.workspace_id or _workspace_id(body.context),
                 )
-                return ApiResponse.ok(ChatReply(type="proposal", proposal=proposal))
+                tool_trace.append(
+                    {
+                        "name": name,
+                        "kind": "write",
+                        "status": "proposed",
+                        "argument_keys": sorted(args),
+                    }
+                )
+                return ChatExecution(ChatReply(type="proposal", proposal=proposal), tool_trace)
 
         # read tools → execute, feed results back as <tool_result> text, loop
         messages.append({"role": "assistant", "content": content})
         for name, args in calls:
+            if tool_trace is not None:
+                tool_trace.append(
+                    {
+                        "name": name,
+                        "kind": "read",
+                        "status": "completed",
+                        "argument_keys": sorted(args),
+                    }
+                )
             result = await _run_read_tool(db, name, args)
+            tool_trace.append(
+                {"name": name, "kind": "read", "status": "completed", "argument_keys": sorted(args)}
+            )
             messages.append(
-                {"role": "user", "content": f'<tool_result name="{name}">{json.dumps(result, ensure_ascii=False)}</tool_result>'}
+                {
+                    "role": "user",
+                    "content": (
+                        f'<tool_result name="{name}">'
+                        f"{json.dumps(result, ensure_ascii=False)}</tool_result>"
+                    ),
+                }
             )
 
-    return ApiResponse.ok(ChatReply(type="message", content="(达到工具调用步数上限, 请换个说法再试)"))
+    return ChatExecution(
+        ChatReply(type="message", content="(达到工具调用步数上限, 请换个说法再试)"), tool_trace
+    )

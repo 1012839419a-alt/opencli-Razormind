@@ -13,20 +13,36 @@ from backend.schemas.common import UTCModel
 
 AGENT_CONTRACT_CONFIGURATION_KEY = "agent_contract"
 AGENT_RUNTIME_BINDING_CONFIGURATION_KEY = "runtime_binding"
+DEFAULT_DEEP_RUN_TIMEOUT_SECONDS = 1800
+MAX_DEEP_RUN_TIMEOUT_SECONDS = 3600
 MAX_AGENT_SCHEMA_BYTES = 65_536
 MAX_AGENT_SCHEMA_DEPTH = 32
 MAX_AGENT_MODEL_CONFIGURATION_BYTES = 262_144
 
 
-class AgentContractV1(BaseModel):
-    """Versioned input, output, and state boundary for an Operations Agent."""
+class AgentQualityGateV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(min_length=1, max_length=100)
+    required: bool = True
+    config: dict[str, JsonValue] = Field(default_factory=dict)
+
+
+class AgentContractV2(BaseModel):
+    """Runtime-neutral business role, I/O, policy, and evidence boundary."""
 
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal["agent.contract.v1"]
+    schema_version: Literal["agent.contract.v2"]
+    role: str = Field(min_length=1, max_length=100)
     input_schema: dict[str, JsonValue]
     output_schema: dict[str, JsonValue]
     state_schema: dict[str, JsonValue]
+    required_capabilities: list[str] = Field(default_factory=list, max_length=64)
+    tool_policy: dict[str, JsonValue] = Field(default_factory=dict)
+    budget: dict[str, JsonValue] = Field(default_factory=dict)
+    quality_gates: list[AgentQualityGateV1] = Field(default_factory=list, max_length=64)
+    evidence_requirements: list[str] = Field(default_factory=list, max_length=64)
 
     @field_validator("input_schema", "output_schema", "state_schema")
     @classmethod
@@ -52,6 +68,28 @@ class AgentContractV1(BaseModel):
             raise ValueError(f"invalid JSON Schema: {exc.message}") from exc
         return schema
 
+    @field_validator("required_capabilities", "evidence_requirements")
+    @classmethod
+    def identifiers_are_normalized(cls, values: list[str]) -> list[str]:
+        normalized = [value.strip() for value in values]
+        if any(
+            not value
+            or len(value) > 64
+            or not value.replace(".", "_").replace("-", "_").replace("_", "").isalnum()
+            for value in normalized
+        ):
+            raise ValueError("capability and evidence identifiers must be simple names")
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("capability and evidence identifiers must be unique")
+        return normalized
+
+    @model_validator(mode="after")
+    def quality_gate_ids_are_unique(self):
+        ids = [gate.id for gate in self.quality_gates]
+        if len(set(ids)) != len(ids):
+            raise ValueError("quality gate ids must be unique")
+        return self
+
 
 class AgentRuntimeBindingV1(BaseModel):
     """Published binding from one Operations Agent version to an existing edge runtime."""
@@ -60,10 +98,106 @@ class AgentRuntimeBindingV1(BaseModel):
 
     schema_version: Literal["agent.runtime-binding.v1"]
     agent_url: str = Field(min_length=1, max_length=512)
-    runtime: Literal["pi"]
+    runtime: Literal["miniflow", "pi", "codex"]
     workflow: str = Field(min_length=1, max_length=255)
     config: dict[str, JsonValue] = Field(default_factory=dict)
-    dispatch_timeout_seconds: int = Field(default=600, ge=1, le=3600)
+    dispatch_timeout_seconds: int = Field(
+        default=DEFAULT_DEEP_RUN_TIMEOUT_SECONDS,
+        ge=1,
+        le=MAX_DEEP_RUN_TIMEOUT_SECONDS,
+    )
+    execution_node_url: str | None = Field(default=None, min_length=1, max_length=512)
+    shared_filesystem_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=255,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+    )
+
+    @field_validator("config")
+    @classmethod
+    def config_is_task_scoped(cls, value: dict[str, JsonValue]) -> dict[str, JsonValue]:
+        unsupported = sorted(set(value) - {"timeout_seconds"})
+        if unsupported:
+            raise ValueError("runtime config is Fleet-owned; unsupported task keys: " + ", ".join(unsupported))
+        timeout = value.get("timeout_seconds")
+        if timeout is not None and (
+            not isinstance(timeout, (int, float))
+            or isinstance(timeout, bool)
+            or not 1 <= timeout <= MAX_DEEP_RUN_TIMEOUT_SECONDS
+        ):
+            raise ValueError(
+                "config.timeout_seconds must be between 1 and "
+                f"{MAX_DEEP_RUN_TIMEOUT_SECONDS}"
+            )
+        return value
+
+    @field_validator("agent_url")
+    @classmethod
+    def agent_url_is_http(cls, value: str) -> str:
+        normalized = value.rstrip("/")
+        if not normalized.startswith(("http://", "https://")):
+            raise ValueError("agent_url must be an http/https URL")
+        return normalized
+
+    @field_validator("execution_node_url")
+    @classmethod
+    def execution_node_url_is_http(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.rstrip("/")
+        if not normalized.startswith(("http://", "https://")):
+            raise ValueError("execution_node_url must be an http/https URL")
+        return normalized
+
+
+class AgentModelBindingV1(BaseModel):
+    """Non-secret model selection; credentials are resolved by the edge runtime."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["agent.model-binding.v1"]
+    provider: str = Field(min_length=1, max_length=100)
+    model: str = Field(min_length=1, max_length=255)
+    auth_profile: str | None = Field(default=None, min_length=1, max_length=255)
+
+
+class AgentRuntimeBindingV2(BaseModel):
+    """Capability policy for selecting an edge runtime at dispatch time."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["agent.runtime-binding.v2"]
+    workflow: str = Field(min_length=1, max_length=255)
+    preferred_agent_urls: list[str] = Field(default_factory=list, max_length=32)
+    preferred_runtimes: list[str] = Field(default_factory=list, max_length=32)
+    model_binding: AgentModelBindingV1 | None = None
+    config: dict[str, JsonValue] = Field(default_factory=dict)
+    dispatch_timeout_seconds: int = Field(
+        default=DEFAULT_DEEP_RUN_TIMEOUT_SECONDS,
+        ge=1,
+        le=MAX_DEEP_RUN_TIMEOUT_SECONDS,
+    )
+
+    @field_validator("preferred_agent_urls")
+    @classmethod
+    def agent_urls_are_http(cls, values: list[str]) -> list[str]:
+        normalized = [value.rstrip("/") for value in values]
+        if any(not value.startswith(("http://", "https://")) for value in normalized):
+            raise ValueError("preferred_agent_urls must contain only http/https URLs")
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("preferred_agent_urls must be unique")
+        return normalized
+
+    @field_validator("preferred_runtimes")
+    @classmethod
+    def runtimes_are_normalized(cls, values: list[str]) -> list[str]:
+        normalized = [value.strip() for value in values]
+        if any(not value or len(value) > 100 for value in normalized):
+            raise ValueError("preferred_runtimes must contain non-empty names")
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("preferred_runtimes must be unique")
+        return normalized
 
     @field_validator("config")
     @classmethod
@@ -78,18 +212,13 @@ class AgentRuntimeBindingV1(BaseModel):
         if timeout is not None and (
             not isinstance(timeout, (int, float))
             or isinstance(timeout, bool)
-            or not 1 <= timeout <= 3600
+            or not 1 <= timeout <= MAX_DEEP_RUN_TIMEOUT_SECONDS
         ):
-            raise ValueError("config.timeout_seconds must be between 1 and 3600")
+            raise ValueError(
+                "config.timeout_seconds must be between 1 and "
+                f"{MAX_DEEP_RUN_TIMEOUT_SECONDS}"
+            )
         return value
-
-    @field_validator("agent_url")
-    @classmethod
-    def agent_url_is_http(cls, value: str) -> str:
-        normalized = value.rstrip("/")
-        if not normalized.startswith(("http://", "https://")):
-            raise ValueError("agent_url must be an http/https URL")
-        return normalized
 
 
 def validated_agent_model_configuration(model_configuration: dict[str, Any]) -> dict[str, Any]:
@@ -97,12 +226,12 @@ def validated_agent_model_configuration(model_configuration: dict[str, Any]) -> 
 
     configuration = deepcopy(model_configuration)
     if AGENT_CONTRACT_CONFIGURATION_KEY in configuration:
-        configuration[AGENT_CONTRACT_CONFIGURATION_KEY] = AgentContractV1.model_validate(
+        configuration[AGENT_CONTRACT_CONFIGURATION_KEY] = AgentContractV2.model_validate(
             configuration[AGENT_CONTRACT_CONFIGURATION_KEY]
         ).model_dump(mode="json")
     if AGENT_RUNTIME_BINDING_CONFIGURATION_KEY in configuration:
         configuration[AGENT_RUNTIME_BINDING_CONFIGURATION_KEY] = (
-            AgentRuntimeBindingV1.model_validate(
+            AgentRuntimeBindingV2.model_validate(
                 configuration[AGENT_RUNTIME_BINDING_CONFIGURATION_KEY]
             ).model_dump(mode="json")
         )
@@ -116,20 +245,20 @@ def validated_agent_model_configuration(model_configuration: dict[str, Any]) -> 
 
 def agent_contract_from_model_configuration(
     model_configuration: dict[str, Any],
-) -> AgentContractV1 | None:
+) -> AgentContractV2 | None:
     contract = model_configuration.get(AGENT_CONTRACT_CONFIGURATION_KEY)
-    return None if contract is None else AgentContractV1.model_validate(contract)
+    return None if contract is None else AgentContractV2.model_validate(contract)
 
 
 def agent_runtime_binding_from_model_configuration(
     model_configuration: dict[str, Any],
-) -> AgentRuntimeBindingV1 | None:
+) -> AgentRuntimeBindingV2 | None:
     binding = model_configuration.get(AGENT_RUNTIME_BINDING_CONFIGURATION_KEY)
-    return None if binding is None else AgentRuntimeBindingV1.model_validate(binding)
+    return None if binding is None else AgentRuntimeBindingV2.model_validate(binding)
 
 
 def validate_agent_contract_payload(
-    contract: AgentContractV1,
+    contract: AgentContractV2,
     schema_field: Literal["input_schema", "output_schema", "state_schema"],
     payload: dict[str, JsonValue],
 ) -> None:
@@ -150,7 +279,7 @@ def validate_agent_contract_payload(
 class OperationsAgentCreate(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     description: str | None = Field(default=None, max_length=4000)
-    owning_team_id: str
+    owning_team_id: str | None = None
 
 
 class OperationsAgentPatch(BaseModel):
@@ -204,6 +333,20 @@ class OperationsAgentRunCreate(BaseModel):
     state_payload: dict[str, JsonValue] = Field(default_factory=dict)
 
 
+class AgentRunEvidenceEnvelopeV1(BaseModel):
+    """Runtime-independent event, artifact, evidence, lineage, and audit record."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["agent.run-evidence.v1"] = "agent.run-evidence.v1"
+    runtime: dict[str, JsonValue]
+    events: list[dict[str, JsonValue]] = Field(default_factory=list)
+    artifacts: list[dict[str, JsonValue]] = Field(default_factory=list)
+    evidence: list[dict[str, JsonValue]] = Field(default_factory=list)
+    lineage: list[dict[str, JsonValue]] = Field(default_factory=list)
+    audit: list[dict[str, JsonValue]] = Field(default_factory=list)
+
+
 class OperationsAgentRunRead(UTCModel):
     id: str
     workspace_id: str
@@ -212,11 +355,18 @@ class OperationsAgentRunRead(UTCModel):
     profile_version: int
     trigger_type: str
     trigger_reference: str | None
+    automation_id: str | None
+    automation_revision: int | None
+    automation_snapshot: dict[str, JsonValue] | None
+    scheduled_for: datetime | None
+    schedule_timezone: str | None
     target_resource_type: str
     target_resource_id: str
     input_payload: dict[str, JsonValue]
     state_payload: dict[str, JsonValue]
     output_payload: dict[str, JsonValue] | None
+    execution_binding: dict[str, JsonValue] | None
+    evidence_payload: AgentRunEvidenceEnvelopeV1 | None
     error_message: str | None
     status: str
     started_by_user_id: str
@@ -253,6 +403,16 @@ class AgentProfileRead(UTCModel):
     action_scope: list[str]
     assigned_by_user_id: str
     reason: str
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class OperationsAgentTeamRead(UTCModel):
+    id: str
+    workspace_id: str
+    name: str
+    slug: str
     created_at: datetime
 
     model_config = {"from_attributes": True}

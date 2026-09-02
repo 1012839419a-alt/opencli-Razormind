@@ -635,7 +635,10 @@ test('node capabilities live inside Plugin Center and legacy factor links redire
     readFrontendSource('lib/navigation.ts'),
   ])
 
-  assert.match(plugins, /\['capabilities', '节点能力'\]/)
+  for (const label of ['源库', '模板', '工具', 'Agent', '触发器', '扩展']) {
+    assert.match(plugins, new RegExp(label))
+  }
+  assert.match(plugins, /activeSubtype: PluginSubtype/)
   assert.match(plugins, /nodeCatalog\?\.nodes\.length/)
   assert.match(plugins, /提供的工作流能力/)
   assert.match(plugins, /activeTab === 'capabilities' && nodeCatalog/)

@@ -1,9 +1,50 @@
+import secrets
 from functools import lru_cache
+from pathlib import Path
 from typing import Literal
 
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from backend.security.local_auth import DEFAULT_LOCAL_ADMIN_PASSWORD_HASH
+# Keep local development usable without a checked-in secret while ensuring
+# every process starts with an unpredictable signing key. Docker deployments
+# require SECRET_KEY explicitly (see docker-compose.yml).
+_EPHEMERAL_SECRET_KEY = secrets.token_urlsafe(48)
+
+
+class WorkbenchRepositoryConfiguration(BaseModel):
+    """A controller-owned repository mapping loaded only from backend settings."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    workspace_id: str = Field(min_length=1, max_length=36)
+    name: str = Field(min_length=1, max_length=255)
+    repository_path: str = Field(min_length=1)
+    base_ref: str = Field(pattern=r"^refs/heads/[A-Za-z0-9][A-Za-z0-9._/-]*$")
+    worktree_root: str = Field(min_length=1)
+    execution_node_url: str = Field(min_length=1, max_length=512)
+    shared_filesystem_id: str = Field(
+        min_length=1,
+        max_length=255,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+    )
+    active: bool = True
+
+    @field_validator("repository_path", "worktree_root")
+    @classmethod
+    def paths_are_absolute(cls, value: str) -> str:
+        path = Path(value)
+        if not path.is_absolute():
+            raise ValueError("must be an absolute server path")
+        return str(path)
+
+    @field_validator("execution_node_url")
+    @classmethod
+    def execution_node_is_http(cls, value: str) -> str:
+        normalized = value.rstrip("/")
+        if not normalized.startswith(("http://", "https://")):
+            raise ValueError("must be an http/https edge-node URL")
+        return normalized
 
 
 class Settings(BaseSettings):
@@ -18,7 +59,19 @@ class Settings(BaseSettings):
     app_name: str = "opencli-admin"
     app_env: Literal["development", "staging", "production"] = "development"
     debug: bool = False
-    secret_key: str = "change-me-in-production"
+    secret_key: str = _EPHEMERAL_SECRET_KEY
+
+    @field_validator("secret_key")
+    @classmethod
+    def secret_key_is_not_public_or_weak(cls, value: str) -> str:
+        normalized = value.strip()
+        public_defaults = {
+            "change-me-in-production",
+            "change-me-in-production-use-long-random-string",
+        }
+        if len(normalized) < 32 or normalized in public_defaults:
+            raise ValueError("SECRET_KEY must be at least 32 characters and not a public default")
+        return normalized
     # Fernet key used to encrypt provider credentials at rest. Keep this
     # stable after providers have been saved, or their stored API keys cannot
     # be decrypted on the next process start.
@@ -27,9 +80,12 @@ class Settings(BaseSettings):
     # Database
     database_url: str = "sqlite+aiosqlite:///./opencli_admin.db"
 
-    # Task execution mode: local (in-process), celery (distributed), or Hermes
-    # (the host-side Hermes scheduler owns durable Gaojixing collection claims).
-    task_executor: Literal["local", "celery", "hermes"] = "local"
+    # Server-only Workbench repository-to-edge affinity mappings. This JSON
+    # setting is reconciled for the authorized workspace at API access time;
+    # neither paths nor execution topology are accepted from the browser.
+    workbench_repositories: list[WorkbenchRepositoryConfiguration] = Field(default_factory=list)
+    # Task execution mode: "local" (in-process asyncio) or "celery" (distributed)
+    task_executor: Literal["local", "celery"] = "local"
 
     # AUDIT C6: process-wide cap on concurrently-RUNNING pipeline executions in
     # the local (in-process asyncio) executor — independent of the per-domain
@@ -44,6 +100,30 @@ class Settings(BaseSettings):
     # admin — API内置 scheduler.py / Celery Beat 驱动定时采集（默认）
     # iii   — III engine + schedule-bootstrap 驱动 cron；API 仅保留 UI/手动任务
     collection_orchestrator: Literal["admin", "iii"] = "admin"
+    # III direct function trigger used by the durable Admin collection outbox.
+    # The bridge path remains the public `iii trigger` protocol; no private queue
+    # or engine HTTP convention is assumed.
+    iii_cli_path: str = "iii"
+    iii_url: str = ""
+    iii_trigger_timeout_seconds: float = 30.0
+    # Optional shared secret for III lifecycle callbacks. API-wide fleet auth,
+    # when configured, remains in force independently.
+    iii_lifecycle_token: str = ""
+    # Required for governed V1 collection dispatch: without a callback target,
+    # Admin refuses to invoke III rather than losing lifecycle authority.
+    iii_lifecycle_url: str = ""
+    # HMAC key shared only with the authenticated odp-ingest producer. Empty
+    # means signed ingress receipts fail closed.
+    iii_ingress_receipt_secret: str = ""
+    iii_dispatch_lease_seconds: float = 60.0
+
+    # JSON server-owned registry for delivery receiver v2. Endpoint identity,
+    # request key reference, and receipt verification key are never API input.
+    controlled_receiver_registry_json: str = "{}"
+    controlled_receiver_credentials_json: str = "{}"
+    controlled_receiver_receipt_keys_json: str = "{}"
+    controlled_receiver_inbound_keys_json: str = "{}"
+    controlled_receiver_max_clock_skew_seconds: int = 300
 
     # Redis / Celery — only required when task_executor="celery"
     redis_url: str = "redis://localhost:6379/0"
@@ -77,11 +157,17 @@ class Settings(BaseSettings):
     oidc_audience: str = ""
     oidc_jwks_url: str = ""
     bootstrap_admin_token: str = ""
-    # Local-first account used by the NAS/server deployment. The password hash
-    # is persisted to local_admin_password_hash_file and .env when available.
+    # Local-first account used by the NAS/server deployment. Durable state is
+    # initialized explicitly by the installer; there is no public fallback
+    # password hash in application defaults.
     local_admin_username: str = "admin"
-    local_admin_password_hash: str = DEFAULT_LOCAL_ADMIN_PASSWORD_HASH
-    local_admin_password_hash_file: str = "/data/local_admin_password_hash"
+    local_admin_password_hash: str = ""
+    # Optional durable state file. Docker points this at the /data volume so a
+    # password change survives container replacement without mutating /app.
+    local_auth_state_path: str = Field(
+        default="./data/local-admin-password.hash",
+        min_length=1,
+    )
 
     # CLI channel binary allowlist (ADR-0005, audit P0-4). The cli channel is
     # an arbitrary-binary-execution surface, so it only runs binaries the

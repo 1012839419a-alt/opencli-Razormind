@@ -10,6 +10,41 @@ from backend.workflow.record_hygiene import (
     execute_record_hygiene,
 )
 
+
+def _gaojixing_item(
+    *,
+    source_identity: str | None = "https://example.test/conversations/one",
+    package_digest: str = "package-digest",
+    artifact_id: str = "artifact-1",
+    source_id: str = "doubao",
+    run_id: str = "run-1",
+    node_id: str = "source-1",
+) -> dict:
+    raw: dict = {
+        "title": "Captured answer",
+        "url": source_identity or "",
+        "content": "Answer",
+        "source_id": source_id,
+        "published_at": "2026-08-26T00:00:00Z",
+        "packageDigest": package_digest,
+        "questionPackage": {"digest": package_digest},
+        "answerArtifactId": artifact_id,
+        "gaojixing": {
+            "package": {"digest": package_digest},
+            "artifactId": artifact_id,
+            "evidence": {"runId": run_id, "nodeId": node_id},
+        },
+    }
+    if source_identity:
+        raw["dedupe"] = {
+            "type": "source-identity",
+            "field": "conversation_url",
+            "value": source_identity,
+            "status": "unique",
+        }
+    return {"raw": raw}
+
+
 CONTEXT = {"runId": "run-1", "nodeId": "hygiene-1"}
 RAW_ITEMS = [
     {
@@ -69,6 +104,70 @@ def test_normalize_profile_reuses_pipeline_semantics_and_preserves_refs():
         "nodeId": "hygiene-1",
     }
     assert result.metrics["normalizedCount"] == 1
+
+
+def test_normalize_canonical_source_identity_accepts_and_preserves_lineage():
+    candidate = execute_record_hygiene(
+        "normalize",
+        [_gaojixing_item()],
+        {},
+        {"runId": "run-1", "nodeId": "normalize-1"},
+    ).records[0]
+    accepted = execute_record_hygiene(
+        "accept",
+        [candidate],
+        {"mode": "automatic_with_review"},
+        {"runId": "run-1", "nodeId": "accept-1"},
+    )
+
+    assert accepted.rejected == []
+    assert accepted.records[0]["status"] == "accepted"
+    assert candidate["dedupe"]["type"] == "canonical-dedupe"
+    assert candidate["dedupe"]["basis"]["packageDigest"] == "package-digest"
+    assert candidate["dedupe"]["artifact"] == {
+        "artifactId": "artifact-1",
+        "packageDigest": "package-digest",
+    }
+    assert candidate["raw"]["gaojixing"]["evidence"] == {"runId": "run-1", "nodeId": "source-1"}
+    assert candidate["lineage"][-1] == {
+        "step": "normalize",
+        "index": 0,
+        "runId": "run-1",
+        "nodeId": "normalize-1",
+    }
+
+
+def test_canonical_source_identity_is_retry_stable_and_business_scoped():
+    first = execute_record_hygiene(
+        "normalize", [_gaojixing_item(artifact_id="artifact-1", run_id="run-1")], {}, CONTEXT
+    ).records[0]
+    retry = execute_record_hygiene(
+        "normalize", [_gaojixing_item(artifact_id="artifact-2", run_id="run-2")], {}, CONTEXT
+    ).records[0]
+    other = execute_record_hygiene(
+        "normalize",
+        [_gaojixing_item(source_identity="https://example.test/conversations/two")],
+        {},
+        CONTEXT,
+    ).records[0]
+
+    assert first["dedupe"]["identity"] == retry["dedupe"]["identity"]
+    assert first["dedupe"]["fingerprint"] == retry["dedupe"]["fingerprint"]
+    assert first["dedupe"]["artifact"]["artifactId"] != retry["dedupe"]["artifact"]["artifactId"]
+    assert first["dedupe"]["identity"] != other["dedupe"]["identity"]
+
+
+def test_missing_canonical_source_identity_remains_review_required():
+    candidate = execute_record_hygiene(
+        "normalize", [_gaojixing_item(source_identity=None)], {}, CONTEXT
+    )
+    result = execute_record_hygiene(
+        "accept", candidate.records, {"mode": "automatic_with_review"}, CONTEXT
+    )
+
+    assert result.records == []
+    assert result.rejected[0]["disposition"] == "review"
+    assert result.rejected[0]["rejection"]["reasons"] == ["dedupe_required"]
 
 
 def test_dedupe_profile_parses_compound_key_and_uses_24_hour_window():

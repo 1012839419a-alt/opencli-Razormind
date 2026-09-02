@@ -17,14 +17,24 @@ from backend.models.edge_node import EdgeNode
 @pytest.mark.asyncio
 async def test_upsert_node_persists_runtimes_on_create(db_session):
     node = await _upsert_node(
-        db_session, "http://agent:1", runtimes=["pi", "stub"]
+        db_session,
+        "http://agent:1",
+        runtimes=["pi", "prime-agent"],
+        runtime_capabilities={
+            "pi": ["streaming"],
+            "prime-agent": ["streaming", "subagents"],
+        },
     )
     await db_session.commit()
 
     result = await db_session.execute(select(EdgeNode).where(EdgeNode.url == "http://agent:1"))
     fetched = result.scalar_one()
-    assert fetched.runtimes == ["pi", "stub"]
-    assert node.runtimes == ["pi", "stub"]
+    assert fetched.runtimes == ["pi", "prime-agent"]
+    assert fetched.runtime_capabilities == {
+        "pi": ["streaming"],
+        "prime-agent": ["streaming", "subagents"],
+    }
+    assert node.runtime_capabilities == fetched.runtime_capabilities
 
 
 @pytest.mark.asyncio
@@ -36,6 +46,7 @@ async def test_upsert_node_without_runtimes_leaves_column_null(db_session):
     fetched = result.scalar_one()
     assert fetched.runtimes is None
     assert node.runtimes is None
+    assert node.runtime_capabilities is None
 
 
 @pytest.mark.asyncio
@@ -54,10 +65,21 @@ async def test_upsert_node_reregister_without_runtimes_preserves_existing(db_ses
     """A re-register handshake that omits `runtimes` (e.g. an older agent
     build, or the HTTP registration path which never sends it) must not wipe
     out a previously-advertised runtimes list."""
-    await _upsert_node(db_session, "http://agent:4", runtimes=["pi"])
+    await _upsert_node(
+        db_session,
+        "http://agent:4",
+        runtimes=["pi"],
+        runtime_capabilities={"pi": ["streaming"]},
+    )
     await db_session.commit()
 
-    updated = await _upsert_node(db_session, "http://agent:4", runtimes=None)
+    updated = await _upsert_node(
+        db_session,
+        "http://agent:4",
+        runtimes=None,
+        runtime_capabilities=None,
+    )
     await db_session.commit()
 
     assert updated.runtimes == ["pi"]
+    assert updated.runtime_capabilities == {"pi": ["streaming"]}

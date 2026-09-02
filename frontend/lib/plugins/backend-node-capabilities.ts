@@ -52,6 +52,9 @@ export type BackendNodeCapabilityParameter = {
 
 export type BackendNodeCapabilityDefinition = {
   id: string
+  installationId?: string | null
+  pluginVersion?: string | null
+  pluginCapabilityId?: string | null
   label: string
   description: string
   category: BackendNodeCapabilityCategoryId
@@ -98,8 +101,13 @@ type ApiResponse<T> = {
 
 export const NODE_CAPABILITY_CATALOG_QUERY_KEY = ["node-capability-catalog"] as const
 
-export async function fetchBackendNodeCapabilityCatalog(): Promise<BackendNodeCapabilityCatalog> {
-  const response = await fetch("/api/v1/plugins/capabilities", {
+export async function fetchBackendNodeCapabilityCatalog(
+  workspaceId?: string | null,
+): Promise<BackendNodeCapabilityCatalog> {
+  const path = workspaceId
+    ? `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/plugins/capabilities`
+    : "/api/v1/plugins/capabilities"
+  const response = await fetch(path, {
     cache: "no-store",
     headers: apiAuthHeaders(),
   })
@@ -112,11 +120,14 @@ export async function fetchBackendNodeCapabilityCatalog(): Promise<BackendNodeCa
   return payload.data
 }
 
-export function useBackendNodeCapabilityCatalog(enabled = true) {
+export function useBackendNodeCapabilityCatalog(
+  enabled = true,
+  workspaceId?: string | null,
+) {
   const query = useQuery({
-    queryKey: NODE_CAPABILITY_CATALOG_QUERY_KEY,
-    queryFn: fetchBackendNodeCapabilityCatalog,
-    enabled,
+    queryKey: [...NODE_CAPABILITY_CATALOG_QUERY_KEY, workspaceId ?? "global"],
+    queryFn: () => fetchBackendNodeCapabilityCatalog(workspaceId),
+    enabled: enabled && (workspaceId === undefined || Boolean(workspaceId)),
     staleTime: 15_000,
     retry: 1,
   })

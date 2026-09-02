@@ -7,6 +7,8 @@ import pytest
 
 from backend.channels.rss_channel import RSSChannel
 
+pytestmark = pytest.mark.usefixtures("mock_rss_public_client")
+
 VALID_RSS_XML = """<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0">
   <channel>

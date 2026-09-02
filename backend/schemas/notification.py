@@ -51,6 +51,7 @@ class NotificationLogRead(UTCModel):
     id: str
     rule_id: str
     record_id: str | None
+    lineage: dict[str, Any] | None
     status: str
     response_data: dict[str, Any] | None
     error_message: str | None
@@ -58,8 +59,6 @@ class NotificationLogRead(UTCModel):
     ack_data: dict[str, Any] | None
     acked_at: datetime | None
     created_at: datetime
-
-    model_config = {"from_attributes": True}
 
 
 class NotificationAckRequest(BaseModel):

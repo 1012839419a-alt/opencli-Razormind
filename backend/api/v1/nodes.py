@@ -4,10 +4,11 @@ Handles registration, lifecycle events, and management of remote agent nodes.
 Both HTTP-mode agents (center calls agent) and WS-mode agents (agent initiates
 reverse channel) register here and have their online/offline history tracked.
 """
-
+import io
 import logging
 import re
 import shlex
+import tarfile
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -21,7 +22,7 @@ from fastapi import (
     WebSocket,
     WebSocketDisconnect,
 )
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, Response
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -53,6 +54,7 @@ async def _upsert_node(
     ip: str | None = None,
     node_type: str = "chrome",
     runtimes: list[str] | None = None,
+    runtime_capabilities: dict[str, list[str]] | None = None,
 ) -> "EdgeNode":
     from backend.models.edge_node import EdgeNode
 
@@ -71,6 +73,8 @@ async def _upsert_node(
             node.ip = ip
         if runtimes is not None:
             node.runtimes = runtimes
+        if runtime_capabilities is not None:
+            node.runtime_capabilities = runtime_capabilities
     else:
         node = EdgeNode(
             url=url,
@@ -82,6 +86,7 @@ async def _upsert_node(
             last_seen_at=now,
             ip=ip,
             runtimes=runtimes,
+            runtime_capabilities=runtime_capabilities,
         )
         db.add(node)
     await db.flush()
@@ -157,6 +162,7 @@ class NodeRegisterRequest(BaseModel):
     label: str = ""
     agent_protocol: str = "http"
     runtimes: list[str] | None = None
+    runtime_capabilities: dict[str, list[str]] | None = None
     profile_kind: str = "authenticated"
 
 
@@ -198,6 +204,7 @@ async def register_node(
         ip,
         body.node_type,
         runtimes=body.runtimes,
+        runtime_capabilities=body.runtime_capabilities,
     )
     await _write_event(
         db,
@@ -209,6 +216,7 @@ async def register_node(
             "node_type": body.node_type,
             "protocol": body.agent_protocol,
             "runtimes": body.runtimes,
+            "runtime_capabilities": body.runtime_capabilities,
             "profile_kind": body.profile_kind,
         },
     )
@@ -231,6 +239,7 @@ async def register_node(
             agent_protocol=body.agent_protocol,
             label=body.label,
             profile_kind=body.profile_kind,
+            profile_name=url,
         )
         db.add(inst)
 
@@ -381,7 +390,7 @@ async def delete_node(node_id: str, db: AsyncSession = Depends(get_db)) -> ApiRe
 
 @router.get("/install/patch-opencli.js", response_class=PlainTextResponse)
 async def get_opencli_runtime_patch() -> PlainTextResponse:
-    """Serve the pinned OpenCLI 1.8.6 managed-CDP routing patch."""
+    """Serve the pinned OpenCLI 1.8.7 managed-CDP routing patch."""
     candidates = [
         Path(__file__).parent.parent.parent.parent / "scripts" / "patch-opencli.js",
         Path("/app/scripts/patch-opencli.js"),
@@ -393,6 +402,52 @@ async def get_opencli_runtime_patch() -> PlainTextResponse:
                 media_type="application/javascript",
             )
     raise HTTPException(status_code=404, detail="OpenCLI runtime patch not packaged")
+
+@router.get("/install/agent-runtime.tar.gz")
+async def get_agent_runtime_bundle() -> Response:
+    """Serve the Python packages required by non-Docker Agents."""
+    source_roots = [
+        Path(__file__).parent.parent.parent.parent,
+        Path("/app"),
+    ]
+    source_root = next(
+        (
+            root
+            for root in source_roots
+            if (root / "backend" / "agent_runtimes").is_dir()
+        ),
+        None,
+    )
+    if source_root is None:
+        raise HTTPException(status_code=404, detail="Agent runtime package not packaged")
+
+    package_dirs = (
+        Path("backend/agent_runtimes"),
+        Path("backend/miniflow"),
+        Path("backend/security"),
+    )
+    archive = io.BytesIO()
+    with tarfile.open(fileobj=archive, mode="w:gz") as tar:
+        for package_dir in package_dirs:
+            package_root = source_root / package_dir
+            for path in sorted(package_root.rglob("*.py")):
+                info = tar.gettarinfo(
+                    str(path),
+                    arcname=path.relative_to(source_root).as_posix(),
+                )
+                info.mtime = 0
+                info.uid = 0
+                info.gid = 0
+                info.uname = ""
+                info.gname = ""
+                with path.open("rb") as stream:
+                    tar.addfile(info, stream)
+
+    return Response(
+        content=archive.getvalue(),
+        media_type="application/gzip",
+        headers={"Content-Disposition": 'attachment; filename="opencli-agent-runtime.tar.gz"'},
+    )
 
 
 @router.get("/install/agent.sh", response_class=PlainTextResponse)
@@ -750,6 +805,7 @@ async def node_ws_endpoint(ws: WebSocket) -> None:
         node_type = data.get("node_type", "chrome")
         label = data.get("label", "")
         runtimes = data.get("runtimes")
+        runtime_capabilities = data.get("runtime_capabilities")
         profile_kind = data.get("profile_kind", "authenticated")
 
         if not agent_url.startswith("http"):
@@ -765,6 +821,21 @@ async def node_ws_endpoint(ws: WebSocket) -> None:
             not isinstance(runtimes, list) or not all(isinstance(r, str) for r in runtimes)
         ):
             await ws.close(code=1008, reason="runtimes must be a list of strings")
+            return
+        if runtime_capabilities is not None and (
+            not isinstance(runtime_capabilities, dict)
+            or any(
+                not isinstance(runtime_name, str)
+                or not isinstance(capabilities, list)
+                or not all(isinstance(capability, str) for capability in capabilities)
+                for runtime_name, capabilities in runtime_capabilities.items()
+            )
+            or set(runtime_capabilities) != set(runtimes or [])
+        ):
+            await ws.close(
+                code=1008,
+                reason="runtime_capabilities must map every advertised runtime to string names",
+            )
             return
         if profile_kind not in ("anonymous", "authenticated"):
             await ws.close(
@@ -784,6 +855,7 @@ async def node_ws_endpoint(ws: WebSocket) -> None:
                     mode,
                     node_type=node_type,
                     runtimes=runtimes,
+                    runtime_capabilities=runtime_capabilities,
                 )
                 await _write_event(
                     db,
@@ -794,6 +866,7 @@ async def node_ws_endpoint(ws: WebSocket) -> None:
                         "node_type": node_type,
                         "protocol": "ws",
                         "profile_kind": profile_kind,
+                        "runtime_capabilities": runtime_capabilities,
                     },
                 )
                 # BrowserInstance compat
@@ -816,6 +889,7 @@ async def node_ws_endpoint(ws: WebSocket) -> None:
                         agent_protocol="ws",
                         label=label,
                         profile_kind=profile_kind,
+                        profile_name=agent_url,
                     )
                     db.add(inst)
                 await db.commit()

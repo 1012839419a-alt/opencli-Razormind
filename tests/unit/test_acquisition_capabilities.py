@@ -59,7 +59,7 @@ async def test_catalog_reports_runtime_identity_and_clean_profile_readiness(monk
             (0, f"{capabilities.OHMYOPENCLI_COMMIT}\n"),
             (0, ""),
             (0, ""),
-            (0, "1.8.6\n"),
+            (0, "1.8.7\n"),
             (0, "official-site observe help"),
             (1, "CDP not reachable at http://127.0.0.1:9"),
         ]
@@ -73,7 +73,7 @@ async def test_catalog_reports_runtime_identity_and_clean_profile_readiness(monk
     assert descriptor.runtime == {
         "ohmyopencli_repo_commit": capabilities.OHMYOPENCLI_COMMIT,
         "capability_source_commit": OFFICIAL_SITE_CAPABILITY_COMMIT,
-        "opencli_version": "1.8.6",
+        "opencli_version": "1.8.7",
     }
 
     pool.set_profile_kind("http://default-profile:9222", "anonymous")
@@ -81,7 +81,7 @@ async def test_catalog_reports_runtime_identity_and_clean_profile_readiness(monk
         (0, f"{capabilities.OHMYOPENCLI_COMMIT}\n"),
         (0, ""),
         (0, ""),
-        (0, "1.8.6\n"),
+        (0, "1.8.7\n"),
         (0, "official-site observe help"),
         (1, "CDP not reachable at http://127.0.0.1:9"),
     ]
@@ -101,7 +101,7 @@ async def test_runtime_probe_uses_the_configured_opencli_binary(monkeypatch):
             (0, f"{capabilities.OHMYOPENCLI_COMMIT}\n"),
             (0, ""),
             (0, ""),
-            (0, "1.8.6\n"),
+            (0, "1.8.7\n"),
             (0, "official-site observe help"),
             (1, "CDP not reachable at http://127.0.0.1:9"),
         ]

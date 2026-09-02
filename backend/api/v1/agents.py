@@ -8,7 +8,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.database import get_db
 from backend.models.agent import AIAgent
-from backend.schemas.agent import AIAgentCreate, AIAgentRead, AIAgentUpdate
+from backend.schemas.agent import (
+    AIAgentCreate,
+    AIAgentRead,
+    AIAgentUpdate,
+    validate_paw_agent_config,
+)
 from backend.schemas.common import ApiResponse
 
 router = APIRouter(prefix="/agents", tags=["agents"])
@@ -29,6 +34,10 @@ async def list_agents(
 
 @router.post("", response_model=ApiResponse[AIAgentRead], status_code=201)
 async def create_agent(body: AIAgentCreate, db: AsyncSession = Depends(get_db)):
+    try:
+        validate_paw_agent_config(body.processor_type, body.prompt_template, body.processor_config)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     agent = AIAgent(**body.model_dump())
     db.add(agent)
     await db.commit()
@@ -53,7 +62,17 @@ async def update_agent(
     agent = result.scalar_one_or_none()
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
-    for field, value in body.model_dump(exclude_unset=True).items():
+    changes = body.model_dump(exclude_unset=True)
+    candidate = {
+        "processor_type": changes.get("processor_type", agent.processor_type),
+        "prompt_template": changes.get("prompt_template", agent.prompt_template),
+        "processor_config": changes.get("processor_config", agent.processor_config),
+    }
+    try:
+        validate_paw_agent_config(**candidate)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    for field, value in changes.items():
         setattr(agent, field, value)
     await db.commit()
     await db.refresh(agent)

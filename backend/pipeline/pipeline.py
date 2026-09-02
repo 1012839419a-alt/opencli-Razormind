@@ -152,6 +152,7 @@ async def run_pipeline(
     agent_config: dict[str, Any] | None = None,
     run_id: str | None = None,
     sink=None,  # ItemSink | None — write destination; defaults to LegacyDbSink
+    collection_lineage=None,  # CollectionLineage | None
 ) -> PipelineResult:
     """Execute the full collection pipeline. Each write step uses its own
     short-lived session so no write lock is held during long-running I/O."""
@@ -373,6 +374,7 @@ async def run_pipeline(
         source_id=source.id,
         provider=source.channel_type,
         run_id=run_id,
+        lineage=collection_lineage,
     )
     logger.info("[task:%s] step2-3/sink start | sink=%s items=%d",
                 task_id, type(active_sink).__name__, channel_result.count)

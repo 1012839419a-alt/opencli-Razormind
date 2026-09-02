@@ -13,6 +13,7 @@ import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
 import { useMemo, useState } from 'react'
 
+import { GpuSurface } from '@/components/gpu/gpu-surface'
 import { EmptyState, ErrorState, LoadingState } from '@/components/shell/data-states'
 import { PageContainer } from '@/components/shell/page-container'
 import { ProjectNavigation } from '@/components/studio/project-navigation'
@@ -31,10 +32,11 @@ import {
   useProjectWorkflows,
   useWorkspaceProjects,
 } from '@/lib/api/hooks'
-import type { RecordGraphNode } from '@/lib/api/types'
+import type { ProjectRecordGraphPreview, RecordGraphNode } from '@/lib/api/types'
 import {
   RECORD_GRAPH_KIND_COLOR,
   RECORD_GRAPH_KIND_LABEL,
+  withoutRecordGraphNodeKinds,
 } from '@/lib/records/project-record-graph'
 import { cn } from '@/lib/utils'
 
@@ -85,23 +87,33 @@ export function ProjectGraphExplorer({
     ?? workflowsQuery.data?.[0]?.id
     ?? null
   const preview = graphQuery.data
-  const selectedNode = preview?.nodes.find((node) => node.id === selectedNodeId) ?? null
+  const isGalaxy = mode === 'galaxy'
+  const graphPreview = useMemo(() => {
+    if (!preview) return null
+    // A collection run is operational lineage, not an evidence relationship.
+    // Keep it in the API projection and operations/data surfaces, but do not
+    // put it in this 2D evidence graph.
+    return isGalaxy
+      ? preview
+      : withoutRecordGraphNodeKinds(preview, ['run'])
+  }, [isGalaxy, preview])
+  const selectedNode = graphPreview?.nodes.find((node) => node.id === selectedNodeId) ?? null
   const related = useMemo(
-    () => preview && selectedNodeId
-      ? preview.edges.filter((edge) => edge.source === selectedNodeId || edge.target === selectedNodeId)
+    () => graphPreview && selectedNodeId
+      ? graphPreview.edges.filter((edge) => edge.source === selectedNodeId || edge.target === selectedNodeId)
       : [],
-    [preview, selectedNodeId],
+    [graphPreview, selectedNodeId],
   )
   const searchResults = useMemo(() => {
     const term = search.trim().toLowerCase()
-    if (!term || !preview) return []
-    return preview.nodes
+    if (!term || !graphPreview) return []
+    return graphPreview.nodes
       .filter((node) => `${node.label} ${node.subtitle ?? ''} ${node.preview ?? ''}`
         .toLowerCase()
         .includes(term))
       .sort((left, right) => right.count - left.count)
       .slice(0, 12)
-  }, [preview, search])
+  }, [graphPreview, search])
 
   const context = workspaceId
     ? `?workspace=${workspaceId}${workflowId ? `&workflow=${workflowId}` : ''}`
@@ -113,7 +125,6 @@ export function ProjectGraphExplorer({
   const galaxyHref = `/studio/projects/${projectId}/galaxy${context}`
   const loading = projectsQuery.isLoading || workflowsQuery.isLoading || graphQuery.isLoading
   const error = projectsQuery.error || workflowsQuery.error || graphQuery.error
-  const isGalaxy = mode === 'galaxy'
 
   return (
     <PageContainer
@@ -123,7 +134,7 @@ export function ProjectGraphExplorer({
         : isGalaxy ? '项目 Galaxy 星图' : '项目证据关系'}
       description={isGalaxy
         ? '在三维空间探索项目、工作流、运行、来源、记录与实体之间的关系。'
-        : '以接近 Obsidian Graph View 的力导向手感探索双向证据关系。'}
+        : '只展示数据源、记录和实体之间的证据关系；采集运行保留在运行记录中。'}
       className="max-w-none"
       actions={(
         <Link
@@ -239,28 +250,44 @@ export function ProjectGraphExplorer({
               hint="确认项目已有可读取的工作流和运行记录。"
             />
           </div>
-        ) : !preview ? (
+        ) : !graphPreview ? (
           <EmptyState
             title="暂无项目关系图"
             description="项目运行产生记录后，系统会建立来源、运行、记录和实体之间的关系。"
           />
         ) : (
           <div className="relative min-h-[44rem]">
-            <div className="min-h-[44rem]">
-              {isGalaxy ? (
+            {isGalaxy ? (
+              <GpuSurface
+                surface="project-galaxy-graph"
+                className="min-h-[44rem]"
+                fallback={(
+                  <ProjectGraphFallback
+                    preview={preview}
+                    selectedNodeId={selectedNodeId}
+                    onSelectNode={setSelectedNodeId}
+                  />
+                )}
+              >
                 <ProjectGalaxyForceGraph
-                  preview={preview}
+                  preview={graphPreview}
                   selectedNodeId={selectedNodeId}
                   onSelectNode={setSelectedNodeId}
                 />
-              ) : (
+              </GpuSurface>
+            ) : (
+              <div
+                className="min-h-[44rem]"
+                data-gpu-surface="project-relationships-graph"
+                data-gpu-backend="canvas2d"
+              >
                 <ProjectRelationshipForceGraph
-                  preview={preview}
+                  preview={graphPreview}
                   selectedNodeId={selectedNodeId}
                   onSelectNode={setSelectedNodeId}
                 />
-              )}
-            </div>
+              </div>
+            )}
             {selectedNode ? (
               <GraphInspector
                 node={selectedNode}
@@ -271,6 +298,58 @@ export function ProjectGraphExplorer({
         )}
       </section>
     </PageContainer>
+  )
+}
+
+function ProjectGraphFallback({
+  preview,
+  selectedNodeId,
+  onSelectNode,
+}: {
+  preview: ProjectRecordGraphPreview
+  selectedNodeId: string | null
+  onSelectNode: (nodeId: string | null) => void
+}) {
+  const initialNodes = preview.nodes.slice(0, 200)
+
+  return (
+    <div
+      className="min-h-[44rem] overflow-y-auto bg-muted/20 p-4"
+      data-project-graph-fallback
+    >
+      <div className="rounded-lg border bg-background p-4">
+        <h2 className="text-sm font-semibold">GPU 图谱不可用</h2>
+        <p className="mt-1 text-sm text-muted-foreground">
+          当前显示前 200 个节点；可使用上方搜索定位其余节点，并查看关联详情。
+        </p>
+      </div>
+      <div className="mt-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+        {initialNodes.map((node) => (
+          <button
+            key={node.id}
+            type="button"
+            aria-pressed={selectedNodeId === node.id}
+            onClick={() => onSelectNode(node.id)}
+            className={cn(
+              'rounded-lg border bg-background p-3 text-left transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+              selectedNodeId === node.id && 'border-primary bg-primary/5',
+            )}
+          >
+            <span className="flex items-center gap-2 text-xs text-muted-foreground">
+              <span
+                className="size-2 rounded-full"
+                style={{ backgroundColor: RECORD_GRAPH_KIND_COLOR[node.kind] }}
+              />
+              {RECORD_GRAPH_KIND_LABEL[node.kind]}
+            </span>
+            <span className="mt-2 block break-words text-sm font-medium">{node.label}</span>
+            <span className="mt-1 block text-xs text-muted-foreground">
+              {node.count.toLocaleString('zh-CN')} 条关联数据
+            </span>
+          </button>
+        ))}
+      </div>
+    </div>
   )
 }
 

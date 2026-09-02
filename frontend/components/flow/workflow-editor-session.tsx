@@ -4,7 +4,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { AlertTriangle, ArrowLeft, CheckCircle2, Loader2, Plus, RefreshCw, Rocket, Workflow } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, CheckCircle2, ChevronDown, ChevronUp, Loader2, Plus, RefreshCw, Rocket, Workflow } from 'lucide-react'
 import { toast } from 'sonner'
 
 import { Button } from '@/components/ui/button'
@@ -15,13 +15,18 @@ import { getProjectWorkflowDraft, publishProjectWorkflow, updateProjectWorkflowD
 import { useCreateProjectWorkflow, useWorkspaceProjects } from '@/lib/api/hooks'
 import type { WorkflowAssetSummary } from '@/lib/api/types'
 import { useFlowStore } from '@/lib/flow/store'
+import { resolveYjsUrl, useSettingsStore } from '@/lib/flow/settings-store'
+import { IMAGE_ASSET_CATALOG_ID } from '@/lib/workflow/node-catalog'
+import { persistableWorkflowProject } from '@/lib/workflow/persistence'
+import { parseWorkflowProject, type WorkflowProject } from '@/lib/workflow/schema'
 import { studioGraphForTemplate } from '@/lib/workflow/studio-templates'
 import { useWorkflowCapabilities } from '@/lib/workflow/use-workflow-capabilities'
-import { parseWorkflowProject } from '@/lib/workflow/schema'
-import { IMAGE_ASSET_CATALOG_ID } from '@/lib/workflow/node-catalog'
-import { preparePersistableWorkflowDraft, workflowDraftFingerprint } from '@/lib/workflow/draft-persistence'
 
 import { WorkflowEditor } from './workflow-editor'
+
+
+const projectFingerprint = (project: WorkflowProject) =>
+  JSON.stringify(persistableWorkflowProject(project))
 
 type WorkflowEditorSessionProps = {
   forceStandalone?: boolean
@@ -52,6 +57,8 @@ export function WorkflowEditorSession({ forceStandalone = false }: WorkflowEdito
   const workflowProject = useFlowStore((state) => state.workflowProject)
   const importWorkflowProject = useFlowStore((state) => state.importWorkflowProject)
   const updateWorkflowNodeParams = useFlowStore((state) => state.updateWorkflowNodeParams)
+  const yjsConnected = useSettingsStore((state) => state.yjsConnected)
+  const yjsEnabled = useSettingsStore((state) => state.yjsEnabled)
   const [workflowId, setWorkflowId] = useState<string | null>(null)
   const [loadState, setLoadState] = useState<WorkflowLoadState>('loading')
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -63,6 +70,7 @@ export function WorkflowEditorSession({ forceStandalone = false }: WorkflowEdito
   const [releaseBlocker, setReleaseBlocker] = useState<string | null>(null)
   const [publishedVersion, setPublishedVersion] = useState<number | null>(null)
   const [validationScope, setValidationScope] = useState<{ active: number; parked: number } | null>(null)
+  const [lifecyclePanelOpen, setLifecyclePanelOpen] = useState(false)
   const loaded = useRef(false)
   const revision = useRef<number | null>(null)
   const saveSession = useRef(0)
@@ -71,29 +79,31 @@ export function WorkflowEditorSession({ forceStandalone = false }: WorkflowEdito
   const saveBlocked = useRef(false)
   const createWorkflow = useCreateProjectWorkflow()
   const consumedImageReturn = useRef<string | null>(null)
-  const { error: capabilityError, loading: capabilityLoading } = useWorkflowCapabilities(true)
+  const { error: capabilityError, loading: capabilityLoading } = useWorkflowCapabilities(
+    true,
+    workspaceId,
+  )
   const standalone = forceStandalone
   const missingProjectContext = !standalone && (!workspaceId || !projectId)
   const projectHref = workspaceId && projectId ? `/studio/projects/${projectId}?workspace=${workspaceId}` : '/studio'
 
+  useEffect(() => {
+    return () => {
+      useSettingsStore.getState().patch({ collabProvider: 'off', yjsEnabled: false, yjsConnected: false })
+    }
+  }, [])
+
   const saveDraft = useCallback(
-    (graph: typeof workflowProject) => {
-      if (!workspaceId || !projectId || !workflowId || revision.current === null || saveBlocked.current) return Promise.reject(new Error('草稿尚未就绪'))
-      const preparedDraft = preparePersistableWorkflowDraft(graph)
-      if (lastSavedFingerprint.current === preparedDraft.fingerprint) return Promise.resolve()
-      const session = saveSession.current
-      let queue = saveQueue.current
-      if (!queue || queue.session !== session) {
-        queue = {
-          session,
-          target: { workspaceId, projectId, workflowId },
-          revision: revision.current,
-          pending: null,
-          promise: null,
-        }
-        saveQueue.current = queue
+    async (graph: typeof workflowProject) => {
+      if (!workspaceId || !projectId || !workflowId || revision.current === null || saveBlocked.current) throw new Error('草稿尚未就绪')
+      const persistableGraph = persistableWorkflowProject(graph)
+      if (lastSavedFingerprint.current === projectFingerprint(persistableGraph)) return
+      if (yjsEnabled) {
+        const latestDraft = await getProjectWorkflowDraft(workspaceId, projectId, workflowId)
+        revision.current = latestDraft.revision
+        setSavedRevision(latestDraft.revision)
       }
-      queue.pending = preparedDraft
+      pendingGraph.current = persistableGraph
       setDocumentState('saving')
       if (!queue.promise) {
         const activeQueue = queue
@@ -135,12 +145,14 @@ export function WorkflowEditorSession({ forceStandalone = false }: WorkflowEdito
       }
       return queue.promise ?? Promise.reject(new Error('草稿保存队列初始化失败'))
     },
-    [projectId, workflowId, workspaceId],
+    [projectId, workflowId, workspaceId, yjsEnabled],
   )
 
   useEffect(() => {
     if (!workspaceId || !projectId) return
-    saveSession.current += 1
+    if (primaryWorkflowPending) return
+    useSettingsStore.getState().patch({ collabProvider: 'off', yjsEnabled: false, yjsConnected: false })
+    let active = true
     loaded.current = false
     revision.current = null
     setSavedRevision(null)
@@ -176,6 +188,13 @@ export function WorkflowEditorSession({ forceStandalone = false }: WorkflowEdito
         setSavedRevision(draft.revision)
         lastSavedFingerprint.current = workflowDraftFingerprint(graph)
         setWorkflowId(resolvedWorkflowId)
+        useSettingsStore.getState().patch({
+          collabProvider: 'yjs',
+          yjsEnabled: true,
+          yjsConnected: false,
+          yjsRoom: `workspace:${workspaceId}:project:${projectId}:workflow:${resolvedWorkflowId}`,
+          yjsUrl: resolveYjsUrl(),
+        })
         loaded.current = true
         setDocumentState('saved')
         setLoadState('ready')
@@ -200,12 +219,47 @@ export function WorkflowEditorSession({ forceStandalone = false }: WorkflowEdito
   }, [importWorkflowProject, primaryWorkflowPending, project, projectId, requestedWorkflowId, resolvedWorkflowId, workspaceId, workspaceProjects.error, workspaceProjects.isError])
 
   useEffect(() => {
-    if (!loaded.current || !workspaceId || !projectId || !workflowId) return
+    if (!loaded.current || !workspaceId || !projectId || !workflowId || yjsConnected) return
     const timer = window.setTimeout(() => {
       saveDraft(workflowProject).catch((reason: Error) => toast.error(`自动保存失败：${reason.message}`))
     }, 800)
     return () => window.clearTimeout(timer)
-  }, [projectId, saveDraft, workflowId, workflowProject, workspaceId])
+  }, [projectId, saveDraft, workflowId, workflowProject, workspaceId, yjsConnected])
+
+  useEffect(() => {
+    if (!loaded.current || !workspaceId || !projectId || !workflowId || !yjsConnected) return
+    const fingerprint = projectFingerprint(workflowProject)
+    if (lastSavedFingerprint.current === fingerprint) return
+    const expectedRevision = revision.current ?? 0
+    setDocumentState('saving')
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        try {
+          const latest = await getProjectWorkflowDraft(workspaceId, projectId, workflowId)
+          if (latest.revision <= expectedRevision) {
+            await saveDraft(workflowProject)
+            return
+          }
+          revision.current = latest.revision
+          setSavedRevision(latest.revision)
+          lastSavedFingerprint.current = fingerprint
+          setDocumentState('saved')
+        } catch (reason) {
+          try {
+            await saveDraft(workflowProject)
+          } catch {
+            setDocumentState('error')
+            toast.error(
+              reason instanceof Error
+                ? `协同快照确认失败：${reason.message}`
+                : '协同快照确认失败',
+            )
+          }
+        }
+      })()
+    }, 1_000)
+    return () => window.clearTimeout(timer)
+  }, [projectId, saveDraft, workflowId, workflowProject, workspaceId, yjsConnected])
 
   useEffect(() => {
     if (!loaded.current) return
@@ -314,6 +368,7 @@ export function WorkflowEditorSession({ forceStandalone = false }: WorkflowEdito
     const publishFingerprint = workflowDraftFingerprint(workflowProject)
     setReleaseState('publishing')
     try {
+      await saveDraft(workflowProject)
       const version = await publishProjectWorkflow(workspaceId, projectId, workflowId, {
         reason: '通过工作区画布发布',
         expectedRevision: revision.current,
@@ -371,7 +426,7 @@ export function WorkflowEditorSession({ forceStandalone = false }: WorkflowEdito
     <div className="relative h-full w-full overflow-hidden">
       {standalone ? (
         <ErrorBoundary label="WorkflowEditor">
-          <WorkflowEditor />
+          <WorkflowEditor workspaceId={workspaceId} />
         </ErrorBoundary>
       ) : missingProjectContext ? (
         <div className="grid h-full place-items-center px-4">
@@ -455,55 +510,68 @@ export function WorkflowEditorSession({ forceStandalone = false }: WorkflowEdito
         </div>
       ) : (
         <ErrorBoundary label="WorkflowEditor">
-          <WorkflowEditor documentState={documentState} />
+          <WorkflowEditor documentState={documentState} workspaceId={workspaceId} />
         </ErrorBoundary>
       )}
       {workspaceId && projectId && workflowId ? (
-        <div className="absolute inset-x-3 bottom-3 z-40 ml-auto flex max-w-4xl flex-col gap-2 rounded-md border bg-background/90 p-2 backdrop-blur-xl">
-          <WorkflowLifecycleStrip state={documentState === 'error' || documentState === 'conflict' || capabilityError ? 'blocked' : releaseState === 'idle' ? 'draft' : releaseState} revision={savedRevision} publishedVersion={publishedVersion} blockerText={documentState === 'conflict' ? '草稿已在其他位置更新，请重新加载。' : documentState === 'error' ? '草稿保存失败。' : capabilityError ? '运行能力目录不可用，暂时无法验证。' : (releaseBlocker ?? undefined)} />
-          {validationScope ? (
-            <div className="flex items-center justify-between gap-2 px-1.5 text-2xs text-muted-foreground" role="status" data-testid="workflow-validation-scope-summary">
-              <span>{`活动节点 ${validationScope.active} · 未接入节点 ${validationScope.parked}`}</span>
-              <span className="text-3xs opacity-70">未接入节点仅提示，不会阻止发布</span>
+        lifecyclePanelOpen ? (
+          <div className="absolute inset-x-3 bottom-3 z-40 ml-auto flex max-w-4xl flex-col gap-2 rounded-md border bg-background/90 p-2 backdrop-blur-xl" data-testid="workflow-lifecycle-panel">
+            <div className="flex justify-end">
+              <Button className="min-h-8 gap-1 text-xs" size="sm" variant="ghost" onClick={() => setLifecyclePanelOpen(false)} aria-expanded="true" aria-controls="workflow-lifecycle-panel">
+                收起状态
+                <ChevronDown className="size-3.5" />
+              </Button>
             </div>
-          ) : null}
-          <div className="flex flex-wrap items-center justify-end gap-2">
-            <div className="mr-auto flex items-center gap-1.5 px-1.5 text-xs text-muted-foreground" role="status">
-              {documentState === 'loading' || documentState === 'saving' ? <Loader2 className="size-3.5 animate-spin" /> : null}
-              {documentState === 'saved' ? <CheckCircle2 className="size-3.5 text-success" /> : null}
-              {documentState === 'error' || documentState === 'conflict' ? <AlertTriangle className="size-3.5 text-warning" /> : null}
-              {
+            <WorkflowLifecycleStrip state={documentState === 'error' || documentState === 'conflict' || capabilityError ? 'blocked' : releaseState === 'idle' ? 'draft' : releaseState} revision={savedRevision} publishedVersion={publishedVersion} blockerText={documentState === 'conflict' ? '草稿已在其他位置更新，请重新加载。' : documentState === 'error' ? '草稿保存失败。' : capabilityError ? '运行能力目录不可用，暂时无法验证。' : (releaseBlocker ?? undefined)} />
+            {validationScope ? (
+              <div className="flex items-center justify-between gap-2 px-1.5 text-2xs text-muted-foreground" role="status" data-testid="workflow-validation-scope-summary">
+                <span>{`活动节点 ${validationScope.active} · 未接入节点 ${validationScope.parked}`}</span>
+                <span className="text-3xs opacity-70">未接入节点仅提示，不会阻止发布</span>
+              </div>
+            ) : null}
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              <div className="mr-auto flex items-center gap-1.5 px-1.5 text-xs text-muted-foreground" role="status">
+                {documentState === 'loading' || documentState === 'saving' ? <Loader2 className="size-3.5 animate-spin" /> : null}
+                {documentState === 'saved' ? <CheckCircle2 className="size-3.5 text-success" /> : null}
+                {documentState === 'error' || documentState === 'conflict' ? <AlertTriangle className="size-3.5 text-warning" /> : null}
                 {
-                  loading: '加载中',
-                  saving: '保存中',
-                  saved: `已保存 · revision ${savedRevision ?? '—'}`,
-                  error: '保存失败',
-                  conflict: '保存冲突',
-                }[documentState]
-              }
+                  {
+                    loading: '加载中',
+                    saving: '保存中',
+                    saved: `已保存 · revision ${savedRevision ?? '—'}`,
+                    error: '保存失败',
+                    conflict: '保存冲突',
+                  }[documentState]
+                }
+              </div>
+              {documentState === 'conflict' ? (
+                <Button className="min-h-11 sm:min-h-7" size="sm" variant="outline" onClick={() => window.location.reload()}>
+                  <RefreshCw className="size-3.5" />
+                  重新加载
+                </Button>
+              ) : null}
+              {documentState === 'error' ? (
+                <Button className="min-h-11 sm:min-h-7" size="sm" variant="outline" onClick={() => void saveDraft(workflowProject)}>
+                  <RefreshCw className="size-3.5" />
+                  重试保存
+                </Button>
+              ) : null}
+              <Button className="min-h-11 sm:min-h-7" size="sm" variant="outline" onClick={validateDraft} disabled={capabilityLoading || Boolean(capabilityError) || releaseState === 'validating' || releaseState === 'publishing'} title={capabilityLoading ? '正在加载运行能力目录' : capabilityError ? '运行能力目录不可用' : undefined}>
+                {capabilityLoading || releaseState === 'validating' ? <Loader2 className="size-3.5 animate-spin" /> : <CheckCircle2 className="size-3.5" />}
+                验证
+              </Button>
+              <Button className="min-h-11 sm:min-h-7" size="sm" onClick={publishDraft} disabled={releaseState !== 'validated'}>
+                {releaseState === 'publishing' ? <Loader2 className="size-3.5 animate-spin" /> : <Rocket className="size-3.5" />}
+                发布
+              </Button>
             </div>
-            {documentState === 'conflict' ? (
-              <Button className="min-h-11 sm:min-h-7" size="sm" variant="outline" onClick={() => window.location.reload()}>
-                <RefreshCw className="size-3.5" />
-                重新加载
-              </Button>
-            ) : null}
-            {documentState === 'error' ? (
-              <Button className="min-h-11 sm:min-h-7" size="sm" variant="outline" onClick={() => void saveDraft(workflowProject)}>
-                <RefreshCw className="size-3.5" />
-                重试保存
-              </Button>
-            ) : null}
-            <Button className="min-h-11 sm:min-h-7" size="sm" variant="outline" onClick={validateDraft} disabled={capabilityLoading || Boolean(capabilityError) || releaseState === 'validating' || releaseState === 'publishing'} title={capabilityLoading ? '正在加载运行能力目录' : capabilityError ? '运行能力目录不可用' : undefined}>
-              {capabilityLoading || releaseState === 'validating' ? <Loader2 className="size-3.5 animate-spin" /> : <CheckCircle2 className="size-3.5" />}
-              验证
-            </Button>
-            <Button className="min-h-11 sm:min-h-7" size="sm" onClick={publishDraft} disabled={releaseState !== 'validated'}>
-              {releaseState === 'publishing' ? <Loader2 className="size-3.5 animate-spin" /> : <Rocket className="size-3.5" />}
-              发布
-            </Button>
           </div>
-        </div>
+        ) : (
+          <Button className="absolute bottom-3 right-3 z-40 min-h-8 gap-1.5 rounded-md border bg-background/90 px-2.5 text-xs shadow-sm backdrop-blur-xl" size="sm" variant="outline" onClick={() => setLifecyclePanelOpen(true)} aria-expanded="false" aria-controls="workflow-lifecycle-panel" data-testid="workflow-lifecycle-toggle">
+            <ChevronUp className="size-3.5" />
+            状态
+          </Button>
+        )
       ) : null}
     </div>
   )

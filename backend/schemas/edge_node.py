@@ -15,6 +15,7 @@ class EdgeNodeRead(BaseModel):
     last_seen_at: datetime | None
     ip: str | None
     runtimes: list[str] | None = None
+    runtime_capabilities: dict[str, list[str]] | None = None
     created_at: datetime
     updated_at: datetime
 

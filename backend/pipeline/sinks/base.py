@@ -18,6 +18,88 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol, Sequence
 
 
+@dataclass(frozen=True, slots=True)
+class CollectionLineage:
+    """Immutable provenance envelope shared by collection projections.
+
+    Every value is an identifier or reference owned by an existing subsystem.
+    ``None`` means that subsystem did not establish the value at this boundary;
+    callers must not synthesize replacements.
+    """
+
+    task_id: str | None = None
+    source_id: str | None = None
+    provider: str | None = None
+    ingest_mode: str | None = None
+    collection_run_id: str | None = None
+    acquisition_execution_id: str | None = None
+    source_revision_id: str | None = None
+    source_binding_revision_id: str | None = None
+    account_revision_id: str | None = None
+    credential_revision_id: str | None = None
+    project_id: str | None = None
+    scope_ref: str | None = None
+    worker_id: str | None = None
+    runtime_id: str | None = None
+    trace_id: str | None = None
+    trace_ref: str | None = None
+    artifact_refs: tuple[Any, ...] | None = None
+
+    def __post_init__(self) -> None:
+        if self.artifact_refs is not None and not isinstance(self.artifact_refs, tuple):
+            object.__setattr__(self, "artifact_refs", tuple(self.artifact_refs))
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return the stable JSON representation persisted on projections."""
+        values = {
+            "task_id": self.task_id,
+            "source_id": self.source_id,
+            "provider": self.provider,
+            "ingest_mode": self.ingest_mode,
+            "collection_run_id": self.collection_run_id,
+            "acquisition_execution_id": self.acquisition_execution_id,
+            "source_revision_id": self.source_revision_id,
+            "source_binding_revision_id": self.source_binding_revision_id,
+            "account_revision_id": self.account_revision_id,
+            "credential_revision_id": self.credential_revision_id,
+            "project_id": self.project_id,
+            "scope_ref": self.scope_ref,
+            "worker_id": self.worker_id,
+            "runtime_id": self.runtime_id,
+            "trace_id": self.trace_id,
+            "trace_ref": self.trace_ref,
+            "artifact_refs": (
+                list(self.artifact_refs) if self.artifact_refs is not None else None
+            ),
+        }
+        return values
+
+    @classmethod
+    def from_dict(cls, values: dict[str, Any] | None) -> "CollectionLineage | None":
+        if values is None:
+            return None
+        fields = {
+            "task_id",
+            "source_id",
+            "provider",
+            "ingest_mode",
+            "collection_run_id",
+            "acquisition_execution_id",
+            "source_revision_id",
+            "source_binding_revision_id",
+            "account_revision_id",
+            "credential_revision_id",
+            "project_id",
+            "scope_ref",
+            "worker_id",
+            "runtime_id",
+            "trace_id",
+            "trace_ref",
+            "artifact_refs",
+        }
+        return cls(**{key: values[key] for key in fields if key in values})
+
+
 @dataclass
 class RunContext:
     """Identity of one collection run, threaded to whichever sink handles it.
@@ -25,7 +107,8 @@ class RunContext:
     ``provider`` is the channel_type (e.g. ``"rss"``); it becomes the ODP
     ``provider`` and the legacy ``channel_type``. ``ingest_mode`` is
     ``snapshot`` (full re-list) or ``stream`` (incremental), mirroring the ODP
-    contract.
+    contract. Optional references remain absent when the owning subsystem has
+    not established them.
     """
 
     task_id: str
@@ -34,7 +117,45 @@ class RunContext:
     ingest_mode: str = "snapshot"
     run_id: str | None = None
     trace_id: str | None = None
+    acquisition_execution_id: str | None = None
+    source_revision_id: str | None = None
+    source_binding_revision_id: str | None = None
+    account_revision_id: str | None = None
+    credential_revision_id: str | None = None
+    project_id: str | None = None
+    scope_ref: str | None = None
+    worker_id: str | None = None
+    runtime_id: str | None = None
+    trace_ref: str | None = None
+    artifact_refs: list[Any] | tuple[Any, ...] | None = None
+    lineage: CollectionLineage | None = None
 
+    def lineage_envelope(self) -> CollectionLineage:
+        """Build one immutable envelope without inventing missing references."""
+        values = self.lineage.to_dict() if self.lineage is not None else {}
+        values.update(
+            task_id=self.task_id,
+            source_id=self.source_id,
+            provider=self.provider,
+            ingest_mode=self.ingest_mode,
+        )
+        optional = {
+            "collection_run_id": self.run_id,
+            "trace_id": self.trace_id,
+            "acquisition_execution_id": self.acquisition_execution_id,
+            "source_revision_id": self.source_revision_id,
+            "source_binding_revision_id": self.source_binding_revision_id,
+            "account_revision_id": self.account_revision_id,
+            "credential_revision_id": self.credential_revision_id,
+            "project_id": self.project_id,
+            "scope_ref": self.scope_ref,
+            "worker_id": self.worker_id,
+            "runtime_id": self.runtime_id,
+            "trace_ref": self.trace_ref,
+            "artifact_refs": self.artifact_refs,
+        }
+        values.update({key: value for key, value in optional.items() if value is not None})
+        return CollectionLineage.from_dict(values)  # type: ignore[return-value]
 
 @dataclass
 class SinkResult:

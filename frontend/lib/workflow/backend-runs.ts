@@ -396,6 +396,7 @@ export async function startWorkflowRun(
     authorization?: string | null
     runId?: string
     traceId?: string
+    ephemeral?: boolean
     packageNodeId?: string
     sourceOutputs?: Record<string, Array<Record<string, unknown>>>
     trigger?: WorkflowRunTrigger
@@ -438,7 +439,15 @@ export async function startWorkflowRun(
       ...(!questionBankBody ? { "Content-Type": "application/json" } : {}),
       ...(options.authorization ? { Authorization: options.authorization } : {}),
     },
-    body: questionBankBody ?? JSON.stringify(request),
+    body: JSON.stringify({
+      project,
+      ...(options.runId ? { runId: options.runId } : {}),
+      ...(options.traceId ? { traceId: options.traceId } : {}),
+      ...(options.ephemeral ? { ephemeral: true } : {}),
+      ...(options.packageNodeId ? { packageNodeId: options.packageNodeId } : {}),
+      ...(options.sourceOutputs ? { sourceOutputs: options.sourceOutputs } : {}),
+      trigger: options.trigger ?? inferWorkflowRunTrigger(project),
+    }),
   })
   return readApiResponse(response, "Workflow run failed")
 }

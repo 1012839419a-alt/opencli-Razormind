@@ -6,8 +6,8 @@ import base64
 import hashlib
 import hmac
 import os
-import re
 import secrets
+import tempfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -21,7 +21,11 @@ def hash_password(password: str) -> str:
     encode = base64.urlsafe_b64encode
     return f"scrypt${n}${r}${p}${encode(salt).decode()}${encode(digest).decode()}"
 
-DEFAULT_LOCAL_ADMIN_PASSWORD_HASH = hash_password("admin")
+_STATE_MARKER_INITIAL_CONTENT = "opencli-local-auth-state-v1:initial\n"
+_STATE_MARKER_CHANGED_CONTENT = "opencli-local-auth-state-v1:changed\n"
+_VALID_STATE_MARKERS = frozenset(
+    {_STATE_MARKER_INITIAL_CONTENT, _STATE_MARKER_CHANGED_CONTENT}
+)
 
 
 def verify_password(password: str, encoded: str) -> bool:
@@ -61,46 +65,111 @@ def issue_local_token(username: str, secret_key: str) -> str:
     )
 
 
-def load_password_hash(path: str, fallback: str) -> str:
-    """Load a persisted password hash, falling back to configured settings."""
+def load_password_hash(configured_hash: str, state_path: str = "") -> str:
+    """Load the local password hash, failing closed for incomplete durable state."""
 
+    if not state_path:
+        return configured_hash
+    path = Path(state_path)
+    marker_path = _state_marker_path(path)
     try:
-        persisted = Path(path).read_text(encoding="utf-8").strip()
-    except (OSError, UnicodeError):
-        return fallback
-    return persisted or fallback
-
-
-def persist_password_hash(password_hash: str) -> None:
-    """Persist the local password in the deployment and current process."""
-
-    os.environ["LOCAL_ADMIN_PASSWORD_HASH"] = password_hash
-    durable_path = os.environ.get("LOCAL_ADMIN_PASSWORD_HASH_FILE")
-    if durable_path is None and Path("/data").is_dir():
-        durable_path = "/data/local_admin_password_hash"
-    if durable_path:
-        durable_file = Path(durable_path)
-        durable_file.parent.mkdir(parents=True, exist_ok=True)
-        durable_file.write_text(password_hash + "\n", encoding="utf-8")
-
-    path = os.environ.get("ENV_FILE_PATH")
-    if not path:
-        for candidate in (Path("/app/.env"), Path(__file__).resolve().parents[2] / ".env"):
-            if candidate.exists():
-                path = str(candidate)
-                break
-        else:
-            path = str(Path(__file__).resolve().parents[2] / ".env")
-
-    env_path = Path(path)
+        persisted = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
     try:
-        content = env_path.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        content = ""
-    new_line = f"LOCAL_ADMIN_PASSWORD_HASH={password_hash}"
-    pattern = r"^LOCAL_ADMIN_PASSWORD_HASH=.*$"
-    if re.search(pattern, content, re.MULTILINE):
-        content = re.sub(pattern, new_line, content, flags=re.MULTILINE)
-    else:
-        content = content.rstrip("\n") + f"\n{new_line}\n"
-    env_path.write_text(content, encoding="utf-8")
+        marker = marker_path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    if not persisted or marker not in _VALID_STATE_MARKERS:
+        return ""
+    return persisted
+
+
+def password_change_required(state_path: str = "") -> bool:
+    """Return whether the installer-created initial password is still active."""
+
+    if not state_path:
+        return False
+    try:
+        return (
+            _state_marker_path(Path(state_path)).read_text(encoding="utf-8")
+            == _STATE_MARKER_INITIAL_CONTENT
+        )
+    except OSError:
+        return False
+
+
+def _state_marker_path(path: Path) -> Path:
+    return path.with_name(f"{path.name}.initialized")
+
+
+def _write_private_atomic(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary_path, 0o600)
+        os.replace(temporary_path, path)
+        os.chmod(path, 0o600)
+    finally:
+        temporary_path.unlink(missing_ok=True)
+
+
+def initialize_password_hash(password_hash: str, state_path: str = "") -> None:
+    """Create local authentication state exactly once.
+
+    Both files must be absent.  A pre-existing or partially-created state is
+    never overwritten, so an installer cannot silently replace an operator's
+    password.  Readers fail closed while the two files are being created.
+    """
+
+    if not state_path:
+        raise ValueError("local authentication state path is required")
+    path = Path(state_path)
+    marker_path = _state_marker_path(path)
+    created: list[Path] = []
+    try:
+        _write_private_exclusive(marker_path, _STATE_MARKER_INITIAL_CONTENT)
+        created.append(marker_path)
+        _write_private_exclusive(path, f"{password_hash}\n")
+        created.append(path)
+    except BaseException:
+        for created_path in created:
+            created_path.unlink(missing_ok=True)
+        raise
+
+
+def _write_private_exclusive(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
+            descriptor = -1
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+    finally:
+        if descriptor != -1:
+            os.close(descriptor)
+    os.chmod(path, 0o600)
+
+
+def persist_password_hash(password_hash: str, state_path: str = "") -> None:
+    """Persist the local password in a server-owned durable state file."""
+
+    if not state_path:
+        raise ValueError("local authentication state path is required")
+    path = Path(state_path)
+    marker_path = _state_marker_path(path)
+    try:
+        marker = marker_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise RuntimeError("local authentication state is not initialized") from exc
+    if marker not in _VALID_STATE_MARKERS or not path.is_file():
+        raise RuntimeError("local authentication state is incomplete")
+    _write_private_atomic(path, f"{password_hash}\n")
+    _write_private_atomic(marker_path, _STATE_MARKER_CHANGED_CONTENT)

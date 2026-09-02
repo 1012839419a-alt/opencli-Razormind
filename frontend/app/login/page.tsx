@@ -11,6 +11,7 @@ import Dither from '@/components/Dither'
 import { useAuth } from '@/components/auth/auth-provider'
 import { PixelLiquidBg } from '@/components/unlumen-ui/pixel-liquid-bg'
 import { Button } from '@/components/ui/button'
+import { GpuSurface } from '@/components/gpu/gpu-surface'
 import {
   Card,
   CardContent,
@@ -60,71 +61,116 @@ const LIQUID_LIGHT_PALETTE = [
   '#8f2112',
 ]
 
+function StaticLoginBackground({ theme }: { theme: LoginBackdrop }) {
+  const themeClassName = theme === 'liquid'
+    ? 'bg-[radial-gradient(circle_at_20%_20%,#ff8a2b_0%,transparent_34%),radial-gradient(circle_at_80%_75%,#bd2d17_0%,transparent_38%),#070604]'
+    : theme === 'terminal'
+      ? 'bg-[linear-gradient(135deg,#0d0805_0%,#2a1008_48%,#070604_100%)]'
+      : 'bg-[radial-gradient(circle_at_30%_20%,#f0441f_0%,transparent_25%),linear-gradient(145deg,#130604_0%,#020202_72%)]'
+
+  return (
+    <div
+      aria-hidden="true"
+      className={`relative size-full overflow-hidden ${themeClassName}`}
+      data-login-static-background
+      data-login-theme={theme}
+    >
+      {theme === 'terminal' ? (
+        <div className="absolute inset-0 bg-[linear-gradient(rgba(249,115,22,0.13)_1px,transparent_1px),linear-gradient(90deg,rgba(249,115,22,0.13)_1px,transparent_1px)] bg-[size:28px_28px]" />
+      ) : null}
+      <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,transparent_0%,rgba(0,0,0,0.42)_100%)]" />
+    </div>
+  )
+}
+
+function LoginPendingShell() {
+  return (
+    <main className="relative min-h-screen overflow-hidden bg-[#070604] text-white">
+      <div className="absolute inset-0 opacity-90" aria-hidden="true">
+        <div
+          className="absolute inset-0"
+          data-gpu-surface="login-background"
+          data-gpu-backend="pending"
+          data-gpu-fallback-reason="probing"
+        >
+          <StaticLoginBackground theme="liquid" />
+        </div>
+      </div>
+    </main>
+  )
+}
+
 function LoginBackground({ theme, reduceMotion }: { theme: LoginBackdrop; reduceMotion: boolean }) {
   return (
-    <AnimatePresence mode="wait" initial={false}>
-      <motion.div
-        key={theme}
-        className="absolute inset-0"
-        initial={reduceMotion ? false : { opacity: 0, filter: 'blur(6px)', scale: 1.01 }}
-        animate={{ opacity: 1, filter: 'blur(0px)', scale: 1 }}
-        exit={reduceMotion ? { opacity: 0 } : { opacity: 0, filter: 'blur(3px)', scale: 0.995 }}
-        transition={{ type: 'spring', duration: 0.45, bounce: 0 }}
-      >
-        {theme === 'liquid' ? (
-          <div className="relative size-full overflow-hidden bg-[#070604]">
-            <PixelLiquidBg
-              className="absolute inset-0"
-              darkPalette={LIQUID_DARK_PALETTE}
-              lightPalette={LIQUID_LIGHT_PALETTE}
-              pixelSize={11}
-              resolution={0.34}
-              mouseForce={5.5}
-              cursorSize={150}
-              viscosity={14}
-              surfaceStrength={0.76}
-              autoDemo={!reduceMotion}
-            />
-          </div>
-        ) : theme === 'terminal' ? (
-          <FaultyTerminal
-            tint="#F97316"
-            scale={1.35}
-            gridMul={[2, 1]}
-            digitSize={1.2}
-            timeScale={0.22}
-            pause={reduceMotion}
-            scanlineIntensity={0.35}
-            glitchAmount={0.65}
-            flickerAmount={0.25}
-            noiseAmp={0.85}
-            chromaticAberration={0.5}
-            curvature={0.08}
-            mouseReact={!reduceMotion}
-            mouseStrength={0.12}
-            dpr={1}
-            pageLoadAnimation={!reduceMotion}
-            brightness={0.9}
-          />
-        ) : (
-          <div className="relative size-full overflow-hidden bg-black">
-            <div className="absolute inset-0 opacity-85">
-              <Dither
-                waveSpeed={0.1}
-                waveFrequency={2.6}
-                waveAmplitude={0.38}
-                waveColor={[1, 0.27, 0.08]}
-                colorNum={7}
-                pixelSize={3}
-                disableAnimation={reduceMotion}
-                enableMouseInteraction={!reduceMotion}
-                mouseRadius={0.72}
+    <GpuSurface
+      surface="login-background"
+      className="absolute inset-0"
+      fallback={<StaticLoginBackground theme={theme} />}
+    >
+      <AnimatePresence mode="wait" initial={false}>
+        <motion.div
+          key={theme}
+          className="absolute inset-0"
+          initial={reduceMotion ? false : { opacity: 0, filter: 'blur(6px)', scale: 1.01 }}
+          animate={{ opacity: 1, filter: 'blur(0px)', scale: 1 }}
+          exit={reduceMotion ? { opacity: 0 } : { opacity: 0, filter: 'blur(3px)', scale: 0.995 }}
+          transition={{ type: 'spring', duration: 0.45, bounce: 0 }}
+        >
+          {theme === 'liquid' ? (
+            <div className="relative size-full overflow-hidden bg-[#070604]">
+              <PixelLiquidBg
+                className="absolute inset-0"
+                darkPalette={LIQUID_DARK_PALETTE}
+                lightPalette={LIQUID_LIGHT_PALETTE}
+                pixelSize={11}
+                resolution={0.34}
+                mouseForce={5.5}
+                cursorSize={150}
+                viscosity={14}
+                surfaceStrength={0.76}
+                autoDemo={!reduceMotion}
               />
             </div>
-          </div>
-        )}
-      </motion.div>
-    </AnimatePresence>
+          ) : theme === 'terminal' ? (
+            <FaultyTerminal
+              tint="#F97316"
+              scale={1.35}
+              gridMul={[2, 1]}
+              digitSize={1.2}
+              timeScale={0.22}
+              pause={reduceMotion}
+              scanlineIntensity={0.35}
+              glitchAmount={0.65}
+              flickerAmount={0.25}
+              noiseAmp={0.85}
+              chromaticAberration={0.5}
+              curvature={0.08}
+              mouseReact={!reduceMotion}
+              mouseStrength={0.12}
+              dpr={1}
+              pageLoadAnimation={!reduceMotion}
+              brightness={0.9}
+            />
+          ) : (
+            <div className="relative size-full overflow-hidden bg-black">
+              <div className="absolute inset-0 opacity-85">
+                <Dither
+                  waveSpeed={0.1}
+                  waveFrequency={2.6}
+                  waveAmplitude={0.38}
+                  waveColor={[1, 0.27, 0.08]}
+                  colorNum={7}
+                  pixelSize={3}
+                  disableAnimation={reduceMotion}
+                  enableMouseInteraction={!reduceMotion}
+                  mouseRadius={0.72}
+                />
+              </div>
+            </div>
+          )}
+        </motion.div>
+      </AnimatePresence>
+    </GpuSurface>
   )
 }
 
@@ -172,7 +218,7 @@ function LoginForm() {
       const usingDefaultPassword = await signInWithPassword(username, password)
       toast.success(
         usingDefaultPassword
-          ? '登录成功。你可以在账户设置中修改默认密码。'
+          ? '登录成功。请在账户设置中修改安装器生成的初始密码。'
           : '登录成功',
       )
       router.replace(returnTo)
@@ -307,7 +353,7 @@ function LoginForm() {
             <CardHeader>
               <CardTitle>登录控制台</CardTitle>
               <CardDescription>
-                本地部署直接登录。首次使用可使用默认账号 admin / admin。
+                本地部署直接登录。首次使用请输入安装完成时显示的随机初始密码。
               </CardDescription>
             </CardHeader>
             <CardContent>
@@ -393,7 +439,7 @@ function LoginForm() {
 
 export default function LoginPage() {
   return (
-    <Suspense>
+    <Suspense fallback={<LoginPendingShell />}>
       <LoginForm />
     </Suspense>
   )

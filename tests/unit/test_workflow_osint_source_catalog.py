@@ -18,6 +18,12 @@ SOURCE_CASES = (
         "source-rsshub-feed",
         "rss",
     ),
+    (
+        "intelligence.source.doubao-research",
+        {"question": "高吉星燕窝酸 DHA 藻油"},
+        "source-doubao-research-capture",
+        "doubao_research",
+    ),
 )
 
 
