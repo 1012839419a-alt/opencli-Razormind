@@ -26,6 +26,18 @@ function printExecutable(executable) {
   process.stdout.write(`${executable}\n`);
 }
 
+function isExecutableFile(filePath) {
+  if (!fs.existsSync(filePath)) return false;
+  try {
+    return (
+      fs.statSync(filePath).isFile() &&
+      fs.accessSync(filePath, fs.constants.X_OK) === undefined
+    );
+  } catch {
+    return false;
+  }
+}
+
 async function resolveExecutable() {
   if (engine === "chromium") {
     printExecutable(process.env.CHROMIUM_BINARY || "chromium");
@@ -39,8 +51,8 @@ async function resolveExecutable() {
 
   const override = process.env.CLOAKBROWSER_BINARY_PATH;
   if (override) {
-    if (!fs.existsSync(override)) {
-      fail("configured CLOAKBROWSER_BINARY_PATH does not exist");
+    if (!isExecutableFile(override)) {
+      fail("configured CLOAKBROWSER_BINARY_PATH is not an executable file");
       return;
     }
     printExecutable(override);

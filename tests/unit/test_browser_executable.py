@@ -24,14 +24,27 @@ def run_resolver(
 
 def test_resolver_accepts_stock_chromium():
     result = run_resolver("chromium")
+    assert result.returncode == 0
     assert result.stdout.strip() == "chromium"
 
 
 def test_resolver_uses_existing_cloak_binary(tmp_path):
     binary = tmp_path / "cloak"
     binary.write_bytes(b"binary")
+    binary.chmod(0o755)
     result = run_resolver("cloakbrowser", {"CLOAKBROWSER_BINARY_PATH": str(binary)})
+    assert result.returncode == 0
     assert result.stdout.strip() == str(binary)
+
+
+def test_resolver_rejects_cloak_directory(tmp_path):
+    binary_directory = tmp_path / "cloak"
+    binary_directory.mkdir()
+    result = run_resolver(
+        "cloakbrowser", {"CLOAKBROWSER_BINARY_PATH": str(binary_directory)}
+    )
+    assert result.returncode != 0
+    assert result.stdout == ""
 
 
 def test_resolver_rejects_unknown_engine():
