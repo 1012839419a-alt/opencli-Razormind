@@ -48,7 +48,8 @@ def test_browser_image_build_override_passes_engine_and_version_args():
             section_end = compose.find("\nservices:", section_start)
         section = compose[section_start:section_end]
 
-        assert "BROWSER_ENGINE: ${BROWSER_ENGINE:-chromium}" in section
+        assert "BROWSER_ENGINE: ${BROWSER_ENGINE-chromium}" in section
+        assert "BROWSER_ENGINE: ${BROWSER_ENGINE:-chromium}" not in section
         assert "CLOAKBROWSER_VERSION: ${CLOAKBROWSER_VERSION:-0.5.10}" in section
 
 
