@@ -189,7 +189,10 @@ test('Browser Space creates, submits a capability task, shows events, and closes
   })
 
   await page.goto(`/browsers?workspace=${workspaceId}`)
-  await page.getByLabel('BrowserInstance ID').fill('browser-instance-e2e')
+  await expect(page.getByText('Browser Spaces', { exact: true })).toBeVisible()
+  const browserInstanceInput = page.getByLabel('BrowserInstance ID')
+  await expect(browserInstanceInput).toBeEditable()
+  await browserInstanceInput.fill('browser-instance-e2e')
   await page.getByRole('button', { name: '创建 Browser Space', exact: true }).click()
   await expect(page.getByText('Browser Space 已创建')).toBeVisible()
 

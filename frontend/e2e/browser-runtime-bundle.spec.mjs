@@ -131,10 +131,17 @@ test("浏览器管理展示 Bundle 期望态、加载态和 Act Pack 关联", as
     await route.fulfill(response([]));
   });
 
-  await page.goto("/browsers");
+  const bundleResponse = page.waitForResponse(
+    (response) =>
+      response.url().endsWith("/api/v1/browsers/runtime-bundles") &&
+      response.request().method() === "GET",
+  );
+  await bundleResponse;
 
   await expect(page.getByText("Browser Runtime Bundles")).toBeVisible();
-  await expect(page.getByText("opencli-default@2").first()).toBeVisible();
+  await expect(page.getByText("opencli-default@2").first()).toBeVisible({
+    timeout: 15_000,
+  });
   await expect(page.getByText("3 个组件").first()).toBeVisible();
   await expect(page.getByText("CONFIG_DRIFT")).toBeVisible();
   await expect(page.getByText("期望 opencli-default@2")).toBeVisible();

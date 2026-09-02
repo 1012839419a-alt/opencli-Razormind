@@ -13,6 +13,7 @@ import {
 import type { NotificationLog, NotificationRule } from '@/lib/api/types'
 import { formatDateTime, formatRelative } from '@/lib/format'
 import { notificationChannelLabel } from '@/lib/notification-channels'
+import { notificationTriggerLabel } from '@/lib/notification-events'
 import {
   acknowledgementStatusPresentation,
   dedupeDeliveryAttempts,
@@ -59,7 +60,7 @@ function DeliveryStatusBadge({ presentation }: { presentation: DeliveryStatusPre
         presentation.tone === 'warning' &&
           'border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300',
         presentation.tone === 'informative' &&
-          'border-blue-500/30 bg-blue-500/10 text-blue-700 dark:text-blue-300',
+          'border-primary-500/30 bg-primary-500/10 text-primary-700 dark:text-primary-300',
         presentation.tone === 'neutral' && 'text-muted-foreground',
       )}
       title={presentation.description}
@@ -105,7 +106,7 @@ function RuleTable({ rules }: { rules: NotificationRule[] }) {
               <TableCell className="font-medium">{rule.name}</TableCell>
               <TableCell>
                 <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">
-                  {rule.trigger_event}
+                  {notificationTriggerLabel(rule.trigger_event)}
                 </code>
               </TableCell>
               <TableCell>

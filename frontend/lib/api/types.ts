@@ -20,7 +20,6 @@ export interface WorkspaceSettingsRead {
   revision: number;
   updated_at: string | null;
 }
-
 // Self-hosted LLM-provider runtime (model-provider runtime, backend/llm/, no litellm) — mirrors
 // backend.schemas.provider.ModelProviderRead.from_model exactly. The raw
 // api_key is NEVER returned by the backend (from_model explicitly masks it) —
@@ -212,22 +211,24 @@ export interface ApiResponse<T> {
 }
 
 export interface DataSource {
-  id: string;
-  name: string;
-  description?: string;
+  id: string
+  name: string
+  description?: string
   channel_type:
-    | "opencli"
-    | "web_scraper"
-    | "api"
-    | "rss"
-    | "cli"
-    | "skill"
-    | "crawl4ai"
-    | "browser_act";
-  channel_config: Record<string, unknown>;
-  ai_config?: Record<string, unknown>;
-  enabled: boolean;
-  tags: string[];
+    | 'opencli'
+    | 'web_scraper'
+    | 'api'
+    | 'rss'
+    | 'cli'
+    | 'skill'
+    | 'crawl4ai'
+    | 'browser_act'
+    | 'doubao_research'
+    | 'douyin_detail'
+  channel_config: Record<string, unknown>
+  ai_config?: Record<string, unknown>
+  enabled: boolean
+  tags: string[]
   // Issue 02: the raw stored per-source SourceObjective override, null when
   // none is set — the UNRESOLVED override dict. See SourceControlState.objective
   // for the RESOLVED shape (override merged over defaults) control-state
@@ -276,6 +277,12 @@ export interface Skill {
   evidence?: SkillEvidenceEntry[];
   last_failing_trace?: Record<string, unknown> | null;
 }
+
+/** Compact projection returned by list and correction-dismiss endpoints. */
+export type SkillBrief = Pick<
+  Skill,
+  'id' | 'domain' | 'capability' | 'name' | 'version' | 'status' | 'enabled' | 'evidence_count' | 'has_open_proposal'
+>
 
 export interface CollectionTask {
   id: string;
@@ -371,11 +378,8 @@ export interface NotificationRule {
 // POST additionally requires name/trigger_event/notifier_type, enforced by
 // the backend schema, not this type.
 //
-// trigger_event is pinned to the literal 'on_new_record': dispatch_
-// notifications() (backend/pipeline/notifier_dispatch.py) only ever queries
-// rules with that value — there is no producer for anything else, so the
-// backend schema rejects any other string with a 422. Treat this as a fixed
-// field, not a preview of a future open set of trigger types.
+// trigger_event is limited to the events currently produced by the pipeline:
+// new records, completed AI processing, and failed tasks.
 //
 // source_id is accepted by NotificationRuleCreate but is deliberately absent
 // from NotificationRuleUpdate on the backend — a rule's source filter can be
@@ -383,13 +387,13 @@ export interface NotificationRule {
 // payloads (an included value would silently be dropped by the backend's
 // exclude_unset handling anyway).
 export interface NotificationRuleInput {
-  name?: string;
-  source_id?: string | null;
-  trigger_event?: "on_new_record";
-  notifier_type?: string;
-  notifier_config?: Record<string, unknown>;
-  filter_conditions?: Record<string, unknown> | null;
-  enabled?: boolean;
+  name?: string
+  source_id?: string | null
+  trigger_event?: 'on_new_record' | 'on_ai_processed' | 'on_task_failed'
+  notifier_type?: string
+  notifier_config?: Record<string, unknown>
+  filter_conditions?: Record<string, unknown> | null
+  enabled?: boolean
 }
 
 export interface NotificationLog {

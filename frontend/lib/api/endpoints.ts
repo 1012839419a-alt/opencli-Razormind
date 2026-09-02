@@ -44,13 +44,36 @@ import type {
   ProviderModelSyncResult,
   RssCatalogImportResult,
   Skill,
+  SkillBrief,
   SourceControlState,
   SourceMeasurementRecord,
   SystemConfig,
   TaskRun,
   TaskRunEvent,
   WorkerNode,
-} from "./types";
+  WorkspaceSummary,
+  ProjectSummary,
+  ProjectRecordGraphPreview,
+  ProjectBootstrapResult,
+  ProjectAppType,
+  ProjectRuntimeLogPage,
+  ProjectRuntimeSummary,
+  ProjectRuntimeTrace,
+  WorkflowAssetSummary,
+  WorkflowDraftRead,
+  WorkflowVersionSummary,
+  OperationsWorkItem,
+  ApprovalDecision,
+  ApprovalDecisionResult,
+  OperationsAgent,
+  OperationsAgentDraft,
+  OperationsAgentMode,
+  OperationsAgentProfile,
+  OperationsAgentRun,
+  PublishedOperationsAgentVersion,
+  Automation,
+  WorkspaceSource,
+} from './types'
 export * from "./workspace-endpoints";
 export * from "./browser-endpoints";
 export * from "./workbench-endpoints";
@@ -361,9 +384,7 @@ export const redistillSkill = (id: string, trace?: Record<string, unknown>) =>
     .then((r) => r.data.data);
 
 export const dismissCorrection = (id: string) =>
-  apiClient
-    .post<ApiResponse<Skill>>(`/skills/${id}/dismiss-correction`)
-    .then((r) => r.data.data);
+  apiClient.post<ApiResponse<SkillBrief>>(`/skills/${id}/dismiss-correction`).then((r) => r.data.data)
 
 export const rollbackSkill = (id: string) =>
   apiClient

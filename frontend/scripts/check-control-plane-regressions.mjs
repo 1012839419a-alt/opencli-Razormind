@@ -8,7 +8,7 @@ test('task list links every work item to its operational detail', async () => {
   const tasks = await read('app/(app)/tasks/page.tsx')
   assert.match(tasks, /title="任务与通知"/)
   assert.match(tasks, /ACTION_CENTER_TABS/)
-  assert.match(tasks, /href=\{`\/tasks\/\$\{t\.id\}`\}/)
+  assert.match(tasks, /href=\{(?:`\/tasks\/\$\{t\.id\}`|taskDetailPath\(t\.id, returnTo\))\}/)
 })
 
 test('work item detail keeps runs, events, results, and audit in one context', async () => {

@@ -12,6 +12,10 @@ import {
 } from '@/lib/api/hooks'
 import type { NotificationRule, NotificationRuleInput } from '@/lib/api/types'
 import { notificationChannelLabel } from '@/lib/notification-channels'
+import {
+  NOTIFICATION_TRIGGER_EVENTS,
+  type NotificationTriggerEvent,
+} from '@/lib/notification-events'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -37,18 +41,12 @@ import { Textarea } from '@/components/ui/textarea'
 const NOTIFIER_TYPES = ['webhook', 'feishu', 'dingtalk', 'wecom', 'email'] as const
 type NotifierType = (typeof NOTIFIER_TYPES)[number]
 
-// dispatch_notifications() (backend/pipeline/notifier_dispatch.py) only ever
-// fires rules with trigger_event == 'on_new_record' — the backend schema
-// (NotificationRuleCreate/Update, backend/schemas/notification.py) rejects
-// any other literal with a 422. Fixed value today, not a preview of a wider
-// open set — shown disabled rather than as a free choice.
-const TRIGGER_EVENT = 'on_new_record'
-
 const ALL_SOURCES = '__all__'
 
 interface FormState {
   name: string
   sourceId: string
+  triggerEvent: NotificationTriggerEvent
   notifierType: NotifierType
   enabled: boolean
   // webhook: notifier_config.url
@@ -87,6 +85,7 @@ interface FormState {
 const EMPTY_FORM: FormState = {
   name: '',
   sourceId: ALL_SOURCES,
+  triggerEvent: 'on_new_record',
   notifierType: 'webhook',
   enabled: true,
   url: '',
@@ -117,6 +116,10 @@ function isNotifierType(value: string): value is NotifierType {
   return (NOTIFIER_TYPES as readonly string[]).includes(value)
 }
 
+function isTriggerEvent(value: string): value is NotificationTriggerEvent {
+  return NOTIFICATION_TRIGGER_EVENTS.some((item) => item.value === value)
+}
+
 // Unlike ModelProvider (has_api_key/api_key_preview mask the raw key —
 // see ModelProviderInput's doc comment in lib/api/types.ts), NotificationRule
 // does NOT mask notifier_config on read: NotificationRuleRead returns the
@@ -129,6 +132,7 @@ function ruleToForm(rule: NotificationRule): FormState {
   return {
     name: rule.name,
     sourceId: rule.source_id ?? ALL_SOURCES,
+    triggerEvent: isTriggerEvent(rule.trigger_event) ? rule.trigger_event : 'on_new_record',
     notifierType: isNotifierType(rule.notifier_type) ? rule.notifier_type : 'webhook',
     enabled: rule.enabled,
     url: str(cfg.url),
@@ -286,7 +290,7 @@ export function NotificationRuleFormDialog({
 
     const payload: NotificationRuleInput = {
       name: form.name.trim(),
-      trigger_event: TRIGGER_EVENT,
+      trigger_event: form.triggerEvent,
       notifier_type: form.notifierType,
       notifier_config: buildNotifierConfig(form, headersResult.value),
       filter_conditions: filterResult.value ?? null,
@@ -466,9 +470,30 @@ export function NotificationRuleFormDialog({
 
             <Field>
               <FieldLabel htmlFor="rule-trigger-event">触发事件</FieldLabel>
-              <Input id="rule-trigger-event" value={TRIGGER_EVENT} disabled />
+              <Select
+                value={form.triggerEvent}
+                onValueChange={(value) =>
+                  setForm((current) => ({
+                    ...current,
+                    triggerEvent: value as NotificationTriggerEvent,
+                  }))
+                }
+              >
+                <SelectTrigger id="rule-trigger-event" className="w-full">
+                  <SelectValue>
+                    {NOTIFICATION_TRIGGER_EVENTS.find((item) => item.value === form.triggerEvent)?.label}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  {NOTIFICATION_TRIGGER_EVENTS.map((event) => (
+                    <SelectItem key={event.value} value={event.value}>
+                      {event.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
               <FieldDescription>
-                当前仅支持&ldquo;新纪录采集&rdquo;这一种触发事件；调度链路还没有其他事件的生产者，选择其他值会被后端拒绝。
+                {NOTIFICATION_TRIGGER_EVENTS.find((item) => item.value === form.triggerEvent)?.description}
               </FieldDescription>
             </Field>
 
@@ -624,7 +649,7 @@ export function NotificationRuleFormDialog({
                   rows={3}
                   className="font-mono text-xs"
                 />
-                <FieldDescription>留空表示该来源下的所有新记录都会触发通知。</FieldDescription>
+                <FieldDescription>留空表示该来源下的所有匹配事件都会触发通知。</FieldDescription>
               </Field>
             </div>
           </details>

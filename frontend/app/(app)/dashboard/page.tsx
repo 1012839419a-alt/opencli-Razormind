@@ -658,7 +658,8 @@ export default function DashboardPage() {
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           <ActionLink href="/studio" title="编排工作流" description="先选择项目，再设计节点和执行链路" icon={GitBranch} />
           <ActionLink href="/sources" title="接入数据源" description="配置采集来源与凭证" icon={Database} />
-          <ActionLink href="/schedules" title="安排任务与自动化" description="安排任务、选择智能体和配置执行链路" icon={Clock3} />
+          <ActionLink href="/schedules" title="检查调度计划" description="确认下一次运行时间与启用状态" icon={Clock3} />
+          <ActionLink href="/operations-agents" title="设置自动化与智能体" description="安排任务、选择智能体和配置执行链路" icon={Clock3} />
           <ActionLink href="/tasks" title="检查运行结果" description="查看任务、记录与通知" icon={Activity} />
         </div>
       </section>

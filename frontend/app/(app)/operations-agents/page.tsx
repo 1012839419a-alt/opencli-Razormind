@@ -7,7 +7,7 @@ import { toast } from 'sonner'
 
 import AgentAvatar from '@/components/smoothui/agent-avatar'
 import SwitchboardCard from '@/components/smoothui/switchboard-card'
-import { useAutomations, useCreateAutomation, useGovernedWorkspaces, useInstallAutomationStarters, useOperationsAgentActivity, useOperationsAgentDraft, useOperationsAgents, useOperationsAgentVersions, usePatchAutomation, usePublishOperationsAgentVersion, useStartOperationsAgentRun, useUpdateOperationsAgentDraft } from '@/lib/api/hooks'
+import { useAutomations, useCreateAutomation, useGovernedWorkspaces, useInstallAutomationStarters, useOperationsAgentActivity, useOperationsAgentDraft, useOperationsAgents, useOperationsAgentVersion, useOperationsAgentVersions, usePatchAutomation, usePublishOperationsAgentVersion, useStartOperationsAgentRun, useUpdateOperationsAgentDraft } from '@/lib/api/hooks'
 import type { AgentRuntimeBindingV1, Automation, OperationsAgent, OperationsAgentMode } from '@/lib/api/types'
 import { cn } from '@/lib/utils'
 import { BACKEND_HINT, EmptyState, ErrorState, LoadingState } from '@/components/shell/data-states'
@@ -97,6 +97,8 @@ function parseJsonObject(value: string, label: string) {
 function ContractEditor({ workspaceId, agent }: { workspaceId: string; agent: OperationsAgent }) {
   const draft = useOperationsAgentDraft(workspaceId, agent.id)
   const versions = useOperationsAgentVersions(workspaceId, agent.id)
+  const [selectedVersion, setSelectedVersion] = useState<number | null>(null)
+  const selectedVersionQuery = useOperationsAgentVersion(workspaceId, agent.id, selectedVersion)
   const updateDraft = useUpdateOperationsAgentDraft()
   const publishVersion = usePublishOperationsAgentVersion()
   const [instructions, setInstructions] = useState('')
@@ -214,7 +216,13 @@ function ContractEditor({ workspaceId, agent }: { workspaceId: string; agent: Op
         <Button className="mt-3 w-full" size="sm" onClick={() => void publish()} disabled={!reason.trim() || publishVersion.isPending}>发布 Contract</Button>
         <div className="mt-7 border-t border-white/[0.08] pt-5">
           <h3 className="text-xs font-medium text-muted-foreground">版本历史</h3>
-          {versions.isLoading ? <div className="mt-3 text-xs text-muted-foreground">加载中…</div> : versions.isError ? <p className="mt-3 text-xs text-destructive">{(versions.error as Error)?.message}</p> : !versions.data?.length ? <p className="mt-3 text-xs text-muted-foreground">尚未发布版本</p> : <div className="mt-3 space-y-2">{versions.data.map((version) => <div key={version.version} className="rounded-lg border border-white/[0.08] p-3"><div className="flex items-center justify-between text-xs"><span className="font-medium text-foreground">v{version.version}</span><span className="text-muted-foreground">Draft r{version.draft_revision}</span></div><p className="mt-2 text-xs leading-5 text-muted-foreground">{version.reason}</p><p className="mt-1 text-[11px] text-muted-foreground">{new Date(version.created_at).toLocaleString()}</p></div>)}</div>}
+          {versions.isLoading ? <div className="mt-3 text-xs text-muted-foreground">加载中…</div> : versions.isError ? <p className="mt-3 text-xs text-destructive">{(versions.error as Error)?.message}</p> : !versions.data?.length ? <p className="mt-3 text-xs text-muted-foreground">尚未发布版本</p> : <div className="mt-3 space-y-2">{versions.data.map((version) => <div key={version.version} className="rounded-lg border border-white/[0.08] p-3"><div className="flex items-center justify-between gap-2 text-xs"><span className="font-medium text-foreground">v{version.version}</span><Button size="xs" variant="ghost" onClick={() => setSelectedVersion(version.version)}>{selectedVersion === version.version ? '已选择' : '查看详情'}</Button></div><p className="mt-2 text-xs leading-5 text-muted-foreground">{version.reason}</p><p className="mt-1 text-[11px] text-muted-foreground">{new Date(version.created_at).toLocaleString()}</p></div>)}</div>}
+          {selectedVersion !== null ? (
+            <div className="mt-4 rounded-lg border border-primary/20 bg-primary/5 p-3">
+              <p className="text-xs font-medium text-foreground">v{selectedVersion} Contract 详情</p>
+              {selectedVersionQuery.isLoading ? <p className="mt-2 text-xs text-muted-foreground">加载详情中…</p> : selectedVersionQuery.isError ? <p className="mt-2 text-xs text-destructive">{(selectedVersionQuery.error as Error)?.message}</p> : selectedVersionQuery.data ? <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap font-mono text-[11px] leading-5 text-muted-foreground">{JSON.stringify(selectedVersionQuery.data, null, 2)}</pre> : null}
+            </div>
+          ) : null}
         </div>
       </aside>
     </div>
