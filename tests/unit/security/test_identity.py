@@ -56,7 +56,11 @@ def test_local_token_uses_application_secret(monkeypatch):
     )
 
     assert response.status_code == 200
-    assert response.json()["auth_method"] == "local"
+    body = response.json()
+    assert body["auth_method"] == "local"
+    assert body["subject"] == "local-admin"
+    assert body["username"] == "admin"
+    assert body["claims"] == {"auth_method": "local", "username": "admin"}
 
 
 

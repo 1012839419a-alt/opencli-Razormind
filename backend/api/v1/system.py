@@ -88,6 +88,7 @@ def _system_payload() -> dict:
         "control_mode": settings.control_mode,
         "control_kill_switch": settings.control_kill_switch,
         "image_tag": settings.image_tag,
+        "runtime_revision": settings.opencli_runtime_revision,
         "database_kind": "sqlite" if settings.is_sqlite else "postgresql",
         "api_auth_configured": bool(settings.api_auth_token),
         "oidc_configured": bool(os.getenv("OIDC_ISSUER") and os.getenv("OIDC_AUDIENCE")),
