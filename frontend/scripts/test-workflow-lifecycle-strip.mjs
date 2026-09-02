@@ -66,13 +66,17 @@ test('every state exposes exactly three workflow authoring stages in a stable or
 
 test('render contract carries authoring revision and published version separately', async () => {
   const { readFile } = await import('node:fs/promises')
-  const [source, logic] = await Promise.all([
+  const [source, logic, session] = await Promise.all([
     readFile(new URL('../components/studio/workflow-lifecycle-strip.tsx', import.meta.url), 'utf8'),
     readFile(new URL('../components/studio/workflow-lifecycle-strip.logic.ts', import.meta.url), 'utf8'),
+    readFile(new URL('../components/flow/workflow-editor-session.tsx', import.meta.url), 'utf8'),
   ])
   assert.match(source, /revision: number \| null/)
   assert.match(source, /publishedVersion\?: number \| null/)
   assert.match(source, /aria-label="工作流生命周期"/)
+  assert.match(session, /lifecyclePanelOpen/)
+  assert.match(session, /data-testid="workflow-lifecycle-toggle"/)
+  assert.match(session, /收起状态/)
   assert.doesNotMatch(logic, /activate|激活|待后端接入/)
 })
 

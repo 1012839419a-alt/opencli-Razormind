@@ -20,7 +20,7 @@ class IdentitySettings:
     audience: str
     jwks_url: str = ""
     bootstrap_admin_token: str = ""
-    secret_key: str = "change-me-in-production"
+    secret_key: str = ""
 
     @classmethod
     def from_env(cls) -> IdentitySettings:

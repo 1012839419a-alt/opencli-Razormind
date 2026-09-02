@@ -8,7 +8,7 @@ test('task list links every work item to its operational detail', async () => {
   const tasks = await read('app/(app)/tasks/page.tsx')
   assert.match(tasks, /title="任务与通知"/)
   assert.match(tasks, /ACTION_CENTER_TABS/)
-  assert.match(tasks, /href=\{`\/tasks\/\$\{t\.id\}`\}/)
+  assert.match(tasks, /href=\{(?:`\/tasks\/\$\{t\.id\}`|taskDetailPath\(t\.id, returnTo\))\}/)
 })
 
 test('work item detail keeps runs, events, results, and audit in one context', async () => {
@@ -57,7 +57,7 @@ test('plugin hub keeps provider management without hiding provider capabilities'
   assert.match(sources, /redirect\('\/records'\)/)
 })
 
-test('studio node selector exposes the complete Dify-compatible component split', async () => {
+test('studio node selector keeps Dify-compatible nodes in the unified node, tool, and start split', async () => {
   const selector = await read('components/flow/command-palette.tsx')
   const nodeCatalog = await read('lib/workflow/node-catalog.ts')
 
@@ -65,8 +65,14 @@ test('studio node selector exposes the complete Dify-compatible component split'
   assert.match(selector, /\{ id: "nodes", label: "节点" \}/)
   assert.match(selector, /\{ id: "tools", label: "工具" \}/)
   assert.match(selector, /\{ id: "start", label: "开始" \}/)
-  assert.match(selector, /source: \{ "zh-CN": "数据来源"/)
+  assert.match(selector, /activeTab === "nodes"/)
+  assert.match(selector, /nodeCatalogGroups\.map/)
+  assert.match(selector, /activeTab === "tools"/)
+  assert.match(selector, /workflowCatalogItemIsOpenCLIAdapterPreset/)
+  assert.match(selector, /workflowCatalogPluginProvenance/)
+  assert.match(selector, /activeTab === "start"/)
   assert.match(selector, /package: \{ "zh-CN": "业务能力包"/)
+  assert.match(selector, /source: \{ "zh-CN": "数据来源"/)
   assert.match(selector, /trigger: \{ "zh-CN": "触发与开始"/)
   for (const id of [
     'workflow.block.agent',

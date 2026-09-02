@@ -74,7 +74,7 @@ test('skill correction review preserves full detail after dismiss and rollback',
   assert.doesNotMatch(dismissHook, /setQueryData/)
 })
 
-test('all requested W5 wrappers are either consumed by UI hooks or removed', async () => {
+test('all requested W5 wrappers and workspace settings remain wired', async () => {
   const files = await readProjectFiles()
   const project = [...files.values()].join('\n')
   const requiredHooks = [
@@ -126,10 +126,18 @@ test('all requested W5 wrappers are either consumed by UI hooks or removed', asy
   }
 
   const endpoints = await read('lib/api/endpoints.ts')
+  const workspaceEndpoints = await read('lib/api/workspace-endpoints.ts')
   const hooks = await read('lib/api/hooks.ts')
   const types = await read('lib/api/types.ts')
-  for (const source of [endpoints, hooks, types]) {
-    assert.doesNotMatch(source, /WorkspaceSettings(?:Read|Values)?|(?:get|update|reset)WorkspaceSettings/)
+  assert.match(project, /\buseWorkspaceSettings\b/)
+  assert.match(project, /\buseUpdateWorkspaceSettings\b/)
+  assert.match(project, /\buseResetWorkspaceSettings\b/)
+  for (const endpoint of ['getWorkspaceSettings', 'updateWorkspaceSettings', 'resetWorkspaceSettings']) {
+    assert.match(workspaceEndpoints, new RegExp(`\\b${endpoint}\\b`))
   }
-  assert.doesNotMatch(endpoints, /['"]\/settings['"]/)
+  assert.match(hooks, /\buseWorkspaceSettings\b/)
+  assert.match(hooks, /\buseUpdateWorkspaceSettings\b/)
+  assert.match(hooks, /\buseResetWorkspaceSettings\b/)
+  assert.match(types, /\bWorkspaceSettingsRead\b/)
+  assert.match(types, /\bWorkspaceSettingsValues\b/)
 })

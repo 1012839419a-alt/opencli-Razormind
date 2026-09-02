@@ -4,6 +4,7 @@ from typing import Any, Optional
 from pydantic import BaseModel, Field
 
 from backend.schemas.common import UTCModel
+from backend.schemas.provider_capacity import ProviderCapacityRead, project_provider_capacity
 
 
 class ModelProviderCreate(BaseModel):
@@ -60,6 +61,7 @@ class ModelProviderRead(UTCModel):
     default_model: Optional[str]
     notes: Optional[str]
     enabled: bool
+    capacity: ProviderCapacityRead
     created_at: datetime
     updated_at: datetime
 
@@ -86,6 +88,7 @@ class ModelProviderRead(UTCModel):
                 "default_model": provider.default_model,
                 "notes": provider.notes,
                 "enabled": provider.enabled,
+                "capacity": project_provider_capacity(provider),
                 "created_at": provider.created_at,
                 "updated_at": provider.updated_at,
             }

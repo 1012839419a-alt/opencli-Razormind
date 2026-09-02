@@ -25,6 +25,7 @@ export const STUDIO_TEMPLATES = [
   { id: 'ashare-self-media-listening', variant: 'collection-to-consumption', appType: 'workflow', title: 'A 股自媒体与社区舆情', description: '采集公众号、股吧、雪球、微博、小红书、B站、抖音与知乎内容，并逐来源暴露登录和健康状态。', category: '真实业务测试', steps: ['跨平台搜索', '舆情清洗', '自媒体数据集'] },
   { id: 'opencli-situation-awareness', variant: 'collection-to-consumption', appType: 'workflow', title: 'OpenCLI 态势感知框架', description: '采集实时事件、新闻和视频字幕，保留证据血缘，并投影到数据工作台与逻辑证据页。', category: '真实业务测试', steps: ['多模态证据采集', '证据准入', '数据与证据工作台'] },
   { id: 'opencli-live-pipeline', variant: 'collection-to-consumption', appType: 'workflow', title: 'OpenCLI 实时采集清洗发送', description: '从 OpenCLI 动态数据源实时提取，完成标准化、去重、Records 入库并发送结果。', category: '完整链路', steps: ['OpenCLI 实时采集', '清洗与 Records', 'Webhook 发送'] },
+  { id: 'feishu-douyin-doubao', variant: 'collection-to-consumption', appType: 'workflow', title: '飞书关键词 → 豆包', description: '从飞书多维表格读取待采集词条，逐条原样交给豆包回答，保留回答、数据、链接、分享信息和建议关键词后写入 Records。', category: '真实业务测试', steps: ['飞书词条', '豆包直接回答', '完整结果入库'] },
   { id: 'financial-rss-intelligence', variant: 'collect', appType: 'workflow', title: '财经多源 RSS 情报', description: '并行采集央行政策、监管公告与研究动态，按来源 Group 清洗后写入成果与数据。', category: '采集与监控', steps: ['多源 RSS', 'Group 标准化', 'Records 入库'] },
   { id: 'website-watch', variant: 'collect', appType: 'workflow', title: '网站变化监控', description: '定时读取指定页面，识别内容变化并形成可追溯记录。', category: '采集与监控', steps: ['网页来源', '变化检测', '记录入库'] },
   { id: 'multi-source-intake', variant: 'collect', appType: 'workflow', title: '多来源信息采集', description: '把多个网站与 CLI 数据源汇入统一的采集队列。', category: '采集与监控', steps: ['来源列表', '并行采集', '统一输出'] },
@@ -60,6 +61,7 @@ const TEMPLATE_INTENTS: Record<(typeof STUDIO_TEMPLATES)[number]['id'], Template
   'ashare-self-media-listening': { cadence: '30m', source: 'opencli-ashare-social', objective: 'collect-cross-platform-market-discussion', delivery: 'records' },
   'opencli-situation-awareness': { cadence: '5m', source: 'opencli-news-video-live', objective: 'collect-normalize-project-evidence', delivery: 'records-and-evidence' },
   'opencli-live-pipeline': { cadence: '5m', source: 'opencli-live-catalog', objective: 'collect-clean-store-deliver', delivery: 'webhook' },
+  'feishu-douyin-doubao': { cadence: '15m', source: 'feishu-keyword-table', objective: 'collect-douyin-and-doubao-evidence', delivery: 'records' },
   'financial-rss-intelligence': { cadence: '15m', source: 'financial-rss-groups', objective: 'collect-normalize-store', delivery: 'records' },
   'website-watch': { cadence: 'hourly', source: 'webpage-url', objective: 'detect-change', delivery: 'records' },
   'multi-source-intake': { cadence: '15m', source: 'website-and-opencli-sources', objective: 'collect-and-normalize', delivery: 'records' },
@@ -107,6 +109,7 @@ export function studioGraphForTemplate(template: StudioTemplateId, name: string)
     })
   }
   if (template === 'opencli-live-pipeline') return opencliLivePipelineGraph(name)
+  if (template === 'feishu-douyin-doubao') return feishuDoubaoGraph(name)
   if (template === 'financial-rss-intelligence') return financialRssIntelligenceGraph(name)
   if (template === 'ashare-market-intelligence') return buildAshareMarketWorkflow(name)
   if (template === 'ashare-stock-research') return buildAshareStockResearchWorkflow(name)
@@ -131,6 +134,45 @@ export function studioGraphForTemplate(template: StudioTemplateId, name: string)
   const referencedAdapterIds = collectReferencedAdapterIds(nodes)
   const adapters = base.adapters.filter((adapter) => referencedAdapterIds.has(adapter.id))
   return parseWorkflowProject({ ...base, id: `draft-${Date.now()}`, name, nodes, edges: base.edges.filter((edge) => ids.has(edge.source) && ids.has(edge.target)), adapters })
+}
+
+function feishuDoubaoGraph(name: string) {
+  const catalog = (id: string) => {
+    const item = WORKFLOW_NODE_CATALOG.find((candidate) => candidate.id === id)
+    if (!item) throw new Error(`工作流节点未注册：${id}`)
+    return item
+  }
+  const schedule = createWorkflowNodeFromCatalog(catalog('intelligence.schedule.cron'), 'schedule', { x: 80, y: 260 })
+  const feishu = createWorkflowNodeFromCatalog(catalog('intelligence.source.feishu-table'), 'feishu-keywords', { x: 320, y: 260 })
+  feishu.params = {
+    ...feishu.params,
+    table_id: 'tblS6dfkT1dE0SXd',
+    keyword_field: '推荐追问',
+    source_group: 'feishu-recommended-followups',
+  }
+  const doubao = createWorkflowNodeFromCatalog(catalog('intelligence.source.doubao-research'), 'doubao-research', { x: 820, y: 260 })
+  doubao.params = {
+    ...doubao.params,
+    question: '{{keyword}}',
+    questionFrom: 'keyword',
+  }
+  const hygiene = createWorkflowNodeFromCatalog(catalog('package.processing.record-hygiene'), 'record-hygiene', { x: 1080, y: 260 })
+  const records = createWorkflowNodeFromCatalog(catalog('intelligence.sink.records'), 'records', { x: 1380, y: 260 })
+  return parseWorkflowProject({
+    ...PACKAGED_WORKFLOW_PROJECT, id: `draft-${Date.now()}`, name,
+    agentPermissions: { ...PACKAGED_WORKFLOW_PROJECT.agentPermissions, canFetchNetwork: true },
+    adapters: [
+      { id: 'feishu-table-source', type: 'source', provider: 'feishu', mode: 'live', config: { channel: 'feishu_table', channelType: 'feishu_table' } },
+      { id: 'doubao-research-source', type: 'source', provider: 'doubao', mode: 'live', config: { channel: 'doubao_research', channelType: 'doubao_research' } },
+    ],
+    nodes: [schedule, feishu, doubao, hygiene, records],
+    edges: [
+      { id: 'schedule-feishu', source: schedule.id, target: feishu.id },
+      { id: 'feishu-doubao', source: feishu.id, sourcePort: 'out', target: doubao.id, targetPort: 'in' },
+      { id: 'doubao-hygiene', source: doubao.id, sourcePort: 'out', target: hygiene.id, targetPort: 'in' },
+      { id: 'hygiene-records', source: hygiene.id, sourcePort: 'out', target: records.id, targetPort: 'records' },
+    ],
+  })
 }
 
 function opencliLivePipelineGraph(name: string) {

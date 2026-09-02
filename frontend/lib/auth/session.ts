@@ -3,6 +3,11 @@ const DEVELOPMENT_SESSION_KEY = 'opencli.developmentSession'
 
 let runtimeIdentityToken = ''
 let runtimeDevelopmentSession = false
+let identityGeneration = 0
+
+function advanceIdentityGeneration(): void {
+  identityGeneration += 1
+}
 
 function safeSessionGet(key: string): string {
   try {
@@ -26,8 +31,13 @@ export function getIdentityAccessToken(): string {
   return runtimeIdentityToken || safeSessionGet(BOOTSTRAP_TOKEN_KEY)
 }
 
+export function getIdentityGeneration(): number {
+  return identityGeneration
+}
+
 export function setRuntimeIdentityToken(token: string): void {
   runtimeIdentityToken = token.trim()
+  advanceIdentityGeneration()
 }
 
 export function getBootstrapIdentityToken(): string {
@@ -38,11 +48,13 @@ export function persistBootstrapIdentityToken(token: string): void {
   const trimmed = token.trim()
   runtimeIdentityToken = trimmed
   safeSessionSet(BOOTSTRAP_TOKEN_KEY, trimmed)
+  advanceIdentityGeneration()
 }
 
 export function clearIdentityToken(): void {
   runtimeIdentityToken = ''
   safeSessionSet(BOOTSTRAP_TOKEN_KEY, '')
+  advanceIdentityGeneration()
 }
 
 export function hasDevelopmentSession(): boolean {
@@ -60,4 +72,3 @@ export function isDevelopmentLoginAllowed(): boolean {
     process.env.NEXT_PUBLIC_ALLOW_UNAUTHENTICATED_DEV !== 'false'
   )
 }
-
