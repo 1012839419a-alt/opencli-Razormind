@@ -756,13 +756,15 @@ export interface OdpStoreHealth {
   available: boolean;
   healthy: boolean | null;
   heartbeat_age_seconds: number | null;
-  note: string;
+  note: string | null;
+  error?: string | null;
 }
 
 export interface OdpOutboxState {
   available: boolean;
   unpublished: number | null;
-  note: string;
+  note: string | null;
+  error?: string | null;
 }
 
 export interface OdpSystemState {
