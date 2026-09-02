@@ -160,6 +160,34 @@ export interface FeedProviderWorkflowNode {
   allowedDomains: string[];
 }
 
+export interface DeliveryConnection {
+  id: string
+  name: string
+  provider: 'feishu_bitable'
+  app_id_preview: string
+  has_app_secret: boolean
+  enabled: boolean
+  created_at: string
+  updated_at: string
+}
+
+export interface DeliveryConnectionInput {
+  name?: string
+  app_id?: string
+  app_secret?: string
+  enabled?: boolean
+}
+
+export interface FeishuBitableProbeInput {
+  app_token: string
+  table_id: string
+}
+
+export interface FeishuBitableProbeResult {
+  ok: boolean
+  field_count: number
+}
+
 // Role a model-defaults candidate list resolves for (backend.llm role
 // registry): chat = agent 坞对话模型, executor = skill_channel 执行模型
 // （轻量/低成本）, enrichment = pipeline 富化兜底模型.

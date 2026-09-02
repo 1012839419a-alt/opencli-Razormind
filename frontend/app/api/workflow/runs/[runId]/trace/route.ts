@@ -1,3 +1,6 @@
+import { backendWorkflowRunsRoot, readWorkflowProxyScope } from "../../../run-scope"
+import { forwardedRequestAuthHeaders } from "@/lib/workflow/request-auth"
+
 export const dynamic = "force-dynamic"
 
 const BACKEND_URL = process.env.BACKEND_URL ?? "http://127.0.0.1:8031"
@@ -6,9 +9,13 @@ export async function GET(req: Request, context: { params: Promise<{ runId: stri
   const { runId } = await context.params
   try {
     const url = new URL(req.url)
+    const scope = readWorkflowProxyScope(url)
+    url.searchParams.delete("workspace")
+    url.searchParams.delete("project")
+    url.searchParams.delete("workflow")
     const search = url.searchParams.toString()
     const response = await fetch(
-      `${BACKEND_URL}/api/v1/workflows/runs/${encodeURIComponent(runId)}/trace${search ? `?${search}` : ""}`,
+      `${BACKEND_URL}${backendWorkflowRunsRoot(scope)}/${encodeURIComponent(runId)}/trace${search ? `?${search}` : ""}`,
       {
         headers: {
           ...forwardedRequestAuthHeaders(req),
@@ -32,4 +39,3 @@ export async function GET(req: Request, context: { params: Promise<{ runId: stri
     )
   }
 }
-import { forwardedRequestAuthHeaders } from "@/lib/workflow/request-auth"

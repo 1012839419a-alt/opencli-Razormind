@@ -13,6 +13,18 @@ from backend.worker.celery_app import celery_app
 logger = logging.getLogger(__name__)
 
 
+@celery_app.task(name="run_gaojixing_collection")
+def run_gaojixing_collection(job_id: str) -> str:
+    """Advance durable GJX work and explicitly requeue global-lease contention."""
+
+    from backend.workflow.gaojixing_worker_runtime import execute_collection_job
+
+    outcome = _run_async(execute_collection_job(job_id))
+    if outcome in {"busy", "resume_pending"}:
+        run_gaojixing_collection.apply_async(kwargs={"job_id": job_id}, countdown=2)
+    return outcome
+
+
 @celery_app.task(name="run_acquisition")
 def run_acquisition(execution_id: str) -> None:
     """Execute one durable managed-acquisition record."""

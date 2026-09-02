@@ -34,6 +34,15 @@ type WorkflowEditorSessionProps = {
 
 type WorkflowLoadState = 'loading' | 'ready' | 'empty' | 'error'
 
+type PreparedWorkflowDraft = ReturnType<typeof preparePersistableWorkflowDraft>
+type DraftSaveQueue = {
+  session: number
+  target: { workspaceId: string; projectId: string; workflowId: string }
+  revision: number
+  pending: PreparedWorkflowDraft | null
+  promise: Promise<void> | null
+}
+
 export function WorkflowEditorSession({ forceStandalone = false }: WorkflowEditorSessionProps = {}) {
   const params = useSearchParams()
   const router = useRouter()
@@ -64,9 +73,9 @@ export function WorkflowEditorSession({ forceStandalone = false }: WorkflowEdito
   const [lifecyclePanelOpen, setLifecyclePanelOpen] = useState(false)
   const loaded = useRef(false)
   const revision = useRef<number | null>(null)
-  const pendingGraph = useRef<typeof workflowProject | null>(null)
+  const saveSession = useRef(0)
+  const saveQueue = useRef<DraftSaveQueue | null>(null)
   const lastSavedFingerprint = useRef<string | null>(null)
-  const saveQueuePromise = useRef<Promise<void> | null>(null)
   const saveBlocked = useRef(false)
   const createWorkflow = useCreateProjectWorkflow()
   const consumedImageReturn = useRef<string | null>(null)
@@ -96,30 +105,45 @@ export function WorkflowEditorSession({ forceStandalone = false }: WorkflowEdito
       }
       pendingGraph.current = persistableGraph
       setDocumentState('saving')
-      if (!saveQueuePromise.current) {
-        saveQueuePromise.current = (async () => {
-          while (pendingGraph.current) {
-            const nextGraph = pendingGraph.current
-            pendingGraph.current = null
+      if (!queue.promise) {
+        const activeQueue = queue
+        activeQueue.promise = (async () => {
+          while (activeQueue.pending) {
+            const nextDraft = activeQueue.pending
+            activeQueue.pending = null
             try {
-              const draft = await updateProjectWorkflowDraft(workspaceId, projectId, workflowId, nextGraph, revision.current!)
-              revision.current = draft.revision
-              setSavedRevision(draft.revision)
-              lastSavedFingerprint.current = projectFingerprint(nextGraph)
+              const draft = await updateProjectWorkflowDraft(
+                activeQueue.target.workspaceId,
+                activeQueue.target.projectId,
+                activeQueue.target.workflowId,
+                nextDraft.graph,
+                activeQueue.revision,
+              )
+              activeQueue.revision = draft.revision
+              if (saveSession.current === activeQueue.session && saveQueue.current === activeQueue) {
+                revision.current = draft.revision
+                setSavedRevision(draft.revision)
+                lastSavedFingerprint.current = nextDraft.fingerprint
+              }
             } catch (reason) {
-              pendingGraph.current = null
-              const status = (reason as Error & { status?: number }).status
-              saveBlocked.current = status === 409
-              setDocumentState(status === 409 ? 'conflict' : 'error')
-              throw reason
+              activeQueue.pending = null
+              if (saveSession.current === activeQueue.session && saveQueue.current === activeQueue) {
+                const status = (reason as Error & { status?: number }).status
+                saveBlocked.current = status === 409
+                setDocumentState(status === 409 ? 'conflict' : 'error')
+                throw reason
+              }
+              return
             }
           }
-          setDocumentState('saved')
+          if (saveSession.current === activeQueue.session && saveQueue.current === activeQueue) {
+            setDocumentState('saved')
+          }
         })().finally(() => {
-          saveQueuePromise.current = null
+          activeQueue.promise = null
         })
       }
-      return saveQueuePromise.current
+      return queue.promise ?? Promise.reject(new Error('草稿保存队列初始化失败'))
     },
     [projectId, workflowId, workspaceId, yjsEnabled],
   )
@@ -132,7 +156,7 @@ export function WorkflowEditorSession({ forceStandalone = false }: WorkflowEdito
     loaded.current = false
     revision.current = null
     setSavedRevision(null)
-    pendingGraph.current = null
+    saveQueue.current = null
     lastSavedFingerprint.current = null
     saveBlocked.current = false
     setWorkflowId(null)
@@ -141,6 +165,8 @@ export function WorkflowEditorSession({ forceStandalone = false }: WorkflowEdito
     setCreationError(null)
     setDocumentState('loading')
     setLoadError(null)
+    if (primaryWorkflowPending) return
+    let active = true
     ;(async () => {
       try {
         if (!requestedWorkflowId && workspaceProjects.isError) {
@@ -160,7 +186,7 @@ export function WorkflowEditorSession({ forceStandalone = false }: WorkflowEdito
         importWorkflowProject(graph)
         revision.current = draft.revision
         setSavedRevision(draft.revision)
-        lastSavedFingerprint.current = projectFingerprint(graph)
+        lastSavedFingerprint.current = workflowDraftFingerprint(graph)
         setWorkflowId(resolvedWorkflowId)
         useSettingsStore.getState().patch({
           collabProvider: 'yjs',
@@ -288,9 +314,17 @@ export function WorkflowEditorSession({ forceStandalone = false }: WorkflowEdito
     setReleaseState('validating')
     setReleaseBlocker(null)
     setValidationScope(null)
+    const validationSession = saveSession.current
+    const validationFingerprint = workflowDraftFingerprint(workflowProject)
     try {
       await saveDraft(workflowProject)
       const run = await validateProjectWorkflowDraft(workspaceId, projectId, workflowId)
+      if (
+        saveSession.current !== validationSession
+        || workflowDraftFingerprint(useFlowStore.getState().workflowProject) !== validationFingerprint
+      ) {
+        return
+      }
       const validationRun = run as typeof run & {
         warnings?: Array<{ code?: string; nodeId?: string | null; node_id?: string | null }>
       }
@@ -313,6 +347,10 @@ export function WorkflowEditorSession({ forceStandalone = false }: WorkflowEdito
       setReleaseState('validated')
       toast.success('验证 Run 已通过，可以发布')
     } catch (reason) {
+      if (
+        saveSession.current !== validationSession
+        || workflowDraftFingerprint(useFlowStore.getState().workflowProject) !== validationFingerprint
+      ) return
       const message = reason instanceof Error ? reason.message : '验证失败'
       setReleaseBlocker(message)
       setReleaseState('blocked')
@@ -326,6 +364,8 @@ export function WorkflowEditorSession({ forceStandalone = false }: WorkflowEdito
       toast.error('请先完成当前 revision 的验证 Run')
       return
     }
+    const publishSession = saveSession.current
+    const publishFingerprint = workflowDraftFingerprint(workflowProject)
     setReleaseState('publishing')
     try {
       await saveDraft(workflowProject)
@@ -334,11 +374,19 @@ export function WorkflowEditorSession({ forceStandalone = false }: WorkflowEdito
         expectedRevision: revision.current,
         validationRunId,
       })
+      if (
+        saveSession.current !== publishSession
+        || workflowDraftFingerprint(useFlowStore.getState().workflowProject) !== publishFingerprint
+      ) return
       setPublishedVersion(version.version)
       setReleaseBlocker(null)
       setReleaseState('published')
       toast.success(`Workflow Version ${version.version} 已发布`)
     } catch (reason) {
+      if (
+        saveSession.current !== publishSession
+        || workflowDraftFingerprint(useFlowStore.getState().workflowProject) !== publishFingerprint
+      ) return
       const message = reason instanceof Error ? reason.message : '发布失败'
       setReleaseBlocker(message)
       setReleaseState('blocked')

@@ -301,6 +301,11 @@ class DoubaoResearchChannel(AbstractChannel):
     channel_type = "doubao_research"
     capabilities = Capabilities(auth_kind="session", session_affinity=True, default_rate="6/min")
 
+    async def readiness_code(self, config: dict[str, Any] | None = None) -> str | None:
+        """Return a machine-readable session readiness failure when available."""
+
+        return None
+
     async def collect(self, config: dict[str, Any], parameters: dict[str, Any]) -> ChannelResult:
         question = str(parameters.get("question") or config.get("question") or "").strip()
         if not question:

@@ -745,6 +745,8 @@ class WorkflowToolCapabilityExecutor(BaseModel):
         "bbx",
         "kats_runtime",
         "wigolo_embedded",
+        "gaojixing_doubao_batch",
+        "gaojixing_batch_certify",
     ]
     description: Optional[str] = None
     params: dict[str, Any] = Field(default_factory=dict)

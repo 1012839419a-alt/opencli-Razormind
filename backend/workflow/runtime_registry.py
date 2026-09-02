@@ -63,6 +63,7 @@ MERGE_BINDING_ID = "workflow.flow.merge"
 ROUTER_ROUTE_BINDING_ID = "workflow.router.route"
 RECORD_ACCEPTANCE_BINDING_ID = "workflow.gate.record-acceptance"
 RECORD_SINK_BINDING_ID = "workflow.record-sink.records"
+FEISHU_BITABLE_SINK_BINDING_ID = "workflow.feishu-bitable.records"
 INBOX_STORE_BINDING_ID = "workflow.inbox.store"
 WEBHOOK_NOTIFY_BINDING_ID = "workflow.notifier.webhook.send"
 NOTIFY_SEND_BINDING_ID = "workflow.notify.send"
@@ -81,6 +82,8 @@ SUPPORTED_TOOL_EXECUTOR_MODES = {
     "opentabs",
     "bbx",
     "kats_runtime",
+    "gaojixing_doubao_batch",
+    "gaojixing_batch_certify",
 }
 _LEGACY_DATA_OPERATOR_PACK_VERSION = "1.0.0"
 _SENSITIVE_CONFIG_KEYS = {
@@ -162,6 +165,8 @@ def resolve_runtime_metadata(
         metadata = _resolve_router_route_node(node, node_id=resolved_node_id)
     elif _is_record_acceptance_gate(node):
         metadata = _resolve_record_acceptance_gate(node, node_id=resolved_node_id)
+    elif _is_feishu_bitable_sink(node):
+        metadata = _resolve_feishu_bitable_sink(node, node_id=resolved_node_id)
     elif _is_record_sink(node):
         metadata = _resolve_record_sink(node, node_id=resolved_node_id)
     elif _is_inbox_store_node(node):
@@ -553,9 +558,7 @@ def _resolve_data_operator_node(
     operator_id = _read_string(node.params.get("operatorId"))
     pack_version_provided = "packVersion" in node.params
     requested_pack_version = _read_string(node.params.get("packVersion"))
-    resolved_pack_version = (
-        requested_pack_version or _LEGACY_DATA_OPERATOR_PACK_VERSION
-    )
+    resolved_pack_version = requested_pack_version or _LEGACY_DATA_OPERATOR_PACK_VERSION
     spec = (
         resolve_data_operator(operator_id, resolved_pack_version)
         if operator_id and (requested_pack_version or not pack_version_provided)
@@ -765,6 +768,41 @@ def _resolve_record_sink(node: WorkflowProjectNode, *, node_id: str) -> dict[str
     }
 
 
+def _resolve_feishu_bitable_sink(node: WorkflowProjectNode, *, node_id: str) -> dict[str, Any]:
+    values = {
+        key: _read_string(node.params.get(key)) for key in ("connectionId", "appToken", "tableId")
+    }
+    field_map = _read_dict(node.params.get("fieldMap"))
+    missing = [key for key, value in values.items() if value is None]
+    if not field_map:
+        missing.append("fieldMap")
+    if missing:
+        return {
+            "missing_runtime": _dump_missing_runtime(
+                WorkflowMissingRuntime(
+                    code=MISSING_RUNTIME_PARAMETER,
+                    node_id=node_id,
+                    kind=node.kind,
+                    capability=node.capability,
+                    required_params=missing,
+                    message="Feishu Bitable delivery requires connectionId, appToken, and tableId.",
+                )
+            )
+        }
+    return {
+        "binding": {
+            "status": "bound",
+            "binding_id": FEISHU_BITABLE_SINK_BINDING_ID,
+            "runtime": "workflow",
+            "channel": "feishu-bitable",
+            "input": {
+                **values,
+                "fieldMap": field_map,
+            },
+        }
+    }
+
+
 def _resolve_inbox_store_node(node: WorkflowProjectNode, *, node_id: str) -> dict[str, Any]:
     queue = _read_string(node.params.get("queue")) or "workflow-inbox"
     return {
@@ -847,9 +885,7 @@ def _resolve_external_tool_capability(node: WorkflowProjectNode, *, node_id: str
     if tool.status != "runnable":
         readiness = _read_dict(tool.manifest.get("readiness"))
         missing_reasons = [
-            value
-            for value in readiness.get("missingReasons", [])
-            if isinstance(value, str)
+            value for value in readiness.get("missingReasons", []) if isinstance(value, str)
         ]
         return {
             "external_tool": {
@@ -914,12 +950,8 @@ def _resolve_external_tool_capability(node: WorkflowProjectNode, *, node_id: str
                 ),
                 "executorMode": executor_mode,
                 "toolLabel": tool.label,
-                "inputPort": (
-                    tool.inputPorts[0].type if tool.inputPorts else "unknown"
-                ),
-                "outputPort": (
-                    tool.outputPorts[0].type if tool.outputPorts else "unknown"
-                ),
+                "inputPort": (tool.inputPorts[0].type if tool.inputPorts else "unknown"),
+                "outputPort": (tool.outputPorts[0].type if tool.outputPorts else "unknown"),
                 "transportBindingId": EXTERNAL_TOOL_BINDING_ID,
                 "actionBindingId": action_binding_id,
                 "fixtureOutput": executor.get("output"),
@@ -1235,9 +1267,7 @@ def _data_operator_kind(node: WorkflowProjectNode) -> str | None:
 def _is_dedupe_node(node: WorkflowProjectNode) -> bool:
     if (node.internals and node.internals.nodes) or node.topicCollapse or node.miniNetwork:
         return False
-    return _read_string(
-        (node.ui or {}).get("catalogId")
-    ) == "intelligence.processing.dedupe" or (
+    return _read_string((node.ui or {}).get("catalogId")) == "intelligence.processing.dedupe" or (
         node.kind == "agent" and node.capability == "dedupe"
     )
 
@@ -1266,6 +1296,10 @@ def _is_record_sink(node: WorkflowProjectNode) -> bool:
     return _read_string((node.ui or {}).get("catalogId")) == "intelligence.sink.records" or (
         node.kind == "sink" and node.capability == "store"
     )
+
+
+def _is_feishu_bitable_sink(node: WorkflowProjectNode) -> bool:
+    return _read_string((node.ui or {}).get("catalogId")) == "intelligence.sink.feishu-bitable"
 
 
 def _is_inbox_store_node(node: WorkflowProjectNode) -> bool:

@@ -181,6 +181,32 @@ capability_groups:
     - backend_plugin_catalog
   target_route: /studio
   configuration_route: /plugins?provider=workflow-core
+- capability_id: provider.feishu-bitable
+  label: Feishu Bitable
+  projection: plugin_provider
+  distribution: builtin
+  lifecycle: active
+  owner: opencli-admin
+  wrapper_names:
+  - createDeliveryConnection
+  - deleteDeliveryConnection
+  - listDeliveryConnections
+  - probeFeishuBitable
+  - updateDeliveryConnection
+  workflow_node_ids:
+  - intelligence.sink.feishu-bitable
+  provider_key: opencli-admin/feishu-bitable
+  provider_aliases: []
+  primary_category: extension
+  plugin_types:
+  - extension
+  readiness_sources:
+    required:
+    - workflow_capabilities
+    optional:
+    - backend_plugin_catalog
+  target_route: /providers/catalog
+  configuration_route: /providers/catalog
 - capability_id: setup.nodes
   label: 节点设置与状态
   projection: setup_card

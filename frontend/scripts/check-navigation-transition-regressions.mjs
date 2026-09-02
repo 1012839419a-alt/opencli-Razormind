@@ -152,7 +152,7 @@ test('studio keeps Agent conversation global while management has its own entry'
   assert.match(agentDock, /work_item_id\?: string \| null/)
   assert.match(agentDock, /workspace_id\?: string \| null/)
   assert.match(agentDock, /proposal_version\?: string \| null/)
-  assert.match(agentDock, /apiClient\.post\('\/chat\/confirm', \{ proposal \}\)/)
+  assert.match(agentDock, /apiClient\.post\('\/chat\/confirm', \{ proposal: proposalToConfirm \}\)/)
   assert.match(agentDock, /status === 409/)
   assert.match(agentDock, /仅在后端能解析出唯一授权范围时允许确认写操作/)
   assert.match(agentDock, /\/chat\/confirm/)

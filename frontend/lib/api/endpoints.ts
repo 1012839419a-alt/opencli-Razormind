@@ -74,6 +74,10 @@ import type {
   PublishedOperationsAgentVersion,
   Automation,
   WorkspaceSource,
+  DeliveryConnection,
+  DeliveryConnectionInput,
+  FeishuBitableProbeInput,
+  FeishuBitableProbeResult,
 } from './types'
 import type { WorkflowProject } from '@/lib/workflow/schema'
 export * from "./workspace-endpoints";
@@ -957,6 +961,28 @@ export const buildFeedProviderWorkflowNode = (
       data,
     )
     .then((r) => r.data.data);
+
+// ── Reusable delivery connections ───────────────────────────────────────────
+export const listDeliveryConnections = () =>
+  apiClient.get<ApiResponse<DeliveryConnection[]>>('/delivery-connections').then((r) => r.data)
+
+export const createDeliveryConnection = (data: DeliveryConnectionInput) =>
+  apiClient
+    .post<ApiResponse<DeliveryConnection>>('/delivery-connections', data)
+    .then((r) => r.data.data)
+
+export const updateDeliveryConnection = (id: string, data: DeliveryConnectionInput) =>
+  apiClient
+    .patch<ApiResponse<DeliveryConnection>>(`/delivery-connections/${id}`, data)
+    .then((r) => r.data.data)
+
+export const deleteDeliveryConnection = (id: string) =>
+  apiClient.delete<ApiResponse<null>>(`/delivery-connections/${id}`).then((r) => r.data)
+
+export const probeFeishuBitable = (id: string, data: FeishuBitableProbeInput) =>
+  apiClient
+    .post<ApiResponse<FeishuBitableProbeResult>>(`/delivery-connections/${id}/probe`, data)
+    .then((r) => r.data.data)
 
 // ── Model defaults (model-provider runtime — role-based failover candidate lists) ───────────────
 // A role can be entirely absent from the list on a fresh install — that's a

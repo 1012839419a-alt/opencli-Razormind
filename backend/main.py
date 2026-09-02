@@ -17,6 +17,7 @@ from backend.security.fleet_auth import (
     enforce_bind_guard,
     resolve_uvicorn_host,
 )
+from backend.security.question_bank_body_limit import QuestionBankBodyLimitMiddleware
 
 
 def _configure_logging() -> None:
@@ -174,6 +175,11 @@ async def lifespan(app: FastAPI):
         sweep_acquisition_executions(stop=acquisition_sweeper_stop)
     )
 
+    from backend.workflow.gaojixing_worker_runtime import recover_collection_jobs
+
+    recovered_gaojixing = await recover_collection_jobs()
+    logger.info("Requeued %d Gaojixing collection jobs", len(recovered_gaojixing))
+
     use_admin_scheduler = (
         settings.collection_orchestrator == "admin" and settings.task_executor == "local"
     )
@@ -242,6 +248,10 @@ def create_app() -> FastAPI:
     # Opaque and stable for this application process only. Restart clients use
     # it to distinguish a newly started API from the still-running old process.
     app.state.api_instance_id = secrets.token_hex(16)
+
+    # Bound managed question-bank requests before Starlette parses and spools
+    # multipart parts. Fleet auth is added afterwards and remains outermost.
+    app.add_middleware(QuestionBankBodyLimitMiddleware)
 
     # Fleet auth (ADR-0005): static bearer token on every /api route.
     # Registered BEFORE CORSMiddleware on purpose — Starlette treats the

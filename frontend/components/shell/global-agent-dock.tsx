@@ -14,12 +14,12 @@ import {
 } from '@/components/agent-native/agent-primitives'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog'
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from '@/components/ui/sheet'
 import { Textarea } from '@/components/ui/textarea'
 import {
   closeAgentConversation,
@@ -75,11 +75,9 @@ function restoreConversation(detail: AgentConversationDetail) {
 export function GlobalAgentDock({
   open,
   onOpenChange,
-  initialPrompt = '',
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
-  initialPrompt?: string
 }) {
   const pathname = usePathname()
   const searchParams = useSearchParams()
@@ -305,7 +303,7 @@ export function GlobalAgentDock({
       if (reply?.type === 'proposal' && reply.proposal) {
         setProposal(reply.proposal)
       } else {
-        setMessages((current) => [
+        setMessages((current) => recentAgentMessages([
           ...current,
           { role: 'assistant', content: reply?.content?.trim() || '没有返回内容。' },
         ])
@@ -321,6 +319,11 @@ export function GlobalAgentDock({
     if (!proposal || !pendingProposal || confirming) return
     setError(null)
     setConfirming(true)
+    setLastFailedProposal(null)
+    setActivities([
+      { label: '已获得你的确认', detail: proposalToConfirm.summary, state: 'complete' },
+      { label: '正在执行操作', detail: '系统正在应用这项变更。', state: 'active' },
+    ])
     try {
       await apiClient.post('/chat/confirm', { proposal })
       setDismissedProposalSequence(pendingProposal.sequence)
@@ -364,17 +367,14 @@ export function GlobalAgentDock({
   const canClose = Boolean(selectedSession?.status === 'active' && !sending && !confirming && !closing)
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent
-        className="fixed bottom-4 right-4 top-auto left-auto flex h-[min(680px,calc(100vh-2rem))] w-[min(420px,calc(100vw-2rem))] max-w-none translate-x-0 translate-y-0 flex-col gap-0 overflow-hidden p-0 shadow-2xl"
-        aria-label="全局 Agent"
-      >
-        <DialogHeader className="border-b px-4 py-3">
-          <DialogTitle className="flex items-center gap-2">
+    <Sheet open={open} onOpenChange={onOpenChange}>
+      <SheetContent className="w-full gap-0 sm:max-w-md" aria-label="全局 Agent">
+        <SheetHeader className="border-b">
+          <SheetTitle className="flex items-center gap-2">
             <Bot className="size-4 text-primary" aria-hidden />
             全局 Agent
-          </DialogTitle>
-          <DialogDescription>
+          </SheetTitle>
+          <SheetDescription>
             当前上下文：{ROUTE_LABELS[pathname] ?? pathname}。读取可直接执行，写入操作先生成确认提案。
             未明确指定 Workspace 时，仅在后端能解析出唯一授权范围时允许确认写操作。
           </DialogDescription>
@@ -442,7 +442,7 @@ export function GlobalAgentDock({
                 </p>
               </div>
             ) : null}
-            {messages.map((message, index) => (
+            {visibleMessages.map((message, index) => (
               <div
                 key={`${message.role}-${index}`}
                 className={message.role === 'user'
@@ -456,6 +456,58 @@ export function GlobalAgentDock({
               <ThinkingTrace
                 steps={['读取当前页面上下文', '整理可执行建议', '等待 Agent 回复']}
               />
+            ) : null}
+            {goal ? (
+              <section className="rounded-md border bg-muted/20 p-3" aria-label="Agent 执行进度">
+                <div className="flex items-center gap-2 text-sm font-medium">
+                  <Sparkles className="size-4 text-primary" aria-hidden />
+                  正在处理
+                </div>
+                <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">目标：{goal}</p>
+                <ol className="mt-3 space-y-2">
+                  {activities.map((activity, index) => {
+                    const Icon = activity.state === 'complete' ? CircleCheck : activity.state === 'attention' ? CircleAlert : Clock3
+                    return (
+                      <li key={`${activity.label}-${index}`} className="flex gap-2 text-xs">
+                        <Icon className={activity.state === 'complete' ? 'mt-0.5 size-3.5 shrink-0 text-success' : activity.state === 'attention' ? 'mt-0.5 size-3.5 shrink-0 text-warning' : 'mt-0.5 size-3.5 shrink-0 animate-pulse text-primary'} aria-hidden />
+                        <div>
+                          <p className="font-medium">{activity.label}</p>
+                          <p className="mt-0.5 text-muted-foreground">{activity.detail}</p>
+                          {activity.target?.type ? (
+                            <p className="mt-1 text-3xs text-muted-foreground">
+                              对象：{activity.target.type}{activity.target.id ? ` · ${activity.target.id}` : ''}
+                            </p>
+                          ) : null}
+                        </div>
+                      </li>
+                    )
+                  })}
+                </ol>
+              </section>
+            ) : null}
+            {goal ? (
+              <section className="rounded-md border p-3" aria-label="软件现场">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="flex items-center gap-2 text-sm font-medium">
+                      <Monitor className="size-4 text-primary" aria-hidden />
+                      软件现场
+                    </p>
+                    <p className="mt-1 text-xs text-muted-foreground">查看内置浏览器正在发生的实际变化。</p>
+                  </div>
+                  <Button variant="outline" size="sm" onClick={() => setShowLiveSurface((value) => !value)}>
+                    {showLiveSurface ? '收起' : '实时查看'}
+                  </Button>
+                </div>
+                {showLiveSurface ? (
+                  <iframe
+                    title="内置浏览器实时画面"
+                    src={`${window.location.protocol}//${window.location.hostname}:6080/vnc.html?autoconnect=true&resize=scale&view_only=true`}
+                    className="mt-3 aspect-video w-full rounded-xs border bg-black"
+                    sandbox="allow-scripts allow-same-origin"
+                  />
+                ) : null}
+              </section>
             ) : null}
             {proposal ? (
               <ApprovalCard
@@ -477,7 +529,17 @@ export function GlobalAgentDock({
                 onConfirm={() => void confirmProposal()}
               />
             ) : null}
-            {error ? <p className="text-xs text-destructive" role="alert">{error}</p> : null}
+            {error ? (
+              <div className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-xs" role="alert">
+                <p className="text-destructive">{error}</p>
+                {lastFailedProposal ? (
+                  <Button className="mt-2" variant="outline" size="sm" disabled={confirming} onClick={() => void confirmProposal(lastFailedProposal)}>
+                    <RotateCcw aria-hidden />
+                    重试执行
+                  </Button>
+                ) : null}
+              </div>
+            ) : null}
           </div>
         </ScrollArea>
 
@@ -510,7 +572,7 @@ export function GlobalAgentDock({
             </Button>
           </div>
         </form>
-      </DialogContent>
-    </Dialog>
+      </SheetContent>
+    </Sheet>
   )
 }

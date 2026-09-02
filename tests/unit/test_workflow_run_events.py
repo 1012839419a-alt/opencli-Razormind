@@ -12,6 +12,7 @@ from backend.schemas.workflow import WorkflowNodeRunEvent
 from backend.workflow.workflow_run_events import (
     WorkflowRunEventConflictError,
     _counter_reconciliation_statement,
+    _postgres_allocator_lock_statement,
     _sequence_reservation_statement,
     append_workflow_run_events,
 )
@@ -333,3 +334,14 @@ def test_allocator_and_reconciliation_statements_compile_for_sqlite_and_postgres
         assert all("UPDATE workflow_runs" in sql for sql in compiled)
         assert "next_event_sequence" in compiled[0]
         assert "max(workflow_run_events.sequence)" in compiled[1]
+
+
+def test_postgresql_allocator_lock_uses_a_namespaced_64_bit_hash():
+    compiled = str(
+        _postgres_allocator_lock_statement("run-1").compile(
+            dialect=postgresql.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+    )
+
+    assert "pg_advisory_xact_lock(hashtextextended('run-1', 22363277192072265))" in compiled

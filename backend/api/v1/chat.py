@@ -11,21 +11,23 @@ provider/模型网关 + OpenAI tool-calling) 决定调工具:
 v1 薄闭环: 唯一写动作 = 启停 source。验证通后按同模式扩 trigger_task / update_schedule。
 """
 
+import asyncio
 import json
 import logging
 import re
+from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import Any, Literal, Optional
+from typing import Any, Awaitable, Callable, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.control.agent_control import ACTION_REGISTRY, agent_control_service
-from backend.database import get_db
-from backend.llm import ResolverError, resolver
-from backend.llm.base import LlmAdapterError, classify_retryable
+from backend.database import AsyncSessionLocal, get_db
+from backend.models.agent_run import AgentRun, AgentRunEvent, AgentSession
 from backend.models.provider import ModelProvider
 from backend.schemas.common import ApiResponse
 from backend.security.identity import RequestIdentity, get_request_identity
@@ -37,6 +39,51 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 MAX_TOOL_STEPS = 5
+
+ActivitySink = Callable[[dict[str, Any]], Awaitable[None]]
+ActivityFlusher = Callable[[], Awaitable[None]]
+_activity_sink: ContextVar[ActivitySink | None] = ContextVar("chat_activity_sink", default=None)
+_activity_flusher: ContextVar[ActivityFlusher | None] = ContextVar(
+    "chat_activity_flusher", default=None
+)
+_background_runs: set[asyncio.Task] = set()
+
+_PUBLIC_TOOL_LABELS = {
+    "list_sources": ("检查数据源", "数据源"),
+    "list_schedules": ("检查调度计划", "调度计划"),
+    "list_tasks": ("检查最近任务", "采集任务"),
+    "list_providers": ("检查模型连接", "模型提供商"),
+    "toggle_source": ("变更数据源状态", "数据源"),
+    "trigger_task": ("启动采集任务", "数据源"),
+    "update_schedule": ("更新调度计划", "调度计划"),
+    "update_provider": ("更新模型配置", "模型提供商"),
+}
+
+
+async def _emit_activity(event_type: str, label: str, detail: str, **extra: Any) -> None:
+    sink = _activity_sink.get()
+    if sink is not None:
+        await sink({"type": event_type, "label": label, "detail": detail, **extra})
+
+
+async def _flush_activity() -> None:
+    flusher = _activity_flusher.get()
+    if flusher is not None:
+        await flusher()
+
+
+def _tool_public_description(name: str, args: dict[str, Any]) -> tuple[str, str, str | None]:
+    label, target_type = _PUBLIC_TOOL_LABELS.get(name, ("执行操作", "系统对象"))
+    target_id = next((str(args[key]) for key in ("source_id", "schedule_id", "provider_id") if args.get(key)), None)
+    return label, target_type, target_id
+
+
+def _result_public_summary(result: Any) -> str:
+    if isinstance(result, list):
+        return f"找到 {len(result)} 项可用信息"
+    if isinstance(result, dict) and result.get("error"):
+        return "未能读取目标信息"
+    return "已读取目标信息"
 
 SYSTEM_PROMPT = """你是 opencli-admin 的全局操作助手。用户可能位于任意产品页面。\
 你的职责: 根据当前页面和对象上下文解释系统状态，并在已有工具覆盖范围内按用户意图查询或修改后端配置。
@@ -210,6 +257,157 @@ class ConfirmRequest(BaseModel):
     proposal: Proposal
 
 
+async def _create_durable_run(body: ChatRequest, identity: RequestIdentity | None) -> AgentRun:
+    """Create a durable run before work begins so clients can reconnect immediately."""
+    async with AsyncSessionLocal() as session:
+        agent_session: AgentSession | None = None
+        if body.session_id:
+            agent_session = await session.get(AgentSession, body.session_id)
+        if agent_session is None:
+            agent_session = AgentSession(
+                workspace_id=_workspace_id(body.context),
+                actor_subject=identity.subject if identity else None,
+                context=body.context or {},
+            )
+            session.add(agent_session)
+            await session.flush()
+        goal = next((message.content for message in reversed(body.messages) if message.role == "user"), "")
+        run = AgentRun(
+            session_id=agent_session.id,
+            status="queued",
+            goal=goal,
+            request_payload={"messages": [message.model_dump() for message in body.messages], "context": body.context or {}},
+        )
+        session.add(run)
+        await session.commit()
+        await session.refresh(run)
+        return run
+
+
+class _DurableEventPersistenceError(RuntimeError):
+    """The run-scoped writer could not commit its pending durable events."""
+
+
+class _RunScopedDurableEventWriter:
+    """Persist ordered public events in natural run batches before publishing them."""
+
+    def __init__(self, run_id: str, queue: asyncio.Queue[dict[str, Any] | None]):
+        self.run_id = run_id
+        self.queue = queue
+        self.session: AsyncSession | None = None
+        self.run: AgentRun | None = None
+        self.next_sequence = 1
+        self.pending: list[dict[str, Any]] = []
+        self.dirty = False
+
+    async def __aenter__(self) -> "_RunScopedDurableEventWriter":
+        self.session = AsyncSessionLocal()
+        self.run = await self.session.get(AgentRun, self.run_id)
+        if self.run is None:
+            await self.session.close()
+            raise RuntimeError("Agent run disappeared")
+        self.next_sequence = self.run.next_event_sequence
+        return self
+
+    async def __aexit__(self, _exc_type, _exc, _traceback) -> None:
+        if self.session is not None:
+            await self.session.close()
+
+    def mark_running(self) -> None:
+        if self.run is None:
+            raise RuntimeError("Durable event writer is not open")
+        self.run.status = "running"
+        self.dirty = True
+
+    async def emit(self, event: dict[str, Any]) -> None:
+        if self.session is None or self.run is None:
+            raise RuntimeError("Durable event writer is not open")
+        payload = {"sequence": self.next_sequence, **event}
+        self.next_sequence += 1
+        self.run.next_event_sequence = self.next_sequence
+        self.session.add(
+            AgentRunEvent(
+                run_id=self.run.id,
+                sequence=payload["sequence"],
+                event_type=event["type"],
+                payload=payload,
+            )
+        )
+        self.pending.append(payload)
+        self.dirty = True
+
+    async def flush(self) -> None:
+        if self.session is None or not self.dirty:
+            return
+        try:
+            await self.session.commit()
+        except Exception as exc:
+            try:
+                await self.session.rollback()
+            except Exception:
+                logger.exception("chat durable event rollback failed")
+            finally:
+                self.pending.clear()
+                self.dirty = False
+            raise _DurableEventPersistenceError(
+                "Failed to persist agent run events"
+            ) from exc
+        committed, self.pending = self.pending, []
+        self.dirty = False
+        for payload in committed:
+            await self.queue.put(payload)
+
+    async def finish(
+        self,
+        *,
+        reply: dict[str, Any] | None = None,
+        error: str | None = None,
+    ) -> None:
+        if self.run is None:
+            raise RuntimeError("Durable event writer is not open")
+        self.run.status = "failed" if error else "completed"
+        self.run.reply_payload = reply
+        self.run.error_message = error
+        self.dirty = True
+        await self.flush()
+
+
+async def _persist_writer_failure(
+    run_id: str,
+    queue: asyncio.Queue[dict[str, Any] | None],
+) -> None:
+    """Atomically persist a terminal event with a fresh database session."""
+
+    async with AsyncSessionLocal() as session:
+        run = await session.get(AgentRun, run_id, with_for_update=True)
+        if run is None:
+            raise RuntimeError("Agent run disappeared")
+        payload = {
+            "sequence": run.next_event_sequence,
+            "type": "run.failed",
+            "label": "处理未完成",
+            "detail": "Agent 无法保存这次任务的执行进度。",
+            "state": "failed",
+            "status": 500,
+            "recovery": "稍后重试；本次失败状态已保存。",
+        }
+        run.next_event_sequence += 1
+        run.status = "failed"
+        run.reply_payload = None
+        run.error_message = "Agent event persistence failed"
+        session.add(
+            AgentRunEvent(
+                run_id=run.id,
+                sequence=payload["sequence"],
+                event_type=payload["type"],
+                payload=payload,
+            )
+        )
+        await session.commit()
+
+    await queue.put(payload)
+
+
 # ── provider → AsyncOpenAI client ───────────────────────────────────────────
 async def _pick_provider(db: AsyncSession, provider_id: str | None) -> ModelProvider:
     if provider_id:
@@ -377,6 +575,8 @@ async def _build_proposal(
     )
 
 
+
+
 async def _chat_with_client(
     client: Any,
     model: str,
@@ -385,43 +585,19 @@ async def _chat_with_client(
     identity: RequestIdentity | None,
     *,
     tool_trace: list[dict[str, Any]] | None = None,
-) -> ApiResponse:
-    """Run the agent-dock tool loop against ``client`` with ``model``.
+) -> ChatExecution:
+    """Run either provider protocol while returning a persistence-safe tool trace."""
 
-    Extracted from the ``chat`` endpoint so the same loop serves both the
-    legacy single-provider path and each candidate tried inside
-    ``ProviderResolver.resolve_with_fallback`` (model-provider runtime
-    PR-E, issue #55). LLM-call failures are re-raised as
-    :class:`~backend.llm.base.LlmAdapterError` carrying
-    :func:`~backend.llm.base.classify_retryable`'s connection-vs-business
-    split (decision #7) — the resolver only fails over connection-level
-    failures, and the HTTP 502 conversion happens once at the endpoint
-    boundary instead of being baked into the loop.
-    """
     system = SYSTEM_PROMPT
     if body.context:
         system += f"\n\n当前用户操作上下文 (JSON): {json.dumps(body.context, ensure_ascii=False)}"
-
-    execution = await _chat_with_client(client, model, system, body, db, identity)
-    return ApiResponse.ok(execution.reply)
-
-
-async def _chat_with_client(
-    client: Any,
-    model: str,
-    system: str,
-    body: ChatRequest,
-    db: AsyncSession,
-    identity: RequestIdentity | None,
-) -> ChatExecution:
-    """Run either provider protocol while returning a persistence-safe tool trace."""
 
     if _is_xml_tool_model(model):
         return await _chat_xml(client, model, system, body, db, identity, tool_trace=tool_trace)
 
     messages: list[dict[str, Any]] = [{"role": "system", "content": system}]
     messages += [{"role": m.role, "content": m.content} for m in body.messages]
-    tool_trace: list[dict[str, Any]] = []
+    tool_trace = tool_trace if tool_trace is not None else []
 
     for _step in range(MAX_TOOL_STEPS):
         # End any read-only transaction before an outbound model call. The
@@ -432,13 +608,9 @@ async def _chat_with_client(
             response = await client.chat.completions.create(
                 model=model, messages=messages, tools=TOOLS, tool_choice="auto"
             )
-        except LlmAdapterError:
-            raise
         except Exception as exc:
             logger.error("chat llm error | %s", exc)
-            raise LlmAdapterError(
-                f"chat llm error: {exc}", retryable=classify_retryable(exc)
-            ) from exc
+            raise HTTPException(status_code=502, detail=f"模型调用失败: {exc}") from exc
 
         msg = response.choices[0].message
         tool_calls = msg.tool_calls or []
@@ -656,23 +828,19 @@ async def _chat_xml(
     identity: RequestIdentity | None,
     *,
     tool_trace: list[dict[str, Any]] | None = None,
-) -> ApiResponse:
+) -> ChatExecution:
     """Tool loop for XML-style models (parse <tool_use> from content, feed results back as text)."""
     messages: list[dict[str, Any]] = [{"role": "system", "content": system + XML_TOOL_TEXT}]
     messages += [{"role": m.role, "content": m.content} for m in body.messages]
-    tool_trace: list[dict[str, Any]] = []
+    tool_trace = tool_trace if tool_trace is not None else []
 
     for _step in range(MAX_TOOL_STEPS):
         await db.commit()
         try:
             response = await client.chat.completions.create(model=model, messages=messages, max_tokens=1024)
-        except LlmAdapterError:
-            raise
         except Exception as exc:
             logger.error("chat(xml) llm error | %s", exc)
-            raise LlmAdapterError(
-                f"chat(xml) llm error: {exc}", retryable=classify_retryable(exc)
-            ) from exc
+            raise HTTPException(status_code=502, detail=f"模型调用失败: {exc}") from exc
 
         content = response.choices[0].message.content or ""
         calls = _parse_tool_use(content)

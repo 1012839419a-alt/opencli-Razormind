@@ -423,6 +423,19 @@ RUNTIME_IO_CONTRACTS: dict[str, RuntimeIOContract] = {
         event_shape=("partial:storedRefs", "completed"),
         fixture_coverage=("workflow-capabilities-api",),
     ),
+    "workflow.feishu-bitable.records": RuntimeIOContract(
+        binding_id="workflow.feishu-bitable.records",
+        status="blocked_until_preconditions",
+        input_ports=(("records", "storedItems[]"),),
+        output_ports=(("delivery", "deliveryAttempt[]"),),
+        input_params=("connectionId", "appToken", "tableId", "fieldMap"),
+        output_artifacts=("deliveryAttempts",),
+        permission_gate=(),
+        config_gate=("saved_feishu_connection", "existing_bitable_target"),
+        event_shape=("partial:deliveryAttempts", "blocked", "completed"),
+        fixture_coverage=("feishu-bitable-delivery",),
+        errors=("feishu_delivery_failed",),
+    ),
     "workflow.inbox.store": RuntimeIOContract(
         binding_id="workflow.inbox.store",
         status="executable",
@@ -684,9 +697,13 @@ NATIVE_INTELLIGENCE_COMMON_ERRORS = (
     "operation_in_progress",
 )
 
-for _action, _input_type, _output_type, _errors, _mutates in (
-    NATIVE_INTELLIGENCE_ACTION_CONTRACT_ROWS
-):
+for (
+    _action,
+    _input_type,
+    _output_type,
+    _errors,
+    _mutates,
+) in NATIVE_INTELLIGENCE_ACTION_CONTRACT_ROWS:
     _binding_id = f"workflow.native-intelligence.{_action.replace('.', '-')}"
     RUNTIME_IO_CONTRACTS[_binding_id] = RuntimeIOContract(
         binding_id=_binding_id,
@@ -702,9 +719,7 @@ for _action, _input_type, _output_type, _errors, _mutates in (
         output_artifacts=(_output_type,),
         permission_gate=(),
         config_gate=(),
-        resource_gate=(
-            "database_session",
-        ),
+        resource_gate=("database_session",),
         event_shape=(
             "tool_call_started",
             "partial:outputItemCount",

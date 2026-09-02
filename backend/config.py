@@ -141,6 +141,9 @@ class Settings(BaseSettings):
     # Empty (default) = auth disabled — dev posture, which the startup bind
     # guard only allows on a localhost bind. Env: API_AUTH_TOKEN.
     api_auth_token: str = ""
+    # Emergency first-run/recovery credential. Local administrator setup
+    # verifies this value but never persists it as a daily login secret.
+    bootstrap_admin_token: str = ""
 
     # OIDC identity verification + emergency bootstrap admin token
     # (backend/security/identity.py). Read via Settings — not raw
@@ -201,6 +204,9 @@ class Settings(BaseSettings):
     # Docker image tag used in agent install scripts / node wizard.
     # Set IMAGE_TAG env var (or bake it in at build time) to match the deployed version.
     image_tag: str = "latest"
+    # Immutable source revision carried by the API and collection claimant.
+    # Deployment must set this from the same checkout used to build both images.
+    opencli_runtime_revision: str = "unidentified"
 
     # Public-facing URL of this deployment (used in install scripts and invite links).
     # Set this to the URL your remote agents will use to reach the center API.
@@ -283,6 +289,7 @@ class Settings(BaseSettings):
     invokeai_api_token: str = ""
     invokeai_request_timeout_seconds: int = 30
     image_asset_storage_path: str = "/data/image-studio/assets"
+    gaojixing_run_storage_path: str = "/data/gaojixing"
 
     # Timezone
     default_timezone: str = "UTC"

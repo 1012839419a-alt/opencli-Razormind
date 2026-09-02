@@ -6,6 +6,19 @@ import subprocess
 import sys
 from pathlib import Path
 
+from alembic.config import Config
+from alembic.script import ScriptDirectory
+
+REPO_ROOT = Path(__file__).parents[2]
+
+
+def _current_migration_head() -> str:
+    config = Config()
+    config.set_main_option("script_location", str(REPO_ROOT / "backend" / "migrations"))
+    head = ScriptDirectory.from_config(config).get_current_head()
+    assert head is not None
+    return head
+
 
 def _create_legacy_plugin_database(path: Path) -> None:
     connection = sqlite3.connect(path)

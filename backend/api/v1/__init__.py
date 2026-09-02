@@ -16,6 +16,7 @@ from backend.api.v1 import (
     cookies,
     dashboard,
     delivery_authorization_routes,
+    delivery_connections,
     controlled_receiver_routes,
     delivery_execution_routes,
     dify_imports,
@@ -100,6 +101,7 @@ v1_router.include_router(operations_agents.router)
 v1_router.include_router(workbench.router)
 v1_router.include_router(workers.router)
 v1_router.include_router(dashboard.router)
+v1_router.include_router(delivery_connections.router)
 v1_router.include_router(system.router)
 v1_router.include_router(identity.router)
 v1_router.include_router(workspaces.router)

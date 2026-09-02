@@ -1,6 +1,17 @@
-import pytest
-from sqlalchemy import select
+import asyncio
+import json
 
+import pytest
+from fastapi import Request
+from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+from backend.api.v1 import studio_workflows
+from backend.config import get_settings
+from backend.database import Base, get_db
+from backend.main import app
 from backend.models.studio import (
     StudioProject,
     StudioWorkflow,
@@ -52,6 +63,60 @@ async def _publish_studio_workflow(client, created: dict) -> dict:
     )
     assert response.status_code == 201, response.text
     return response.json()["data"]
+
+
+def _gaojixing_four_node_project() -> dict:
+    shared = {
+        "sourceMode": "offline_fixture",
+        "fixtureId": "gaojixing-doubao-offline-v1",
+    }
+    return {
+        "id": "wf-gaojixing-published-upload",
+        "name": "Gaojixing published upload",
+        "profile": "intelligence",
+        "version": 1,
+        "nodes": [
+            {
+                "id": "trigger",
+                "kind": "schedule",
+                "capability": "trigger",
+                "params": {"mode": "manual", "timezone": "Asia/Shanghai"},
+                "ui": {"catalogId": "intelligence.schedule.cron"},
+            },
+            {
+                "id": "batch",
+                "kind": "agent",
+                "capability": "normalize",
+                "params": {"template": "gaojixing-doubao-batch", **shared},
+                "ui": {"catalogId": "package.gaojixing.doubao-batch"},
+            },
+            {
+                "id": "certify",
+                "kind": "agent",
+                "capability": "normalize",
+                "params": {"template": "gaojixing-batch-certification", **shared},
+                "ui": {"catalogId": "package.gaojixing.batch-certification"},
+            },
+            {
+                "id": "delivery",
+                "kind": "inbox",
+                "capability": "store",
+                "params": {"queue": "gaojixing-doubao-certified", "archive": True},
+                "ui": {"catalogId": "intelligence.output.inbox"},
+            },
+        ],
+        "edges": [
+            {"id": "trigger-batch", "source": "trigger", "target": "batch"},
+            {"id": "batch-certify", "source": "batch", "target": "certify"},
+            {"id": "certify-delivery", "source": "certify", "target": "delivery"},
+        ],
+        "adapters": [],
+        "agentPermissions": {
+            "canFetchNetwork": False,
+            "canSendNotifications": False,
+            "canWriteInbox": True,
+        },
+    }
 
 
 @pytest.mark.asyncio
@@ -216,6 +281,257 @@ async def test_studio_api_run_requires_a_published_version(client):
 
 
 @pytest.mark.asyncio
+async def test_published_question_bank_run_is_managed_idempotent_and_path_private(
+    client, db_session, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(get_settings(), "gaojixing_run_storage_path", str(tmp_path))
+    created = await _create_studio_workflow(client, graph=_gaojixing_four_node_project())
+    published = await _publish_studio_workflow(client, created)
+    question_bank = json.dumps(
+        {
+            "phase1": [{"id": "G0001", "question": "孕妇 DHA 怎么选？"}],
+            "phase2": [],
+        },
+        ensure_ascii=False,
+    ).encode("utf-8")
+
+    async def start(payload: bytes):
+        return await client.post(
+            f"{created['base_url']}/runs/question-bank",
+            data={
+                "request": json.dumps({"user": "server-worker", "idempotency_key": "upload-key-1"})
+            },
+            files={"questionBank": ("questions.json", payload, "application/json")},
+        )
+
+    first = await start(question_bank)
+    repeated = await start(question_bank)
+
+    assert first.status_code == 202, first.text
+    assert repeated.status_code == 202, repeated.text
+    assert first.json()["data"]["status"] == "waiting"
+    run_id = first.json()["data"]["runId"]
+    assert repeated.json()["data"]["runId"] == run_id
+    row = await db_session.get(WorkflowRun, run_id)
+    assert row is not None
+    assert row.studio_workflow_version_id == published["id"]
+    trace = await client.get(f"{created['base_url']}/runs/{run_id}/trace")
+    assert trace.status_code == 200, trace.text
+    assert set(trace.json()["data"]["inputs"]) == {"questionBatchRef"}
+    assert trace.json()["data"]["inputs"]["questionBatchRef"].startswith("qbr1.")
+    assert str(tmp_path) not in trace.text
+    assert "projectRoot" not in trace.text
+    assert "questionBankPath" not in trace.text
+    batch_waiting = next(
+        event
+        for event in trace.json()["data"]["trace"]["events"]
+        if event["nodeId"] == "batch::tool" and event["eventType"] == "waiting"
+    )
+    assert "gaojixing.collection-run.v1" in json.dumps(
+        batch_waiting["details"], ensure_ascii=False
+    )
+
+    changed = json.dumps(
+        {
+            "phase1": [{"id": "G0001", "question": "内容已经变化"}],
+            "phase2": [],
+        },
+        ensure_ascii=False,
+    ).encode("utf-8")
+    collision = await start(changed)
+    assert collision.status_code == 409, collision.text
+
+
+@pytest.mark.asyncio
+async def test_concurrent_published_idempotent_requests_return_the_same_run(
+    tmp_path, monkeypatch
+):
+    engine = create_async_engine(
+        f"sqlite+aiosqlite:///{tmp_path / 'published-idempotency.db'}",
+        connect_args={"check_same_thread": False},
+    )
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    session_factory = async_sessionmaker(
+        engine,
+        class_=AsyncSession,
+        expire_on_commit=False,
+    )
+    setup_session = session_factory()
+    first_session = session_factory()
+    second_session = session_factory()
+    sessions = {
+        "setup": setup_session,
+        "first": first_session,
+        "second": second_session,
+    }
+
+    async def override_get_db(request: Request):
+        yield sessions[request.headers.get("X-Test-Session", "setup")]
+
+    app.dependency_overrides[get_db] = override_get_db
+    real_start = studio_workflows.start_workflow_run
+    arrival_lock = asyncio.Lock()
+    both_arrived = asyncio.Event()
+    winner_committed = asyncio.Event()
+    arrival_count = 0
+
+    async def race_at_insert(body, **kwargs):
+        nonlocal arrival_count
+        async with arrival_lock:
+            arrival_count += 1
+            arrival_number = arrival_count
+            if arrival_count == 2:
+                both_arrived.set()
+        await asyncio.wait_for(both_arrived.wait(), timeout=5)
+        if arrival_number == 1:
+            try:
+                projection = await real_start(body, **kwargs)
+                await kwargs["session"].commit()
+                return projection
+            finally:
+                winner_committed.set()
+        await asyncio.wait_for(winner_committed.wait(), timeout=5)
+        raise IntegrityError(
+            "INSERT INTO workflow_runs ...",
+            {},
+            RuntimeError("UNIQUE constraint failed: workflow_runs.id"),
+        )
+
+    monkeypatch.setattr(studio_workflows, "start_workflow_run", race_at_insert)
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+        ) as concurrent_client:
+            created = await _create_studio_workflow(concurrent_client)
+            await _publish_studio_workflow(concurrent_client, created)
+            await setup_session.commit()
+            url = f"{created['base_url']}/runs"
+            request_body = {
+                "inputs": {"batch": {"questions": ["same question"]}},
+                "response_mode": "async",
+                "user": "server-worker",
+            }
+
+            first, second = await asyncio.gather(
+                concurrent_client.post(
+                    url,
+                    json=request_body,
+                    headers={
+                        "Idempotency-Key": "concurrent-batch",
+                        "X-Test-Session": "first",
+                    },
+                ),
+                concurrent_client.post(
+                    url,
+                    json=request_body,
+                    headers={
+                        "Idempotency-Key": "concurrent-batch",
+                        "X-Test-Session": "second",
+                    },
+                ),
+            )
+
+        assert first.status_code == 202, first.text
+        assert second.status_code == 202, second.text
+        assert first.json()["data"] == second.json()["data"]
+    finally:
+        app.dependency_overrides.clear()
+        await setup_session.close()
+        await first_session.close()
+        await second_session.close()
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_failed_idempotent_question_bank_request_preserves_shared_run_directory(
+    client, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(get_settings(), "gaojixing_run_storage_path", str(tmp_path))
+    created = await _create_studio_workflow(client, graph=_gaojixing_four_node_project())
+    await _publish_studio_workflow(client, created)
+
+    async def fail_start(**_kwargs):
+        raise RuntimeError("controlled run-start failure")
+
+    monkeypatch.setattr(studio_workflows, "_start_published_version_run", fail_start)
+    with pytest.raises(RuntimeError, match="controlled run-start failure"):
+        await client.post(
+            f"{created['base_url']}/runs/question-bank",
+            data={
+                "request": json.dumps(
+                    {"user": "server-worker", "idempotency_key": "shared-upload-key"}
+                )
+            },
+            files={
+                "questionBank": (
+                    "questions.json",
+                    b'{"phase1":[{"id":"G0001","question":"question"}],"phase2":[]}',
+                    "application/json",
+                )
+            },
+        )
+
+    run_directories = [path for path in (tmp_path / "runs").iterdir() if path.is_dir()]
+    assert len(run_directories) == 1
+    assert (run_directories[0] / "question-bank.json").is_file()
+
+
+@pytest.mark.asyncio
+async def test_failed_unique_question_bank_request_cleans_its_run_directory(
+    client, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(get_settings(), "gaojixing_run_storage_path", str(tmp_path))
+    created = await _create_studio_workflow(client, graph=_gaojixing_four_node_project())
+    await _publish_studio_workflow(client, created)
+
+    async def fail_start(**_kwargs):
+        raise RuntimeError("controlled run-start failure")
+
+    monkeypatch.setattr(studio_workflows, "_start_published_version_run", fail_start)
+    with pytest.raises(RuntimeError, match="controlled run-start failure"):
+        await client.post(
+            f"{created['base_url']}/runs/question-bank",
+            data={"request": json.dumps({"user": "server-worker"})},
+            files={
+                "questionBank": (
+                    "questions.json",
+                    b'{"phase1":[{"id":"G0001","question":"question"}],"phase2":[]}',
+                    "application/json",
+                )
+            },
+        )
+
+    assert list((tmp_path / "runs").iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_published_question_bank_run_rejects_a_non_gaojixing_workflow(
+    client, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(get_settings(), "gaojixing_run_storage_path", str(tmp_path))
+    created = await _create_studio_workflow(client)
+    await _publish_studio_workflow(client, created)
+
+    response = await client.post(
+        f"{created['base_url']}/runs/question-bank",
+        data={"request": json.dumps({"user": "server-worker"})},
+        files={
+            "questionBank": (
+                "questions.json",
+                b'{"phase1":[{"id":"G0001","question":"question"}],"phase2":[]}',
+                "application/json",
+            )
+        },
+    )
+
+    assert response.status_code == 422, response.text
+    assert "Gaojixing" in response.text
+    assert not (tmp_path / "runs").exists()
+
+
+@pytest.mark.asyncio
 async def test_studio_api_run_is_version_bound_idempotent_and_visible_in_logs(
     client,
     db_session,
@@ -223,9 +539,25 @@ async def test_studio_api_run_is_version_bound_idempotent_and_visible_in_logs(
     created = await _create_studio_workflow(client)
     published = await _publish_studio_workflow(client, created)
     request = {
-        "inputs": {"topic": "OpenCLI ecosystem"},
+        "inputs": {
+            "topic": "OpenCLI ecosystem",
+            "batch": {
+                "questions": ["first question", "second question"],
+                "options": {"language": "zh-CN", "evidence": True},
+            },
+        },
         "response_mode": "async",
         "initiated_by": "server-worker",
+    }
+    reordered_request = {
+        **request,
+        "inputs": {
+            "batch": {
+                "options": {"evidence": True, "language": "zh-CN"},
+                "questions": ["first question", "second question"],
+            },
+            "topic": "OpenCLI ecosystem",
+        },
     }
     headers = {
         "Idempotency-Key": "nightly-project-job",
@@ -233,7 +565,11 @@ async def test_studio_api_run_is_version_bound_idempotent_and_visible_in_logs(
     }
 
     first = await client.post(f"{created['base_url']}/runs", json=request, headers=headers)
-    replay = await client.post(f"{created['base_url']}/runs", json=request, headers=headers)
+    replay = await client.post(
+        f"{created['base_url']}/runs",
+        json=reordered_request,
+        headers=headers,
+    )
 
     assert first.status_code == 202, first.text
     assert replay.status_code == 202, replay.text
@@ -343,6 +679,76 @@ async def test_studio_api_run_is_version_bound_idempotent_and_visible_in_logs(
 
     deleted = await client.delete(project_url)
     assert deleted.status_code == 200, deleted.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("first_request", "conflicting_request"),
+    [
+        pytest.param(
+            {
+                "inputs": {"batch": {"questions": ["first question"]}},
+                "response_mode": "async",
+                "user": "server-worker",
+            },
+            {
+                "inputs": {"batch": {"questions": ["different question"]}},
+                "response_mode": "async",
+                "user": "server-worker",
+            },
+            id="different-inputs",
+        ),
+        pytest.param(
+            {
+                "inputs": {"batch": {"reviewed": True}},
+                "response_mode": "async",
+                "user": "server-worker",
+            },
+            {
+                "inputs": {"batch": {"reviewed": 1}},
+                "response_mode": "async",
+                "user": "server-worker",
+            },
+            id="different-json-types",
+        ),
+        pytest.param(
+            {
+                "inputs": {"batch": {"questions": ["same question"]}},
+                "response_mode": "async",
+                "user": "first-worker",
+            },
+            {
+                "inputs": {"batch": {"questions": ["same question"]}},
+                "response_mode": "async",
+                "user": "different-worker",
+            },
+            id="different-user",
+        ),
+    ],
+)
+async def test_studio_api_run_rejects_idempotency_key_reused_for_different_work(
+    client,
+    first_request,
+    conflicting_request,
+):
+    created = await _create_studio_workflow(client)
+    await _publish_studio_workflow(client, created)
+    headers = {"Idempotency-Key": "dynamic-batch"}
+
+    first = await client.post(
+        f"{created['base_url']}/runs",
+        json=first_request,
+        headers=headers,
+    )
+    conflicting = await client.post(
+        f"{created['base_url']}/runs",
+        json=conflicting_request,
+        headers=headers,
+    )
+
+    assert first.status_code == 202, first.text
+    assert conflicting.status_code == 409, conflicting.text
+    assert "idempotency" in str(conflicting.json()["detail"]).lower()
 
 
 @pytest.mark.asyncio

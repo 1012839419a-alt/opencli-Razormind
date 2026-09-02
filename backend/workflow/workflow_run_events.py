@@ -271,6 +271,20 @@ async def _lock_run_event_allocator(
             .execution_options(synchronize_session=False)
         )
         found = result.rowcount == 1
+    elif bind.dialect.name == "postgresql":
+        # A transition waiting to be flushed can already hold a KEY SHARE lock
+        # on the run through its foreign key. Upgrading two such transactions
+        # to FOR UPDATE deadlocks. A transaction-scoped advisory lock provides
+        # the same per-run serialization without participating in row-lock
+        # upgrades; the following lookup still fails closed for a missing run.
+        # hashtextextended yields a 64-bit key. The stable seed namespaces these
+        # allocator locks away from unrelated advisory-lock users.
+        await session.scalar(_postgres_allocator_lock_statement(run_id))
+        found = (
+            await session.scalar(
+                select(WorkflowRun.id).where(WorkflowRun.id == run_id)
+            )
+        ) is not None
     else:
         found = (
             await session.scalar(
@@ -283,6 +297,14 @@ async def _lock_run_event_allocator(
         raise WorkflowRunEventSequenceConflictError(
             f"workflow run {run_id!r} does not exist"
         )
+
+
+def _postgres_allocator_lock_statement(run_id: str):
+    return select(
+        func.pg_advisory_xact_lock(
+            func.hashtextextended(run_id, 22363277192072265)
+        )
+    )
 
 
 def _sequence_reservation_statement(run_id: str, current: int, count: int):
