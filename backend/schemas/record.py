@@ -1,8 +1,6 @@
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel
-
 from backend.schemas.common import UTCModel
 
 
@@ -24,7 +22,7 @@ class CollectedRecordRead(UTCModel):
     model_config = {"from_attributes": True}
 
 
-class RecordFilter(BaseModel):
+class RecordFilter(UTCModel):
     source_id: str | None = None
     task_id: str | None = None
     status: str | None = None

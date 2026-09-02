@@ -1,4 +1,10 @@
-import type { AgentProposal, AgentProposalOperation } from "./proposal"
+import {
+  getCollectorNodeRevision,
+  type AgentProposal,
+  type AgentProposalOperation,
+  type CollectorNodeProposal,
+  type CollectorPatchOperation,
+} from "./proposal"
 import { workflowRequestAuthHeaders } from "./request-auth"
 import type { WorkflowProject, WorkflowProjectEdge, WorkflowProjectNode } from "./schema"
 
@@ -81,6 +87,43 @@ function toAgentProposal(response: BackendWorkflowPatchResponse, text: string): 
   }
 }
 
+export async function draftCollectorNodeDemand(
+  project: WorkflowProject,
+  nodeId: string,
+  text: string,
+  options: { authorization?: string | null; locale?: string | null } = {},
+): Promise<CollectorNodeProposal> {
+  const node = findProjectNode(project.nodes, nodeId)
+  if (!node) throw new Error(`Collector demand target "${nodeId}" does not exist`)
+  const response = await fetch("/api/workflow/demand-draft", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...workflowRequestAuthHeaders(options.authorization),
+    },
+    body: JSON.stringify({
+      project,
+      text,
+      ...(options.locale ? { locale: options.locale } : {}),
+    }),
+  })
+  const payload = (await response.json().catch(() => null)) as ApiResponse<BackendWorkflowPatchResponse> | null
+  if (!response.ok || !payload?.data) {
+    throw new Error(payload?.message ?? payload?.error ?? `Collector demand draft failed (${response.status})`)
+  }
+  const operations = toCollectorOperations(payload.data.patch.operations, node)
+  if (operations.length === 0) {
+    throw new Error(payload.data.missing_capabilities[0]?.reason ?? "No collector changes were proposed")
+  }
+  return {
+    proposalId: `collector-demand-${Date.now()}`,
+    nodeId,
+    baseRevision: getCollectorNodeRevision(node),
+    summary: `Update collector from demand: ${text.slice(0, 120)}`,
+    operations,
+  }
+}
+
 function toAgentOperation(operation: BackendPatchOperation): AgentProposalOperation[] {
   if (operation.op === "add_node" && operation.node) {
     return [{ type: "addNode", node: operation.node }]
@@ -92,4 +135,82 @@ function toAgentOperation(operation: BackendPatchOperation): AgentProposalOperat
     return [{ type: "addEdge", edge: operation.edge }]
   }
   return []
+}
+
+function toCollectorOperations(
+  operations: BackendPatchOperation[],
+  node: WorkflowProjectNode,
+): CollectorPatchOperation[] {
+  const currentSources = Array.isArray(node.params.sources) ? node.params.sources : []
+  return operations.flatMap((operation) => {
+    if (operation.op !== "update_parameters" || operation.nodeId !== node.id) return []
+    const nextParams = operation.params ?? {}
+    const nextSources = Array.isArray(nextParams.sources) ? nextParams.sources : []
+    const changes: CollectorPatchOperation[] = []
+    for (const nextSource of nextSources) {
+      if (!nextSource || typeof nextSource !== "object" || Array.isArray(nextSource)) continue
+      const source = nextSource as Record<string, unknown>
+      const sourceId = typeof source.sourceId === "string" ? source.sourceId : null
+      if (!sourceId) continue
+      const previous = currentSources.find((candidate) => (
+        Boolean(candidate) &&
+        typeof candidate === "object" &&
+        !Array.isArray(candidate) &&
+        (candidate as Record<string, unknown>).sourceId === sourceId
+      ))
+      if (!previous || typeof previous !== "object" || Array.isArray(previous)) continue
+      for (const [key, value] of Object.entries(source)) {
+        if (key === "sourceId" || key === "kind") continue
+        if (JSON.stringify((previous as Record<string, unknown>)[key]) === JSON.stringify(value)) continue
+        changes.push({
+          type: "updateSource",
+          sourceId,
+          changes: { [key]: value },
+          expected: {
+            [key]: {
+              exists: key in (previous as Record<string, unknown>),
+              value: (previous as Record<string, unknown>)[key],
+            },
+          },
+        })
+      }
+    }
+    const nextExecution = nextParams.execution
+    if (nextExecution && typeof nextExecution === "object" && !Array.isArray(nextExecution)) {
+      const currentExecution = node.params.execution
+      const previous = currentExecution && typeof currentExecution === "object" && !Array.isArray(currentExecution)
+        ? currentExecution as Record<string, unknown>
+        : {}
+      for (const [field, value] of Object.entries(nextExecution)) {
+        if (field !== "concurrency" && field !== "timeoutMs" && field !== "retry") continue
+        if (JSON.stringify(previous[field]) === JSON.stringify(value)) continue
+        changes.push({
+          type: "setExecution",
+          field,
+          value,
+          expected: { exists: field in previous, value: previous[field] },
+        })
+      }
+    }
+    return changes
+  })
+}
+
+function findProjectNode(
+  nodes: WorkflowProjectNode[],
+  nodeId: string,
+): WorkflowProjectNode | undefined {
+  for (const node of nodes) {
+    if (node.id === nodeId) return node
+    const nestedNodes = (node.internals?.nodes ?? []).filter(
+      (candidate): candidate is WorkflowProjectNode =>
+        Boolean(candidate) &&
+        typeof candidate === "object" &&
+        !Array.isArray(candidate) &&
+        typeof (candidate as { id?: unknown }).id === "string",
+    )
+    const nested = findProjectNode(nestedNodes, nodeId)
+    if (nested) return nested
+  }
+  return undefined
 }
