@@ -6,6 +6,7 @@ const root = process.cwd()
 const args = process.argv.slice(2)
 const envFileArg = args.find((arg) => arg.startsWith('--env-file='))
 const profilesArg = args.find((arg) => arg.startsWith('--profiles='))
+const skipTools = args.includes('--skip-tools')
 const envFile = path.resolve(root, envFileArg?.slice('--env-file='.length) || '.env')
 
 function parseEnv(file) {
@@ -95,11 +96,24 @@ const rules = {
     for (const name of ['POSTGRES_DB', 'POSTGRES_USER', 'POSTGRES_PASSWORD']) requireValue(name, 'postgres')
   },
   agent() {
-    requireValue('CENTRAL_API_URL', 'agent')
-    requireValue('API_AUTH_TOKEN', 'agent')
-    const registration = value('AGENT_REGISTER') || 'http'
-    if (!['http', 'ws'].includes(registration)) errors.push('[agent] AGENT_REGISTER must be http or ws')
-    if (registration === 'http') requireValue('AGENT_ADVERTISE_URL', 'agent')
+    const registration = (value('AGENT_REGISTER') || 'http').toLowerCase()
+    if (!['http', 'ws', 'off'].includes(registration)) {
+      errors.push('[agent] AGENT_REGISTER must be http, ws, or off')
+      return
+    }
+    if (registration === 'off') return
+
+    const agentToken = value('AGENT_API_TOKEN') || value('API_AUTH_TOKEN')
+    if (!agentToken) errors.push('[agent] configure AGENT_API_TOKEN or API_AUTH_TOKEN')
+
+    const centralApiUrl = value('CENTRAL_API_URL')
+    if (!centralApiUrl) {
+      notes.push('[agent] CENTRAL_API_URL is empty; auto-registration is disabled')
+      return
+    }
+    if (!value('AGENT_ADVERTISE_URL')) {
+      notes.push('[agent] AGENT_ADVERTISE_URL is empty; the agent URL will be auto-detected')
+    }
   },
   'embedded-chrome'() {
     requireExact('CHROME_SUFFIX', '-chrome', 'embedded-chrome')
@@ -133,9 +147,15 @@ const expectedNode = existsSync(path.join(root, '.nvmrc')) ? readFileSync(path.j
 if (expectedNode && nodeVersion.split('.')[0] !== expectedNode.split('.')[0]) {
   errors.push(`[tools] Node ${expectedNode}.x required; active version is ${nodeVersion}`)
 }
-checkCommand('uv', ['--version'], 'uv')
-checkCommand('uv', ['lock', '--check'], 'uv lock')
-checkCommand('docker', ['compose', '--env-file', envFile, '-f', 'docker-compose.yml', '-f', 'docker-compose.build.yml', 'config', '--quiet'], 'Docker Compose configuration')
+if (!skipTools) {
+  checkCommand('uv', ['--version'], 'uv')
+  checkCommand('uv', ['lock', '--check'], 'uv lock')
+  checkCommand(
+    'docker',
+    ['compose', '--env-file', envFile, '-f', 'docker-compose.yml', '-f', 'docker-compose.build.yml', 'config', '--quiet'],
+    'Docker Compose configuration',
+  )
+}
 
 for (const note of notes) console.log(`NOTE ${note}`)
 if (errors.length) {
