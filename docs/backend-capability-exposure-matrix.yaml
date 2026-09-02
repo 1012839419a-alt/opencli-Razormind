@@ -1669,6 +1669,15 @@ operations:
   decision: Bind to Workflow Studio; do not create a second top-level product surface.
   target_epic: Epic 8
   capability_id: studio.workflow
+- method: POST
+  path: /api/v1/governance/workspaces/{workspace_id}/projects/bootstrap
+  operation_id: bootstrap_governance_project_api_v1_governance_workspaces__workspace_id__projects_bootstrap_post
+  disposition: studio_binding
+  frontend_route: /plugins
+  wrapper: bootstrapGovernedWorkspaceProject
+  decision: Create template projects through the governed workspace boundary before opening Workflow Studio.
+  target_epic: Epic 8
+  capability_id: operator.plugins
 - method: GET
   path: /api/v1/workspaces/{workspace_id}/projects/{project_id}/workflows
   operation_id: list_workflows_api_v1_workspaces__workspace_id__projects__project_id__workflows_get
@@ -1742,6 +1751,15 @@ operations:
   target_epic: Epic 8
   capability_id: operator.plugins
 - method: DELETE
+  path: /api/v1/workspaces/{workspace_id}/plugins/{installation_id}
+  operation_id: delete_workspace_plugin_api_v1_workspaces__workspace_id__plugins__installation_id__delete
+  disposition: operator_ui
+  frontend_route: /plugins
+  wrapper: null
+  decision: Expose workspace-scoped plugin uninstall through the existing plugin center.
+  target_epic: Epic 8
+  capability_id: operator.plugins
+- method: DELETE
   path: /api/v1/providers/feed-generators/{feed_provider_id}
   operation_id: delete_feed_generator_api_v1_providers_feed_generators__feed_provider_id__delete
   disposition: setup_status
@@ -1787,6 +1805,33 @@ operations:
   target_epic: Epic 8
   capability_id: operator.plugins
 - method: GET
+  path: /api/v1/workspaces/{workspace_id}/plugins
+  operation_id: list_workspace_plugins_api_v1_workspaces__workspace_id__plugins_get
+  disposition: operator_ui
+  frontend_route: /plugins
+  wrapper: null
+  decision: Expose the current workspace plugin registry through the existing plugin center.
+  target_epic: Epic 8
+  capability_id: operator.plugins
+- method: GET
+  path: /api/v1/workspaces/{workspace_id}/plugins/capabilities
+  operation_id: list_workspace_plugin_capabilities_api_v1_workspaces__workspace_id__plugins_capabilities_get
+  disposition: operator_ui
+  frontend_route: /plugins
+  wrapper: null
+  decision: Expose workspace-scoped node capabilities through Plugin Center and Studio.
+  target_epic: Epic 8
+  capability_id: operator.plugins
+- method: GET
+  path: /api/v1/workspaces/{workspace_id}/plugins/{installation_id}
+  operation_id: get_workspace_plugin_api_v1_workspaces__workspace_id__plugins__installation_id__get
+  disposition: operator_ui
+  frontend_route: /plugins
+  wrapper: null
+  decision: Expose workspace-scoped plugin details through the existing plugin center.
+  target_epic: Epic 8
+  capability_id: operator.plugins
+- method: GET
   path: /api/v1/providers/feed-generators
   operation_id: list_feed_generators_api_v1_providers_feed_generators_get
   disposition: setup_status
@@ -1829,6 +1874,24 @@ operations:
   frontend_route: /plugins
   wrapper: null
   decision: Expose Dify plugin import through the existing plugin center.
+  target_epic: Epic 8
+  capability_id: operator.plugins
+- method: PATCH
+  path: /api/v1/workspaces/{workspace_id}/plugins/{installation_id}
+  operation_id: update_workspace_plugin_api_v1_workspaces__workspace_id__plugins__installation_id__patch
+  disposition: operator_ui
+  frontend_route: /plugins
+  wrapper: null
+  decision: Expose workspace-scoped plugin enablement and permission grants through Plugin Center.
+  target_epic: Epic 8
+  capability_id: operator.plugins
+- method: POST
+  path: /api/v1/workspaces/{workspace_id}/plugins/import/dify
+  operation_id: import_workspace_dify_plugin_file_api_v1_workspaces__workspace_id__plugins_import_dify_post
+  disposition: operator_ui
+  frontend_route: /plugins
+  wrapper: null
+  decision: Expose workspace-scoped Dify metadata import through the existing plugin center.
   target_epic: Epic 8
   capability_id: operator.plugins
 - method: POST

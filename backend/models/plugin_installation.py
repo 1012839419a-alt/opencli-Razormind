@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import JSON, String, UniqueConstraint
+from sqlalchemy import JSON, Boolean, ForeignKey, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.models.base import TimestampMixin
@@ -14,13 +14,21 @@ class PluginInstallation(TimestampMixin):
     __tablename__ = "plugin_installations"
     __table_args__ = (
         UniqueConstraint(
+            "workspace_id",
             "provider_key",
             "version",
             "source_digest",
-            name="uq_plugin_installations_provider_version_digest",
+            name="uq_plugin_installations_workspace_provider_version_digest",
         ),
     )
 
+    workspace_id: Mapped[str | None] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    granted_permissions_json: Mapped[list[str]] = mapped_column(
+        JSON, nullable=False, default=list
+    )
     provider_key: Mapped[str] = mapped_column(String(257), nullable=False, index=True)
     name: Mapped[str] = mapped_column(String(128), nullable=False)
     author: Mapped[str] = mapped_column(String(128), nullable=False)

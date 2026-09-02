@@ -59,7 +59,7 @@ def test_legacy_plugin_head_rejoins_native_intelligence_head(tmp_path: Path) -> 
             for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
         }
 
-    assert revision == ("s0t1u2v3w4x5",)
+    assert revision == ("p0q1r2s3t4u5",)
     assert marker == ("workspace-1", "native-intelligence-workspace")
     assert "intelligence_sessions" in tables
     assert "intelligence_artifacts" in tables

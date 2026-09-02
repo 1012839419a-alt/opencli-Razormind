@@ -7,17 +7,23 @@ import json
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.models.identity import Workspace
 from backend.models.browser import (
     BrowserInstance,
     BrowserRuntimeBundle,
     BrowserRuntimeDeployment,
 )
 from backend.models.plugin_installation import PluginInstallation
-from backend.models.studio import StudioWorkflowDraft
+from backend.models.studio import (
+    StudioProject,
+    StudioWorkflow,
+    StudioWorkflowDraft,
+    StudioWorkspace,
+)
 from backend.plugins.dify_manifest import parse_dify_manifest
 from backend.plugins.dify_package import DifyPackageError, read_dify_plugin_payload
 from backend.schemas.plugin import PluginInstallationRead
@@ -35,15 +41,17 @@ class PluginRegistryError(RuntimeError):
 async def list_plugin_installations(
     session: AsyncSession,
     *,
+    workspace_id: str | None = None,
     dify_runtime_ready: bool = False,
 ) -> list[PluginInstallationRead]:
-    rows = (
-        await session.scalars(
-            select(PluginInstallation).order_by(
-                PluginInstallation.provider_key, PluginInstallation.version
-            )
-        )
-    ).all()
+    query = select(PluginInstallation).order_by(
+        PluginInstallation.provider_key, PluginInstallation.version
+    )
+    if workspace_id is None:
+        query = query.where(PluginInstallation.workspace_id.is_(None))
+    else:
+        query = query.where(PluginInstallation.workspace_id == workspace_id)
+    rows = (await session.scalars(query)).all()
     runtime_bundles = await _browser_runtime_bundle_installations(session)
     return [
         *_bundled_installations(dify_runtime_ready=dify_runtime_ready),
@@ -56,6 +64,7 @@ async def get_plugin_installation(
     session: AsyncSession,
     installation_id: str,
     *,
+    workspace_id: str | None = None,
     dify_runtime_ready: bool = False,
 ) -> PluginInstallationRead | None:
     runtime_bundle = next(
@@ -78,7 +87,12 @@ async def get_plugin_installation(
     )
     if bundled is not None:
         return bundled
-    row = await session.get(PluginInstallation, installation_id)
+    query = select(PluginInstallation).where(PluginInstallation.id == installation_id)
+    if workspace_id is None:
+        query = query.where(PluginInstallation.workspace_id.is_(None))
+    else:
+        query = query.where(PluginInstallation.workspace_id == workspace_id)
+    row = await session.scalar(query)
     return _to_read(row) if row is not None else None
 
 
@@ -87,6 +101,7 @@ async def import_dify_plugin(
     *,
     filename: str,
     content: bytes,
+    workspace_id: str | None = None,
 ) -> PluginInstallationRead:
     payload = read_dify_plugin_payload(content, filename=filename)
     parsed = parse_dify_manifest(payload)
@@ -95,17 +110,22 @@ async def import_dify_plugin(
         session,
         provider_key=parsed.provider_key,
         version=parsed.version,
+        workspace_id=workspace_id,
         source_digest=payload.source_digest,
     )
     if existing is not None:
         return _to_read(existing)
-
-    conflicting = await session.scalar(
-        select(PluginInstallation).where(
-            PluginInstallation.provider_key == parsed.provider_key,
-            PluginInstallation.version == parsed.version,
-        )
+    conflict_query = select(PluginInstallation).where(
+        PluginInstallation.provider_key == parsed.provider_key,
+        PluginInstallation.version == parsed.version,
     )
+    if workspace_id is None:
+        conflict_query = conflict_query.where(PluginInstallation.workspace_id.is_(None))
+    else:
+        conflict_query = conflict_query.where(
+            PluginInstallation.workspace_id == workspace_id
+        )
+    conflicting = await session.scalar(conflict_query)
     if conflicting is not None:
         raise PluginRegistryError(
             "dify_plugin_version_conflict",
@@ -115,8 +135,9 @@ async def import_dify_plugin(
             ),
             status_code=409,
         )
-
     row = PluginInstallation(
+        workspace_id=workspace_id,
+        enabled=workspace_id is None,
         provider_key=parsed.provider_key,
         name=parsed.name,
         author=parsed.author,
@@ -146,6 +167,7 @@ async def import_dify_plugin(
             session,
             provider_key=parsed.provider_key,
             version=parsed.version,
+            workspace_id=workspace_id,
             source_digest=payload.source_digest,
         )
         if duplicate is not None:
@@ -158,7 +180,12 @@ async def import_dify_plugin(
     return _to_read(row)
 
 
-async def delete_plugin_installation(session: AsyncSession, installation_id: str) -> None:
+async def delete_plugin_installation(
+    session: AsyncSession,
+    installation_id: str,
+    *,
+    workspace_id: str | None = None,
+) -> None:
     if installation_id.startswith("bundled:"):
         raise PluginRegistryError(
             "bundled_plugin_cannot_uninstall",
@@ -171,7 +198,12 @@ async def delete_plugin_installation(session: AsyncSession, installation_id: str
             "Browser runtime bundles are managed through the browser runtime API.",
             status_code=409,
         )
-    row = await session.get(PluginInstallation, installation_id)
+    query = select(PluginInstallation).where(PluginInstallation.id == installation_id)
+    if workspace_id is None:
+        query = query.where(PluginInstallation.workspace_id.is_(None))
+    else:
+        query = query.where(PluginInstallation.workspace_id == workspace_id)
+    row = await session.scalar(query)
     if row is None:
         raise PluginRegistryError(
             "plugin_installation_not_found",
@@ -188,26 +220,85 @@ async def delete_plugin_installation(session: AsyncSession, installation_id: str
     await session.flush()
 
 
+async def update_plugin_installation(
+    session: AsyncSession,
+    installation_id: str,
+    *,
+    workspace_id: str,
+    enabled: bool | None = None,
+    granted_permissions: list[str] | None = None,
+) -> PluginInstallationRead:
+    row = await session.scalar(
+        select(PluginInstallation).where(
+            PluginInstallation.id == installation_id,
+            PluginInstallation.workspace_id == workspace_id,
+        )
+    )
+    if row is None:
+        raise PluginRegistryError(
+            "plugin_installation_not_found",
+            "Plugin installation not found.",
+            status_code=404,
+        )
+    declared_permissions = (row.permissions_json or {}).get("declared", {})
+    declared = (
+        set(declared_permissions)
+        if isinstance(declared_permissions, dict)
+        else set()
+    )
+    if granted_permissions is not None:
+        invalid = sorted(set(granted_permissions) - declared)
+        if invalid:
+            raise PluginRegistryError(
+                "plugin_permission_not_declared",
+                f"Plugin permissions are not declared: {', '.join(invalid)}.",
+                status_code=422,
+            )
+        row.granted_permissions_json = sorted(set(granted_permissions))
+    if enabled is not None:
+        row.enabled = enabled
+    await session.flush()
+    return _to_read(row)
+
+
 async def _find_exact_installation(
     session: AsyncSession,
     *,
     provider_key: str,
     version: str,
+    workspace_id: str | None,
     source_digest: str,
 ) -> PluginInstallation | None:
-    return await session.scalar(
-        select(PluginInstallation).where(
-            PluginInstallation.provider_key == provider_key,
-            PluginInstallation.version == version,
-            PluginInstallation.source_digest == source_digest,
-        )
+    query = select(PluginInstallation).where(
+        PluginInstallation.provider_key == provider_key,
+        PluginInstallation.version == version,
+        PluginInstallation.source_digest == source_digest,
     )
+    if workspace_id is None:
+        query = query.where(PluginInstallation.workspace_id.is_(None))
+    else:
+        query = query.where(PluginInstallation.workspace_id == workspace_id)
+    return await session.scalar(query)
 
 
 async def _referencing_draft_ids(
     session: AsyncSession, installation: PluginInstallation
 ) -> list[str]:
-    drafts = (await session.scalars(select(StudioWorkflowDraft))).all()
+    query = select(StudioWorkflowDraft)
+    if installation.workspace_id is not None:
+        query = (
+            query.join(StudioWorkflow, StudioWorkflow.id == StudioWorkflowDraft.workflow_id)
+            .join(StudioProject, StudioProject.id == StudioWorkflow.project_id)
+            .join(StudioWorkspace, StudioWorkspace.id == StudioProject.workspace_id)
+            .join(Workspace, Workspace.id == installation.workspace_id)
+            .where(
+                or_(
+                    StudioProject.workspace_id == installation.workspace_id,
+                    StudioWorkspace.slug == Workspace.slug,
+                )
+            )
+        )
+    drafts = (await session.scalars(query)).all()
     return [
         draft.id
         for draft in drafts
@@ -259,9 +350,12 @@ def _graph_references_installation(
 
 def _to_read(row: PluginInstallation) -> PluginInstallationRead:
     manifest = row.manifest_json or {}
-    capabilities = list(row.capabilities_json or [])
+    capabilities = _effective_capabilities(row)
+    blockers = _effective_installation_blockers(row)
     return PluginInstallationRead(
         id=row.id,
+        workspaceId=row.workspace_id,
+        enabled=row.enabled,
         providerKey=row.provider_key,
         name=row.name,
         author=row.author,
@@ -277,18 +371,114 @@ def _to_read(row: PluginInstallation) -> PluginInstallationRead:
         manifest=manifest.get("raw") if isinstance(manifest.get("raw"), dict) else {},
         capabilities=capabilities,
         permissions=row.permissions_json or {},
-        runtimeStatus=row.runtime_status,
-        blockers=row.blockers_json or [],
+        grantedPermissions=list(row.granted_permissions_json or []),
+        runtimeStatus="BLOCKED" if blockers else row.runtime_status,
+        blockers=blockers,
         nodeDefinitions=_node_definitions(
             capabilities,
             installation_id=row.id,
             provider_key=row.provider_key,
             version=row.version,
+            enabled=row.enabled,
         ),
         bundled=False,
         installedAt=row.created_at,
         updatedAt=row.updated_at,
     )
+
+
+def _effective_capabilities(row: PluginInstallation) -> list[dict[str, Any]]:
+    capabilities = [dict(item) for item in row.capabilities_json or []]
+    installation_blockers = _effective_installation_blockers(row)
+    if not installation_blockers:
+        return capabilities
+    for capability in capabilities:
+        capability["status"] = "BLOCKED"
+        blockers = list(capability.get("blockers") or [])
+        existing_codes = {
+            blocker.get("code")
+            for blocker in blockers
+            if isinstance(blocker, dict)
+        }
+        blockers.extend(
+            blocker
+            for blocker in installation_blockers
+            if blocker["code"] not in existing_codes
+        )
+        capability["blockers"] = blockers
+    return capabilities
+
+
+def _effective_installation_blockers(
+    row: PluginInstallation,
+) -> list[dict[str, str]]:
+    blockers = [
+        blocker
+        for blocker in (row.blockers_json or [])
+        if isinstance(blocker, dict)
+        and isinstance(blocker.get("code"), str)
+        and isinstance(blocker.get("message"), str)
+    ]
+    if not row.enabled:
+        blockers.append(
+            {
+                "code": "plugin_disabled",
+                "message": "Plugin installation is disabled for this workspace.",
+            }
+        )
+    for permission in _missing_permissions(row):
+        blockers.append(
+            {
+                "code": "plugin_permission_not_granted",
+                "message": (
+                    f'Permission "{permission}" must be granted before this plugin can run.'
+                ),
+            }
+        )
+    if row.runtime_status != "READY" and not any(
+        blocker["code"] == "dify_plugin_execution_disabled" for blocker in blockers
+    ):
+        blockers.append(
+            {
+                "code": "plugin_runtime_blocked",
+                "message": "The plugin runtime is not ready for execution.",
+            }
+        )
+    return _dedupe_blockers(blockers)
+
+
+def _missing_permissions(row: PluginInstallation) -> list[str]:
+    # Global installations predate workspace grants and are only mutable by a
+    # platform administrator. Preserve their legacy implicit grant semantics;
+    # workspace installations must opt into every declared permission.
+    if row.workspace_id is None:
+        return []
+    permissions = row.permissions_json if isinstance(row.permissions_json, dict) else {}
+    declared = permissions.get("declared", {})
+    if not isinstance(declared, dict):
+        return []
+    required = {
+        str(key)
+        for key, value in declared.items()
+        if value is not False and value is not None
+    }
+    granted = {
+        str(permission)
+        for permission in (row.granted_permissions_json or [])
+        if isinstance(permission, str)
+    }
+    return sorted(required - granted)
+
+
+def _dedupe_blockers(blockers: list[dict[str, str]]) -> list[dict[str, str]]:
+    seen: set[tuple[str, str]] = set()
+    result: list[dict[str, str]] = []
+    for blocker in blockers:
+        identity = (blocker["code"], blocker["message"])
+        if identity not in seen:
+            seen.add(identity)
+            result.append(blocker)
+    return result
 
 
 def _node_definitions(
@@ -297,12 +487,17 @@ def _node_definitions(
     installation_id: str,
     provider_key: str,
     version: str,
+    enabled: bool = True,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for capability in capabilities:
         if capability.get("flowCapability") is not True:
             continue
-        status = capability.get("status") if capability.get("status") == "READY" else "BLOCKED"
+        status = (
+            capability.get("status")
+            if enabled and capability.get("status") == "READY"
+            else "BLOCKED"
+        )
         rows.append(
             {
                 "id": (
@@ -315,7 +510,22 @@ def _node_definitions(
                 "lockReason": (
                     None
                     if status == "READY"
-                    else "Install or configure a compatible OpenCLI runtime adapter."
+                    else (
+                        next(
+                            (
+                                blocker["message"]
+                                for blocker in capability.get("blockers", [])
+                                if isinstance(blocker, dict)
+                                and isinstance(blocker.get("message"), str)
+                            ),
+                            None,
+                        )
+                        or (
+                            "Enable this plugin installation first."
+                            if not enabled
+                            else "Install or configure a compatible OpenCLI runtime adapter."
+                        )
+                    )
                 ),
                 "installationId": installation_id,
                 "providerKey": provider_key,
@@ -651,6 +861,9 @@ def _bundled_installations(*, dify_runtime_ready: bool) -> list[PluginInstallati
         installations.append(
             PluginInstallationRead(
                 id=installation_id,
+                workspaceId=None,
+                enabled=True,
+                grantedPermissions=[],
                 providerKey=provider_key,
                 name=name,
                 author="opencli-admin",
@@ -672,6 +885,7 @@ def _bundled_installations(*, dify_runtime_ready: bool) -> list[PluginInstallati
                     installation_id=installation_id,
                     provider_key=provider_key,
                     version="builtin",
+                    enabled=True,
                 ),
                 bundled=True,
                 installedAt=timestamp,
