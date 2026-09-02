@@ -1,6 +1,6 @@
 """add local owner credentials and opaque sessions
 
-Revision ID: l9m0n1o2p3q4
+Revision ID: y5z6a7b8c9d0
 Revises: k8l9m0n1o2p3
 Create Date: 2026-08-19
 """
@@ -8,7 +8,7 @@ Create Date: 2026-08-19
 import sqlalchemy as sa
 from alembic import op
 
-revision = "l9m0n1o2p3q4"
+revision = "y5z6a7b8c9d0"
 down_revision = "k8l9m0n1o2p3"
 branch_labels = None
 depends_on = None

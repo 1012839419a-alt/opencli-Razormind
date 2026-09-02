@@ -15,8 +15,9 @@ import asyncio
 import json
 import logging
 import re
+from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import Any, Literal, Optional
+from typing import Any, Awaitable, Callable, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -574,54 +575,29 @@ async def _build_proposal(
     )
 
 
-@router.post("", response_model=ApiResponse[ChatReply])
-async def chat(
-    body: ChatRequest,
-    db: AsyncSession,
-    identity: RequestIdentity | None,
-    *,
-    tool_trace: list[dict[str, Any]] | None = None,
-) -> ApiResponse:
-    await _emit_activity(
-        "phase.changed",
-        "理解目标",
-        "正在结合当前页面、工作区和选中对象理解请求。",
-        state="completed",
-    )
-    provider = await _pick_provider(db, body.provider_id)
-    client = await _build_client(provider)
-    model = provider.default_model or "gpt-4o-mini"
-    await _emit_activity(
-        "phase.changed",
-        "制定执行路径",
-        "已选择可用模型，正在判断需要读取的信息和可能的操作。",
-        state="active",
-    )
-
-    system = SYSTEM_PROMPT
-    if body.context:
-        system += f"\n\n当前用户操作上下文 (JSON): {json.dumps(body.context, ensure_ascii=False)}"
-
-    execution = await _chat_with_client(client, model, system, body, db, identity)
-    return ApiResponse.ok(execution.reply)
 
 
 async def _chat_with_client(
     client: Any,
     model: str,
-    system: str,
     body: ChatRequest,
     db: AsyncSession,
     identity: RequestIdentity | None,
+    *,
+    tool_trace: list[dict[str, Any]] | None = None,
 ) -> ChatExecution:
     """Run either provider protocol while returning a persistence-safe tool trace."""
+
+    system = SYSTEM_PROMPT
+    if body.context:
+        system += f"\n\n当前用户操作上下文 (JSON): {json.dumps(body.context, ensure_ascii=False)}"
 
     if _is_xml_tool_model(model):
         return await _chat_xml(client, model, system, body, db, identity, tool_trace=tool_trace)
 
     messages: list[dict[str, Any]] = [{"role": "system", "content": system}]
     messages += [{"role": m.role, "content": m.content} for m in body.messages]
-    tool_trace: list[dict[str, Any]] = []
+    tool_trace = tool_trace if tool_trace is not None else []
 
     for _step in range(MAX_TOOL_STEPS):
         # End any read-only transaction before an outbound model call. The
@@ -852,11 +828,11 @@ async def _chat_xml(
     identity: RequestIdentity | None,
     *,
     tool_trace: list[dict[str, Any]] | None = None,
-) -> ApiResponse:
+) -> ChatExecution:
     """Tool loop for XML-style models (parse <tool_use> from content, feed results back as text)."""
     messages: list[dict[str, Any]] = [{"role": "system", "content": system + XML_TOOL_TEXT}]
     messages += [{"role": m.role, "content": m.content} for m in body.messages]
-    tool_trace: list[dict[str, Any]] = []
+    tool_trace = tool_trace if tool_trace is not None else []
 
     for _step in range(MAX_TOOL_STEPS):
         await db.commit()

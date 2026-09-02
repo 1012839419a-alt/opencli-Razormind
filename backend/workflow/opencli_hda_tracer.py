@@ -94,6 +94,16 @@ from backend.workflow.gaojixing_runtime import (
     capture_live_doubao,
     map_capture_item,
 )
+from backend.workflow.gaojixing_certification import (
+    GAOJIXING_BATCH_CERTIFY_EXECUTOR,
+    GAOJIXING_BATCH_CERTIFY_TOOL_ID,
+    execute_gaojixing_batch_certification,
+)
+from backend.workflow.gaojixing_doubao import (
+    GAOJIXING_DOUBAO_BATCH_EXECUTOR,
+    GAOJIXING_DOUBAO_BATCH_TOOL_ID,
+    execute_gaojixing_doubao_batch,
+)
 from backend.workflow.http_source_executor import (
     WorkflowHTTPSourceExecutionError,
     execute_workflow_http_source,
@@ -5778,6 +5788,7 @@ async def _store_record_sink_outputs(
     triples_by_source_node: dict[
         str, list[tuple[dict, dict, str, list[dict[str, Any]], str | None]]
     ] = {}
+    source_tasks_by_key: dict[str, tuple[str, str, str]] = {}
     for item in input_items:
         source_node_id = _origin_source_node_id(item, runtime_nodes_by_id)
         if source_node_id:
@@ -5949,6 +5960,63 @@ def _dedupe_identity(item: dict[str, Any]) -> str | None:
     dedupe = _read_dict(item.get("dedupe"))
     identity = _read_string(dedupe.get("identity"))
     return identity if dedupe.get("status") == "unique" and identity else None
+
+
+async def _materialize_gaojixing_source_task(
+    session: AsyncSession,
+    *,
+    run_id: str,
+    workflow_id: str,
+    sink_node_id: str,
+    cache: dict[str, tuple[str, str]],
+) -> tuple[str, str]:
+    """Create the managed source/task required to index certified GJX archives."""
+
+    source_key = f"gaojixing-certified-archive:{run_id}"
+    cached = cache.get(source_key)
+    if cached:
+        return cached
+    source = await _find_materialized_workflow_source(
+        session,
+        workflow_id=workflow_id,
+        source_node_id=source_key,
+        channel_type="opencli",
+    )
+    source_config = {
+        "workflowId": workflow_id,
+        "workflowRunId": run_id,
+        "sourceNodeId": source_key,
+        "displayName": "高吉星认证证据归档",
+        "adapter": "gaojixing.project-record.v1",
+    }
+    if source is None:
+        source = DataSource(
+            name="高吉星认证证据归档 · 工作流扫描数据源",
+            description="由高吉星终审结果投影到记录库；原始归档保持不可变。",
+            channel_type="opencli",
+            channel_config=source_config,
+            enabled=True,
+            tags=["workflow", "record-sink", "gaojixing", "certified-evidence"],
+        )
+        session.add(source)
+        await session.flush()
+    else:
+        source.channel_config = source_config
+    task = CollectionTask(
+        source_id=source.id,
+        trigger_type="workflow",
+        parameters={
+            "workflowId": workflow_id,
+            "workflowRunId": run_id,
+            "sourceNodeId": source_key,
+            "sinkNodeId": sink_node_id,
+        },
+        status="completed",
+    )
+    session.add(task)
+    await session.flush()
+    cache[source_key] = (source.id, task.id)
+    return source.id, task.id
 
 
 async def _materialize_source_task(
@@ -6775,6 +6843,43 @@ def _task_id(workflow_id: str, run_id: str, node_id: str, source_group: str) -> 
             f"opencli-admin/workflow/{workflow_id}/run/{run_id}/node/{node_id}/source/{source_group}",
         )
     )
+
+
+def _expand_gaojixing_project_records(
+    input_items: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Project certified Gaojixing batch records into indexable record items."""
+
+    expanded: list[dict[str, Any]] = []
+    for item in input_items:
+        raw = _read_dict(item.get("raw"))
+        project_records = raw.get("projectRecords")
+        if raw.get("schema") != "gaojixing.batch-certification.v1" or not isinstance(
+            project_records, list
+        ):
+            expanded.append(item)
+            continue
+        for record in project_records:
+            if not isinstance(record, dict):
+                continue
+            projected = dict(record)
+            projected["_certification"] = {
+                "batchId": raw.get("batchId"),
+                "snapshotDigest": raw.get("snapshotDigest"),
+                "evidenceDigest": raw.get("evidenceDigest"),
+            }
+            expanded.append(
+                {
+                    **item,
+                    "raw": projected,
+                    "normalizedData": projected,
+                }
+            )
+    return expanded
+
+def _is_gaojixing_project_record(item: dict[str, Any]) -> bool:
+    return _read_dict(item.get("raw")).get("schema") == "gaojixing.project-record.v1"
+
 
 
 def _read_string(value: object) -> str | None:

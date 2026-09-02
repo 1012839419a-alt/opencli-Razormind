@@ -489,18 +489,20 @@ async def _start_published_version_run(
     trigger_kind = body.trigger_kind or _default_published_trigger_kind(
         project, body.trigger_node_id
     )
-    projection = await start_workflow_run(
-        workflow_schemas.WorkflowRunStartRequest(
-            project=project,
-            runId=run_id,
-            trigger=workflow_schemas.WorkflowRunTrigger(
-                kind=trigger_kind,
-                triggerNodeId=body.trigger_node_id,
-                requestId=request_id,
-                idempotencyKey=idempotency_key,
-            ),
-            session=db,
-            studio_workflow_version_id=version_id,
+    try:
+        projection = await start_workflow_run(
+            workflow_schemas.WorkflowRunStartRequest(
+                project=project,
+                runId=run_id,
+                trigger=workflow_schemas.WorkflowRunTrigger(
+                    kind=trigger_kind,
+                    triggerNodeId=body.trigger_node_id,
+                    requestId=request_id,
+                    idempotencyKey=idempotency_key,
+                ),
+                session=db,
+                studio_workflow_version_id=version_id,
+            )
         )
     except IntegrityError:
         if not idempotency_key:

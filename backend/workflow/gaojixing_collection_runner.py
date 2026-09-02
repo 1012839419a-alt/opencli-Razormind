@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import shutil
 from collections.abc import Callable
 from contextlib import suppress
@@ -25,6 +26,8 @@ from backend.models.gaojixing_collection import (
     GaojixingQuestionStatus,
     GaojixingRuntimeLease,
 )
+logger = logging.getLogger(__name__)
+
 from backend.workflow.gaojixing_archive import (
     finalize_archive,
     promote_capture_artifacts,
@@ -91,6 +94,7 @@ async def run_collection_job(
                     if isawaitable(result):
                         await result
                 except Exception:
+                    logger.exception("failed to resume Gaojixing workflow run", extra={"run_id": job.workflow_run_id})
                     return "resume_pending"
                 return "workflow_resume_scheduled"
             return "busy"
@@ -195,6 +199,7 @@ async def run_collection_job(
                     if isawaitable(result):
                         await result
                 except Exception:
+                    logger.exception("failed to resume Gaojixing workflow run", extra={"run_id": workflow_run_id})
                     return "resume_pending"
                 return "workflow_resume_scheduled"
             if pending.phase == "phase2":

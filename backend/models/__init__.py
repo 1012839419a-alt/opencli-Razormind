@@ -8,6 +8,7 @@ from backend.models.agent_conversation import (
     AgentConversationTurn,
     AgentConversationTurnStatus,
 )
+from backend.models.agent_run import AgentRun, AgentRunEvent, AgentSession
 from backend.models.base import TimestampMixin
 from backend.models.browser import (
     BrowserBinding,
@@ -31,6 +32,13 @@ from backend.models.control_action import ControlActionRecord
 from backend.models.cookie_jar import CookieJarEntry
 from backend.models.delivery_connection import DeliveryAttempt, DeliveryConnection
 from backend.models.edge_node import EdgeNode, EdgeNodeEvent
+from backend.models.gaojixing_collection import (
+    GaojixingCollectionRun,
+    GaojixingCollectionRunStatus,
+    GaojixingQuestionCheckpoint,
+    GaojixingQuestionStatus,
+    GaojixingRuntimeLease,
+)
 from backend.models.feed_provider import FeedProvider
 from backend.models.identity import (
     LocalAdmin,

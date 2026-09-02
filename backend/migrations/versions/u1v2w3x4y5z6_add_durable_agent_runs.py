@@ -1,15 +1,15 @@
 """add durable Agent sessions, runs, and public events
 
-Revision ID: a8b9c0d1e2f3
-Revises: z7a8b9c0d1e2
+Revision ID: u1v2w3x4y5z6
+Revises: z6a7b8c9d0e1
 Create Date: 2026-08-06
 """
 
 import sqlalchemy as sa
 from alembic import op
 
-revision = "a8b9c0d1e2f3"
-down_revision = "z7a8b9c0d1e2"
+revision = "u1v2w3x4y5z6"
+down_revision = "z6a7b8c9d0e1"
 branch_labels = None
 depends_on = None
 

@@ -1,12 +1,12 @@
 """add local administrator credential
 
-Revision ID: z7a8b9c0d1e2
+Revision ID: z6a7b8c9d0e1
 Revises: k8l9m0n1o2p3
 """
 import sqlalchemy as sa
 from alembic import op
 
-revision = "z7a8b9c0d1e2"
+revision = "z6a7b8c9d0e1"
 down_revision = "k8l9m0n1o2p3"
 branch_labels = None
 depends_on = None

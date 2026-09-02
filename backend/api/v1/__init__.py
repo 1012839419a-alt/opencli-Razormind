@@ -16,6 +16,7 @@ from backend.api.v1 import (
     cookies,
     dashboard,
     delivery_authorization_routes,
+    delivery_connections,
     controlled_receiver_routes,
     delivery_execution_routes,
     dify_imports,
