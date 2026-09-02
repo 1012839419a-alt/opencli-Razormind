@@ -62,7 +62,7 @@ def manifest() -> RuntimeBundleManifest:
                     "runtime": "opentabs",
                     "args_schema": {
                         "type": "object",
-                        "properties": {"url": {"type": "string"}},
+                        "properties": {"url": {"type": "string"}, "cookie": {"type": "string"}},
                         "required": ["url"],
                         "additionalProperties": False,
                     },
