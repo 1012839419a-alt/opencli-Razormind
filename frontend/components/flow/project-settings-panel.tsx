@@ -38,7 +38,14 @@ export function ProjectSettingsPanel({ profile, onProfileChange }: ProjectSettin
             <Label className="font-mono text-[10px] uppercase tracking-wider">Profile</Label>
             <Select value={profile} onValueChange={(value) => onProfileChange?.(value as WorkflowProfile)}>
               <SelectTrigger>
-                <SelectValue />
+                {/* Base UI's SelectValue shows the raw value string unless told how to
+                    format it — see the note on the schedule-agent Select in
+                    schedule-form-dialog.tsx. */}
+                <SelectValue>
+                  {(value: WorkflowProfile | null) =>
+                    value ? WORKFLOW_PROFILE_REGISTRY[value].label : "Select profile"
+                  }
+                </SelectValue>
               </SelectTrigger>
               <SelectContent>
                 {WORKFLOW_PROFILE_IDS.map((id) => (

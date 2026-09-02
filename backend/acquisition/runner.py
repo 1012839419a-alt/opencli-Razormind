@@ -14,14 +14,16 @@ from backend.acquisition.registry import get_capability_registration
 from backend.browser_pool import (
     LocalBrowserPool,
     NoCleanProfileError,
+    NoReadyBrowserSlotError,
     RedisBrowserPool,
 )
 from backend.models.acquisition import AcquisitionExecution, AcquisitionExecutionStatus
-from backend.models.browser import BrowserInstance
+from backend.models.browser import BrowserInstance, BrowserRuntimeDeployment
 
 _LEASE_DURATION = timedelta(seconds=30)
 _HEARTBEAT_INTERVAL_SECONDS = 5
 logger = logging.getLogger(__name__)
+
 
 async def _managed_browser_pool(
     session_factory: async_sessionmaker[AsyncSession],
@@ -45,6 +47,11 @@ async def _managed_browser_pool(
     async with session_factory() as db:
         result = await db.execute(select(BrowserInstance))
         instances = list(result.scalars().all())
+        deployment_rows = await db.execute(select(BrowserRuntimeDeployment))
+        deployments = {
+            deployment.browser_instance_id: deployment
+            for deployment in deployment_rows.scalars().all()
+        }
 
     for instance in instances:
         if isinstance(pool, RedisBrowserPool):
@@ -56,6 +63,14 @@ async def _managed_browser_pool(
                 continue
         pool.set_mode(instance.endpoint, instance.mode)
         pool.set_profile_kind(instance.endpoint, instance.profile_kind)
+        pool.set_profile_name(instance.endpoint, instance.profile_name or instance.endpoint)
+        deployment = deployments.get(instance.id)
+        pool.set_runtime_status(
+            instance.endpoint,
+            deployment.state
+            if deployment is not None
+            else ("DEGRADED" if instance.runtime_bundle_id else "LEGACY"),
+        )
         if isinstance(pool, LocalBrowserPool):
             pool.set_agent_url(instance.endpoint, instance.agent_url)
             pool.set_agent_protocol(instance.endpoint, instance.agent_protocol)
@@ -86,15 +101,10 @@ async def recover_acquisition_executions(
                 or_(
                     AcquisitionExecution.status.in_(
                         [AcquisitionExecutionStatus.ACCEPTED]
-                        + (
-                            [AcquisitionExecutionStatus.QUEUED]
-                            if include_queued
-                            else []
-                        )
+                        + ([AcquisitionExecutionStatus.QUEUED] if include_queued else [])
                     ),
                     and_(
-                        AcquisitionExecution.status
-                        == AcquisitionExecutionStatus.RUNNING,
+                        AcquisitionExecution.status == AcquisitionExecutionStatus.RUNNING,
                         or_(
                             AcquisitionExecution.lease_expires_at.is_(None),
                             AcquisitionExecution.lease_expires_at <= now,
@@ -114,8 +124,7 @@ async def recover_acquisition_executions(
             if execution.status == AcquisitionExecutionStatus.RUNNING:
                 eligibility.extend(
                     [
-                        AcquisitionExecution.status
-                        == AcquisitionExecutionStatus.RUNNING,
+                        AcquisitionExecution.status == AcquisitionExecutionStatus.RUNNING,
                         or_(
                             AcquisitionExecution.lease_expires_at.is_(None),
                             AcquisitionExecution.lease_expires_at <= now,
@@ -124,8 +133,7 @@ async def recover_acquisition_executions(
                 )
             else:
                 eligibility.append(
-                    AcquisitionExecution.status
-                    == AcquisitionExecutionStatus.ACCEPTED
+                    AcquisitionExecution.status == AcquisitionExecutionStatus.ACCEPTED
                 )
             requeued = await db.execute(
                 update(AcquisitionExecution)
@@ -208,9 +216,7 @@ async def _heartbeat_execution(
     try:
         while True:
             try:
-                await asyncio.wait_for(
-                    stop.wait(), timeout=_HEARTBEAT_INTERVAL_SECONDS
-                )
+                await asyncio.wait_for(stop.wait(), timeout=_HEARTBEAT_INTERVAL_SECONDS)
                 return
             except TimeoutError:
                 pass
@@ -220,8 +226,7 @@ async def _heartbeat_execution(
                     update(AcquisitionExecution)
                     .where(
                         AcquisitionExecution.id == execution_id,
-                        AcquisitionExecution.status
-                        == AcquisitionExecutionStatus.RUNNING,
+                        AcquisitionExecution.status == AcquisitionExecutionStatus.RUNNING,
                         AcquisitionExecution.lease_owner == lease_owner,
                     )
                     .values(
@@ -344,9 +349,7 @@ async def run_acquisition_execution(
             parameters["execution_id"] = execution_id
         if required_artifacts:
             parameters["trace"] = "on"
-        collection_task = asyncio.create_task(
-            channel.collect(registration.invocation, parameters)
-        )
+        collection_task = asyncio.create_task(channel.collect(registration.invocation, parameters))
         lease_lost_task = asyncio.create_task(lease_lost.wait())
         done, _ = await asyncio.wait(
             {collection_task, lease_lost_task},
@@ -359,6 +362,14 @@ async def run_acquisition_execution(
             return
         result = await collection_task
     except NoCleanProfileError as exc:
+        await _fail_execution(
+            execution_id,
+            {"code": exc.code, "message": str(exc)},
+            session_factory,
+            lease_owner,
+        )
+        return
+    except NoReadyBrowserSlotError as exc:
         await _fail_execution(
             execution_id,
             {"code": exc.code, "message": str(exc)},

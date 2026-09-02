@@ -4,7 +4,7 @@ OpenCLI is an Agent-driven research and intelligence pipeline for continuously c
 
 ## Public Release Baseline
 
-The public v0.4.0 release has one end-to-end product path:
+The public v0.4.1 release has one end-to-end product path:
 
 <strong>Project → Workflow → Run → Records / Evidence → Delivery</strong>
 

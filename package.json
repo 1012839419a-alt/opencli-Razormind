@@ -1,7 +1,7 @@
 {
   "name": "opencli-admin",
   "private": true,
-  "version": "0.4.0",
+  "version": "0.4.1",
   "workspaces": [
     "chrome/extension-src"
   ],
@@ -21,6 +21,6 @@
     "nx": "nx"
   },
   "devDependencies": {
-    "nx": "^20.6.0"
+    "nx": "^23.1.1"
   }
 }

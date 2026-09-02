@@ -14,7 +14,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Input } from '@/components/ui/input'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { useBootstrapWorkspaceProject, useCreateProjectWorkflow, useDeleteWorkspaceProject, useMyWorkspaces, useWorkspaceProjects } from '@/lib/api/hooks'
+import { useBootstrapWorkspaceProject, useCreateProjectWorkflow, useDeleteWorkspaceProject, useGovernedWorkspaces, useMyWorkspaces, useWorkspaceProjects } from '@/lib/api/hooks'
 import { formatRelative } from '@/lib/format'
 import { PROJECT_APP_CATEGORY_LABELS, projectAppCategoryLabel, projectAppTypeForDifyMode, projectAppTypeLabel, projectMatchesAppType, type ProjectAppTypeFilter } from '@/lib/studio/app-types'
 import type { ProjectSummary } from '@/lib/api/types'
@@ -32,6 +32,7 @@ const PROJECT_TYPE_FILTERS = [
 export default function StudioPage() {
   const router = useRouter()
   const workspaces = useMyWorkspaces()
+  const governedWorkspaces = useGovernedWorkspaces()
   const [workspaceId, setWorkspaceId] = useState<string | null>(null)
   const [search, setSearch] = useState('')
   const [type, setType] = useState<ProjectAppTypeFilter>('all')
@@ -54,8 +55,21 @@ export default function StudioPage() {
     if (workspaceId || !workspaces.data?.length) return
     const requestedWorkspaceId = new URLSearchParams(window.location.search).get('workspace')
     const requestedWorkspace = workspaces.data.find((workspace) => workspace.id === requestedWorkspaceId)
-    setWorkspaceId(requestedWorkspace?.id ?? workspaces.data[0].id)
-  }, [workspaceId, workspaces.data])
+    const governedWorkspace = governedWorkspaces.data?.find((workspace) => workspace.id === requestedWorkspaceId)
+    if (!requestedWorkspace && requestedWorkspaceId && governedWorkspaces.isLoading) return
+    const mappedWorkspace = governedWorkspace
+      ? workspaces.data.find((workspace) =>
+        workspace.slug === governedWorkspace.slug
+        || workspace.slug === `governed-${governedWorkspace.slug}`,
+      )
+      : undefined
+    setWorkspaceId(
+      requestedWorkspace?.id
+        ?? (governedWorkspace ? governedWorkspace.id : undefined)
+        ?? mappedWorkspace?.id
+        ?? workspaces.data[0].id,
+    )
+  }, [workspaceId, workspaces.data, governedWorkspaces.data, governedWorkspaces.isLoading])
 
   useEffect(() => {
     if (!workspaceId || createIntentHandled.current) return
@@ -178,7 +192,7 @@ export default function StudioPage() {
           <DropdownMenuTrigger render={<Button className="min-h-11" disabled={!workspaceId} />}><Plus className="size-4" />创建<ChevronDown className="size-3.5" /></DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-48">
             <DropdownMenuItem onClick={() => { setCreateTemplate('blank'); setProjectName('未命名项目') }}><Plus className="size-4" />创建空白工作流</DropdownMenuItem>
-            <DropdownMenuItem onClick={() => router.push(`/studio/templates?workspace=${workspaceId}`)}>从模板创建</DropdownMenuItem>
+            <DropdownMenuItem onClick={() => router.push(`/plugins?type=template&workspace=${workspaceId}`)}>从模板创建</DropdownMenuItem>
             <DropdownMenuItem onClick={() => importInputRef.current?.click()}><FileUp className="size-4" />导入 DSL</DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
@@ -261,7 +275,7 @@ export default function StudioPage() {
             <p className="mt-1 text-xs text-muted-foreground">创建空白工作流、从模板开始，或者导入现有工作流。Agent 始终在顶部可用。</p>
             <div className="mt-5 grid gap-2 text-left">
               <CreateChoice title="创建空白工作流" description="从需求节点开始，自由添加业务能力。" onClick={workspaceId ? () => { setCreateTemplate('blank'); setProjectName('未命名项目') } : undefined} icon={Plus} />
-              <CreateChoice title="从应用模板创建" description="选择预设的数据链路，最快体验 OpenCLI。" href={workspaceId ? `/studio/templates?workspace=${workspaceId}` : undefined} icon={Sparkles} />
+              <CreateChoice title="从应用模板创建" description="选择预设的数据链路，最快体验 OpenCLI。" href={workspaceId ? `/plugins?type=template&workspace=${workspaceId}` : '/plugins?type=template'} icon={Sparkles} />
               <div className="my-0.5 flex items-center gap-3 text-3xs text-muted-foreground before:h-px before:flex-1 before:bg-border after:h-px after:flex-1 after:bg-border">或</div>
               <CreateChoice title="导入 DSL 文件" description="兼容迁移 Dify、n8n 和 OpenCLI 工作流。" onClick={workspaceId ? () => importInputRef.current?.click() : undefined} icon={FileUp} />
             </div>
@@ -304,7 +318,16 @@ export default function StudioPage() {
           <label className="space-y-2 text-sm">
             <span>目标 Project</span>
             <Select value={importProjectId} onValueChange={(value) => setImportProjectId(value ?? '')}>
-              <SelectTrigger className="w-full"><SelectValue placeholder="选择 Project" /></SelectTrigger>
+              <SelectTrigger className="w-full">
+                <SelectValue>
+                  {(value: string | null) => {
+                    if (!value) return '选择 Project'
+                    if (value === '__new__') return '＋ 新建 Project'
+                    const project = projects.data?.find((item) => item.id === value)
+                    return project ? businessProjectName(project.name) : value
+                  }}
+                </SelectValue>
+              </SelectTrigger>
               <SelectContent>
                 {(projects.data ?? []).map((project) => <SelectItem key={project.id} value={project.id}>{businessProjectName(project.name)}</SelectItem>)}
                 <SelectItem value="__new__">＋ 新建 Project</SelectItem>

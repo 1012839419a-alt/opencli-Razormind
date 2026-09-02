@@ -1,10 +1,14 @@
 'use client'
 
+import { ArrowUpRight } from 'lucide-react'
+import Link from 'next/link'
+
 import { useSkills } from '@/lib/api/hooks'
 import { formatNumber } from '@/lib/format'
 import { BACKEND_HINT, EmptyState, ErrorState, LoadingState } from '@/components/shell/data-states'
 import { PageContainer } from '@/components/shell/page-container'
 import { AUTOMATION_TABS, RouteTabs } from '@/components/shell/route-tabs'
+import { SkillRecordingDialog } from '@/components/skills/skill-recording-dialog'
 import { StatusBadge } from '@/components/shell/status-badge'
 import { Badge } from '@/components/ui/badge'
 import { Card } from '@/components/ui/card'
@@ -27,6 +31,7 @@ export default function SkillsPage() {
       title="自动化与 Agent"
       description="管理录制、蒸馏和纠错循环产出的浏览器技能。"
       tabs={<RouteTabs tabs={AUTOMATION_TABS} />}
+      actions={<SkillRecordingDialog />}
     >
       {isLoading ? (
         <LoadingState />
@@ -49,8 +54,13 @@ export default function SkillsPage() {
             </TableHeader>
             <TableBody>
               {skills.map((s) => (
-                <TableRow key={s.id}>
-                  <TableCell className="font-medium">{s.name}</TableCell>
+                <TableRow key={s.id} className="group">
+                  <TableCell className="font-medium">
+                    <Link href={`/skills/${s.id}`} className="flex items-center gap-2 hover:underline">
+                      <span>{s.name}</span>
+                      <ArrowUpRight className="size-3.5 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" />
+                    </Link>
+                  </TableCell>
                   <TableCell className="text-muted-foreground">
                     <span className="font-mono text-xs">{s.domain}</span>
                     <span className="mx-1 text-muted-foreground/50">/</span>

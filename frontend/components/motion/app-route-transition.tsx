@@ -21,14 +21,17 @@ const APP_ROUTES = [
   '/nodes',
   '/workers',
   '/control/actions',
+  '/control/kill-switch',
+  '/control/advisory-report',
+  '/control/odp-state',
   '/canvas',
 ] as const
 
 const MOTION_CONFIG: SsgoiConfig = {
   transitions: [
-    drill({ enter: '/studio/workflow', exit: '/studio', type: 'parallax' }),
-    drill({ enter: '/sources/*', exit: '/sources', type: 'slide' }),
-    axis({ paths: APP_ROUTES, type: 'x', variant: 'snappy' }),
+    { from: '/studio', to: '/studio/workflow', transition: drill({ type: 'parallax' }) },
+    { from: '/sources', to: '/sources/*', transition: drill({ type: 'slide' }) },
+    { ordered: APP_ROUTES, transition: axis({ type: 'x', variant: 'snappy' }) },
   ],
 }
 

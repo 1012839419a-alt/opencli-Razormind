@@ -11,6 +11,8 @@ from backend.security.identity import RequestIdentity, get_request_identity
 from backend.security.local_auth import (
     hash_password,
     issue_local_token,
+    load_password_hash,
+    password_change_required,
     persist_password_hash,
     verify_password,
 )
@@ -32,8 +34,12 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 @router.post("/login", response_model=ApiResponse[dict])
 async def local_login(body: LocalLoginRequest) -> ApiResponse:
     settings = get_settings()
+    password_hash = load_password_hash(
+        settings.local_admin_password_hash,
+        settings.local_auth_state_path,
+    )
     if body.username != settings.local_admin_username or not verify_password(
-        body.password, settings.local_admin_password_hash
+        body.password, password_hash
     ):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "用户名或密码错误")
 
@@ -41,8 +47,10 @@ async def local_login(body: LocalLoginRequest) -> ApiResponse:
         {
             "access_token": issue_local_token(settings.local_admin_username, settings.secret_key),
             "token_type": "bearer",
-            "using_default_password": verify_password(
-                "admin", settings.local_admin_password_hash
+            # Kept as the public response field for frontend compatibility. It
+            # now reflects durable first-login state, not a public password.
+            "using_default_password": password_change_required(
+                settings.local_auth_state_path
             ),
         }
     )
@@ -56,12 +64,15 @@ async def change_local_password(
     if identity.auth_method != "local":
         raise HTTPException(status.HTTP_403_FORBIDDEN, "仅本地管理员可以修改本地密码")
     settings = get_settings()
-    if not verify_password(body.current_password, settings.local_admin_password_hash):
+    password_hash = load_password_hash(
+        settings.local_admin_password_hash,
+        settings.local_auth_state_path,
+    )
+    if not verify_password(body.current_password, password_hash):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "当前密码错误")
     if body.new_password == body.current_password:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "新密码不能与当前密码相同")
-    persist_password_hash(hash_password(body.new_password))
-    get_settings.cache_clear()
+    persist_password_hash(hash_password(body.new_password), settings.local_auth_state_path)
     return ApiResponse.ok({"message": "密码已更新"})
 
 

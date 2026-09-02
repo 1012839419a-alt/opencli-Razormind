@@ -1,5 +1,8 @@
 import struct
+import threading
 import zlib
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import pytest
 
@@ -43,6 +46,31 @@ def test_image_ingest_rejects_unknown_magic_and_pixel_bombs():
     )
     with pytest.raises(image_studio_service.MediaAssetValidationError):
         image_studio_service.inspect_and_sanitize_image(png)
+
+
+def test_media_asset_persistence_is_atomic_under_concurrent_writes(tmp_path, monkeypatch):
+    destination = tmp_path / "media" / "asset.png"
+    payload = b"content-addressed-image"
+    writers_ready = threading.Barrier(2)
+    original_write_bytes = Path.write_bytes
+
+    def synchronized_write(path: Path, content: bytes) -> int:
+        written = original_write_bytes(path, content)
+        if path.suffix == ".tmp":
+            writers_ready.wait(timeout=5)
+        return written
+
+    monkeypatch.setattr(Path, "write_bytes", synchronized_write)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        list(
+            executor.map(
+                lambda _: image_studio_service._persist_media_asset(destination, payload),
+                range(2),
+            )
+        )
+
+    assert destination.read_bytes() == payload
+    assert list(destination.parent.glob("*.tmp")) == []
 
 
 async def _studio_scope(db_session):

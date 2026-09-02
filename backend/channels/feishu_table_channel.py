@@ -52,6 +52,14 @@ def _positive_int(value: Any, default: int, maximum: int) -> int:
     return min(max(1, parsed), maximum)
 
 
+def _non_negative_int(value: Any, default: int, maximum: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return min(max(0, parsed), maximum)
+
+
 def _cli_rows(payload: Any) -> list[dict[str, Any]]:
     if isinstance(payload, list):
         return [row for row in payload if isinstance(row, dict)]
@@ -249,7 +257,7 @@ class FeishuTableChannel(AbstractChannel):
         if not base_token:
             raise ChannelFetchError("'app_token' is required for lark-cli", "InvalidSourceConfig")
         max_rows = _positive_int(config.get("max_rows"), _DEFAULT_MAX_ROWS, 5000)
-        offset = _positive_int((ctx.cursor or {}).get("offset"), 0, 5_000_000)
+        offset = _non_negative_int((ctx.cursor or {}).get("offset"), 0, 5_000_000)
         remaining = max_rows - offset
         if remaining <= 0:
             return FetchResult(
@@ -314,7 +322,7 @@ class FeishuTableChannel(AbstractChannel):
     async def _fetch_with_lark_cli_bridge(self, ctx: FetchContext, bridge_url: str) -> FetchResult:
         """Run the host's authenticated lark-cli through the read-only bridge."""
         config = ctx.config
-        offset = _positive_int((ctx.cursor or {}).get("offset"), 0, 5_000_000)
+        offset = _non_negative_int((ctx.cursor or {}).get("offset"), 0, 5_000_000)
         max_rows = _positive_int(config.get("max_rows"), _DEFAULT_MAX_ROWS, 5000)
         remaining = max_rows - offset
         if remaining <= 0:

@@ -218,7 +218,16 @@ export function ProjectGraphExplorer({
               }}
             >
               <SelectTrigger className="w-48">
-                <SelectValue />
+                {/* Base UI's SelectValue shows the raw value string unless told
+                    how to format it — see the note on the schedule-agent Select
+                    in schedule-form-dialog.tsx. `value` here is the stringified
+                    `String(maxNodes)`, so match it against the stringified
+                    DENSITY_OPTIONS.value (a number) rather than comparing raw. */}
+                <SelectValue>
+                  {(value: string | null) =>
+                    DENSITY_OPTIONS.find((option) => String(option.value) === value)?.label
+                      ?? '选择密度'}
+                </SelectValue>
               </SelectTrigger>
               <SelectContent>
                 {DENSITY_OPTIONS.map((option) => (

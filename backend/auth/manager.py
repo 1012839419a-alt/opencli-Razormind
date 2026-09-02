@@ -15,6 +15,14 @@ from backend.auth import crypto
 from backend.channels.base import AuthContext
 
 
+class CredentialResolutionError(ValueError):
+    """A persisted credential reference is invalid or cannot be resolved."""
+
+
+class CredentialResolutionUnavailableError(CredentialResolutionError):
+    """The credential store could not be reached while resolving a reference."""
+
+
 class AuthManager:
     async def store(self, source_id: str, key_name: str, secret: str) -> None:
         """Encrypt ``secret`` and upsert it under ``(source_id, key_name)``.
@@ -118,6 +126,41 @@ class AuthManager:
                 )
             ).scalars().all()
         return {r.key_name: crypto.decrypt(r.ciphertext) for r in rows}
+
+    async def resolve_reference_context(
+        self,
+        credential_ref: str,
+        auth_kind: str,
+    ) -> AuthContext:
+        """Resolve a typed ``credential://`` reference into ephemeral headers."""
+
+        import re
+
+        match = re.fullmatch(r"credential://([A-Za-z0-9][A-Za-z0-9_-]{0,35})", credential_ref)
+        if match is None:
+            raise CredentialResolutionError("invalid credential reference")
+        try:
+            creds = await self.resolve(match.group(1))
+        except CredentialResolutionError:
+            raise
+        except Exception as exc:
+            raise CredentialResolutionUnavailableError(
+                "credential_resolution_unavailable"
+            ) from exc
+        if not creds:
+            raise CredentialResolutionError("credential reference not found")
+
+        from backend.auth.header_builder import build_auth_header
+
+        normalized = dict(creds)
+        if "access_token" in normalized and "token" not in normalized:
+            normalized["token"] = normalized["access_token"]
+        if "api_key" in normalized and "key" not in normalized:
+            normalized["key"] = normalized["api_key"]
+        headers = build_auth_header(auth_kind, normalized)
+        if not headers:
+            raise CredentialResolutionError("credential reference has no usable secret")
+        return AuthContext(kind=auth_kind, headers=headers)
 
     async def store_cookie(
         self, domain: str, cookie_name: str, attrs: dict, *, session: AsyncSession | None = None

@@ -1,21 +1,22 @@
-"""Workspace-scoped HTTP boundary for Browser Space ownership and task leases.
-
-The Browser Space model and service land with the sibling domain change.  Imports
-are deliberately lazy so this API slice does not change existing browser routes
-until that dependency is integrated.
-"""
+"""Workspace-scoped Browser Space lifecycle and task routes."""
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
-from datetime import datetime
-from typing import Any, Literal, Protocol, cast
+import json
+from collections.abc import Mapping
+from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.database import get_db
+from backend.schemas.browser_space import (
+    BrowserSpaceCreate,
+    BrowserSpaceEventRead,
+    BrowserSpaceRead,
+    BrowserSpaceTaskCreate,
+    BrowserSpaceTaskRead,
+)
 from backend.schemas.common import ApiResponse
 from backend.security.identity import RequestIdentity, get_request_identity
 from backend.security.workspace_rbac import (
@@ -24,170 +25,107 @@ from backend.security.workspace_rbac import (
     get_workspace_access,
     require_permission,
 )
+from backend.services import browser_space_service
 
-router = APIRouter(prefix="/workspaces/{workspace_id}/browser-spaces", tags=["browser-spaces"])
+router = APIRouter(
+    prefix="/workspaces/{workspace_id}/browser-spaces",
+    tags=["browser-spaces"],
+)
 
-
-class BrowserSpaceCreateRequest(BaseModel):
-    browser_instance_id: str = Field(min_length=1)
-    binding_id: str | None = None
-    owner_type: Literal["operator", "runtime_agent"]
-    owner_id: str = Field(min_length=1, max_length=255)
-    granted_capabilities: list[str] = Field(min_length=1, max_length=100)
-
-
-class BrowserSpaceTaskRequest(BaseModel):
-    request_id: str = Field(min_length=1, max_length=64)
-    capability: str = Field(min_length=1, max_length=255)
-    args: dict[str, Any] = Field(default_factory=dict)
-    timeout_seconds: int = Field(default=60, ge=1, le=300)
-
-
-class BrowserSpaceRead(BaseModel):
-    space_id: str
-    workspace_id: str
-    browser_instance_id: str
-    binding_id: str | None
-    owner_type: str
-    owner_id: str
-    status: str
-    granted_capabilities: list[str]
-    revision: int
-    last_error_code: str | None
-    created_at: datetime
-    updated_at: datetime
+_MAX_PAYLOAD_BYTES = 64 * 1024
+_SENSITIVE_KEYS = frozenset(
+    {
+        "agent_url",
+        "authorization",
+        "authorization_header",
+        "cookie",
+        "cookies",
+        "cdp_endpoint",
+        "credential",
+        "credentials",
+        "endpoint",
+        "headers",
+        "password",
+        "profile_path",
+        "secret",
+        "token",
+    }
+)
 
 
-class BrowserSpaceTaskRead(BaseModel):
-    space_id: str
-    task_id: str
-    operation_id: str
-    status: str
-    result: dict[str, Any] | None
-    error: dict[str, str] | None
+def _safe_payload(value: Any) -> Any:
+    """Return a bounded, secret-free representation suitable for an API response."""
+    if isinstance(value, Mapping):
+        clean = {
+            str(key): _safe_payload(item)
+            for key, item in value.items()
+            if str(key).lower().replace("-", "_") not in _SENSITIVE_KEYS
+        }
+    elif isinstance(value, (list, tuple)):
+        clean = [_safe_payload(item) for item in value]
+    elif isinstance(value, (str, int, float, bool)) or value is None:
+        clean = value
+    else:
+        clean = str(value)
 
-
-class BrowserSpaceEventRead(BaseModel):
-    sequence: int
-    kind: str
-    payload: dict[str, Any]
-    created_at: datetime
-
-
-class _BrowserSpaceService(Protocol):
-    class BrowserSpaceServiceError(Exception):
-        code: str
-        status_code: int
-
-    async def create_space(self, db: AsyncSession, **kwargs: Any) -> Any: ...
-    async def get_space(self, db: AsyncSession, **kwargs: Any) -> Any: ...
-    async def list_spaces(self, db: AsyncSession, **kwargs: Any) -> list[Any]: ...
-    async def submit_task(self, db: AsyncSession, **kwargs: Any) -> Any: ...
-    async def cancel_space_task(self, db: AsyncSession, **kwargs: Any) -> Any: ...
-    async def close_space(self, db: AsyncSession, **kwargs: Any) -> Any: ...
-    async def list_events(self, db: AsyncSession, **kwargs: Any) -> list[Any]: ...
-    def task_response(self, task: Any) -> dict[str, Any]: ...
-
-
-# Keep the domain import lazy while making an explicitly unavailable service a
-# deterministic 503, rather than retrying the import and reaching the database.
-_SERVICE_UNRESOLVED = object()
-browser_space_service: _BrowserSpaceService | None | object = _SERVICE_UNRESOLVED
-
-
-def _service() -> _BrowserSpaceService:
-    global browser_space_service
-    if browser_space_service is None:
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail={"code": "browser_space_service_unavailable"},
-        )
-    if browser_space_service is _SERVICE_UNRESOLVED:
-        try:
-            from backend.services import browser_space_service as resolved_service
-        except ImportError as exc:  # pragma: no cover - protects pre-integration deployments
-            raise HTTPException(
-                status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail={"code": "browser_space_service_unavailable"},
-            ) from exc
-        browser_space_service = cast(_BrowserSpaceService, resolved_service)
-    return cast(_BrowserSpaceService, browser_space_service)
-
-
-def _service_error(service: _BrowserSpaceService, code: str, status_code: int) -> Exception:
-    return service.BrowserSpaceServiceError(code, status_code)
-
-
-async def _authorize_space(space: Any, access: WorkspaceAccess) -> None:
-    """Allow an operator's own Space or a permitted runtime-agent controller."""
-    service = _service()
-    if space.owner_type == "operator" and space.owner_id == access.user_id:
-        return
-    if (
-        space.owner_type == "runtime_agent"
-        and access.allows(WorkspacePermission.RUN_OPERATIONS_AGENTS)
-    ):
-        return
-    raise _service_error(service, "owner_not_authorized", status.HTTP_403_FORBIDDEN)
-
-
-def _map_service_error(exc: Exception) -> HTTPException:
-    code = str(getattr(exc, "code", "browser_space_error"))[:64]
-    status_code = int(getattr(exc, "status_code", status.HTTP_422_UNPROCESSABLE_CONTENT))
-    return HTTPException(status_code, detail={"code": code})
-
-
-async def _call(call: Callable[[], Awaitable[Any]]) -> Any:
-    service = _service()
     try:
-        return await call()
-    except service.BrowserSpaceServiceError as exc:
-        raise _map_service_error(exc) from exc
+        encoded = json.dumps(clean, ensure_ascii=False, separators=(",", ":"))
+    except (TypeError, ValueError):
+        return {"truncated": True, "reason": "result_not_serializable"}
+    if len(encoded.encode("utf-8")) > _MAX_PAYLOAD_BYTES:
+        return {"truncated": True, "reason": "result_too_large"}
+    return clean
 
 
-def _space_read(space: Any) -> BrowserSpaceRead:
-    return BrowserSpaceRead(
-        space_id=str(space.id),
-        workspace_id=str(space.workspace_id),
-        browser_instance_id=str(space.browser_instance_id),
-        binding_id=str(space.binding_id) if space.binding_id is not None else None,
-        owner_type=space.owner_type,
-        owner_id=str(space.owner_id),
-        status=space.status,
-        granted_capabilities=list(space.granted_capabilities),
-        revision=space.revision,
-        last_error_code=space.last_error_code,
-        created_at=space.created_at,
-        updated_at=space.updated_at,
-    )
-
+def _space_read(space: Any, active_task: Any = None) -> BrowserSpaceRead:
+    result = BrowserSpaceRead.model_validate(space)
+    if active_task is not None:
+        result.active_task = _task_read(active_task)
+    return result
 
 def _task_read(task: Any) -> BrowserSpaceTaskRead:
-    response = _service().task_response(task)
-    error = response.get("error")
     return BrowserSpaceTaskRead(
-        space_id=str(response["space_id"]),
-        task_id=str(response["task_id"]),
-        operation_id=str(response["operation_id"]),
-        status=response["status"],
-        result=response.get("result"),
-        error=error if isinstance(error, dict) else None,
+        space_id=str(task.space_id),
+        task_id=str(task.id),
+        operation_id=str(task.operation_id),
+        capability=getattr(task, "capability", None),
+        status=task.status,
+        result=_safe_payload(task.result) if task.result is not None else None,
+        error=getattr(task, "error_code", None),
     )
 
 
 def _event_read(event: Any) -> BrowserSpaceEventRead:
     return BrowserSpaceEventRead(
+        id=str(event.id),
+        space_id=str(event.space_id),
+        task_id=str(event.task_id) if event.task_id is not None else None,
         sequence=event.sequence,
         kind=event.kind,
-        payload=event.payload if isinstance(event.payload, dict) else {},
+        payload=_safe_payload(event.payload) or {},
         created_at=event.created_at,
     )
 
 
-async def _workspace_access(
-    workspace_id: str, identity: RequestIdentity, db: AsyncSession
-) -> WorkspaceAccess:
-    return await get_workspace_access(db, workspace_id, identity)
+def _service_error(exc: browser_space_service.BrowserSpaceError) -> HTTPException:
+    return HTTPException(status_code=exc.status_code, detail=exc.code)
+
+
+def _require_owner_or_manager(
+    space: Any, identity: RequestIdentity, access: WorkspaceAccess
+) -> None:
+    """Allow the owner or a Workspace manager to mutate a Space."""
+    role = getattr(access.role, "value", access.role)
+    if role in {"admin", "maintainer"}:
+        return
+    if space.owner_id in {identity.subject, access.user_id}:
+        return
+    raise HTTPException(status.HTTP_403_FORBIDDEN, "Browser Space owner permission required")
+
+
+def _space_identity(identity: RequestIdentity, access: WorkspaceAccess) -> RequestIdentity | None:
+    role = getattr(access.role, "value", access.role)
+    return None if role in {"admin", "maintainer"} else identity
 
 
 @router.get("", response_model=ApiResponse[list[BrowserSpaceRead]])
@@ -196,42 +134,31 @@ async def list_browser_spaces(
     limit: int = Query(default=20, ge=1, le=100),
     identity: RequestIdentity = Depends(get_request_identity),
     db: AsyncSession = Depends(get_db),
-) -> ApiResponse[list[BrowserSpaceRead]]:
-    access = await _workspace_access(workspace_id, identity, db)
+) -> ApiResponse:
+    access = await get_workspace_access(db, workspace_id, identity)
     require_permission(access, WorkspacePermission.READ)
-    spaces = await _call(
-        lambda: _service().list_spaces(
-            db,
-            workspace_id=workspace_id,
-            limit=limit,
-            authorizer=lambda space: _authorize_space(space, access),
-        )
-    )
+    try:
+        spaces = await browser_space_service.list_spaces(db, workspace_id, identity, limit=limit)
+    except browser_space_service.BrowserSpaceError as exc:
+        raise _service_error(exc) from exc
     return ApiResponse.ok([_space_read(space) for space in spaces])
 
 
 @router.post("", response_model=ApiResponse[BrowserSpaceRead], status_code=status.HTTP_201_CREATED)
 async def create_browser_space(
     workspace_id: str,
-    body: BrowserSpaceCreateRequest,
+    body: BrowserSpaceCreate,
     identity: RequestIdentity = Depends(get_request_identity),
     db: AsyncSession = Depends(get_db),
-) -> ApiResponse[BrowserSpaceRead]:
-    access = await _workspace_access(workspace_id, identity, db)
-    require_permission(access, WorkspacePermission.RUN_OPERATIONS_AGENTS)
-    if body.owner_type == "operator" and body.owner_id != access.user_id:
-        raise HTTPException(status.HTTP_403_FORBIDDEN, detail={"code": "owner_not_authorized"})
-    space = await _call(
-        lambda: _service().create_space(
-            db,
-            workspace_id=workspace_id,
-            browser_instance_id=body.browser_instance_id,
-            binding_id=body.binding_id,
-            owner_type=body.owner_type,
-            owner_id=body.owner_id,
-            granted_capabilities=body.granted_capabilities,
-        )
-    )
+) -> ApiResponse:
+    access = await get_workspace_access(db, workspace_id, identity)
+    require_permission(access, WorkspacePermission.MANAGE_CONFIGURATION)
+    if body.owner_type == "operator" and body.owner_id != identity.subject:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Browser Space owner permission required")
+    try:
+        space = await browser_space_service.create_space(db, workspace_id, body, identity)
+    except browser_space_service.BrowserSpaceError as exc:
+        raise _service_error(exc) from exc
     return ApiResponse.ok(_space_read(space))
 
 
@@ -241,66 +168,79 @@ async def get_browser_space(
     space_id: str,
     identity: RequestIdentity = Depends(get_request_identity),
     db: AsyncSession = Depends(get_db),
-) -> ApiResponse[BrowserSpaceRead]:
-    access = await _workspace_access(workspace_id, identity, db)
+) -> ApiResponse:
+    access = await get_workspace_access(db, workspace_id, identity)
     require_permission(access, WorkspacePermission.READ)
-    space = await _call(
-        lambda: _service().get_space(
-            db,
-            workspace_id=workspace_id,
-            space_id=space_id,
-            authorizer=lambda value: _authorize_space(value, access),
+    try:
+        space = await browser_space_service.get_space(
+            db, workspace_id, space_id, _space_identity(identity, access)
         )
-    )
-    return ApiResponse.ok(_space_read(space))
+        active_task = await browser_space_service.get_latest_task(db, space.id)
+    except browser_space_service.BrowserSpaceError as exc:
+        raise _service_error(exc) from exc
+    return ApiResponse.ok(_space_read(space, active_task))
 
 
-@router.post(
-    "/{space_id}/tasks",
-    response_model=ApiResponse[BrowserSpaceTaskRead],
-    status_code=status.HTTP_202_ACCEPTED,
-)
+@router.post("/{space_id}/tasks", response_model=ApiResponse[BrowserSpaceTaskRead])
 async def submit_browser_space_task(
     workspace_id: str,
     space_id: str,
-    body: BrowserSpaceTaskRequest,
+    body: BrowserSpaceTaskCreate,
+    response: Response,
+    background_tasks: BackgroundTasks,
     identity: RequestIdentity = Depends(get_request_identity),
     db: AsyncSession = Depends(get_db),
-) -> ApiResponse[BrowserSpaceTaskRead]:
-    access = await _workspace_access(workspace_id, identity, db)
+) -> ApiResponse:
+    access = await get_workspace_access(db, workspace_id, identity)
     require_permission(access, WorkspacePermission.RUN_OPERATIONS_AGENTS)
-    task = await _call(
-        lambda: _service().submit_task(
-            db,
-            workspace_id=workspace_id,
-            space_id=space_id,
-            request_id=body.request_id,
-            capability=body.capability,
-            args=body.args,
-            authorizer=lambda value: _authorize_space(value, access),
+    try:
+        space = await browser_space_service.get_space(
+            db, workspace_id, space_id, _space_identity(identity, access)
         )
-    )
+        _require_owner_or_manager(space, identity, access)
+        task, created = await browser_space_service.submit_task(
+            db,
+            workspace_id,
+            space_id,
+            body,
+            _space_identity(identity, access),
+            execute=False,
+        )
+    except browser_space_service.BrowserSpaceError as exc:
+        raise _service_error(exc) from exc
+    if created:
+        background_tasks.add_task(
+            browser_space_service.execute_task_in_background,
+            str(task.id),
+            body.args,
+            body.timeout_seconds,
+        )
+    response.status_code = status.HTTP_202_ACCEPTED if created else status.HTTP_200_OK
     return ApiResponse.ok(_task_read(task))
 
 
-@router.post("/{space_id}/cancel", response_model=ApiResponse[BrowserSpaceTaskRead | None])
-async def cancel_browser_space_task(
+@router.post("/{space_id}/cancel", response_model=ApiResponse[BrowserSpaceTaskRead])
+async def cancel_browser_space(
     workspace_id: str,
     space_id: str,
+    response: Response,
     identity: RequestIdentity = Depends(get_request_identity),
     db: AsyncSession = Depends(get_db),
-) -> ApiResponse[BrowserSpaceTaskRead | None]:
-    access = await _workspace_access(workspace_id, identity, db)
+) -> ApiResponse:
+    access = await get_workspace_access(db, workspace_id, identity)
     require_permission(access, WorkspacePermission.RUN_OPERATIONS_AGENTS)
-    task = await _call(
-        lambda: _service().cancel_space_task(
-            db,
-            workspace_id=workspace_id,
-            space_id=space_id,
-            authorizer=lambda value: _authorize_space(value, access),
+    try:
+        space = await browser_space_service.get_space(
+            db, workspace_id, space_id, _space_identity(identity, access)
         )
-    )
-    return ApiResponse.ok(_task_read(task) if task is not None else None)
+        _require_owner_or_manager(space, identity, access)
+        task = await browser_space_service.cancel_space(
+            db, workspace_id, space_id, _space_identity(identity, access)
+        )
+    except browser_space_service.BrowserSpaceError as exc:
+        raise _service_error(exc) from exc
+    response.status_code = status.HTTP_200_OK
+    return ApiResponse.ok(_task_read(task))
 
 
 @router.post("/{space_id}/close", response_model=ApiResponse[BrowserSpaceRead])
@@ -309,39 +249,42 @@ async def close_browser_space(
     space_id: str,
     identity: RequestIdentity = Depends(get_request_identity),
     db: AsyncSession = Depends(get_db),
-) -> ApiResponse[BrowserSpaceRead]:
-    access = await _workspace_access(workspace_id, identity, db)
-    require_permission(access, WorkspacePermission.RUN_OPERATIONS_AGENTS)
-    space = await _call(
-        lambda: _service().close_space(
-            db,
-            workspace_id=workspace_id,
-            space_id=space_id,
-            authorizer=lambda value: _authorize_space(value, access),
+) -> ApiResponse:
+    access = await get_workspace_access(db, workspace_id, identity)
+    require_permission(access, WorkspacePermission.MANAGE_CONFIGURATION)
+    try:
+        space = await browser_space_service.get_space(
+            db, workspace_id, space_id, _space_identity(identity, access)
         )
-    )
-    return ApiResponse.ok(_space_read(space))
+        _require_owner_or_manager(space, identity, access)
+        closed = await browser_space_service.close_space(
+            db, workspace_id, space_id, _space_identity(identity, access)
+        )
+    except browser_space_service.BrowserSpaceError as exc:
+        raise _service_error(exc) from exc
+    return ApiResponse.ok(_space_read(closed))
 
 
 @router.get("/{space_id}/events", response_model=ApiResponse[list[BrowserSpaceEventRead]])
-async def list_browser_space_events(
+async def replay_browser_space_events(
     workspace_id: str,
     space_id: str,
     after_sequence: int = Query(default=0, ge=0),
     limit: int = Query(default=100, ge=1, le=100),
     identity: RequestIdentity = Depends(get_request_identity),
     db: AsyncSession = Depends(get_db),
-) -> ApiResponse[list[BrowserSpaceEventRead]]:
-    access = await _workspace_access(workspace_id, identity, db)
+) -> ApiResponse:
+    access = await get_workspace_access(db, workspace_id, identity)
     require_permission(access, WorkspacePermission.READ)
-    events = await _call(
-        lambda: _service().list_events(
+    try:
+        events = await browser_space_service.list_events(
             db,
-            workspace_id=workspace_id,
-            space_id=space_id,
+            workspace_id,
+            space_id,
+            _space_identity(identity, access),
             after_sequence=after_sequence,
             limit=limit,
-            authorizer=lambda value: _authorize_space(value, access),
         )
-    )
+    except browser_space_service.BrowserSpaceError as exc:
+        raise _service_error(exc) from exc
     return ApiResponse.ok([_event_read(event) for event in events])

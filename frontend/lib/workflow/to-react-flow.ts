@@ -48,26 +48,35 @@ const KIND_TO_ICON: Record<WorkflowProjectNode["kind"], string> = {
 export function workflowProjectToReactFlow(project: WorkflowProject): { nodes: WorkflowNode[]; edges: WorkflowEdge[] } {
   return {
     nodes: project.nodes.map((node, index) => workflowNodeToReactFlow(node, index)),
-    edges: project.edges.map((edge) => ({
-      id: edge.id,
-      source: edge.source,
-      target: edge.target,
-      sourceHandle: edge.sourcePort,
-      targetHandle: edge.targetPort,
-      label: edge.label,
-      type: "workflow",
-      animated: true,
-      data: {
+    edges: project.edges.map((edge) => {
+      const targetNode = project.nodes.find((node) => node.id === edge.target)
+      const targetPort = (
+        targetNode?.capability === "merge" &&
+        (edge.targetPort === "in1" || edge.targetPort === "in2")
+      )
+        ? "in"
+        : edge.targetPort
+      return {
+        id: edge.id,
+        source: edge.source,
+        target: edge.target,
+        sourceHandle: edge.sourcePort,
+        targetHandle: targetPort,
         label: edge.label,
-        semantic: edge.semantic,
-        weight: edge.weight,
-        contractId: edge.contractId,
-        proposalState: edge.proposalState,
-        sourcePort: edge.sourcePort,
-        targetPort: edge.targetPort,
-        ...(edge.ui ?? {}),
-      },
-    })),
+        type: "workflow",
+        animated: true,
+        data: {
+          label: edge.label,
+          semantic: edge.semantic,
+          weight: edge.weight,
+          contractId: edge.contractId,
+          proposalState: edge.proposalState,
+          sourcePort: edge.sourcePort,
+          targetPort,
+          ...(edge.ui ?? {}),
+        },
+      }
+    }),
   }
 }
 

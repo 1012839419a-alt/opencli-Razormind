@@ -42,6 +42,14 @@ import styles from './provider-form-dialog.module.css'
 
 type ProviderType = ModelProvider['provider_type']
 
+// Base UI's SelectValue shows the raw value string unless told how to format
+// it — see the note on the schedule-agent Select in schedule-form-dialog.tsx.
+const PROVIDER_TYPE_LABEL: Record<ProviderType, string> = {
+  openai: 'OpenAI Compatible',
+  claude: 'Anthropic',
+  local: '本地 OpenAI Compatible',
+}
+
 interface FormState {
   name: string
   provider_type: ProviderType
@@ -459,7 +467,9 @@ export function ProviderFormDialog({
                   }
                 >
                   <SelectTrigger id="provider-type" className="w-full">
-                    <SelectValue />
+                    <SelectValue>
+                      {(value: ProviderType | null) => (value ? PROVIDER_TYPE_LABEL[value] : '选择类型')}
+                    </SelectValue>
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="openai">OpenAI Compatible</SelectItem>

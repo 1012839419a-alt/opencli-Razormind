@@ -2,8 +2,8 @@
 
 import Link from 'next/link'
 import { Blocks, Database, Search, Send, Sparkles, Workflow } from 'lucide-react'
-import { useRouter, useSearchParams } from 'next/navigation'
-import { useEffect, useMemo, useState } from 'react'
+import { useRouter } from 'next/navigation'
+import { useMemo, useState } from 'react'
 import { toast } from 'sonner'
 
 import { Badge } from '@/components/ui/badge'
@@ -17,7 +17,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
-import { useBootstrapWorkspaceProject, useMyWorkspaces } from '@/lib/api/hooks'
+import { useBootstrapWorkspaceProject } from '@/lib/api/hooks'
 import {
   STUDIO_TEMPLATES,
   studioAppTypeForTemplate,
@@ -38,31 +38,14 @@ const ICONS = {
 
 /**
  * Template catalog grid + create-from-template flow.
- *
- * Extracted from studio/templates/page.tsx as the Plugin Hub's canonical
- * 模板 tab. studio/templates/page.tsx is intentionally left untouched (still
- * its own standalone entry point reachable from Studio) — this is a parallel
- * call site, not a shared import, so the two carry duplicated logic by design
- * for this skeleton PR. A follow-up can fold studio/templates/page.tsx down
- * to reuse this component once the Plugin Hub is the confirmed canonical home.
  */
-export function TemplateCatalog() {
+export function TemplateCatalog({ workspaceId }: { workspaceId: string | null }) {
   const router = useRouter()
-  const searchParams = useSearchParams()
-  const workspaces = useMyWorkspaces()
-  const bootstrapProject = useBootstrapWorkspaceProject()
-  const [workspaceId, setWorkspaceId] = useState<string | null>(searchParams.get('workspace'))
+  const bootstrapProject = useBootstrapWorkspaceProject(true)
   const [category, setCategory] = useState<(typeof CATEGORIES)[number]>('全部')
   const [query, setQuery] = useState('')
   const [selected, setSelected] = useState<StudioTemplateId | null>(null)
   const [name, setName] = useState('')
-
-  useEffect(() => {
-    if (!workspaces.data?.length) return
-    if (!workspaceId || !workspaces.data.some((workspace) => workspace.id === workspaceId)) {
-      setWorkspaceId(workspaces.data[0].id)
-    }
-  }, [workspaceId, workspaces.data])
 
   const visible = useMemo(
     () =>
@@ -237,7 +220,7 @@ export function TemplateCatalog() {
                   onChange={(event) => setName(event.target.value)}
                 />
               </label>
-              {!workspaceId && !workspaces.isLoading ? (
+              {!workspaceId ? (
                 <p role="status" className="rounded-md border bg-muted/30 p-3 text-xs text-muted-foreground">
                   当前没有可用工作区。返回项目页选择或创建工作区后，即可继续使用这个模板。
                 </p>
@@ -255,10 +238,6 @@ export function TemplateCatalog() {
                 {workspaceId ? (
                   <Button type="submit" className="min-h-11" disabled={!name.trim() || bootstrapProject.isPending}>
                     {bootstrapProject.isPending ? '正在创建…' : '创建并打开工作流'}
-                  </Button>
-                ) : workspaces.isLoading ? (
-                  <Button type="button" className="min-h-11" disabled>
-                    正在读取工作区…
                   </Button>
                 ) : (
                   <Button className="min-h-11" nativeButton={false} render={<Link href="/studio" />}>

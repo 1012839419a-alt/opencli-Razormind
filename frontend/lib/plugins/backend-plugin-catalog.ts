@@ -36,6 +36,9 @@ export type BackendPluginNodeDefinition = {
 
 export type BackendPluginInstallation = {
   id: string
+  workspaceId?: string | null
+  enabled: boolean
+  grantedPermissions: string[]
   providerKey: string
   name: string
   author: string
@@ -65,11 +68,12 @@ type ApiResponse<T> = {
   error?: string | null
   detail?: { code?: string; message?: string } | string
 }
-
 export const PLUGIN_CATALOG_QUERY_KEY = ["plugin-installations"] as const
 
-export async function fetchPluginInstallations(): Promise<BackendPluginInstallation[]> {
-  const response = await fetch("/api/v1/plugins", {
+export async function fetchPluginInstallations(
+  workspaceId?: string | null,
+): Promise<BackendPluginInstallation[]> {
+  const response = await fetch(pluginPath(workspaceId), {
     cache: "no-store",
     headers: apiAuthHeaders(),
   })
@@ -82,10 +86,13 @@ export async function fetchPluginInstallations(): Promise<BackendPluginInstallat
   return payload.data
 }
 
-export async function importDifyPluginPackage(file: File): Promise<BackendPluginInstallation> {
+export async function importDifyPluginPackage(
+  workspaceId: string,
+  file: File,
+): Promise<BackendPluginInstallation> {
   const body = new FormData()
   body.append("file", file)
-  const response = await fetch("/api/v1/plugins/import/dify", {
+  const response = await fetch(`${pluginPath(workspaceId)}/import/dify`, {
     method: "POST",
     headers: apiAuthHeaders(),
     body,
@@ -99,11 +106,33 @@ export async function importDifyPluginPackage(file: File): Promise<BackendPlugin
   return payload.data
 }
 
-export function useBackendPluginCatalog(enabled = true) {
+export async function updatePluginInstallation(
+  workspaceId: string,
+  installationId: string,
+  update: { enabled?: boolean; grantedPermissions?: string[] },
+): Promise<BackendPluginInstallation> {
+  const response = await fetch(`${pluginPath(workspaceId)}/${installationId}`, {
+    method: "PATCH",
+    headers: { ...apiAuthHeaders(), "Content-Type": "application/json" },
+    body: JSON.stringify(update),
+  })
+  const payload = (await response.json().catch(() => null)) as
+    | ApiResponse<BackendPluginInstallation>
+    | null
+  if (!response.ok || !payload?.success || !payload.data) {
+    throw new Error(readApiError(payload, `插件状态更新失败 (${response.status})`))
+  }
+  return payload.data
+}
+
+export function useBackendPluginCatalog(
+  workspaceId?: string | null,
+  enabled = true,
+) {
   const query = useQuery({
-    queryKey: PLUGIN_CATALOG_QUERY_KEY,
-    queryFn: fetchPluginInstallations,
-    enabled,
+    queryKey: [...PLUGIN_CATALOG_QUERY_KEY, workspaceId ?? "global"],
+    queryFn: () => fetchPluginInstallations(workspaceId),
+    enabled: enabled && (workspaceId === undefined || Boolean(workspaceId)),
     staleTime: 15_000,
     retry: 1,
   })
@@ -115,6 +144,11 @@ export function useBackendPluginCatalog(enabled = true) {
   }
 }
 
+function pluginPath(workspaceId?: string | null): string {
+  return workspaceId
+    ? `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/plugins`
+    : "/api/v1/plugins"
+}
 function readApiError<T>(payload: ApiResponse<T> | null, fallback: string): string {
   if (typeof payload?.detail === "string") return payload.detail
   if (payload?.detail && typeof payload.detail === "object") {

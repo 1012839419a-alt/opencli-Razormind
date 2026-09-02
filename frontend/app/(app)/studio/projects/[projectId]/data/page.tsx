@@ -51,6 +51,14 @@ const PAGE_SIZE = 50
 const EXPORT_PAGE_SIZE = 100
 const SOURCE_PUBLISHED_RAW_KEYS = ['displayTime', 'published_at', 'publishedAt', 'published', 'sent_at', 'sentAt', 'time', 'timestamp'] as const
 const SOURCE_PUBLISHED_FALLBACK_KEYS = ['noticeDate', 'date', 'created_at', 'createdAt', 'listed', 'updated'] as const
+const RECORD_STATUS_LABEL: Record<string, string> = {
+  all: '全部处理状态',
+  raw: '原始数据',
+  normalized: '已标准化',
+  ai_processed: '已富化',
+  notified: '已交付',
+  error: '处理失败',
+}
 type WorkbenchView = 'dataset' | 'profile' | 'quality' | 'files'
 type ExportFormat = 'xlsx' | 'csv' | 'json'
 type ExportScope = 'filtered' | 'selected'
@@ -496,7 +504,10 @@ export default function ProjectDataWorkbenchPage({ params }: { params: Promise<{
       } else if (format === 'csv') {
         const headers = Object.keys(rows[0])
         const csv = [headers, ...rows.map((row) => headers.map((header) => row[header] ?? ''))]
-          .map((row) => row.map(serializeCsvCell).join(','))
+          .map((row) => row.map((value) => {
+            const text = String(value)
+            return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text
+          }).join(','))
           .join('\r\n')
         downloadBlob(`${base}.csv`, `\uFEFF${csv}`, 'text/csv;charset=utf-8')
       } else {
@@ -576,7 +587,7 @@ export default function ProjectDataWorkbenchPage({ params }: { params: Promise<{
                 <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索标题、正文、URL 或字段值…" className="pl-9" />
               </div>
               <Select value={status} onValueChange={(value) => setStatus(value ?? 'all')}>
-                <SelectTrigger><Filter className="size-4" /><SelectValue>{status === 'all' ? '全部处理状态' : status}</SelectValue></SelectTrigger>
+                <SelectTrigger><Filter className="size-4" /><SelectValue>{(value: string | null) => (value ? (RECORD_STATUS_LABEL[value] ?? value) : '全部处理状态')}</SelectValue></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">全部处理状态</SelectItem>
                   <SelectItem value="raw">原始数据</SelectItem>

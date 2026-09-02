@@ -76,7 +76,12 @@ import {
 } from "@/lib/workflow/workflow-outline"
 import { findWorkflowProjectNodeByCanvasId } from "@/lib/workflow/node-path"
 import {
+  collectorKindForCatalogId,
+  createCollectorSource,
+  isCollectorNodeParams,
   isOpenCLISourceSlotArray,
+  type CollectorNodeParams,
+  type CollectorSourceDefinition,
   type OpenCLISourceSlot,
 } from "@/lib/workflow/node-catalog"
 import {
@@ -1025,7 +1030,9 @@ export function Inspector({ compact = false, onClose }: { compact?: boolean; onC
             <Label className="font-mono text-[10px] uppercase tracking-wider">Type</Label>
             <Select value={edgeType} onValueChange={(v) => v && updateEdgeType(edge.id, v)}>
               <SelectTrigger>
-                <SelectValue />
+                <SelectValue>
+                  {(value: string | null) => edgeTypeOptions.find((o) => o.value === value)?.label ?? value}
+                </SelectValue>
               </SelectTrigger>
               <SelectContent>
                 {edgeTypeOptions.map((o) => (
@@ -1238,7 +1245,11 @@ export function Inspector({ compact = false, onClose }: { compact?: boolean; onC
           aria-label={`${copy.insertVariable}: ${fieldText.label}`}
           className={cn(houdiniSelectTriggerClass, "w-full")}
         >
-          <SelectValue placeholder={copy.insertVariable} />
+          <SelectValue>
+            {(value: string | null) =>
+              value ? (upstreamVariableOptions.find((option) => option.value === value)?.label ?? value) : copy.insertVariable
+            }
+          </SelectValue>
         </SelectTrigger>
         <SelectContent className="rounded-[2px] border border-[#2c3036] bg-[#0d0f12] font-mono text-[11px]">
           {upstreamVariableOptions.map((option) => (
@@ -1583,6 +1594,13 @@ export function Inspector({ compact = false, onClose }: { compact?: boolean; onC
   const openCLISources = isOpenCLISourceSlotArray(configurationNode?.params.sources)
     ? configurationNode.params.sources
     : undefined
+  const collectorKind = collectorKindForCatalogId(configurationNode?.ui?.catalogId)
+  const collectorParams = collectorKind && isCollectorNodeParams(
+    configurationNode?.params,
+    collectorKind,
+  )
+    ? configurationNode.params as CollectorNodeParams
+    : undefined
   const publicParameterPanel = parameterInterfaceView ? (
     <section className="space-y-2 rounded-[3px] border border-[#35404b] bg-[#101216]/84 p-3">
       <div>
@@ -1786,6 +1804,16 @@ export function Inspector({ compact = false, onClose }: { compact?: boolean; onC
           />
         ) : null}
 
+        {collectorParams && collectorKind ? (
+          <CollectorSourceEditor
+            key={configurationNodeId}
+            kind={collectorKind}
+            params={collectorParams}
+            language={language}
+            onChange={(params) => updateWorkflowNodeParams(configurationNodeId, params)}
+          />
+        ) : null}
+
         <details className={houdiniDetailsClass} open>
           <summary className={houdiniSummaryClass}>
             <span>{copy.inputs}</span>
@@ -1844,7 +1872,15 @@ export function Inspector({ compact = false, onClose }: { compact?: boolean; onC
                       aria-label={`${copy.inputs}: ${port.name}`}
                       className={houdiniSelectTriggerClass}
                     >
-                      <SelectValue placeholder={copy.inputUnbound} />
+                      <SelectValue>
+                        {(value: string | null) =>
+                          !value || value === UNBOUND_INPUT_VALUE
+                            ? copy.inputUnbound
+                            : value === legacyValue && currentEdge
+                              ? `${copy.legacyMapping} · ${currentEdge.source}:${currentEdge.sourceHandle ?? "default"}`
+                              : (options.find((option) => option.value === value)?.label ?? value)
+                        }
+                      </SelectValue>
                     </SelectTrigger>
                     <SelectContent className="rounded-xs border border-ops-line bg-ops-raised font-mono text-2xs">
                       <SelectItem value={UNBOUND_INPUT_VALUE}>{copy.inputUnbound}</SelectItem>
@@ -2095,6 +2131,220 @@ function findImplementationNode(node: WorkflowProjectNode | undefined): Workflow
   })
 }
 
+function CollectorSourceEditor({
+  kind,
+  params,
+  language,
+  onChange,
+}: {
+  kind: "web" | "api" | "rss" | "cli"
+  params: CollectorNodeParams
+  language: WorkflowLanguage
+  onChange: (params: CollectorNodeParams) => void
+}) {
+  const isZh = language === "zh-CN"
+  const updateSource = (index: number, patch: Partial<CollectorSourceDefinition>) => {
+    onChange({
+      ...params,
+      sources: params.sources.map((source, sourceIndex) => (
+        sourceIndex === index
+          ? { ...source, ...patch } as CollectorSourceDefinition
+          : source
+      )),
+    })
+  }
+  const removeSource = (index: number) => {
+    onChange({
+      ...params,
+      sources: params.sources.filter((_, sourceIndex) => sourceIndex !== index),
+    })
+  }
+  const moveSource = (index: number, direction: -1 | 1) => {
+    const nextIndex = index + direction
+    if (nextIndex < 0 || nextIndex >= params.sources.length) return
+    const sources = [...params.sources]
+    const [source] = sources.splice(index, 1)
+    sources.splice(nextIndex, 0, source)
+    onChange({ ...params, sources })
+  }
+  const addSource = () => {
+    const source = createCollectorSource(kind, `${kind}-${params.sources.length + 1}`)
+    onChange({ ...params, sources: [...params.sources, source] })
+  }
+  const sourceTypeLabel = {
+    web: isZh ? "网页" : "Web",
+    api: "API",
+    rss: "RSS",
+    cli: "CLI",
+  }[kind]
+  const previewItems = collectorPreviewItems({ items: [] })
+
+  return (
+    <section className="space-y-3 rounded-md border border-ops-line bg-ops-panel p-3">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <SectionCaption>{isZh ? `${sourceTypeLabel} 来源` : `${sourceTypeLabel} sources`}</SectionCaption>
+          <p className="mt-1 text-2xs leading-relaxed text-zinc-400">
+            {isZh
+              ? "来源按顺序并行执行；凭证只能引用已保存的 credential。"
+              : "Sources run in order-preserving parallel fan-out; credentials are references only."}
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={addSource}
+          className="inline-flex h-7 items-center gap-1 rounded-xs border border-ops-line px-2 font-mono text-2xs text-primary-400 hover:border-primary-500"
+        >
+          <Plus className="size-3" />
+          {isZh ? "添加来源" : "Add source"}
+        </button>
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          disabled
+          className="rounded-xs border border-ops-line px-2 py-1 font-mono text-3xs text-zinc-500 disabled:opacity-60"
+        >
+          {isZh ? "测试全部" : "Test all"}
+        </button>
+        <button
+          type="button"
+          disabled
+          className="rounded-xs border border-ops-line px-2 py-1 font-mono text-3xs text-zinc-500 disabled:opacity-60"
+        >
+          {isZh ? "重试失败项" : "Retry failed"}
+        </button>
+        <span className="font-mono text-3xs text-zinc-500">
+          publishedAt / fetchedAt
+        </span>
+      </div>
+
+      {params.sources.map((source, index) => (
+        <div key={source.sourceId} className="space-y-2 rounded-md border border-ops-line bg-ops-raised p-3">
+          <div className="flex items-center justify-between gap-2">
+            <span className="font-mono text-2xs text-zinc-300">{source.sourceId}</span>
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                aria-label={isZh ? "上移来源" : "Move source up"}
+                disabled={index === 0}
+                onClick={() => moveSource(index, -1)}
+                className="rounded-xs border border-ops-line px-1.5 py-1 font-mono text-3xs text-zinc-400 disabled:opacity-40"
+              >
+                ↑
+              </button>
+              <button
+                type="button"
+                aria-label={isZh ? "下移来源" : "Move source down"}
+                disabled={index === params.sources.length - 1}
+                onClick={() => moveSource(index, 1)}
+                className="rounded-xs border border-ops-line px-1.5 py-1 font-mono text-3xs text-zinc-400 disabled:opacity-40"
+              >
+                ↓
+              </button>
+              <button
+                type="button"
+                aria-label={isZh ? "移除来源" : "Remove source"}
+                onClick={() => removeSource(index)}
+                className="rounded-xs border border-ops-line px-1.5 py-1 text-signal-danger"
+              >
+                <Trash2 className="size-3" />
+              </button>
+            </div>
+          </div>
+
+          <label className="block space-y-1">
+            <span className="font-mono text-3xs uppercase tracking-wider text-zinc-500">
+              {isZh ? "名称" : "Name"}
+            </span>
+            <Input
+              value={source.name ?? ""}
+              className={houdiniInputClass}
+              onChange={(event) => updateSource(index, { name: event.target.value })}
+            />
+          </label>
+
+          {source.kind === "web" || source.kind === "api" ? (
+            <label className="block space-y-1">
+              <span className="font-mono text-3xs uppercase tracking-wider text-zinc-500">URL</span>
+              <Input
+                value={source.url}
+                className={houdiniInputClass}
+                onChange={(event) => updateSource(index, { url: event.target.value })}
+              />
+            </label>
+          ) : null}
+
+          {source.kind === "rss" ? (
+            <label className="block space-y-1">
+              <span className="font-mono text-3xs uppercase tracking-wider text-zinc-500">Feed URL</span>
+              <Input
+                value={source.feedUrl}
+                className={houdiniInputClass}
+                onChange={(event) => updateSource(index, { feedUrl: event.target.value })}
+              />
+            </label>
+          ) : null}
+
+          {source.kind === "api" ? (
+            <label className="block space-y-1">
+              <span className="font-mono text-3xs uppercase tracking-wider text-zinc-500">
+                {isZh ? "凭证引用（可选）" : "Credential reference (optional)"}
+              </span>
+              <Input
+                value={source.credentialRef ?? ""}
+                placeholder="credential://api-example"
+                className={houdiniInputClass}
+                onChange={(event) => updateSource(index, {
+                  credentialRef: event.target.value || undefined,
+                  credentialScheme: event.target.value
+                    ? source.credentialScheme ?? "bearer"
+                    : undefined,
+                })}
+              />
+            </label>
+          ) : null}
+
+          {source.kind === "cli" ? (
+            <label className="block space-y-1">
+              <span className="font-mono text-3xs uppercase tracking-wider text-zinc-500">
+                {isZh ? "已注册 adapterNodeId" : "Registered adapterNodeId"}
+              </span>
+              <Input
+                value={source.adapterNodeId}
+                className={houdiniInputClass}
+                onChange={(event) => updateSource(index, { adapterNodeId: event.target.value })}
+              />
+              <p className="text-3xs leading-relaxed text-zinc-500">
+                {isZh
+                  ? "仅允许填写目录中的只读 adapter；不接受 Shell 或 commandLine。"
+                  : "Only registered read adapters are allowed; Shell and commandLine are not accepted."}
+              </p>
+            </label>
+          ) : null}
+        </div>
+      ))}
+
+      {params.sources.length === 0 ? (
+        <p className="rounded-xs border border-dashed border-ops-line p-3 text-2xs text-zinc-500">
+          {isZh ? "尚未配置来源。" : "No sources configured."}
+        </p>
+      ) : null}
+      {previewItems.length > 0 ? (
+        <div className="space-y-1 border-t border-ops-line pt-2">
+          {previewItems.map((item, index) => (
+            <div key={index} className="font-mono text-3xs text-zinc-500">{String(item)}</div>
+          ))}
+        </div>
+      ) : null}
+    </section>
+  )
+}
+
+function collectorPreviewItems(output: { items: unknown[] }) {
+  return output.items.slice(0, 50)
+}
+
 function OpenCLISourceEditor({
   sources,
   language,
@@ -2291,7 +2541,15 @@ function OpenCLISourceEditor({
               className="h-7 w-auto min-w-28 rounded-[2px] border-[#343a43] bg-[#111317] px-2 text-[11px] shadow-none focus:ring-0"
             >
               <Plus className="size-3" />
-              <SelectValue placeholder={sourceCatalog.isLoading ? copy.loading : copy.addSource} />
+              <SelectValue>
+                {(value: string | null) =>
+                  value
+                    ? (registeredSources.find((source) => source.id === value)?.label ?? value)
+                    : sourceCatalog.isLoading
+                      ? copy.loading
+                      : copy.addSource
+                }
+              </SelectValue>
             </SelectTrigger>
             <SelectContent>
               {availableSources.map((source) => (
@@ -2356,7 +2614,13 @@ function OpenCLISourceEditor({
               className="h-8 rounded-[3px] border-[#303640] bg-[#080a0c] text-xs shadow-none focus:ring-0"
             >
               <Plus className="size-3" />
-              <SelectValue placeholder={copy.addContent} />
+              <SelectValue>
+                {(value: string | null) =>
+                  value && value in copy.contentTypes
+                    ? copy.contentTypes[value as keyof typeof copy.contentTypes]
+                    : copy.addContent
+                }
+              </SelectValue>
             </SelectTrigger>
             <SelectContent>
               {Object.entries(copy.contentTypes).map(([value, label]) => (
@@ -2407,7 +2671,9 @@ function OpenCLISourceEditor({
               <Label className="text-[11px] font-medium text-foreground">{copy.market}</Label>
               <Select value={market} onValueChange={(value) => value && onChange(updateSourceMarket(sources, value))}>
                 <SelectTrigger className="h-8 rounded-[3px] border-[#303640] bg-[#080a0c] text-xs focus:ring-0">
-                  <SelectValue />
+                  <SelectValue>
+                    {(value: string | null) => SOURCE_MARKET_OPTIONS.find((option) => option.value === value)?.label ?? value}
+                  </SelectValue>
                 </SelectTrigger>
                 <SelectContent>
                   {!SOURCE_MARKET_OPTIONS.some((option) => option.value === market) ? (
