@@ -247,22 +247,29 @@ function AgentRunQueue({ tasks }: { tasks: StreamTask[] }) {
 
 function AgentDeliveryPanel({
   agents,
-  notificationLogs,
+  delivery,
   notificationChannels,
   agentsLoading,
   logsLoading,
   rulesLoading,
 }: {
   agents: Array<{ id: string; name: string; processor_type: string; model?: string; enabled: boolean }>
-  notificationLogs: Array<{ id: string; status: string; ack_status: string; created_at: string }>
+  delivery: {
+    attempts: number
+    submitted: number
+    awaiting_ack: number
+    confirmed: number
+    ack_failed: number
+    submission_failed: number
+    ack_not_required: number
+    window: string
+  }
   notificationChannels: string[]
   agentsLoading: boolean
   logsLoading: boolean
   rulesLoading: boolean
 }) {
   const enabledAgents = agents.filter((agent) => agent.enabled)
-  const delivered = notificationLogs.filter((log) => ['sent', 'success', 'completed'].includes(log.status.toLowerCase())).length
-  const failed = notificationLogs.filter((log) => log.status.toLowerCase().includes('fail') || log.status.toLowerCase().includes('error')).length
 
   return (
     <Card>
@@ -272,7 +279,7 @@ function AgentDeliveryPanel({
             <Bot className="size-4 text-primary" aria-hidden />
             Agent 与交付
           </CardTitle>
-          <p className="mt-1 text-sm text-muted-foreground">谁在处理信号，以及结果是否抵达外部渠道。</p>
+          <p className="mt-1 text-sm text-muted-foreground">谁在处理信号，以及外部渠道报告了什么交付证据。</p>
         </div>
         <Badge variant="outline">
           {rulesLoading ? '同步渠道' : notificationChannels.length ? `${notificationChannels.length} 个渠道` : '未配置渠道'}
@@ -315,14 +322,24 @@ function AgentDeliveryPanel({
           </div>
           <div className="mt-3 grid grid-cols-2 gap-3">
             <div>
-              <div className="font-mono text-2xl tabular-nums">{logsLoading ? '—' : delivered}</div>
-              <div className="text-[10px] text-muted-foreground">已送达</div>
+              <div className="font-mono text-2xl tabular-nums">{delivery.submitted}</div>
+              <div className="text-[10px] text-muted-foreground">已提交（{delivery.attempts} 次尝试）</div>
             </div>
             <div>
-              <div className="font-mono text-2xl tabular-nums text-destructive">{logsLoading ? '—' : failed}</div>
-              <div className="text-[10px] text-muted-foreground">失败</div>
+              <div className="font-mono text-2xl tabular-nums text-success">{delivery.confirmed}</div>
+              <div className="text-[10px] text-muted-foreground">已确认回执</div>
             </div>
           </div>
+          <div className="mt-3 grid grid-cols-2 gap-x-3 gap-y-1 text-[10px] text-muted-foreground">
+            <span>等待回执：{delivery.awaiting_ack}</span>
+            <span>无需回执：{delivery.ack_not_required}</span>
+            <span>回执失败：{delivery.ack_failed}</span>
+            <span>提交失败：{delivery.submission_failed}</span>
+          </div>
+          <p className="mt-2 text-[10px] text-muted-foreground">
+            统计窗口：{delivery.window === 'all' ? '全部记录' : delivery.window}；提交成功不等于已确认送达。
+            {logsLoading ? '通知日志正在同步…' : ''}
+          </p>
           <div className="mt-4 border-t pt-3">
             <div className="text-xs text-muted-foreground">已启用渠道</div>
             <div className="mt-2 flex flex-wrap gap-1.5">
@@ -459,6 +476,7 @@ function OpinionMonitorPanel({ data, isLoading, isError }: { data?: OpinionMonit
 function runsToStream(
   runs: Array<{
     id: string
+    task_id: string
     source_name: string
     task_trigger_type: string
     status: string
@@ -469,6 +487,7 @@ function runsToStream(
 ): StreamTask[] {
   return runs.map((r) => ({
     id: r.id,
+    href: `/tasks/${r.task_id}`,
     lane: 'collect' as const,
     title: `${r.source_name} 采集`,
     endpoint: r.source_name,
@@ -571,6 +590,7 @@ export default function DashboardPage() {
     .filter((task) => task.phase === 'failed')
     .map((task) => ({
       id: `f-${task.id}`,
+      href: task.href,
       lane: task.lane,
       title: task.title,
       workerName: task.workerName,
@@ -580,7 +600,6 @@ export default function DashboardPage() {
     }))
   const hasAttention = s.tasks.failed > 0 || failures.length > 0
   const agents = agentsQuery.data?.data ?? []
-  const notificationLogs = notificationLogsQuery.data?.data ?? []
   const notificationRules = notificationRulesQuery.data?.data ?? []
   const activeDeliveryChannels = Array.from(
     new Set(notificationRules.filter((rule) => rule.enabled).map((rule) => rule.notifier_type)),
@@ -655,7 +674,7 @@ export default function DashboardPage() {
             </div>
             <div className="flex flex-wrap items-center gap-2 md:justify-end">
               <Link
-                href="/tasks"
+                href={hasAttention ? '/tasks?status=failed' : '/tasks'}
                 className={buttonVariants({
                   variant: hasAttention ? 'destructive' : 'default',
                   size: 'sm',
@@ -712,6 +731,7 @@ export default function DashboardPage() {
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           <ActionLink href="/studio" title="编排工作流" description="先选择项目，再设计节点和执行链路" icon={GitBranch} />
           <ActionLink href="/sources" title="接入数据源" description="配置采集来源与凭证" icon={Database} />
+          <ActionLink href="/schedules" title="检查调度计划" description="确认下一次运行时间与启用状态" icon={Clock3} />
           <ActionLink href="/operations-agents" title="设置自动化与智能体" description="安排任务、选择智能体和配置执行链路" icon={Clock3} />
           <ActionLink href="/tasks" title="检查运行结果" description="查看任务、记录与通知" icon={Activity} />
         </div>
@@ -748,7 +768,7 @@ export default function DashboardPage() {
 
       <AgentDeliveryPanel
         agents={agents}
-        notificationLogs={notificationLogs}
+        delivery={s.delivery}
         notificationChannels={activeDeliveryChannels}
         agentsLoading={agentsQuery.isLoading}
         logsLoading={notificationLogsQuery.isLoading}
@@ -767,7 +787,7 @@ export default function DashboardPage() {
       </section>
 
       <section className="grid gap-4" aria-label="运行与异常">
-        <FailureFeed failures={failures} />
+        <FailureFeed failures={failures} totalFailed={s.tasks.failed} />
         <TaskStream tasks={stream} />
       </section>
 

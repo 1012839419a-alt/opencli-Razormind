@@ -8,4 +8,4 @@ export type AuthIdentity = {
   auth_method: 'oidc' | 'bootstrap' | 'development' | string
 }
 
-export type AuthStatus = 'loading' | 'authenticated' | 'anonymous'
+export type AuthStatus = 'loading' | 'recovering' | 'authenticated' | 'anonymous'

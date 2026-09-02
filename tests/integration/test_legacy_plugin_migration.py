@@ -87,7 +87,7 @@ def test_legacy_plugin_database_rejoins_current_migration_head(tmp_path: Path) -
     finally:
         connection.close()
 
-    assert revision == ("cd4e5f6a7b8c",)
+    assert revision == ("p0q1r2s3t4u5",)
     assert "version" in cursor_columns
     assert "identity_key" in record_columns
     assert "ix_collected_records_source_identity" in record_indexes
@@ -126,16 +126,13 @@ def test_current_database_repairs_missing_plugin_installation_table(tmp_path: Pa
     try:
         revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()
         table = connection.execute(
-            "SELECT name FROM sqlite_master "
-            "WHERE type = 'table' AND name = 'plugin_installations'"
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'plugin_installations'"
         ).fetchone()
-        indexes = {
-            row[1] for row in connection.execute("PRAGMA index_list(plugin_installations)")
-        }
+        indexes = {row[1] for row in connection.execute("PRAGMA index_list(plugin_installations)")}
     finally:
         connection.close()
 
-    assert revision == ("cd4e5f6a7b8c",)
+    assert revision == ("p0q1r2s3t4u5",)
     assert table == ("plugin_installations",)
     assert "ix_plugin_installations_provider_key" in indexes
 
@@ -184,7 +181,7 @@ def test_current_head_repairs_missing_record_identity_schema(tmp_path: Path) -> 
     finally:
         connection.close()
 
-    assert revision == ("cd4e5f6a7b8c",)
+    assert revision == ("p0q1r2s3t4u5",)
     assert "identity_key" in columns
     assert "ix_collected_records_source_identity" in indexes
     assert record == ("source-1", None)

@@ -4,6 +4,7 @@ from backend.channels.doubao_research_channel import (
     DoubaoResearchChannel,
     _citations,
     _conversation_url,
+    _run_doubao_command,
     _structured_response,
 )
 from backend.schemas.source import DataSourceCreate
@@ -28,8 +29,9 @@ def test_conversation_url_extracts_chat_id():
 
 
 def test_conversation_url_ignores_root_chat():
-    # A freshly opened /chat page has no conversation id yet — must not be picked up.
-    status = '[{"Status": "Connected", "Url": "https://www.doubao.com/chat", "Title": "x"}]'
+    status = (
+        '[{"Status": "Connected", "Url": "https://www.doubao.com/chat", "Title": "x"}]'
+    )
     assert _conversation_url(status) == ""
 
 
@@ -48,6 +50,39 @@ def test_structured_response_preserves_share_data_and_keywords():
     assert response["session_share_data"] == [{"url": "https://doubao.com/share/1"}]
     assert response["suggested_keywords"] == ["DHA 食物"]
 # end marker
+
+
+def test_structured_response_preserves_data_and_links():
+    response = _structured_response(
+        '{"answer":"结论", "data":{"items":["一","二"]}, '
+        '"links":[{"title":"来源","url":"https://example.com/source"}], '
+        '"session_share_data":[], "suggested_keywords":[]}'
+    )
+
+    assert response["data"] == {"items": ["一", "二"]}
+    assert response["links"] == [{"title": "来源", "url": "https://example.com/source"}]
+    assert response["response_data"]["data"] == {"items": ["一", "二"]}
+
+
+def test_structured_response_accepts_doubao_suggested_keys_alias():
+    response = _structured_response(
+        '{"answer":"结论", "session_share_data":"", '
+        '"suggested_keys":["深海鱼", "DHA 鸡蛋"], "citations":[]}'
+    )
+
+    assert response["suggested_keywords"] == ["深海鱼", "DHA 鸡蛋"]
+
+
+def test_structured_response_preserves_share_data_and_keywords():
+    response = _structured_response(
+        "```json\n"
+        '{"answer":"结论", "session_share_data":[{"url":"https://doubao.com/share/1"}], '
+        '"suggested_keywords":["DHA 食物"]}\n```'
+    )
+
+    assert response["answer"] == "结论"
+    assert response["session_share_data"] == [{"url": "https://doubao.com/share/1"}]
+    assert response["suggested_keywords"] == ["DHA 食物"]
 
 
 def test_structured_response_preserves_data_and_links():
@@ -188,8 +223,7 @@ async def test_collect_captures_conversation_url(monkeypatch):
 
     assert result.success
     assert result.items[0]["conversation_url"] == "https://www.doubao.com/chat/12345"
-    # ask + status both hit the adapter
-    assert [c[2] for c in calls] == ["ask", "status"]
+    assert [command[2] for command in calls] == ["ask", "status"]
 
 
 @pytest.mark.asyncio
@@ -202,7 +236,6 @@ async def test_collect_tolerates_status_failure(monkeypatch):
     monkeypatch.setattr("backend.channels.doubao_research_channel._run_doubao_command", fake_run)
     result = await DoubaoResearchChannel().collect({"question": "测试"}, {})
 
-    # A failed status must NOT fail the collect — answer is already in hand.
     assert result.success
     assert result.items[0]["conversation_url"] == ""
 
@@ -263,95 +296,133 @@ def test_source_schema_accepts_doubao_research_channel():
 
 
 @pytest.mark.asyncio
-async def test_health_check_accepts_unknown_login_with_authenticated_provider_probe(monkeypatch):
-    calls = []
+async def test_doubao_command_uses_host_bridge_when_configured(monkeypatch):
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
 
-    async def fake_run(command):
-        calls.append(command)
-        if command[2] == "status":
-            return (
-                0,
-                (
-                    '[{"Status":"Connected","Login":"Unknown","Title":"豆包工作 - '
-                    '字节跳动旗下 AI 智能助手","Url":"https://www.doubao.com/chat/?from_login=1"}]'
-                ),
-                "",
-            )
-        return 0, '[{"Name":"authenticated account","Email":"user@example.com"}]', ""
+        def json(self):
+            return {"returncode": 0, "stdout": "logged_in: true", "stderr": ""}
 
-    monkeypatch.setattr("backend.channels.doubao_research_channel._run_doubao_command", fake_run)
+    class FakeClient:
+        async def __aenter__(self):
+            return self
 
-    assert await DoubaoResearchChannel().health_check({"site_session": "persistent"})
-    assert [command[2] for command in calls] == ["status", "whoami"]
-    assert all(command[-2:] == ["--site-session", "persistent"] for command in calls)
+        async def __aexit__(self, *_):
+            return None
 
+        async def post(self, url, **kwargs):
+            assert url.endswith("/doubao")
+            assert kwargs["json"] == {"command": "status", "args": []}
+            return FakeResponse()
 
-@pytest.mark.asyncio
-async def test_health_check_rejects_explicitly_logged_out_status(monkeypatch):
-    async def fake_run(command):
-        return 0, '[{"Status":"Connected","Login":"false"}]', ""
+    monkeypatch.setattr(
+        "backend.channels.doubao_research_channel.httpx.AsyncClient",
+        lambda **_: FakeClient(),
+    )
+    monkeypatch.setenv("DOUBAO_CLI_BRIDGE_URL", "http://host.docker.internal:18765/doubao")
+    monkeypatch.setenv("DOUBAO_CLI_BRIDGE_TOKEN", "bridge-token")
 
-    monkeypatch.setattr("backend.channels.doubao_research_channel._run_doubao_command", fake_run)
+    result = await _run_doubao_command(["opencli", "doubao", "status"])
 
-    assert not await DoubaoResearchChannel().health_check()
-
-
-@pytest.mark.asyncio
-async def test_health_check_rejects_captcha_status(monkeypatch):
-    async def fake_run(command):
-        return 1, "", "Doubao blocked the request with a verification challenge"
-
-    monkeypatch.setattr("backend.channels.doubao_research_channel._run_doubao_command", fake_run)
-
-    assert not await DoubaoResearchChannel().health_check()
+    assert result == (0, "logged_in: true", "")
 
 
-@pytest.mark.asyncio
+def _ctx(**config) -> FetchContext:
+    merged = {"question": "x", "max_retries": 3, "retry_base_delay": 0.001}
+    merged.update(config)
+    return FetchContext(config=merged, params={})
+
+
+async def test_fetch_retries_transient_then_succeeds(monkeypatch):
+    channel = DoubaoResearchChannel()
+    results = [
+        ChannelResult.fail("CDP connection is not open", error_type="ConnectionError"),
+        ChannelResult.fail("CDP connection is not open", error_type="ConnectionError"),
+        ChannelResult.ok([{"title": "回答"}]),
+    ]
+    calls: list[int] = []
+
+    async def fake_collect(config, parameters):
+        calls.append(1)
+        return results.pop(0)
+
+    monkeypatch.setattr(channel, "collect", fake_collect)
+    out = await channel.fetch(_ctx())
+
+    assert out.items == [{"title": "回答"}]
+    assert len(calls) == 3
+
+
+async def test_fetch_gives_up_after_max_retries(monkeypatch):
+    channel = DoubaoResearchChannel()
+    calls: list[int] = []
+
+    async def fake_collect(config, parameters):
+        calls.append(1)
+        return ChannelResult.fail("CDP connection is not open", error_type="ConnectionError")
+
+    monkeypatch.setattr(channel, "collect", fake_collect)
+
+    with pytest.raises(ChannelFetchError) as error:
+        await channel.fetch(_ctx(max_retries=3))
+
+    assert error.value.error_type == "ConnectionError"
+    assert len(calls) == 4
+
+
 @pytest.mark.parametrize(
-    "status",
-    [
-        '[{"Status":"Connected","Login":"Unknown","Title":"Other provider","Url":"https://example.com/chat"}]',
-        '[{"Status":"Connected","Login":"Unknown","Title":"豆包工作","Url":"https://www.doubao.com/chat/"},'
-        '{"Status":"Connected","Login":"Unknown","Title":"豆包工作","Url":"https://www.doubao.com/chat/"}]',
-    ],
+    ("error_type", "message"),
+    [("captcha_challenge", "verification challenge"), ("ValueError", "bad config")],
 )
-async def test_health_check_rejects_wrong_or_ambiguous_workspace(monkeypatch, status):
+async def test_fetch_does_not_retry_non_transient_errors(
+    monkeypatch, error_type, message
+):
+    channel = DoubaoResearchChannel()
+    calls: list[int] = []
+
+    async def fake_collect(config, parameters):
+        calls.append(1)
+        return ChannelResult.fail(message, error_type=error_type)
+
+    monkeypatch.setattr(channel, "collect", fake_collect)
+
+    with pytest.raises(ChannelFetchError) as error:
+        await channel.fetch(_ctx())
+
+    assert error.value.error_type == error_type
+    assert len(calls) == 1
+
+
+async def test_fetch_success_passes_metadata_through(monkeypatch):
+    channel = DoubaoResearchChannel()
+
+    async def fake_collect(config, parameters):
+        return ChannelResult.ok(
+            [{"title": "x"}], citation_count=3, citation_capture="answer_url_extraction"
+        )
+
+    monkeypatch.setattr(channel, "collect", fake_collect)
+    out = await channel.fetch(_ctx())
+
+    assert out.metadata["citation_count"] == 3
+    assert out.metadata["citation_capture"] == "answer_url_extraction"
+
+
+@pytest.mark.parametrize(
+    "stderr",
+    ["error: CDP connection is not open", "Inspected target navigated or closed"],
+)
+async def test_collect_classifies_cdp_transient_as_connection_error(
+    monkeypatch, stderr
+):
     async def fake_run(command):
-        return 0, status, ""
+        return 1, "", stderr
 
-    monkeypatch.setattr("backend.channels.doubao_research_channel._run_doubao_command", fake_run)
+    monkeypatch.setattr(
+        "backend.channels.doubao_research_channel._run_doubao_command", fake_run
+    )
+    result = await DoubaoResearchChannel().collect({"question": "测试"}, {})
 
-    assert not await DoubaoResearchChannel().health_check()
-
-
-@pytest.mark.asyncio
-async def test_health_check_rejects_provider_probe_error(monkeypatch):
-    async def fake_run(command):
-        if command[2] == "status":
-            return (
-                0,
-                (
-                    '[{"Status":"Connected","Login":"Unknown","Title":"豆包工作 - '
-                    '字节跳动旗下 AI 智能助手","Url":"https://www.doubao.com/chat/"}]'
-                ),
-                "",
-            )
-        return 1, "", "whoami failed"
-
-    monkeypatch.setattr("backend.channels.doubao_research_channel._run_doubao_command", fake_run)
-
-    assert not await DoubaoResearchChannel().health_check()
-
-
-@pytest.mark.asyncio
-async def test_health_check_preserves_explicit_logged_in_path(monkeypatch):
-    calls = []
-
-    async def fake_run(command):
-        calls.append(command)
-        return 0, '[{"Status":"Connected","Login":"authenticated"}]', ""
-
-    monkeypatch.setattr("backend.channels.doubao_research_channel._run_doubao_command", fake_run)
-
-    assert await DoubaoResearchChannel().health_check()
-    assert [command[2] for command in calls] == ["status"]
+    assert not result.success
+    assert result.error_type == "ConnectionError"

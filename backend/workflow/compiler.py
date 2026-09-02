@@ -42,6 +42,12 @@ from backend.workflow.tool_capabilities import (
 INTERNAL_ID_SEPARATOR = "::"
 MAX_NODE_PATH_DEPTH = 4
 _LEGACY_DATA_OPERATOR_PACK_VERSION = "1.0.0"
+COLLECTION_SOURCE_CATALOG_IDS = {
+    "collection.source.web",
+    "collection.source.api",
+    "collection.source.rss",
+    "collection.source.cli",
+}
 
 
 @dataclass(frozen=True)
@@ -87,6 +93,13 @@ _PORT_CONTRACTS: dict[str, tuple[list[_PortContract], list[_PortContract]]] = {
         [_PortContract("in", "input", "trigger", required=False)],
         [_PortContract("out", "output", "trigger")],
     ),
+    **{
+        catalog_id: (
+            [_PortContract("in", "input", "trigger", required=False)],
+            [_PortContract("out", "output", "CollectorOutputV1")],
+        )
+        for catalog_id in COLLECTION_SOURCE_CATALOG_IDS
+    },
     "intelligence.processing.normalize": (
         [_PortContract("in", "input", "items[]")],
         [_PortContract("out", "output", "recordCandidate[]")],
@@ -112,10 +125,7 @@ _PORT_CONTRACTS: dict[str, tuple[list[_PortContract], list[_PortContract]]] = {
         [_PortContract("out", "output", "recordCandidate[]")],
     ),
     "intelligence.flow.merge": (
-        [
-            _PortContract("in1", "input", "recordCandidate[]"),
-            _PortContract("in2", "input", "recordCandidate[]"),
-        ],
+        [_PortContract("in", "input", "CollectorMergeInputV1")],
         [_PortContract("out", "output", "recordCandidate[]")],
     ),
     "intelligence.control.record-acceptance": (
@@ -447,6 +457,8 @@ def _validate_capability_version_pin(
 def _requires_adapter(node: WorkflowProjectNode) -> bool:
     if _read_string((node.ui or {}).get("catalogId")) == "media.image-asset":
         return False
+    if _read_string((node.ui or {}).get("catalogId")) in COLLECTION_SOURCE_CATALOG_IDS:
+        return False
     return node.kind == "source" or node.capability in {"fetch", "send"}
 
 
@@ -648,17 +660,17 @@ def _validate_typed_edges(
             continue
 
         source_port = _resolve_output_port(source_contract[1], edge.sourcePort)
-        target_port = _resolve_input_port(target_contract[0], edge.targetPort)
-        if (
-            target_port is None
-            and _read_string((target_node.ui or {}).get("catalogId")) == "intelligence.flow.merge"
+        target_catalog_id = _read_string((target_node.ui or {}).get("catalogId"))
+        merge_alias = (
+            target_catalog_id == "intelligence.flow.merge"
             and edge.targetPort
             and re.fullmatch(r"in\d+", edge.targetPort)
-        ):
-            # Merge fans in N branches; the static contract only names in1/in2
-            # but the demand assembler emits in3+ whenever the catalog matches
-            # more than two sources for one need.
-            target_port = _PortContract(edge.targetPort, "input", "recordCandidate[]")
+        )
+        target_port = (
+            _PortContract("in", "input", "CollectorMergeInputV1")
+            if merge_alias
+            else _resolve_input_port(target_contract[0], edge.targetPort)
+        )
         if source_port is None:
             errors.append(
                 WorkflowCompileError(
@@ -767,6 +779,11 @@ def _node_port_contracts(
         return native_contract
     ui = node.ui or {}
     catalog_id = _read_string(ui.get("catalogId"))
+    if catalog_id in COLLECTION_SOURCE_CATALOG_IDS:
+        return (
+            [_PortContract("in", "input", "trigger", required=False)],
+            [_PortContract("out", "output", "CollectorOutputV1")],
+        )
     if catalog_id in _PORT_CONTRACTS:
         return _PORT_CONTRACTS[catalog_id]
     primitive_id = _read_string(ui.get("primitiveId"))
@@ -874,6 +891,11 @@ def _resolve_input_port(
 
 def _port_types_compatible(source_type: str, target_type: str) -> bool:
     if source_type == target_type:
+        return True
+    if target_type == "CollectorMergeInputV1" and source_type in {
+        "CollectorOutputV1",
+        "recordCandidate[]",
+    }:
         return True
     return source_type in {"any", "unknown"} or target_type in {"any", "unknown"}
 

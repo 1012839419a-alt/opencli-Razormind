@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field
 
 from backend.automation_schedule import parse_automation_schedule, parse_automation_timezone
 from backend.schemas.common import UTCModel
@@ -15,10 +15,9 @@ STARTER_KEYS: tuple[str, ...] = (
     "anomaly-follow-up",
 )
 
-
 class AutomationCreate(BaseModel):
-    operations_agent_id: str | None = None
-    operations_agent_version: int | None = Field(default=None, ge=1)
+    model_config = ConfigDict(extra="forbid")
+
     name: str = Field(min_length=1, max_length=255)
     prompt: str = Field(min_length=1, max_length=20000)
     precheck: str | None = Field(default=None, max_length=4000)
@@ -30,27 +29,6 @@ class AutomationCreate(BaseModel):
     project: dict = Field(default_factory=dict)
     enabled: bool = True
     starter_key: StarterKey | None = None
-
-    @field_validator("schedule")
-    @classmethod
-    def schedule_is_supported(cls, value: str) -> str:
-        parse_automation_schedule(value)
-        return value
-
-    @field_validator("timezone")
-    @classmethod
-    def timezone_is_supported(cls, value: str) -> str:
-        parse_automation_timezone(value)
-        return value
-
-    @model_validator(mode="after")
-    def enabled_automation_has_pinned_agent(self):
-        paired = self.operations_agent_id is not None and self.operations_agent_version is not None
-        if (self.operations_agent_id is None) != (self.operations_agent_version is None):
-            raise ValueError("operations_agent_id and operations_agent_version must be set together")
-        if self.enabled and not paired:
-            raise ValueError("enabled Automation requires a pinned published Operations Agent")
-        return self
 
 class AutomationUpdate(BaseModel):
     operations_agent_id: str | None = None
@@ -97,9 +75,6 @@ class AutomationRead(UTCModel):
     id: str
     workspace_id: str
     starter_key: StarterKey | None
-    revision: int
-    operations_agent_id: str | None
-    operations_agent_version: int | None
     name: str
     prompt: str
     precheck: str | None
@@ -115,23 +90,6 @@ class AutomationRead(UTCModel):
     updated_at: datetime
 
     model_config = {"from_attributes": True}
-
-
-class AutomationSchedulerTickRequest(BaseModel):
-    fired_at: datetime
-
-    @field_validator("fired_at")
-    @classmethod
-    def fired_at_is_timezone_aware(cls, value: datetime) -> datetime:
-        if value.tzinfo is None:
-            raise ValueError("fired_at must include a timezone")
-        return value
-
-
-class AutomationSchedulerTickResult(BaseModel):
-    run_ids: list[str]
-    occurrence_references: list[str]
-    queued_run_ids: list[str]
 
 
 class StarterPreviewItem(BaseModel):

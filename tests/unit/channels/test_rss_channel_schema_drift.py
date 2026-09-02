@@ -9,6 +9,8 @@ import pytest
 from backend.channels.rss_channel import RSSChannel
 from backend.control.error_kinds import ErrorKind, map_error_type
 
+pytestmark = pytest.mark.usefixtures("mock_rss_public_client")
+
 
 @pytest.fixture
 def channel():

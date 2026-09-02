@@ -1,17 +1,9 @@
 param(
-    [int]$Port = 18765,
-    [string]$Prefix = "http://+:18765/"
+    [int]$Port = 8765,
+    [string]$Prefix = "http://127.0.0.1:8765/"
 )
 
 $ErrorActionPreference = "Stop"
-
-# The default listener is reachable from Docker Desktop through
-# host.docker.internal. A token is mandatory whenever the listener is not
-# restricted to the local loopback interface.
-$bridgeToken = [string]($env:LARK_CLI_BRIDGE_TOKEN ?? "")
-if ($Prefix -notmatch "(?i)https?://(?:localhost|127\.0\.0\.1)(?::|/|$)" -and -not $bridgeToken) {
-    throw "LARK_CLI_BRIDGE_TOKEN is required for a non-loopback bridge listener"
-}
 
 function Invoke-LocalCli {
     param(
@@ -67,8 +59,8 @@ try {
             if ($context.Request.HttpMethod -ne "POST" -or $path -notin @("/feishu/records", "/doubao")) {
                 $response.StatusCode = 404
                 $body = @{ error = "not_found" } | ConvertTo-Json -Compress
-            } elseif ($bridgeToken -and
-                $context.Request.Headers["X-Lark-CLI-Bridge-Token"] -ne $bridgeToken) {
+            } elseif (($env:LARK_CLI_BRIDGE_TOKEN ?? "") -and
+                $context.Request.Headers["X-Lark-CLI-Bridge-Token"] -ne $env:LARK_CLI_BRIDGE_TOKEN) {
                 $response.StatusCode = 401
                 $body = @{ error = "unauthorized" } | ConvertTo-Json -Compress
             } else {

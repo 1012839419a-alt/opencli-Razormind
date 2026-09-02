@@ -1,12 +1,36 @@
 from backend.models.acquisition import AcquisitionExecution, AcquisitionExecutionStatus
 from backend.models.agent import AIAgent
+from backend.models.agent_conversation import AgentConversation, AgentConversationTurn
 from backend.models.automation import Automation
+from backend.models.agent_conversation import (
+    AgentConversation,
+    AgentConversationStatus,
+    AgentConversationTurn,
+    AgentConversationTurnStatus,
+)
 from backend.models.base import TimestampMixin
-from backend.models.browser import BrowserBinding, BrowserInstance
+from backend.models.browser import (
+    BrowserBinding,
+    BrowserCapabilityInvocation,
+    BrowserInstance,
+    BrowserRuntimeBundle,
+    BrowserRuntimeDeployment,
+)
+from backend.models.browser_space import (
+    BrowserSpace,
+    BrowserSpaceEvent,
+    BrowserSpaceEventCounter,
+    BrowserSpaceEventKind,
+    BrowserSpaceOwnerType,
+    BrowserSpaceStatus,
+    BrowserSpaceTask,
+    BrowserSpaceTaskStatus,
+)
 from backend.models.consumer_grant import ConsumerGrant
 from backend.models.control_action import ControlActionRecord
 from backend.models.cookie_jar import CookieJarEntry
 from backend.models.edge_node import EdgeNode, EdgeNodeEvent
+from backend.models.feed_provider import FeedProvider
 from backend.models.identity import (
     ServiceIdentity,
     Team,
@@ -16,14 +40,29 @@ from backend.models.identity import (
     WorkspaceMembership,
     WorkspaceRole,
 )
-from backend.models.feed_provider import FeedProvider
-from backend.models.intelligence import (
-    IntelligenceArtifact,
-    IntelligenceArtifactReference,
-    IntelligenceCommandRecord,
-    IntelligenceOutbox,
-    IntelligenceSession,
-    IntelligenceTransition,
+from backend.models.delivery_authorization import (
+    DeliveryAuthorizationDecisionV1,
+    DeliveryTarget,
+    DeliveryTargetRevision,
+)
+from backend.models.delivery_execution import (
+    ControlledReceiverDelivery,
+    ControlledReceiverNonce,
+    DeliveryExecution,
+    DeliveryExecutionReconciliation,
+    DeliveryExecutionResult,
+)
+
+
+from backend.models.iii_collection import (
+    EvidenceBatchMaterializationEventV1,
+    EvidenceBatchMaterializationManifestV1,
+    IIICollectionAttemptV1,
+    IIICollectionCommandV1,
+    IIICollectionExpectedKeyReportV1,
+    IIICollectionIngressReceiptV1,
+    IIICollectionLifecycleObservationV1,
+    IIICollectionOutboundV1,
 )
 from backend.models.image_studio import (
     CanvasDocument,
@@ -31,6 +70,14 @@ from backend.models.image_studio import (
     ImageGenerationJob,
     ImageGenerationJobStatus,
     MediaAsset,
+)
+from backend.models.intelligence import (
+    IntelligenceArtifact,
+    IntelligenceArtifactReference,
+    IntelligenceCommandRecord,
+    IntelligenceOutbox,
+    IntelligenceSession,
+    IntelligenceTransition,
 )
 from backend.models.model_default import ModelDefault
 from backend.models.notification import NotificationLog, NotificationRule
@@ -72,6 +119,13 @@ from backend.models.studio import (
     StudioWorkspace,
 )
 from backend.models.task import CollectionTask, TaskRun, TaskRunEvent
+from backend.models.workbench import (
+    WorkbenchProposal,
+    WorkbenchRepository,
+    WorkbenchThread,
+    WorkbenchTurn,
+    WorkbenchTurnEvent,
+)
 from backend.models.worker import WorkerNode
 from backend.models.workflow import Project, Workflow, WorkflowDraft, WorkflowVersion
 from backend.models.workflow_run import WorkflowRun, WorkflowRunEvent
@@ -80,10 +134,27 @@ __all__ = [
     "TimestampMixin",
     "AcquisitionExecution",
     "AcquisitionExecutionStatus",
+    "AgentConversation",
+    "AgentConversationTurn",
     "AIAgent",
+    "AgentConversation",
+    "AgentConversationStatus",
+    "AgentConversationTurn",
+    "AgentConversationTurnStatus",
     "Automation",
     "BrowserBinding",
+    "BrowserCapabilityInvocation",
     "BrowserInstance",
+    "BrowserRuntimeBundle",
+    "BrowserRuntimeDeployment",
+    "BrowserSpace",
+    "BrowserSpaceEvent",
+    "BrowserSpaceEventCounter",
+    "BrowserSpaceEventKind",
+    "BrowserSpaceOwnerType",
+    "BrowserSpaceStatus",
+    "BrowserSpaceTask",
+    "BrowserSpaceTaskStatus",
     "CookieJarEntry",
     "ConsumerGrant",
     "EdgeNode",
@@ -101,6 +172,11 @@ __all__ = [
     "OperationsAgentDraft",
     "PublishedOperationsAgentVersion",
     "OperationsAgentRun",
+    "WorkbenchRepository",
+    "WorkbenchThread",
+    "WorkbenchTurn",
+    "WorkbenchTurnEvent",
+    "WorkbenchProposal",
     "FeedProvider",
     "IntelligenceSession",
     "IntelligenceArtifact",
@@ -108,6 +184,20 @@ __all__ = [
     "IntelligenceTransition",
     "IntelligenceCommandRecord",
     "IntelligenceOutbox",
+    "IIICollectionCommandV1",
+    "DeliveryTarget",
+    "DeliveryTargetRevision",
+    "DeliveryAuthorizationDecisionV1",
+    "DeliveryExecution",
+    "DeliveryExecutionResult",
+    "DeliveryExecutionReconciliation",
+    "ControlledReceiverDelivery",
+    "ControlledReceiverNonce",
+    "IIICollectionAttemptV1",
+    "IIICollectionOutboundV1",
+    "IIICollectionLifecycleObservationV1",
+    "EvidenceBatchMaterializationManifestV1",
+    "EvidenceBatchMaterializationEventV1",
     "CanvasDocument",
     "CanvasSnapshot",
     "MediaAsset",

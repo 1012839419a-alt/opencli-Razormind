@@ -6,6 +6,8 @@ import { toast } from 'sonner'
 import { useAuth } from '@/components/auth/auth-provider'
 import { BACKEND_HINT, ErrorState, LoadingState } from '@/components/shell/data-states'
 import { PageContainer } from '@/components/shell/page-container'
+import { RestartApiCard } from '@/components/system/restart-api-card'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card'
 import { Field, FieldDescription, FieldGroup, FieldLabel } from '@/components/ui/field'
@@ -776,18 +778,9 @@ export default function SystemSettingsPage() {
             <LoadingState rows={3} />
           </CardContent>
         </Card>
-      ) : config.isError || !config.data ? (
-        <section aria-label="部署与运行配置加载失败">
-          <ErrorState message={(config.error as Error)?.message} hint={BACKEND_HINT} />
-        </section>
-      ) : (
-        <>
-          <SystemConfigOverview config={config.data} />
-          <RuntimeSettingsForm key={JSON.stringify(config.data)} config={config.data} />
-        </>
-      )}
 
-      <AccountSecurityCard />
+        <RestartApiCard />
+      </div>
     </PageContainer>
   )
 }

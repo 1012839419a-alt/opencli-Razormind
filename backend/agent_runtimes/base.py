@@ -21,19 +21,6 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-RUNTIME_CAPABILITY_STREAMING = "streaming"
-RUNTIME_CAPABILITY_TOOL_EVENTS = "tool_events"
-RUNTIME_CAPABILITY_PERSISTENT_SESSION = "persistent_session"
-RUNTIME_CAPABILITY_RESUMABLE = "resumable"
-RUNTIME_CAPABILITY_BROWSER = "browser"
-RUNTIME_CAPABILITY_SUBAGENTS = "subagents"
-RUNTIME_CAPABILITY_WORKSPACE_READ = "workspace_read"
-RUNTIME_CAPABILITY_WORKSPACE_WRITE = "workspace_write"
-RUNTIME_CAPABILITY_SCHEDULES = "schedules"
-RUNTIME_CAPABILITY_HEARTBEATS = "heartbeats"
-RUNTIME_CAPABILITY_AGENT_MESSAGING = "agent_messaging"
-RUNTIME_CAPABILITY_MODEL_SELECTION = "model_selection"
-
 
 @dataclass(frozen=True)
 class RuntimeReadiness:
@@ -46,6 +33,7 @@ class RuntimeReadiness:
     """
 
     runtime: str
+    capability_id: str
     status: Literal["ready", "blocked"]
     binary_present: bool
     version: str | None = None
@@ -231,6 +219,7 @@ class RuntimeAdapter(ABC):
         ready = await self.health()
         return RuntimeReadiness(
             runtime=self.runtime_type,
+            capability_id=f"runtime.{self.runtime_type}",
             status="ready" if ready else "blocked",
             binary_present=ready,
             reason_code=None if ready else "unavailable",

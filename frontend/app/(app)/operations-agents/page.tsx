@@ -6,13 +6,8 @@ import { toast } from 'sonner'
 
 import AgentAvatar from '@/components/smoothui/agent-avatar'
 import SwitchboardCard from '@/components/smoothui/switchboard-card'
-import { useAutomations, useCreateAutomation, useCreateOperationsAgent, useGovernedWorkspaces, useInstallAutomationStarters, useNodes, useOperationsAgentActivity, useOperationsAgentDraft, useOperationsAgents, useOperationsAgentTeams, useOperationsAgentVersions, usePatchAutomation, usePublishOperationsAgentVersion, useStartAutomationRun, useStartOperationsAgentRun, useUpdateOperationsAgentDraft } from '@/lib/api/hooks'
-import type { AgentRuntimeBindingV2, Automation, OperationsAgent, OperationsAgentMode } from '@/lib/api/types'
-import { latestOperationsAgentRuns } from '@/lib/automations/activity'
-import { AUTOMATION_APPROVALS as APPROVALS } from '@/lib/automations/approval'
-import { compatibleOperationsAgents, runnableOperationsAgents } from '@/lib/automations/binding'
-import { automationExecutorMeta as executorMeta } from '@/lib/automations/executors'
-import { automationScheduleText, automationScheduleValue } from '@/lib/automations/schedule'
+import { useAutomations, useCreateAutomation, useGovernedWorkspaces, useInstallAutomationStarters, useOperationsAgentActivity, useOperationsAgentDraft, useOperationsAgents, useOperationsAgentVersion, useOperationsAgentVersions, usePatchAutomation, usePublishOperationsAgentVersion, useStartOperationsAgentRun, useUpdateOperationsAgentDraft } from '@/lib/api/hooks'
+import type { AgentRuntimeBindingV1, Automation, OperationsAgent, OperationsAgentMode } from '@/lib/api/types'
 import { cn } from '@/lib/utils'
 import { BACKEND_HINT, EmptyState, ErrorState, LoadingState } from '@/components/shell/data-states'
 import { Button } from '@/components/ui/button'
@@ -28,21 +23,27 @@ const SUGGESTIONS = [
 
 const AGENT_STARTERS = [
   {
-    ...SUGGESTIONS[0],
     name: '运行简报 Agent',
+    prompt: 'Prepare a concise daily run brief from the latest workspace activity and open work.',
+    schedule: 'daily@09:00',
     subtitle: '每天汇总运行、失败与待批准事项',
+    executor: 'codex',
     pattern: [0, 1, 2, 18, 19, 20, 36, 37, 38, 54, 55, 56, 72, 73, 74],
   },
   {
-    ...SUGGESTIONS[1],
     name: '系统回顾 Agent',
+    prompt: 'Review the workspace system state, summarize trends, and identify actionable improvements.',
+    schedule: 'weekly@monday@09:00',
     subtitle: '每周整理变化、风险与待处理建议',
+    executor: 'codex',
     pattern: [4, 5, 6, 22, 23, 24, 40, 41, 42, 58, 59, 60, 76, 77, 78],
   },
   {
-    ...SUGGESTIONS[2],
     name: '异常跟进 Agent',
-    subtitle: '工作日检查异常并生成证据化建议',
+    prompt: 'Review unresolved anomalies, gather evidence, and propose the next safe follow-up actions.',
+    schedule: 'on_anomaly',
+    subtitle: '异常出现时检查并生成证据化建议',
+    executor: 'codex',
     pattern: [8, 9, 10, 26, 27, 28, 44, 45, 46, 62, 63, 64, 80, 81, 82],
   },
 ] as const
@@ -51,9 +52,34 @@ type AgentStarterInput = {
   name: string
   prompt: string
   schedule: string
+  executor?: string
 }
 
+const EXECUTORS = [
+  { id: 'codex', name: 'Codex', icon: Code2, color: 'text-sky-400' },
+  { id: 'claude', name: 'Claude', icon: Sparkles, color: 'text-orange-400' },
+  { id: 'chatcloud', name: 'ChatCloud', icon: Cloud, color: 'text-violet-400' },
+  { id: 'custom', name: '自定义', icon: Terminal, color: 'text-emerald-400' },
+] as const
 
+type AgentStarterInput = {
+  name: string
+  prompt: string
+  schedule: string
+}
+
+function scheduleText(value: string) {
+  const [kind, qualifier, time] = value.split('@')
+  if (kind === 'on_anomaly') return '检测到异常时'
+  if (kind === 'weekly') {
+    const weekdays: Record<string, string> = {
+      monday: '一', tuesday: '二', wednesday: '三', thursday: '四', friday: '五', saturday: '六', sunday: '日',
+    }
+    return `每周${weekdays[qualifier] ?? qualifier}${time ? ` ${time}` : ''}`
+  }
+  const label = kind === 'daily' ? '每天' : kind === 'weekdays' ? '工作日' : kind === 'hourly' ? '每小时' : kind
+  return `${label}${qualifier ? ` ${qualifier}` : ''}`
+}
 
 const EMPTY_SCHEMA = { type: 'object', properties: {} }
 
@@ -78,6 +104,8 @@ function parseIdentifierList(value: string) {
 function ContractEditor({ workspaceId, agent }: { workspaceId: string; agent: OperationsAgent }) {
   const draft = useOperationsAgentDraft(workspaceId, agent.id)
   const versions = useOperationsAgentVersions(workspaceId, agent.id)
+  const [selectedVersion, setSelectedVersion] = useState<number | null>(null)
+  const selectedVersionQuery = useOperationsAgentVersion(workspaceId, agent.id, selectedVersion)
   const updateDraft = useUpdateOperationsAgentDraft()
   const nodes = useNodes()
   const publishVersion = usePublishOperationsAgentVersion()
@@ -92,7 +120,7 @@ function ContractEditor({ workspaceId, agent }: { workspaceId: string; agent: Op
   const [outputSchema, setOutputSchema] = useState('')
   const [stateSchema, setStateSchema] = useState('')
   const [agentUrl, setAgentUrl] = useState('')
-  const [runtime, setRuntime] = useState<AgentRuntimeBindingV2['preferred_runtimes'][number]>('')
+  const [runtime, setRuntime] = useState<AgentRuntimeBindingV1['runtime']>('pi')
   const [workflow, setWorkflow] = useState('')
   const [dispatchTimeout, setDispatchTimeout] = useState(1800)
   const [runtimeConfig, setRuntimeConfig] = useState('')
@@ -124,14 +152,11 @@ function ContractEditor({ workspaceId, agent }: { workspaceId: string; agent: Op
     setInputSchema(JSON.stringify(contract?.input_schema ?? EMPTY_SCHEMA, null, 2))
     setOutputSchema(JSON.stringify(contract?.output_schema ?? EMPTY_SCHEMA, null, 2))
     setStateSchema(JSON.stringify(contract?.state_schema ?? EMPTY_SCHEMA, null, 2))
-    setAgentUrl(binding?.preferred_agent_urls[0] ?? '')
-    setRuntime(binding?.preferred_runtimes[0] ?? '')
+    setAgentUrl(binding?.agent_url ?? '')
+    setRuntime(binding?.runtime ?? 'pi')
     setWorkflow(binding?.workflow ?? '')
     setDispatchTimeout(binding?.dispatch_timeout_seconds ?? 1800)
     setRuntimeConfig(JSON.stringify(binding?.config ?? { timeout_seconds: 1800 }, null, 2))
-    setProvider(binding?.model_binding?.provider ?? '')
-    setModel(binding?.model_binding?.model ?? '')
-    setAuthProfile(binding?.model_binding?.auth_profile ?? '')
   }, [draft.data])
 
 
@@ -142,6 +167,7 @@ function ContractEditor({ workspaceId, agent }: { workspaceId: string; agent: Op
       return
     }
     try {
+      const binding = draft.data.model_configuration.runtime_binding
       await updateDraft.mutateAsync({
         workspaceId,
         agentId: agent.id,
@@ -163,7 +189,10 @@ function ContractEditor({ workspaceId, agent }: { workspaceId: string; agent: Op
               evidence_requirements: parseIdentifierList(evidenceRequirements),
             },
             runtime_binding: {
-              schema_version: 'agent.runtime-binding.v2',
+              ...(binding ?? {}),
+              schema_version: 'agent.runtime-binding.v1',
+              agent_url: agentUrl.trim(),
+              runtime,
               workflow: workflow.trim(),
               preferred_agent_urls: agentUrl ? [agentUrl.trim()] : [],
               preferred_runtimes: runtime ? [runtime] : [],
@@ -226,11 +255,12 @@ function ContractEditor({ workspaceId, agent }: { workspaceId: string; agent: Op
             <label className="block space-y-1.5 text-xs text-muted-foreground">State schema<Textarea value={stateSchema} onChange={(event) => setStateSchema(event.target.value)} spellCheck={false} className="min-h-64 resize-y font-mono text-xs text-foreground" /></label>
           </div>
           <details className="rounded-lg border border-white/[0.08] px-4 py-3">
-            <summary className="cursor-pointer text-sm text-muted-foreground">Contract 策略与质量门禁</summary>
-            <div className="mt-4 grid gap-4 lg:grid-cols-3">
-              <label className="block space-y-1.5 text-xs text-muted-foreground">Tool policy<Textarea value={toolPolicy} onChange={(event) => setToolPolicy(event.target.value)} spellCheck={false} className="min-h-32 resize-y font-mono text-xs text-foreground" /></label>
-              <label className="block space-y-1.5 text-xs text-muted-foreground">Budget<Textarea value={budget} onChange={(event) => setBudget(event.target.value)} spellCheck={false} className="min-h-32 resize-y font-mono text-xs text-foreground" /></label>
-              <label className="block space-y-1.5 text-xs text-muted-foreground">Quality gates<Textarea value={qualityGates} onChange={(event) => setQualityGates(event.target.value)} spellCheck={false} className="min-h-32 resize-y font-mono text-xs text-foreground" /></label>
+            <summary className="cursor-pointer text-sm text-muted-foreground">Runtime Binding 高级配置</summary>
+            <div className="mt-4 grid gap-4 sm:grid-cols-4">
+              <label className="space-y-1.5 text-xs text-muted-foreground">Agent URL<Input type="url" value={agentUrl} onChange={(event) => setAgentUrl(event.target.value)} placeholder="https://agent.example.com" /></label>
+              <label className="space-y-1.5 text-xs text-muted-foreground">Runtime<select value={runtime} onChange={(event) => setRuntime(event.target.value as AgentRuntimeBindingV1['runtime'])} className="h-9 w-full rounded-lg border bg-background px-3 text-sm text-foreground"><option value="miniflow">MiniFlow</option><option value="pi">Pi</option><option value="codex">Codex</option></select></label>
+              <label className="space-y-1.5 text-xs text-muted-foreground">Workflow<Input value={workflow} onChange={(event) => setWorkflow(event.target.value)} placeholder="default" /></label>
+              <label className="space-y-1.5 text-xs text-muted-foreground">深度执行超时（秒）<Input type="number" min={1} max={3600} value={dispatchTimeout} onChange={(event) => setDispatchTimeout(Number(event.target.value))} /><span className="block text-[11px] leading-4 text-muted-foreground">默认 30 分钟；本地 CLI 不暴露 5 小时额度，因此不伪造剩余额度。</span></label>
             </div>
           </details>
           <details className="rounded-lg border border-white/[0.08] px-4 py-3">
@@ -258,7 +288,13 @@ function ContractEditor({ workspaceId, agent }: { workspaceId: string; agent: Op
         <Button className="mt-3 w-full" size="sm" onClick={() => void publish()} disabled={!reason.trim() || publishVersion.isPending}>发布 Contract</Button>
         <div className="mt-7 border-t border-white/[0.08] pt-5">
           <h3 className="text-xs font-medium text-muted-foreground">版本历史</h3>
-          {versions.isLoading ? <div className="mt-3 text-xs text-muted-foreground">加载中…</div> : versions.isError ? <p className="mt-3 text-xs text-destructive">{(versions.error as Error)?.message}</p> : !versions.data?.length ? <p className="mt-3 text-xs text-muted-foreground">尚未发布版本</p> : <div className="mt-3 space-y-2">{versions.data.map((version) => <div key={version.version} className="rounded-lg border border-white/[0.08] p-3"><div className="flex items-center justify-between text-xs"><span className="font-medium text-foreground">v{version.version}</span><span className="text-muted-foreground">Draft r{version.draft_revision}</span></div><p className="mt-2 text-xs leading-5 text-muted-foreground">{version.reason}</p><p className="mt-1 text-[11px] text-muted-foreground">{new Date(version.created_at).toLocaleString()}</p></div>)}</div>}
+          {versions.isLoading ? <div className="mt-3 text-xs text-muted-foreground">加载中…</div> : versions.isError ? <p className="mt-3 text-xs text-destructive">{(versions.error as Error)?.message}</p> : !versions.data?.length ? <p className="mt-3 text-xs text-muted-foreground">尚未发布版本</p> : <div className="mt-3 space-y-2">{versions.data.map((version) => <div key={version.version} className="rounded-lg border border-white/[0.08] p-3"><div className="flex items-center justify-between gap-2 text-xs"><span className="font-medium text-foreground">v{version.version}</span><Button size="xs" variant="ghost" onClick={() => setSelectedVersion(version.version)}>{selectedVersion === version.version ? '已选择' : '查看详情'}</Button></div><p className="mt-2 text-xs leading-5 text-muted-foreground">{version.reason}</p><p className="mt-1 text-[11px] text-muted-foreground">{new Date(version.created_at).toLocaleString()}</p></div>)}</div>}
+          {selectedVersion !== null ? (
+            <div className="mt-4 rounded-lg border border-primary/20 bg-primary/5 p-3">
+              <p className="text-xs font-medium text-foreground">v{selectedVersion} Contract 详情</p>
+              {selectedVersionQuery.isLoading ? <p className="mt-2 text-xs text-muted-foreground">加载详情中…</p> : selectedVersionQuery.isError ? <p className="mt-2 text-xs text-destructive">{(selectedVersionQuery.error as Error)?.message}</p> : selectedVersionQuery.data ? <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap font-mono text-[11px] leading-5 text-muted-foreground">{JSON.stringify(selectedVersionQuery.data, null, 2)}</pre> : null}
+            </div>
+          ) : null}
         </div>
       </aside>
     </div>
@@ -274,7 +310,6 @@ export default function OperationsAgentsPage() {
   const teams = useOperationsAgentTeams(workspaceId)
   const activity = useOperationsAgentActivity(workspaceId)
   const installStarterPack = useInstallAutomationStarters()
-  const createOperationsAgent = useCreateOperationsAgent()
   const createAutomation = useCreateAutomation()
   const patchAutomation = usePatchAutomation()
   const startAutomationRun = useStartAutomationRun()
@@ -290,6 +325,7 @@ export default function OperationsAgentsPage() {
   const [projectPath, setProjectPath] = useState('')
   const [branch, setBranch] = useState('main')
   const [scheduleKind, setScheduleKind] = useState('weekdays')
+  const [weeklyDay, setWeeklyDay] = useState('monday')
   const [time, setTime] = useState('09:00')
   const [sessionMode, setSessionMode] = useState<'fresh' | 'reuse'>('fresh')
   const [approvalMode, setApprovalMode] = useState<OperationsAgentMode>('suggest_changes')
@@ -297,25 +333,7 @@ export default function OperationsAgentsPage() {
   const [runInput, setRunInput] = useState('{}')
   const [runState, setRunState] = useState('{}')
   const [runTargetType, setRunTargetType] = useState('manual')
-  const [agentCreateOpen, setAgentCreateOpen] = useState(false)
-  const [agentName, setAgentName] = useState('')
-  const [agentDescription, setAgentDescription] = useState('')
-  const [owningTeamId, setOwningTeamId] = useState('')
-  const [automationToBind, setAutomationToBind] = useState<Automation | null>(null)
-  const [automationToRun, setAutomationToRun] = useState<Automation | null>(null)
-  const [bindingAgentId, setBindingAgentId] = useState('')
-  const latestRun = useMemo(
-    () => latestOperationsAgentRuns(activity.data ?? []),
-    [activity.data],
-  )
-  const runnableAgents = useMemo(
-    () => runnableOperationsAgents(agents.data ?? []),
-    [agents.data],
-  )
-  const compatibleAgents = useMemo(
-    () => compatibleOperationsAgents(agents.data ?? [], approvalMode),
-    [agents.data, approvalMode],
-  )
+  const latestRun = useMemo(() => new Map(activity.data?.map((run) => [run.operations_agent_id, run]) ?? []), [activity.data])
 
   useEffect(() => {
     if (!workspaceId && workspaces.data?.length) {
@@ -323,25 +341,19 @@ export default function OperationsAgentsPage() {
     }
   }, [workspaceId, workspaces.data])
 
-  useEffect(() => {
-    if (agentCreateOpen && teams.data?.length === 1 && !owningTeamId) {
-      setOwningTeamId(teams.data[0].id)
-    }
-  }, [agentCreateOpen, owningTeamId, teams.data])
-
-  useEffect(() => {
-    if (!open) return
-    const selected = compatibleAgents.find((agent) => agent.id === automationAgentId)
-    if (!selected) setAutomationAgentId(compatibleAgents[0]?.id ?? '')
-  }, [automationAgentId, compatibleAgents, open])
   function startCreate(preset?: AgentStarterInput) {
     setName(preset?.name ?? '')
     setPrompt(preset?.prompt ?? '')
-    setAutomationAgentId('')
+    setExecutor(preset?.executor ?? 'codex')
     if (preset) {
-      const [kind, presetTime] = preset.schedule.split('@')
+      const [kind, qualifier, weeklyTime] = preset.schedule.split('@')
       setScheduleKind(kind)
-      setTime(presetTime)
+      if (kind === 'weekly') {
+        setWeeklyDay(qualifier || 'monday')
+        setTime(weeklyTime || '09:00')
+      } else if (qualifier) {
+        setTime(qualifier)
+      }
     }
     setOpen(true)
   }
@@ -350,7 +362,7 @@ export default function OperationsAgentsPage() {
     if (!workspaceId || installStarterPack.isPending) return
     try {
       const result = await installStarterPack.mutateAsync({ workspaceId })
-      toast.success(`已安装 ${result.created_count} 个自动化模板，跳过 ${result.skipped_count} 个`)
+      toast.success(`已支起 ${result.created_count} 个 Agent Starter，跳过 ${result.skipped_count} 个`)
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Agent Starter 创建失败')
     }
@@ -397,12 +409,17 @@ export default function OperationsAgentsPage() {
     const boundAgent = compatibleAgents.find((agent) => agent.id === automationAgentId)
     if (!boundAgent?.current_published_version) return
     try {
+      const schedule = scheduleKind === 'on_anomaly'
+        ? 'on_anomaly'
+        : scheduleKind === 'weekly'
+          ? `weekly@${weeklyDay}@${time}`
+          : `${scheduleKind}@${time}`
       await createAutomation.mutateAsync({ workspaceId, data: {
         operations_agent_id: boundAgent.id,
         operations_agent_version: boundAgent.current_published_version,
         name: name.trim(), prompt: prompt.trim(), precheck: precheck.trim() || null,
-        executor: 'operations-agent', schedule: automationScheduleValue(scheduleKind, time), timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-        session_mode: sessionMode, approval_mode: boundAgent.current_profile.mode,
+        executor, schedule, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        session_mode: sessionMode, approval_mode: approvalMode,
         project: { path: projectPath.trim() || null, branch: branch.trim() || null }, enabled: true,
       } })
       setOpen(false)
@@ -519,11 +536,11 @@ export default function OperationsAgentsPage() {
           <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
             <div>
               <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-muted-foreground">SmoothUI / Agent starters</p>
-              <h2 id="agent-starters-title" className="mt-1 text-xl font-medium tracking-[-0.015em]">添加 Operations Agent</h2>
-              <p className="mt-1 text-sm text-muted-foreground">Starter 卡片创建真实 Agent 身份；随后确认 Runtime Contract 并发布即可运行。</p>
+              <h2 id="agent-starters-title" className="mt-1 text-xl font-medium tracking-[-0.015em]">先把这三个 Agent 支起来</h2>
+              <p className="mt-1 text-sm text-muted-foreground">三套可直接创建的自动化模板；创建后会进入我的自动化并按日程执行。</p>
             </div>
-            <Button size="sm" variant="outline" onClick={() => void installAgentStarters()} disabled={installStarterPack.isPending}>
-              {installStarterPack.isPending ? '正在安装…' : '安装三个自动化模板'}
+            <Button size="sm" onClick={() => void installAgentStarters()} disabled={installStarterPack.isPending}>
+              {installStarterPack.isPending ? '正在安装…' : '一键安装三个 Agent'}
             </Button>
           </div>
           <div className="grid gap-3 lg:grid-cols-3">
@@ -531,12 +548,12 @@ export default function OperationsAgentsPage() {
               <SwitchboardCard
                 key={starter.name}
                 title={starter.name}
-                subtitle={starter.subtitle}
+                subtitle={`${starter.subtitle} · ${executorMeta(starter.executor).name}`}
                 columns={18}
                 rows={5}
                 gridPattern={[...starter.pattern]}
                 className="h-[260px] p-4"
-                onButtonClick={() => startAgentCreate(starter)}
+                onButtonClick={() => startCreate(starter)}
               />
             ))}
           </div>
@@ -612,8 +629,8 @@ export default function OperationsAgentsPage() {
             <label className="space-y-1.5 text-xs text-muted-foreground">提示词<Textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="每次运行要完成什么？" className="min-h-40 resize-y text-sm" /></label>
             <label className="space-y-1.5 text-xs text-muted-foreground">绑定已发布智能体<select value={automationAgentId} onChange={(event) => setAutomationAgentId(event.target.value)} className="h-10 w-full rounded-lg border bg-background px-3 text-sm text-foreground"><option value="">选择与审批模式兼容的智能体</option>{compatibleAgents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name} · v{agent.current_published_version} · {APPROVALS.find((item) => item.id === agent.current_profile.mode)?.label}</option>)}</select></label>
             <div className="grid gap-4 sm:grid-cols-2"><label className="space-y-1.5 text-xs text-muted-foreground">项目路径<Input value={projectPath} onChange={(event) => setProjectPath(event.target.value)} placeholder="/workspace/project" /></label><label className="space-y-1.5 text-xs text-muted-foreground">基础分支<Input value={branch} onChange={(event) => setBranch(event.target.value)} /></label></div>
-            <div className="grid gap-4 sm:grid-cols-3"><label className="space-y-1.5 text-xs text-muted-foreground">日程<select value={scheduleKind} onChange={(event) => setScheduleKind(event.target.value)} className="h-9 w-full rounded-lg border bg-background px-3 text-sm"><option value="hourly">每小时</option><option value="daily">每天</option><option value="weekdays">工作日</option><option value="weekly">每周</option></select></label><label className="space-y-1.5 text-xs text-muted-foreground">时间<Input type="time" value={time} onChange={(event) => setTime(event.target.value)} disabled={scheduleKind === 'hourly'} /></label><label className="space-y-1.5 text-xs text-muted-foreground">会话<select value={sessionMode} onChange={(event) => setSessionMode(event.target.value as 'fresh' | 'reuse')} className="h-9 w-full rounded-lg border bg-background px-3 text-sm"><option value="fresh">每次新会话</option><option value="reuse">重复利用会话</option></select></label></div>
-            <fieldset><legend className="mb-2 text-xs text-muted-foreground">审批方式</legend><div className="grid gap-2 sm:grid-cols-2">{APPROVALS.filter((item) => item.id !== 'low_risk_automatic').map((item) => <button key={item.id} type="button" aria-pressed={approvalMode === item.id} onClick={() => setApprovalMode(item.id)} className={cn('rounded-lg border p-3 text-left', approvalMode === item.id ? 'border-foreground bg-white/[0.06]' : 'border-white/[0.08]')}><span className="block text-sm font-medium">{item.label}</span><span className="mt-1 block text-xs text-muted-foreground">{item.detail}</span></button>)}</div></fieldset>
+            <div className="grid gap-4 sm:grid-cols-4"><label className="space-y-1.5 text-xs text-muted-foreground">日程<select value={scheduleKind} onChange={(event) => setScheduleKind(event.target.value)} className="h-9 w-full rounded-lg border bg-background px-3 text-sm"><option value="hourly">每小时</option><option value="daily">每天</option><option value="weekdays">工作日</option><option value="weekly">每周</option><option value="on_anomaly">检测到异常时</option></select></label>{scheduleKind === 'weekly' ? <label className="space-y-1.5 text-xs text-muted-foreground">星期<select value={weeklyDay} onChange={(event) => setWeeklyDay(event.target.value)} className="h-9 w-full rounded-lg border bg-background px-3 text-sm"><option value="monday">周一</option><option value="tuesday">周二</option><option value="wednesday">周三</option><option value="thursday">周四</option><option value="friday">周五</option><option value="saturday">周六</option><option value="sunday">周日</option></select></label> : null}<label className="space-y-1.5 text-xs text-muted-foreground">时间<Input type="time" value={time} onChange={(event) => setTime(event.target.value)} disabled={scheduleKind === 'hourly' || scheduleKind === 'on_anomaly'} /></label><label className="space-y-1.5 text-xs text-muted-foreground">会话<select value={sessionMode} onChange={(event) => setSessionMode(event.target.value as 'fresh' | 'reuse')} className="h-9 w-full rounded-lg border bg-background px-3 text-sm"><option value="fresh">每次新会话</option><option value="reuse">重复利用会话</option></select></label></div>
+            <fieldset><legend className="mb-2 text-xs text-muted-foreground">审批方式</legend><div className="grid gap-2 sm:grid-cols-3">{APPROVALS.map((item) => <button key={item.id} type="button" onClick={() => setApprovalMode(item.id)} className={cn('rounded-lg border p-3 text-left', approvalMode === item.id ? 'border-foreground bg-white/[0.06]' : 'border-white/[0.08]')}><span className="block text-sm font-medium">{item.label}</span><span className="mt-1 block text-xs text-muted-foreground">{item.detail}</span></button>)}</div></fieldset>
             <details className="rounded-lg border border-white/[0.08] px-4 py-3"><summary className="cursor-pointer text-sm text-muted-foreground">高级设置</summary><label className="mt-4 block space-y-1.5 text-xs text-muted-foreground"><Terminal className="mr-1 inline size-3" />预检查<Input value={precheck} onChange={(event) => setPrecheck(event.target.value)} placeholder="可选：运行前检查命令" className="font-mono" /></label></details>
           </div>
           <DialogFooter><Button variant="outline" onClick={() => setOpen(false)}>取消</Button><Button onClick={() => void submitCreate()} disabled={!name.trim() || !prompt.trim() || !automationAgentId || createAutomation.isPending}><Plus />创建并启用</Button></DialogFooter>

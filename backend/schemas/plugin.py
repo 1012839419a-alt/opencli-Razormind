@@ -48,6 +48,9 @@ class PluginInstallationRead(UTCModel):
     model_config = {**UTCModel.model_config, "populate_by_name": True}
 
     id: str
+    workspace_id: str | None = Field(default=None, alias="workspaceId")
+    enabled: bool = False
+    granted_permissions: list[str] = Field(default_factory=list, alias="grantedPermissions")
     provider_key: str = Field(alias="providerKey")
     name: str
     author: str
@@ -75,6 +78,15 @@ class PluginInstallationRead(UTCModel):
     updated_at: datetime = Field(alias="updatedAt")
 
 
+class PluginInstallationUpdate(BaseModel):
+    model_config = {"populate_by_name": True}
+
+    enabled: bool | None = None
+    granted_permissions: list[str] | None = Field(
+        default=None, alias="grantedPermissions"
+    )
+
+
 class PluginNodePortRead(BaseModel):
     name: str
     type: str
@@ -94,6 +106,9 @@ class PluginNodeCapabilityRead(BaseModel):
     model_config = {"populate_by_name": True}
 
     id: str
+    installation_id: str | None = Field(default=None, alias="installationId")
+    plugin_version: str | None = Field(default=None, alias="pluginVersion")
+    plugin_capability_id: str | None = Field(default=None, alias="pluginCapabilityId")
     label: str
     description: str
     category: Literal[

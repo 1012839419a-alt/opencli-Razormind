@@ -1,14 +1,7 @@
 import pytest
 
 from backend.channels.base import ChannelResult
-from backend.workflow.channel_source_executor import (
-    _feishu_overrides,
-    execute_workflow_channel_source,
-)
-
-
-def test_feishu_source_accepts_snake_case_max_rows_runtime_override():
-    assert _feishu_overrides({"max_rows": 1000}) == {"max_rows": 1000}
+from backend.workflow.channel_source_executor import execute_workflow_channel_source
 
 
 @pytest.mark.asyncio

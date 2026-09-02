@@ -2,6 +2,8 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.api.v1.studio_projects import bootstrap_project
+from backend.api.v1.studio_schemas import ProjectBootstrapCreate
 from backend.database import get_db
 from backend.models.identity import Team, User, Workspace, WorkspaceMembership, WorkspaceRole
 from backend.models.workflow import Project
@@ -152,6 +154,20 @@ async def list_governance_projects(
         .all()
     )
     return ApiResponse.ok([ProjectRead.model_validate(row) for row in rows])
+@router.post(
+    "/governance/workspaces/{workspace_id}/projects/bootstrap",
+    response_model=ApiResponse,
+    status_code=201,
+)
+async def bootstrap_governance_project(
+    workspace_id: str,
+    body: ProjectBootstrapCreate,
+    identity: RequestIdentity = Depends(get_request_identity),
+    db: AsyncSession = Depends(get_db),
+) -> ApiResponse:
+    access = await get_workspace_access(db, workspace_id, identity)
+    require_permission(access, WorkspacePermission.MANAGE_CONFIGURATION)
+    return await bootstrap_project(workspace_id, body, db)
 
 
 @router.post(

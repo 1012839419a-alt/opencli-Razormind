@@ -188,10 +188,6 @@ async def test_dispatch_uses_existing_runtime_protocol_and_validates_result(
     assert captured_task["input"] == {"target_id": "daily-news"}
     assert captured_task["config"]["permission_mode"] == "observe_only"
     assert captured_task["config"]["timeout_seconds"] == 1800
-    assert captured_task["provider"] == "openrouter"
-    assert captured_task["model"] == "anthropic/claude-sonnet"
-    assert captured_task["required_capabilities"] == ["streaming", "tool_events"]
-    assert captured_task["budget"] == {"max_turns": 8}
     assert run.status == "completed"
     assert run.state_payload == {"last_target_id": "daily-news"}
     assert run.output_payload == {"summary": "Target inspected"}

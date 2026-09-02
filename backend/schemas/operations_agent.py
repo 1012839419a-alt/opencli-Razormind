@@ -96,18 +96,9 @@ class AgentModelBindingV1(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal["agent.model-binding.v1"]
-    provider: str = Field(min_length=1, max_length=100)
-    model: str = Field(min_length=1, max_length=255)
-    auth_profile: str | None = Field(default=None, min_length=1, max_length=255)
-
-
-class AgentRuntimeBindingV2(BaseModel):
-    """Capability policy for selecting an edge runtime at dispatch time."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    schema_version: Literal["agent.runtime-binding.v2"]
+    schema_version: Literal["agent.runtime-binding.v1"]
+    agent_url: str = Field(min_length=1, max_length=512)
+    runtime: Literal["miniflow", "pi", "codex"]
     workflow: str = Field(min_length=1, max_length=255)
     preferred_agent_urls: list[str] = Field(default_factory=list, max_length=32)
     preferred_runtimes: list[str] = Field(default_factory=list, max_length=32)
@@ -119,25 +110,17 @@ class AgentRuntimeBindingV2(BaseModel):
         le=MAX_DEEP_RUN_TIMEOUT_SECONDS,
     )
 
-    @field_validator("preferred_agent_urls")
-    @classmethod
-    def agent_urls_are_http(cls, values: list[str]) -> list[str]:
-        normalized = [value.rstrip("/") for value in values]
-        if any(not value.startswith(("http://", "https://")) for value in normalized):
-            raise ValueError("preferred_agent_urls must contain only http/https URLs")
-        if len(set(normalized)) != len(normalized):
-            raise ValueError("preferred_agent_urls must be unique")
-        return normalized
+    # Workbench requires an explicit, server-published affinity contract before
+    # it sends a controller-created worktree to an edge runtime. Existing
+    # non-Workbench agent bindings may leave these unset.
+    execution_node_url: str | None = Field(default=None, min_length=1, max_length=512)
+    shared_filesystem_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=255,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+    )
 
-    @field_validator("preferred_runtimes")
-    @classmethod
-    def runtimes_are_normalized(cls, values: list[str]) -> list[str]:
-        normalized = [value.strip() for value in values]
-        if any(not value or len(value) > 100 for value in normalized):
-            raise ValueError("preferred_runtimes must contain non-empty names")
-        if len(set(normalized)) != len(normalized):
-            raise ValueError("preferred_runtimes must be unique")
-        return normalized
 
     @field_validator("config")
     @classmethod
@@ -145,8 +128,7 @@ class AgentRuntimeBindingV2(BaseModel):
         unsupported = sorted(set(value) - {"timeout_seconds"})
         if unsupported:
             raise ValueError(
-                "runtime config is Fleet-owned; unsupported task keys: "
-                + ", ".join(unsupported)
+                "runtime config is Fleet-owned; unsupported task keys: " + ", ".join(unsupported)
             )
         timeout = value.get("timeout_seconds")
         if timeout is not None and (
@@ -159,6 +141,24 @@ class AgentRuntimeBindingV2(BaseModel):
                 f"{MAX_DEEP_RUN_TIMEOUT_SECONDS}"
             )
         return value
+
+    @field_validator("agent_url")
+    @classmethod
+    def agent_url_is_http(cls, value: str) -> str:
+        normalized = value.rstrip("/")
+        if not normalized.startswith(("http://", "https://")):
+            raise ValueError("agent_url must be an http/https URL")
+        return normalized
+
+    @field_validator("execution_node_url")
+    @classmethod
+    def execution_node_url_is_http(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.rstrip("/")
+        if not normalized.startswith(("http://", "https://")):
+            raise ValueError("execution_node_url must be an http/https URL")
+        return normalized
 
 
 def validated_agent_model_configuration(model_configuration: dict[str, Any]) -> dict[str, Any]:

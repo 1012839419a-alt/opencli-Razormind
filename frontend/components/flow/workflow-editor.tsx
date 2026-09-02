@@ -63,8 +63,10 @@ type PendingConnection = {
 
 function EditorCanvas({
   documentState,
+  workspaceId,
 }: {
   documentState?: "loading" | "saving" | "saved" | "error" | "conflict"
+  workspaceId?: string | null
 }) {
   const {
     addNodeFromPalette,
@@ -138,7 +140,7 @@ function EditorCanvas({
   const [nodeMenu, setNodeMenu] = useState<NodeMenuState | null>(null)
   const [wiringState, setWiringState] = useState<"idle" | "wiring" | "picker" | "reconnecting">("idle")
   const [compatiblePort, setCompatiblePort] = useState<CompatibleConnectionPort | undefined>()
-  const { capabilities } = useWorkflowCapabilities(true)
+  const { capabilities } = useWorkflowCapabilities(true, workspaceId)
   const {
     items: openCLIAdapterCatalogItems,
     response: openCLIAdapterCatalogResponse,
@@ -608,12 +610,14 @@ function EditorCanvas({
 
 export function WorkflowEditor({
   documentState,
+  workspaceId,
 }: {
   documentState?: "loading" | "saving" | "saved" | "error" | "conflict"
+  workspaceId?: string | null
 } = {}) {
   return (
     <ReactFlowProvider>
-      <EditorCanvas documentState={documentState} />
+      <EditorCanvas documentState={documentState} workspaceId={workspaceId} />
     </ReactFlowProvider>
   )
 }

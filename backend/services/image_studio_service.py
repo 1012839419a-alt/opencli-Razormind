@@ -6,6 +6,7 @@ import os
 import struct
 from copy import deepcopy
 from pathlib import Path
+from uuid import uuid4
 
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
@@ -515,6 +516,37 @@ async def import_asset(
     return row
 
 
+def _io_path(path: Path) -> Path:
+    if os.name != "nt":
+        return path
+
+    absolute = str(path.resolve())
+    if absolute.startswith("\\\\?\\"):
+        return path
+    if absolute.startswith("\\\\"):
+        return Path(f"\\\\?\\UNC\\{absolute[2:]}")
+    return Path(f"\\\\?\\{absolute}")
+
+
+def _persist_media_asset(destination: Path, payload: bytes) -> None:
+    destination = _io_path(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.exists():
+        return
+
+    temporary = destination.with_name(f".{destination.name}.{uuid4().hex}.tmp")
+    try:
+        temporary.write_bytes(payload)
+        try:
+            temporary.replace(destination)
+        except OSError:
+            # Another writer may have won the same content-addressed path.
+            if not destination.is_file():
+                raise
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 async def import_asset_bytes(
     db: AsyncSession,
     *,
@@ -540,14 +572,7 @@ async def import_asset_bytes(
     )
     destination = media_root / relative_key
 
-    def _persist() -> None:
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        if not destination.exists():
-            temporary = destination.with_suffix(f".{extension}.tmp")
-            temporary.write_bytes(sanitized)
-            temporary.replace(destination)
-
-    await asyncio.to_thread(_persist)
+    await asyncio.to_thread(_persist_media_asset, destination, sanitized)
     return await import_asset(
         db,
         workspace_id=workspace_id,
@@ -589,9 +614,10 @@ async def read_asset_content(asset: MediaAsset) -> bytes:
         path.relative_to(media_root)
     except ValueError as exc:
         raise MediaAssetValidationError("Media asset storage key is invalid") from exc
-    if not path.is_file():
+    io_path = _io_path(path)
+    if not io_path.is_file():
         raise ImageStudioNotFoundError("Media asset content not found")
-    return await asyncio.to_thread(path.read_bytes)
+    return await asyncio.to_thread(io_path.read_bytes)
 
 
 async def list_assets(

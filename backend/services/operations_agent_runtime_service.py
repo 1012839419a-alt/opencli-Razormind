@@ -173,17 +173,11 @@ async def dispatch_operations_agent_run(run_id: str) -> None:
                 or isinstance(configured_timeout, bool)
                 or configured_timeout < binding.dispatch_timeout_seconds
             ):
+                # The edge runtime must not expire before the governed outer
+                # deep-run profile. Binding validation supplies the hard
+                # ceiling; this fills/raises the inner timeout to that profile.
                 runtime_config["timeout_seconds"] = binding.dispatch_timeout_seconds
-            runtime_config["permission_mode"] = _runtime_permission_mode(
-                str(selection["runtime"]), profile.mode
-            )
-            permissions = {
-                "mode": profile.mode,
-                "tool_scope": list(profile.tool_scope),
-                "resource_scope": list(profile.resource_scope),
-                "action_scope": list(profile.action_scope),
-                "tool_policy": contract.tool_policy,
-            }
+            runtime_config["permission_mode"] = profile.mode
 
         state_contract_error: str | None = None
 
