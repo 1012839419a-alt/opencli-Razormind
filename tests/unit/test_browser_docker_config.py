@@ -15,6 +15,7 @@ def test_builtin_browser_passes_runtime_engine_without_baking_license():
     compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
     assert "BROWSER_ENGINE: ${BROWSER_ENGINE:-chromium}" in compose
     assert "CLOAKBROWSER_CACHE_DIR:" in compose
+    assert "CLOAKBROWSER_BINARY_PATH: ${CLOAKBROWSER_BINARY_PATH:-}" in compose
     assert "CLOAKBROWSER_LICENSE_KEY: ${CLOAKBROWSER_LICENSE_KEY:-}" in compose
 
 

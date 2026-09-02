@@ -122,7 +122,7 @@ docker compose -f docker-compose.yml -f docker-compose.build.yml build agent-1
 docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --no-build agent-1
 ~~~
 
-`CLOAKBROWSER_VERSION` 只作为构建参数使用，`CLOAKBROWSER_LICENSE_KEY` 只在运行时注入，不会写入镜像。请遵守 CloakBrowser 的许可证和密钥保管要求，不要把密钥写入仓库、Dockerfile、构建参数或日志。引擎启动失败会直接报告，**不自动降级**到 Chromium 或其他引擎；实际可用性仍取决于站点、网络、账号状态和上游版本，不保证对任意站点都有效。
+`CLOAKBROWSER_VERSION` 只作为构建参数使用，`CLOAKBROWSER_LICENSE_KEY` 只在运行时注入，不会写入镜像。请遵守 CloakBrowser 的许可证和密钥保管要求，不要把密钥写入仓库、Dockerfile、构建参数或日志。CloakBrowser 不解决 CAPTCHA，也不内置代理轮换；实际可用性仍取决于站点、网络、账号状态和上游版本，不保证对任意站点都有效。引擎启动失败会直接报告，**不自动降级**到 Chromium 或其他引擎。
 
 ## Restart recovery and support
 

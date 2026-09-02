@@ -319,6 +319,7 @@ services:
       CHROME_HOSTNAME: agent-1
       BROWSER_ENGINE: ${BROWSER_ENGINE:-chromium}
       CLOAKBROWSER_CACHE_DIR: ${CLOAKBROWSER_CACHE_DIR:-/opt/cloakbrowser/cache}
+      CLOAKBROWSER_BINARY_PATH: ${CLOAKBROWSER_BINARY_PATH:-}
       CLOAKBROWSER_LICENSE_KEY: ${CLOAKBROWSER_LICENSE_KEY:-}
       BROWSER_RUNTIME_BUNDLE_ROOT: /opt/browser-runtime-bundles
       BROWSER_RUNTIME_BUNDLE_MANIFEST: /opt/browser-runtime-bundles/opencli-default/2/manifest.json
