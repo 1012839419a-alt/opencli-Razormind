@@ -17,15 +17,11 @@ test('inbox combines existing operational signals with server-backed human appro
   assert.match(hooks, /export function useInfiniteTasks/)
   assert.match(hooks, /export function useInfiniteNotificationLogs/)
   assert.match(hooks, /export function useInfiniteControlActions/)
-  assert.match(endpoints, /listNotificationLogs = \(params\?: \{ rule_id\?: string; page\?: number; limit\?: number \}\)/)
-  assert.match(page, /useGovernedWorkspaces\(\)/)
-  assert.match(page, /useOperationsInbox\(workspaceId, 'open'\)/)
-  assert.match(approvalDetail, /useDecideOperationsApproval\(\)/)
-  assert.match(approvalDetail, /<AIApproval/)
-  assert.match(approvalDetail, /审批理由（必填）/)
-  assert.match(approvalDetail, /setCardRevision\(\(revision\) => revision \+ 1\)/)
-  assert.match(hooks, /export function useOperationsInbox/)
-  assert.match(hooks, /export function useDecideOperationsApproval/)
+  assert.match(
+    endpoints,
+    /listNotificationLogs = \(params\?: \{\s*rule_id\?: string;\s*page\?: number;\s*limit\?: number;\s*\}\) =>/,
+  )
+  assert.doesNotMatch(page, /useMyWorkspaces|useOperationsInbox|\/workspaces|operations-inbox/)
 })
 
 test('inbox uses a Linear-style queue while preserving destinations for underlying records', async () => {

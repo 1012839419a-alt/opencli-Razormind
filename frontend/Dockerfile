@@ -1,7 +1,7 @@
-FROM node:22-alpine AS dependencies
+FROM node:26-alpine AS dependencies
 
 WORKDIR /app
-RUN corepack enable && corepack prepare pnpm@11.10.0 --activate
+RUN npm install --global pnpm@11.18.0
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile
 
@@ -19,7 +19,7 @@ ENV BACKEND_URL=${BACKEND_URL} \
 COPY . .
 RUN pnpm build
 
-FROM node:22-alpine AS runtime
+FROM node:26-alpine AS runtime
 
 WORKDIR /app
 ENV NODE_ENV=production \

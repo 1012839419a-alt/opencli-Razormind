@@ -63,6 +63,184 @@ export type WorkflowNodeCatalogItem = {
 export const COLLECTION_NEED_CATALOG_ID = "intelligence.input.collection-need"
 export const TURBOPUSH_PUBLISH_CATALOG_ID = "intelligence.output.turbopush-publish"
 export const RECORD_HYGIENE_PACKAGE_CATALOG_ID = "package.processing.record-hygiene"
+export const COLLECTOR_NODE_CATALOG_IDS = [
+  "collection.source.web",
+  "collection.source.api",
+  "collection.source.rss",
+  "collection.source.cli",
+] as const
+
+export type CollectorSourceKind = "web" | "api" | "rss" | "cli"
+
+type CollectorSourceBase = {
+  sourceId: string
+  kind: CollectorSourceKind
+  name?: string
+  enabled?: boolean
+}
+
+export type WebCollectorSource = CollectorSourceBase & {
+  kind: "web"
+  url: string
+  fetchMode: "auto" | "http" | "browser"
+  selector?: string
+  extraction?: Record<string, unknown>
+  pagination?: Record<string, unknown>
+  timeWindow?: Record<string, unknown>
+}
+
+export type ApiCollectorSource = CollectorSourceBase & {
+  kind: "api"
+  url: string
+  method: "GET" | "HEAD"
+  credentialRef?: string
+  credentialScheme?: "bearer" | "api_key" | "basic"
+  query?: Record<string, unknown>
+  headers?: Record<string, unknown>
+  body?: unknown
+  pagination?: Record<string, unknown>
+  responseMapping?: Record<string, unknown>
+}
+
+export type RssCollectorSource = CollectorSourceBase & {
+  kind: "rss"
+  feedUrl: string
+  timeWindow?: Record<string, unknown>
+  itemLimit: number
+}
+
+export type CliCollectorSource = CollectorSourceBase & {
+  kind: "cli"
+  adapterNodeId: string
+  args: Record<string, unknown>
+}
+
+export type CollectorSourceDefinition =
+  | WebCollectorSource
+  | ApiCollectorSource
+  | RssCollectorSource
+  | CliCollectorSource
+
+export type CollectorNodeParams = {
+  version: 1
+  execution: {
+    concurrency?: number
+    timeoutMs?: number
+    retry?: { maxAttempts: number; backoffMs?: number }
+  }
+  sources: CollectorSourceDefinition[]
+}
+
+export type CollectedItemV1 = {
+  itemId: string
+  sourceId: string
+  sourceType: CollectorSourceKind
+  title?: string | null
+  url?: string | null
+  content?: string | null
+  data?: unknown
+  publishedAt: string | null
+  fetchedAt: string
+  lineage: Record<string, unknown>
+}
+
+export type CollectorSourceExecutionResult = {
+  sourceId: string
+  status: "completed" | "failed" | "skipped"
+  itemCount: number
+  attempts: number
+  startedAt: string
+  finishedAt: string
+  error?: { code: string; message: string; retryable: boolean }
+}
+
+export type CollectorOutputV1 = {
+  items: CollectedItemV1[]
+  sourceResults: CollectorSourceExecutionResult[]
+}
+
+export function collectorKindForCatalogId(
+  catalogId: unknown,
+): CollectorSourceKind | undefined {
+  if (typeof catalogId !== "string" || !catalogId.startsWith("collection.source.")) {
+    return undefined
+  }
+  const kind = catalogId.slice("collection.source.".length)
+  return COLLECTOR_NODE_CATALOG_IDS.some((id) => id.endsWith(`.${kind}`))
+    ? kind as CollectorSourceKind
+    : undefined
+}
+
+export function isCollectorNodeParams(
+  value: unknown,
+  expectedKind?: CollectorSourceKind,
+): value is CollectorNodeParams {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false
+  const params = value as Record<string, unknown>
+  if (
+    params.version !== 1 ||
+    !params.execution ||
+    typeof params.execution !== "object" ||
+    Array.isArray(params.execution) ||
+    !Array.isArray(params.sources)
+  ) {
+    return false
+  }
+  return params.sources.every((source) => {
+    if (!source || typeof source !== "object" || Array.isArray(source)) return false
+    const candidate = source as Record<string, unknown>
+    const kind = candidate.kind
+    return (
+      (kind === "web" || kind === "api" || kind === "rss" || kind === "cli") &&
+      (!expectedKind || kind === expectedKind) &&
+      typeof candidate.sourceId === "string" &&
+      candidate.sourceId.trim().length > 0 &&
+      typeof candidate.name === "string" &&
+      typeof candidate.enabled === "boolean"
+    )
+  })
+}
+
+export function createCollectorSource(
+  kind: CollectorSourceKind,
+  sourceId = `source-${Date.now()}`,
+): CollectorSourceDefinition {
+  const base = {
+    sourceId,
+    kind,
+    name: `新${collectorKindLabel(kind)}来源`,
+    enabled: true,
+  }
+  if (kind === "web") {
+    return { ...base, kind, url: "https://example.com", fetchMode: "auto" }
+  }
+  if (kind === "api") {
+    return {
+      ...base,
+      kind,
+      url: "https://api.example.com",
+      method: "GET",
+      query: {},
+      headers: {},
+    }
+  }
+  if (kind === "rss") {
+    return {
+      ...base,
+      kind,
+      feedUrl: "https://example.com/feed.xml",
+      itemLimit: 20,
+    }
+  }
+  return { ...base, kind, adapterNodeId: "opencli.adapter.example.list", args: {} }
+}
+
+function collectorKindLabel(kind: CollectorSourceKind): string {
+  if (kind === "web") return "网页"
+  if (kind === "api") return "API"
+  if (kind === "rss") return "RSS"
+  return "CLI"
+}
 
 const RECORD_HYGIENE_INTERNALS: NonNullable<WorkflowProjectNode["internals"]> = {
   locked: true,
@@ -698,11 +876,16 @@ export function buildOpenCLIMultiSourceHDAInternals(
 
 function buildToolPackageInternals(
   toolId: string,
-  executorMode: "situation_awareness" | "swarm_simulation",
+  executorMode:
+    | "situation_awareness"
+    | "swarm_simulation"
+    | "gaojixing_doubao_batch"
+    | "gaojixing_batch_certify",
   label: string,
   toolParams: Record<string, unknown>,
+  options: { includeOutput?: boolean } = {},
 ): WorkflowProjectNode["internals"] {
-  return {
+  const internals: NonNullable<WorkflowProjectNode["internals"]> = {
     locked: true,
     nodes: [
       {
@@ -750,6 +933,10 @@ function buildToolPackageInternals(
       },
     ],
   }
+
+  return options.includeOutput === false
+    ? { ...internals, nodes: [internals.nodes[0]], edges: [] }
+    : internals
 }
 
 function opencliAdapterId(site: string): string {
@@ -766,6 +953,94 @@ function safeIdPart(value: string): string {
 
 export const WORKFLOW_NODE_CATALOG: WorkflowNodeCatalogItem[] = [
   ...DIFY_COMPATIBLE_WORKFLOW_BLOCKS,
+  {
+    id: "collection.source.web",
+    idPrefix: "web-collector",
+    label: "网页采集",
+    description: "从多个网页配置采集内容，并保留逐来源状态与时间信息",
+    category: "source",
+    profile: "intelligence",
+    kind: "source",
+    capability: "fetch",
+    icon: "Globe",
+    color: "var(--chart-4)",
+    params: {
+      version: 1,
+      execution: {
+        concurrency: 3,
+        timeoutMs: 30_000,
+        retry: { maxAttempts: 2, backoffMs: 1_000 },
+      },
+      sources: [createCollectorSource("web", "web-1")],
+    },
+    keywords: ["web", "page", "crawler", "网页", "网站", "采集"],
+  },
+  {
+    id: "collection.source.api",
+    idPrefix: "api-collector",
+    label: "API 采集",
+    description: "从多个 HTTP API 采集结构化数据，并保留逐来源状态",
+    category: "source",
+    profile: "intelligence",
+    kind: "source",
+    capability: "fetch",
+    icon: "FileCode2",
+    color: "var(--chart-4)",
+    params: {
+      version: 1,
+      execution: {
+        concurrency: 3,
+        timeoutMs: 30_000,
+        retry: { maxAttempts: 2, backoffMs: 1_000 },
+      },
+      sources: [createCollectorSource("api", "api-1")],
+    },
+    keywords: ["api", "http", "json", "接口", "采集"],
+  },
+  {
+    id: "collection.source.rss",
+    idPrefix: "rss-collector",
+    label: "RSS 采集",
+    description: "从多个 RSS 或 Atom Feed 采集条目",
+    category: "source",
+    profile: "intelligence",
+    kind: "source",
+    capability: "fetch",
+    icon: "Radio",
+    color: "var(--chart-4)",
+    params: {
+      version: 1,
+      execution: {
+        concurrency: 3,
+        timeoutMs: 30_000,
+        retry: { maxAttempts: 2, backoffMs: 1_000 },
+      },
+      sources: [createCollectorSource("rss", "rss-1")],
+    },
+    keywords: ["rss", "atom", "feed", "订阅", "采集"],
+  },
+  {
+    id: "collection.source.cli",
+    idPrefix: "cli-collector",
+    label: "CLI 采集",
+    description: "从已注册 OpenCLI 工具目录选择只读工具并填写 typed arguments",
+    category: "source",
+    profile: "intelligence",
+    kind: "source",
+    capability: "fetch",
+    icon: "Terminal",
+    color: "var(--chart-4)",
+    params: {
+      version: 1,
+      execution: {
+        concurrency: 3,
+        timeoutMs: 30_000,
+        retry: { maxAttempts: 2, backoffMs: 1_000 },
+      },
+      sources: [],
+    },
+    keywords: ["cli", "opencli", "adapter", "typed args", "命令行", "采集"],
+  },
   {
     id: IMAGE_GENERATION_CATALOG_ID,
     idPrefix: "image-generation",
@@ -1227,6 +1502,30 @@ export const WORKFLOW_NODE_CATALOG: WorkflowNodeCatalogItem[] = [
     keywords: ["record", "sink", "database", "records", "落库", "存储"],
   },
   {
+    id: "intelligence.sink.feishu-bitable",
+    idPrefix: "feishu-bitable",
+    label: "Feishu Bitable Sink",
+    description: "把已入库且通过认证的 Record 幂等投递到已有飞书多维表格",
+    category: "sink",
+    profile: "intelligence",
+    kind: "sink",
+    capability: "store",
+    icon: "Database",
+    color: "var(--chart-4)",
+    params: {
+      connectionId: "",
+      appToken: "",
+      tableId: "",
+      fieldMap: {
+        recordId: "Record ID",
+        workflowRunId: "Run ID",
+        evidenceDigest: "Evidence Digest",
+        "normalizedData.title": "Title",
+      },
+    },
+    keywords: ["feishu", "bitable", "飞书", "多维表格", "delivery", "sink"],
+  },
+  {
     id: "intelligence.output.webhook",
     idPrefix: "notify",
     label: "Webhook Notify",
@@ -1417,6 +1716,78 @@ export const WORKFLOW_NODE_CATALOG: WorkflowNodeCatalogItem[] = [
       },
     ),
     keywords: ["last30days", "research", "situation", "awareness", "事态感知", "近30天", "研究"],
+  },
+  {
+    id: "package.gaojixing.doubao-batch",
+    idPrefix: "pkg-gaojixing-doubao",
+    label: "豆包证据批次采集",
+    description: "每次运行接收一个新题包，冻结批次快照并自动计算非品牌题与品牌题数量；先完成本批全部非品牌题，再进入品牌题。支持离线夹具或现有规范 2.2 归档；live_preflight 是独立的只读就绪检查，不产生批次结果，也不进入本模板终审；验证异常恢复通知仅在通知权限与 feishuWebhookEnv 同时满足时发送",
+    category: "package",
+    profile: "intelligence",
+    kind: "agent",
+    capability: "normalize",
+    icon: "SearchCheck",
+    color: "var(--chart-2)",
+    params: {
+      template: "gaojixing-doubao-batch",
+      runtime: "iii",
+      lockedInternals: true,
+      sourceMode: "project_archive",
+      requirePhase1BeforePhase2: true,
+      feishuWebhookEnv: "GAOJIXING_FEISHU_WEBHOOK_URL",
+    },
+    topicCollapse: {
+      groupId: "gaojixing-doubao-batch-package",
+      nodeCount: 1,
+      mode: "locked",
+      packageInternal: true,
+    },
+    internals: buildToolPackageInternals(
+      "tool.gaojixing.doubao-batch.run",
+      "gaojixing_doubao_batch",
+      "豆包证据批次采集",
+      {
+        sourceMode: "project_archive",
+        requirePhase1BeforePhase2: true,
+        feishuWebhookEnv: "GAOJIXING_FEISHU_WEBHOOK_URL",
+      },
+      { includeOutput: false },
+    ),
+    keywords: ["高吉星", "豆包", "evidence", "batch", "一题一审", "checkpoint", "HDA"],
+  },
+  {
+    id: "package.gaojixing.batch-certification",
+    idPrefix: "pkg-gaojixing-certify",
+    label: "批次证据结构终审与交付",
+    description: "对 raw、Markdown、进度日志和证据文件执行证据结构终审，核对截图等文件存在、命名及引用一致性，并核对参考资料数量、视频记录和高吉星观察字段，输出可审计交付报告；不执行截图视觉或 OCR 内容判定",
+    category: "package",
+    profile: "intelligence",
+    kind: "agent",
+    capability: "normalize",
+    icon: "BadgeCheck",
+    color: "var(--chart-3)",
+    params: {
+      template: "gaojixing-batch-certification",
+      runtime: "iii",
+      lockedInternals: true,
+      sourceMode: "project_archive",
+    },
+    topicCollapse: {
+      groupId: "gaojixing-batch-certification-package",
+      nodeCount: 1,
+      mode: "locked",
+      packageInternal: true,
+    },
+    internals: buildToolPackageInternals(
+      "tool.gaojixing.batch-certify",
+      "gaojixing_batch_certify",
+      "批次证据结构终审与交付",
+      {
+        sourceMode: "project_archive",
+      },
+      { includeOutput: false },
+    ),
+    keywords: ["高吉星", "证据结构终审", "certification", "raw", "Markdown", "截图", "HDA"],
   },
   {
     id: "package.intelligence.native-lifecycle",
@@ -1705,7 +2076,11 @@ export function getWorkflowNodeCatalog(
   profile: WorkflowProfile,
   capabilities?: WorkflowCapabilitiesResponse | null,
 ): WorkflowNodeCatalogItem[] {
-  const staticCatalog = WORKFLOW_NODE_CATALOG.filter((item) => item.profile === profile).map((item) => {
+  const collectorsEnabled = process.env.NEXT_PUBLIC_COLLECTION_L1_NODES !== "false"
+  const staticCatalog = WORKFLOW_NODE_CATALOG
+    .filter((item) => item.profile === profile)
+    .filter((item) => collectorsEnabled || !COLLECTOR_NODE_CATALOG_IDS.includes(item.id as typeof COLLECTOR_NODE_CATALOG_IDS[number]))
+    .map((item) => {
     const runtimeCapability = projectedCatalogRuntimeCapability(
       catalogRuntimeCapability(capabilities, item.id),
       item,
@@ -1720,7 +2095,12 @@ export function getWorkflowNodeCatalog(
   if (profile !== "intelligence") return staticCatalog
   const dynamicBackendCatalog = (capabilities?.catalog ?? []).flatMap((runtimeCapability) => {
     const item = backendNodeCatalogItem(runtimeCapability)
-    return item ? [item] : []
+    return item && (
+      collectorsEnabled ||
+      !COLLECTOR_NODE_CATALOG_IDS.includes(item.id as typeof COLLECTOR_NODE_CATALOG_IDS[number])
+    )
+      ? [item]
+      : []
   })
   const catalogById = new Map<string, WorkflowNodeCatalogItem>(
     staticCatalog.map((item) => [item.id, item]),

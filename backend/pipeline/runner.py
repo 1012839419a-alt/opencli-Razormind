@@ -9,6 +9,7 @@ from backend.database import AsyncSessionLocal
 from backend.models.task import CollectionTask, TaskRun
 from backend.pipeline import events
 from backend.pipeline.error_taxonomy import effective_error_type
+from backend.pipeline.domain_limiter import domain_slot
 from backend.pipeline.pipeline import run_pipeline
 
 logger = logging.getLogger(__name__)
@@ -42,6 +43,7 @@ async def run_collection_pipeline(
     merged_params: dict = {}
     agent_id: str | None = None
     trigger_type: str = "manual"
+    recovery_mode: str | None = None
 
     async with AsyncSessionLocal() as session:
         task = await session.get(CollectionTask, task_id)
@@ -63,6 +65,7 @@ async def run_collection_pipeline(
         merged_params = {**task.parameters, **parameters}
         agent_id = task.agent_id
         trigger_type = task.trigger_type
+        recovery_mode = task.recovery_mode
         await session.commit()
 
     # Emit trigger event after committing the run row
@@ -186,7 +189,7 @@ async def run_collection_pipeline(
                 parameters=merged_params,
                 agent_config=agent_config,
                 run_id=run_id,
-                collection_lineage=collection_lineage,
+                enable_notifications=recovery_mode != "recollect",
             )
         except Exception as exc:
             # run_pipeline only re-raises errors its taxonomy classified as

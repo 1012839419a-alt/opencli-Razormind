@@ -120,6 +120,7 @@ def test_native_installer_authenticates_follow_up_downloads():
     assert 'wget --header="Authorization: Bearer $AGENT_API_TOKEN"' in body
     assert '[[ -e "$OHMYOPENCLI_ROOT" ]] && die' in body
     assert 'rm -rf "$OHMYOPENCLI_ROOT"' not in body
+    assert "npm install -g @jackwener/opencli@1.8.7" in body
 
 
 def test_windows_managed_installer_supports_api_auth():
@@ -132,6 +133,7 @@ def test_windows_managed_installer_supports_api_auth():
     assert "[string]$ApiAuthToken" in installer
     assert 'Authorization = "Bearer $ApiAuthToken"' in installer
     assert "-Headers $requestHeaders" in installer
+    assert '$OpenCliVersion = "1.8.7"' in installer
 
 
 @pytest.mark.asyncio
@@ -141,9 +143,9 @@ async def test_managed_opencli_patch_is_served_to_native_agents(client):
     assert response.status_code == 200
     assert "OPENCLI_ADMIN_MANAGED_CDP_ROUTING_V2" in response.text
     assert "fetch(probeUrl" in response.text
-    assert "OPENCLI_ADMIN_FACTORY_SELECTION_V1" in response.text
+    assert "OPENCLI_ADMIN_REMOTE_DAEMON_ROUTE_V2" in response.text
     assert "OPENCLI_ADMIN_RUNTIME_FACTORY_V1" in response.text
-    assert "OPENCLI_ADMIN_REMOTE_DAEMON_ROUTE_V1" in response.text
+    assert "OPENCLI_ADMIN_FACTORY_SELECTION_V1" in response.text
     assert "'dist', 'src', 'daemon.js'" in response.text
     assert "'dist', 'src', 'browser', 'daemon-transport.js'" in response.text
 

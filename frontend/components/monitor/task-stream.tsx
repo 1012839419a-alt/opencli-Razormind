@@ -5,6 +5,7 @@ import { AlertTriangle, ArrowRight, CheckCircle2 } from 'lucide-react'
 
 import type { FailureItem, StreamTask } from '@/lib/demo/monitor'
 import { formatDuration, formatRelative } from '@/lib/format'
+import { groupFailures, groupStreamTasks } from '@/lib/monitor/task-grouping'
 import { StatusBadge } from '@/components/shell/status-badge'
 import { Badge } from '@/components/ui/badge'
 import {
@@ -29,42 +30,6 @@ const PHASE_STATUS: Record<StreamTask['phase'], string> = {
   running: 'running',
   success: 'success',
   failed: 'failed',
-}
-
-type GroupedStreamTask = StreamTask & { occurrences: number }
-type GroupedFailure = FailureItem & { occurrences: number }
-
-function groupStreamTasks(tasks: StreamTask[]): GroupedStreamTask[] {
-  const grouped = new Map<string, GroupedStreamTask>()
-
-  for (const task of tasks) {
-    const key = [task.title, task.lane, task.workerName, task.phase].join('\u0000')
-    const existing = grouped.get(key)
-    if (existing) {
-      existing.occurrences += 1
-      existing.records += task.records
-      continue
-    }
-    grouped.set(key, { ...task, occurrences: 1 })
-  }
-
-  return Array.from(grouped.values()).slice(0, 6)
-}
-
-function groupFailures(failures: FailureItem[]): GroupedFailure[] {
-  const grouped = new Map<string, GroupedFailure>()
-
-  for (const failure of failures) {
-    const key = [failure.title, failure.workerName, failure.error].join('\u0000')
-    const existing = grouped.get(key)
-    if (existing) {
-      existing.occurrences += 1
-      continue
-    }
-    grouped.set(key, { ...failure, occurrences: 1 })
-  }
-
-  return Array.from(grouped.values()).slice(0, 5)
 }
 
 export function TaskStream({ tasks }: { tasks: StreamTask[] }) {
@@ -93,7 +58,13 @@ export function TaskStream({ tasks }: { tasks: StreamTask[] }) {
               <TableRow key={`${t.id}-${t.phase}`}>
                 <TableCell className="max-w-52">
                   <span className="flex items-center gap-2">
-                    <span className="block min-w-0 truncate font-medium">{t.title}</span>
+                    {t.href ? (
+                      <Link href={t.href} className="block min-w-0 truncate font-medium hover:underline">
+                        {t.title}
+                      </Link>
+                    ) : (
+                      <span className="block min-w-0 truncate font-medium">{t.title}</span>
+                    )}
                     {t.occurrences > 1 ? (
                       <Badge variant="secondary" className="shrink-0 font-mono text-[10px]">
                         ×{t.occurrences}
@@ -135,27 +106,30 @@ export function TaskStream({ tasks }: { tasks: StreamTask[] }) {
   )
 }
 
-export function FailureFeed({ failures }: { failures: FailureItem[] }) {
+export function FailureFeed({ failures, totalFailed = failures.length }: { failures: FailureItem[]; totalFailed?: number }) {
   const groupedFailures = groupFailures(failures)
 
   if (groupedFailures.length === 0) {
+    const hasUnlistedFailures = totalFailed > 0
     return (
       <Card size="sm" aria-label="失败与重试">
         <CardContent className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex min-w-0 items-center gap-3">
-            <span className="grid size-9 shrink-0 place-items-center rounded-md bg-success/10 text-success">
-              <CheckCircle2 className="size-4" aria-hidden />
+            <span className={`grid size-9 shrink-0 place-items-center rounded-md ${hasUnlistedFailures ? 'bg-destructive/10 text-destructive' : 'bg-success/10 text-success'}`}>
+              {hasUnlistedFailures ? <AlertTriangle className="size-4" aria-hidden /> : <CheckCircle2 className="size-4" aria-hidden />}
             </span>
             <div className="min-w-0">
-              <p className="text-sm font-medium">当前没有失败任务</p>
-              <p className="mt-0.5 text-xs text-muted-foreground">最近运行未发现需要重试或人工处理的异常。</p>
+              <p className="text-sm font-medium">{hasUnlistedFailures ? `${totalFailed} 个失败任务需要处理` : '当前没有失败任务'}</p>
+              <p className="mt-0.5 text-xs text-muted-foreground">
+                {hasUnlistedFailures ? '这些任务不在最近 10 条运行中，请打开失败任务列表继续排查。' : '最近运行未发现需要重试或人工处理的异常。'}
+              </p>
             </div>
           </div>
           <Link
-            href="/tasks"
+            href={hasUnlistedFailures ? '/tasks?status=failed' : '/tasks'}
             className="inline-flex shrink-0 items-center gap-1 text-xs font-medium text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
           >
-            查看运行历史
+            {hasUnlistedFailures ? '查看失败任务' : '查看运行历史'}
             <ArrowRight className="size-3" aria-hidden />
           </Link>
         </CardContent>
@@ -174,7 +148,7 @@ export function FailureFeed({ failures }: { failures: FailureItem[] }) {
         <CardAction className="flex items-center gap-2">
           <Badge variant="destructive">{groupedFailures.length} 类异常</Badge>
           <Link
-            href="/tasks"
+            href="/tasks?status=failed"
             className="inline-flex items-center gap-1 text-xs font-medium text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
           >
             查看全部
@@ -191,7 +165,13 @@ export function FailureFeed({ failures }: { failures: FailureItem[] }) {
             >
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
-                  <span className="truncate text-sm font-medium">{f.title}</span>
+                  {f.href ? (
+                    <Link href={f.href} className="min-w-0 truncate text-sm font-medium hover:underline">
+                      {f.title}
+                    </Link>
+                  ) : (
+                    <span className="truncate text-sm font-medium">{f.title}</span>
+                  )}
                   <span className="shrink-0 text-xs text-muted-foreground">
                     {formatRelative(new Date(f.at).toISOString())}
                   </span>

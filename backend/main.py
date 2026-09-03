@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import secrets
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -16,6 +17,7 @@ from backend.security.fleet_auth import (
     enforce_bind_guard,
     resolve_uvicorn_host,
 )
+from backend.security.question_bank_body_limit import QuestionBankBodyLimitMiddleware
 
 
 def _configure_logging() -> None:
@@ -51,12 +53,14 @@ def _read_chrome_endpoints() -> list[str]:
     shell (project root .env) deployments work correctly.
     """
     import os
+
     candidates = [
         "/app/.env",
         os.path.join(os.path.dirname(__file__), "..", ".env"),
     ]
     try:
         from dotenv import dotenv_values
+
         for path in candidates:
             env = dotenv_values(path)
             raw = (env.get("AGENT_POOL_ENDPOINTS") or "").strip()
@@ -90,6 +94,7 @@ async def lifespan(app: FastAPI):
     # restart reuses the env vars injected at container creation time, so the
     # pydantic-settings value (which comes from those env vars) would be stale.
     from backend import browser_pool
+
     from_env = _read_chrome_endpoints()
     endpoints = from_env or settings.cdp_endpoints
     browser_pool.init_pool(
@@ -107,6 +112,7 @@ async def lifespan(app: FastAPI):
     from backend.browser_pool import LocalBrowserPool
     from backend.database import AsyncSessionLocal
     from backend.models.browser import BrowserInstance
+
     async with AsyncSessionLocal() as session:
         result = await session.execute(select(BrowserInstance))
         pool = browser_pool.get_pool()
@@ -139,6 +145,7 @@ async def lifespan(app: FastAPI):
     from sqlalchemy import update
 
     from backend.models.task import CollectionTask
+
     async with AsyncSessionLocal() as session:
         await session.execute(
             update(CollectionTask)
@@ -168,12 +175,17 @@ async def lifespan(app: FastAPI):
         sweep_acquisition_executions(stop=acquisition_sweeper_stop)
     )
 
+    from backend.workflow.gaojixing_worker_runtime import recover_collection_jobs
+
+    recovered_gaojixing = await recover_collection_jobs()
+    logger.info("Requeued %d Gaojixing collection jobs", len(recovered_gaojixing))
+
     use_admin_scheduler = (
-        settings.collection_orchestrator == "admin"
-        and settings.task_executor == "local"
+        settings.collection_orchestrator == "admin" and settings.task_executor == "local"
     )
     if use_admin_scheduler:
         from backend.scheduler import start_scheduler
+
         start_scheduler()
     elif settings.task_executor == "celery":
         # Bulk-sync redis with the current DB state at startup. redbeat's
@@ -185,6 +197,7 @@ async def lifespan(app: FastAPI):
         # the app from starting.
         try:
             from backend.worker.redbeat_sync import populate_all
+
             await populate_all()
         except Exception as exc:
             logger.warning("redbeat populate_all failed at startup: %s", exc)
@@ -195,6 +208,7 @@ async def lifespan(app: FastAPI):
     # in Advisory Mode (the shipped default) and stays a no-op mutator
     # whenever the kill switch is engaged.
     from backend.control import cycle_task
+
     cycle_task.start()
 
     logger.info(
@@ -210,6 +224,7 @@ async def lifespan(app: FastAPI):
     await cycle_task.stop()
     if use_admin_scheduler:
         from backend.scheduler import stop_scheduler
+
         stop_scheduler()
     await mcp_lifespan.__aexit__(None, None, None)
 
@@ -224,12 +239,19 @@ def create_app() -> FastAPI:
             "`/api/v1/workflows/demand-draft`, validate with `/api/v1/workflows/compile`, "
             "then review before publishing or running."
         ),
-        version="0.4.0",
+        version="0.4.1",
         docs_url="/docs",
         redoc_url="/redoc",
         openapi_url="/openapi.json",
         lifespan=lifespan,
     )
+    # Opaque and stable for this application process only. Restart clients use
+    # it to distinguish a newly started API from the still-running old process.
+    app.state.api_instance_id = secrets.token_hex(16)
+
+    # Bound managed question-bank requests before Starlette parses and spools
+    # multipart parts. Fleet auth is added afterwards and remains outermost.
+    app.add_middleware(QuestionBankBodyLimitMiddleware)
 
     # Fleet auth (ADR-0005): static bearer token on every /api route.
     # Registered BEFORE CORSMiddleware on purpose — Starlette treats the
@@ -334,10 +356,12 @@ def create_app() -> FastAPI:
         # Liveness only. This endpoint is exempt from FleetAuthMiddleware
         # (it sits outside the /api prefix; docker-compose's healthcheck
         # curls it with no credentials), so per closeout issue 04 it must
-        # leak nothing: no version, no config flags. The deployment detail
+        # leak no version or config flags. The opaque per-process identifier
+        # supports restart recovery without disclosing deployment detail;
+        # the deployment detail
         # (task_executor, collection_mode, ...) lives at the authenticated
         # GET /api/v1/system/config instead.
-        return {"status": "ok"}
+        return {"status": "ok", "instance_id": app.state.api_instance_id}
 
     # Keep MCP on the same deployment and auth boundary as the REST API.
     # Mounting at the root preserves the protocol's canonical exact /mcp path.

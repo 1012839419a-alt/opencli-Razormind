@@ -19,6 +19,7 @@ import {
   importDifyPluginPackage,
   type BackendPluginInstallation,
 } from "@/lib/plugins/backend-plugin-catalog"
+import { NODE_CAPABILITY_CATALOG_QUERY_KEY } from "@/lib/plugins/backend-node-capabilities"
 
 const MAX_PACKAGE_BYTES = 50 * 1024 * 1024
 
@@ -26,10 +27,12 @@ export function DifyPackageImportDialog({
   open,
   onOpenChange,
   onImported,
+  workspaceId,
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
   onImported?: (installation: BackendPluginInstallation) => void
+  workspaceId: string | null
 }) {
   const inputRef = useRef<HTMLInputElement>(null)
   const queryClient = useQueryClient()
@@ -51,10 +54,17 @@ export function DifyPackageImportDialog({
 
   const submit = async () => {
     if (!file || submitting) return
+    if (!workspaceId) {
+      toast.error("请先选择工作区")
+      return
+    }
     setSubmitting(true)
     try {
-      const installation = await importDifyPluginPackage(file)
+      const installation = await importDifyPluginPackage(workspaceId, file)
       await queryClient.invalidateQueries({ queryKey: PLUGIN_CATALOG_QUERY_KEY })
+      await queryClient.invalidateQueries({
+        queryKey: [...NODE_CAPABILITY_CATALOG_QUERY_KEY, workspaceId],
+      })
       toast.success(`已导入 ${installation.providerKey} ${installation.version}`)
       setFile(null)
       onImported?.(installation)

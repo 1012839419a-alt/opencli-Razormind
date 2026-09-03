@@ -14,11 +14,13 @@ BlockReasonCategory = Literal[
 ]
 
 FETCH_PERMISSION_REQUIRED = "fetch_permission_required"
-FEISHU_WRITE_PERMISSION_REQUIRED = "feishu_write_permission_required"
 OPENCLI_WRITE_APPROVAL_REQUIRED = "opencli_write_approval_required"
 OPENCLI_WRITE_PERMISSION_REQUIRED = "opencli_write_permission_required"
 SEND_PERMISSION_REQUIRED = "send_permission_required"
 MISSING_DELIVERY_PROJECTION = "missing_delivery_projection"
+MISSING_FEISHU_CONNECTION = "missing_feishu_connection"
+INVALID_FEISHU_RECORD_INPUT = "invalid_feishu_record_input"
+FEISHU_WRITE_PERMISSION_REQUIRED = "feishu_write_permission_required"
 MISSING_ADAPTER_RESOURCE = "missing_adapter_resource"
 MISSING_OPENCLI_COMMAND = "missing_opencli_command"
 MISSING_PROFILE_BINDING = "missing_profile_binding"
@@ -93,14 +95,6 @@ WORKFLOW_BLOCK_REASON_TAXONOMY: dict[str, WorkflowBlockReasonDefinition] = {
         stable_fields=("code", "source", "details.bindingId", "details.requiredPermission"),
         description="Source fetch is blocked because canFetchNetwork is false.",
     ),
-    FEISHU_WRITE_PERMISSION_REQUIRED: WorkflowBlockReasonDefinition(
-        code=FEISHU_WRITE_PERMISSION_REQUIRED,
-        category="missing_permission",
-        stable_fields=("code", "source", "details.bindingId", "details.requiredPermission"),
-        description=(
-            "Feishu sheet synchronization is blocked because external mutation is disabled."
-        ),
-    ),
     OPENCLI_WRITE_APPROVAL_REQUIRED: WorkflowBlockReasonDefinition(
         code=OPENCLI_WRITE_APPROVAL_REQUIRED,
         category="missing_permission",
@@ -125,6 +119,29 @@ WORKFLOW_BLOCK_REASON_TAXONOMY: dict[str, WorkflowBlockReasonDefinition] = {
         stable_fields=("code", "source", "details.bindingId", "details.required_params"),
         volatile_fields=("message",),
         description="Delivery is blocked until webhook URL and projection inputs are configured.",
+    ),
+    MISSING_FEISHU_CONNECTION: WorkflowBlockReasonDefinition(
+        code=MISSING_FEISHU_CONNECTION,
+        category="missing_config",
+        stable_fields=("code", "source", "details.bindingId", "details.connectionId"),
+        volatile_fields=("message",),
+        description="Feishu Bitable delivery requires an enabled saved connection.",
+    ),
+    INVALID_FEISHU_RECORD_INPUT: WorkflowBlockReasonDefinition(
+        code=INVALID_FEISHU_RECORD_INPUT,
+        category="missing_config",
+        stable_fields=("code", "source", "details.bindingId", "details.nodeId"),
+        volatile_fields=("message",),
+        description="Feishu Bitable delivery accepts only materialized certified Record refs.",
+    ),
+    FEISHU_WRITE_PERMISSION_REQUIRED: WorkflowBlockReasonDefinition(
+        code=FEISHU_WRITE_PERMISSION_REQUIRED,
+        category="missing_permission",
+        stable_fields=("code", "source", "details.bindingId", "details.requiredPermission"),
+        description=(
+            "Feishu sheet synchronization or Bitable delivery is blocked because "
+            "external-site mutation is disabled."
+        ),
     ),
     MISSING_RUNTIME_BINDING: WorkflowBlockReasonDefinition(
         code=MISSING_RUNTIME_BINDING,
@@ -205,6 +222,8 @@ __all__ = [
     "FEISHU_WRITE_PERMISSION_REQUIRED",
     "MISSING_ADAPTER_RESOURCE",
     "MISSING_DELIVERY_PROJECTION",
+    "MISSING_FEISHU_CONNECTION",
+    "INVALID_FEISHU_RECORD_INPUT",
     "MISSING_OPENCLI_COMMAND",
     "MISSING_PROFILE_BINDING",
     "MISSING_RUNTIME_BINDING",

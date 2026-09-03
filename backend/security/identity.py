@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import hmac
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -21,18 +20,22 @@ class IdentitySettings:
     audience: str
     jwks_url: str = ""
     bootstrap_admin_token: str = ""
-    secret_key: str = "change-me-in-production"
+    secret_key: str = ""
 
     @classmethod
     def from_env(cls) -> IdentitySettings:
-        from backend.config import get_settings
-
+        # Sourced from Settings (backend/config.py), not raw os.getenv(): the
+        # process environment alone is not a reliable source for these — under
+        # plain `uv run uvicorn ...` uv does not inject .env into os.environ,
+        # while Settings parses .env directly via pydantic-settings regardless
+        # of what the launching process actually exported.
+        settings = get_settings()
         return cls(
-            issuer=os.getenv("OIDC_ISSUER", "").rstrip("/"),
-            audience=os.getenv("OIDC_AUDIENCE", ""),
-            jwks_url=os.getenv("OIDC_JWKS_URL", ""),
-            bootstrap_admin_token=os.getenv("BOOTSTRAP_ADMIN_TOKEN", ""),
-            secret_key=get_settings().secret_key,
+            issuer=settings.oidc_issuer.rstrip("/"),
+            audience=settings.oidc_audience,
+            jwks_url=settings.oidc_jwks_url,
+            bootstrap_admin_token=settings.bootstrap_admin_token,
+            secret_key=settings.secret_key,
         )
 
 
@@ -142,10 +145,13 @@ def identity_dependency(
         if local_claims and local_claims.get("auth_method") == "local":
             return RequestIdentity(
                 subject="local-admin",
-                name=local_claims.get("name") or "本地管理员",
-                username=local_claims.get("username"),
+                email=_string_claim(local_claims, "email"),
+                name=_string_claim(local_claims, "name") or "本地管理员",
+                username=_string_claim(local_claims, "username"),
+                picture=_string_claim(local_claims, "picture"),
                 is_platform_admin=True,
                 auth_method="local",
+                claims=local_claims,
             )
         if resolved.bootstrap_admin_token and hmac.compare_digest(
             token, resolved.bootstrap_admin_token

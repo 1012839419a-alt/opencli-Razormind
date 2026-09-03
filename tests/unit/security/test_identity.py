@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import httpx
 import pytest
 from cryptography.hazmat.primitives import serialization
@@ -28,8 +30,38 @@ def _app(dependency):
     @app.get("/me")
     async def me(identity: RequestIdentity = Depends(dependency)):
         return identity.__dict__
-
     return app
+
+
+def test_local_token_uses_application_secret(monkeypatch):
+    monkeypatch.setattr(
+        "backend.security.identity.get_settings",
+        lambda: SimpleNamespace(
+            oidc_issuer="",
+            oidc_audience="",
+            oidc_jwks_url="",
+            bootstrap_admin_token="",
+            secret_key="runtime-secret",
+        ),
+    )
+    dependency = identity_dependency()
+    token = jwt.encode(
+        {"auth_method": "local", "username": "admin"},
+        "runtime-secret",
+        algorithm="HS256",
+    )
+
+    response = TestClient(_app(dependency)).get(
+        "/me", headers={"Authorization": f"Bearer {token}"}
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["auth_method"] == "local"
+    assert body["subject"] == "local-admin"
+    assert body["username"] == "admin"
+    assert body["claims"] == {"auth_method": "local", "username": "admin"}
+
 
 
 def test_bootstrap_admin_fallback():

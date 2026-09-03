@@ -180,7 +180,7 @@ test('records graph is project-scoped, bounded and rendered through a client-onl
     read('components/shell/route-tabs.tsx'),
     read('app/(app)/records/graph/page.tsx'),
     read('components/records/project-record-graph-canvas.tsx'),
-    read('lib/api/endpoints.ts'),
+    read('lib/api/workspace-endpoints.ts'),
     read('lib/api/hooks.ts'),
   ])
 
@@ -195,7 +195,7 @@ test('records graph is project-scoped, bounded and rendered through a client-onl
   assert.match(canvas, /barnesHutOptimize/)
   assert.match(canvas, /layout\.kill\(\)/)
   assert.match(endpoints, /projects\/\$\{projectId\}\/record-graph/)
-  assert.match(hooks, /\['project-record-graph'/)
+  assert.match(hooks, /\[\s*["']project-record-graph["']/)
 })
 
 test('project data surface distinguishes source freshness from ingestion time', async () => {

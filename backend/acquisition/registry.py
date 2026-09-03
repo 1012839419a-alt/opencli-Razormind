@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 OHMYOPENCLI_COMMIT = "73cc60c83586ef2c95469b3b70d6cfc80fa5bc53"
 OFFICIAL_SITE_CAPABILITY_COMMIT = "73cc60c83586ef2c95469b3b70d6cfc80fa5bc53"
-OPENCLI_VERSION = "1.8.5"
+OPENCLI_VERSION = "1.8.7"
 
 
 @dataclass(frozen=True)

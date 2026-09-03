@@ -1,9 +1,11 @@
 """Registered-Agent adapter for the local Codex CLI.
 
-The adapter is deliberately an edge-side subprocess adapter.  The control
-plane sends an ``agent_task`` over the authenticated Agent transport; only the
-registered Agent process imports this module and starts ``codex``.  No shell is
-used and no provider credential is copied into readiness or runtime events.
+The adapter is deliberately an edge-side subprocess adapter. The control plane
+sends an ``agent_task`` over the authenticated Agent transport; only the
+registered Agent process imports this module and starts an administrator-owned
+isolated runner. Direct Codex execution is intentionally unsupported because a
+read-only Codex sandbox can still read host files. No shell, caller-selected
+executable, caller-selected sandbox, or inherited Agent secret is accepted.
 
 Codex ``exec --json`` emits JSONL.  The native protocol has changed names a few
 times, so translation accepts the stable ``thread.*``, ``turn.*`` and
@@ -15,8 +17,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
-import shutil
+import signal
+import subprocess
+import time
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -43,10 +48,35 @@ _MAX_TIMEOUT_SECONDS = 3600
 _VERSION_TIMEOUT_SECONDS = 5
 _KILL_GRACE_SECONDS = 10
 _STDERR_TAIL_BYTES = 2048
-_PERMISSION_MODES = frozenset({"approval_required", "full_auto", "read_only", "suggest_changes"})
-_SANDBOX_MODES = frozenset({"read-only", "workspace-write", "danger-full-access"})
+_PERMISSION_MODES = frozenset({"observe_only", "suggest_changes"})
+_CAPABILITY_ID = "runtime.codex"
+_ISOLATED_RUNNER_ENV = "AGENT_CODEX_ISOLATED_RUNNER"
+_SAFE_ENVIRONMENT_KEYS = frozenset(
+    {
+        "APPDATA",
+        "CODEX_HOME",
+        "COMSPEC",
+        "HOME",
+        "LANG",
+        "LOCALAPPDATA",
+        "LOGNAME",
+        "PATH",
+        "PATHEXT",
+        "SSL_CERT_DIR",
+        "SSL_CERT_FILE",
+        "SYSTEMROOT",
+        "TEMP",
+        "TMP",
+        "USER",
+        "USERPROFILE",
+        "WINDIR",
+    }
+)
+_SHELL_ENVIRONMENT_POLICY = (
+    'shell_environment_policy.include_only=["PATH","HOME","USERPROFILE","TEMP",'
+    '"TMP","SYSTEMROOT","WINDIR","COMSPEC","PATHEXT","LANG","LC_*"]'
+)
 _VERSION_RE = re.compile(r"\bcodex(?:[- ]cli)?(?:\s+version)?\s+([0-9][0-9A-Za-z.+-]*)\b", re.I)
-_BARE_VERSION_RE = re.compile(r"\b([0-9]+\.[0-9]+(?:\.[0-9]+)?(?:[-+][0-9A-Za-z.-]+)?)\b")
 
 
 @register_runtime
@@ -60,39 +90,25 @@ class CodexRuntimeAdapter(RuntimeAdapter):
         resume_by_id=False,
         checkpoint="none",
         concurrent_sessions=True,
-        features=frozenset({"tool_events", "model_selection", "workspace_read", "workspace_write"}),
     )
 
     def validate_config(self, config: dict[str, Any]) -> list[str]:
         errors: list[str] = []
-        binary = config.get("binary", "codex")
-        if not isinstance(binary, str) or not binary.strip():
-            errors.append("'binary' must be a non-empty string")
-        elif "\x00" in binary:
-            errors.append("'binary' must not contain NUL bytes")
+        unsupported = sorted(set(config) - {"cwd", "timeout_seconds", "permission_mode"})
+        if unsupported:
+            errors.append("unsupported controller runtime config: " + ", ".join(unsupported))
 
-        for key in ("cwd", "project_root"):
-            if key in config and config[key] is not None:
-                value = config[key]
-                if not isinstance(value, str) or not value.strip():
-                    errors.append(f"'{key}' must be a non-empty string when provided")
-                elif "\x00" in value:
-                    errors.append(f"'{key}' must not contain NUL bytes")
-
-        if "args" in config and config["args"] is not None:
-            args = config["args"]
-            if not isinstance(args, list) or not all(isinstance(arg, str) for arg in args):
-                errors.append("'args' must be a list of strings when provided")
+        cwd = config.get("cwd")
+        if not isinstance(cwd, str) or not cwd.strip():
+            errors.append("'cwd' must be a non-empty controller-owned worktree path")
+        elif "\x00" in cwd:
+            errors.append("'cwd' must not contain NUL bytes")
 
         permission_mode = config.get("permission_mode")
         if permission_mode is not None and permission_mode not in _PERMISSION_MODES:
             errors.append(
                 "'permission_mode' must be one of " + ", ".join(sorted(_PERMISSION_MODES))
             )
-        sandbox_mode = config.get("sandbox_mode")
-        if sandbox_mode is not None and sandbox_mode not in _SANDBOX_MODES:
-            errors.append("'sandbox_mode' must be one of " + ", ".join(sorted(_SANDBOX_MODES)))
-
         if "timeout_seconds" in config and config["timeout_seconds"] is not None:
             timeout = config["timeout_seconds"]
             if (
@@ -109,90 +125,102 @@ class CodexRuntimeAdapter(RuntimeAdapter):
         return self.is_available()
 
     @classmethod
-    def is_available(cls, binary: str = "codex") -> bool:
-        """Cheap check used by the Agent registration handshake."""
-        if not isinstance(binary, str) or not binary or "\x00" in binary:
+    def is_available(cls) -> bool:
+        """Fail-closed compatibility check used by Agent registration."""
+        try:
+            runner = cls._configured_runner()
+            cls._configured_roots()
+        except ValueError:
             return False
-        return shutil.which(binary) is not None
+        return cls._probe_runner(runner)
 
     async def readiness(self, config: dict[str, Any] | None = None) -> RuntimeReadiness:
         config = config or {}
         errors = self.validate_config(config)
+        try:
+            resolved_binary = self._configured_runner()
+        except ValueError as exc:
+            return RuntimeReadiness(
+                runtime=self.runtime_type,
+                capability_id=_CAPABILITY_ID,
+                status="blocked",
+                binary_present=False,
+                reason_code="missing_isolated_runner",
+                reason=str(exc),
+            )
         if errors:
             return RuntimeReadiness(
                 runtime=self.runtime_type,
+                capability_id=_CAPABILITY_ID,
                 status="blocked",
-                binary_present=False,
+                binary_present=resolved_binary is not None,
                 reason_code="invalid_config",
                 reason="; ".join(errors),
             )
 
-        binary = config.get("binary") or "codex"
-        resolved_binary = shutil.which(binary)
-        if resolved_binary is None:
-            return RuntimeReadiness(
-                runtime=self.runtime_type,
-                status="blocked",
-                binary_present=False,
-                reason_code="missing_binary",
-                reason=f"codex binary not found: {binary!r}",
-            )
-
         try:
-            project_root, cwd = self._resolve_paths(config)
+            cwd, permitted_root = self._resolve_cwd(config)
         except ValueError as exc:
             return RuntimeReadiness(
                 runtime=self.runtime_type,
+                capability_id=_CAPABILITY_ID,
                 status="blocked",
                 binary_present=True,
-                permitted_project_root=self._display_path(config.get("project_root")),
+                permitted_project_root=self._display_path(config.get("cwd")),
                 working_directory=self._display_path(config.get("cwd")),
                 reason_code="invalid_path",
                 reason=str(exc),
             )
 
         version = await self._detect_version(
-            resolved_binary, config.get("args") or [], timeout_seconds=_VERSION_TIMEOUT_SECONDS
+            resolved_binary, timeout_seconds=_VERSION_TIMEOUT_SECONDS
         )
+        if version is None:
+            return RuntimeReadiness(
+                runtime=self.runtime_type,
+                capability_id=_CAPABILITY_ID,
+                status="blocked",
+                binary_present=True,
+                permitted_project_root=str(permitted_root),
+                working_directory=str(cwd),
+                reason_code="isolated_runner_probe_failed",
+                reason="isolated Codex runner did not complete a compatible version probe",
+            )
         return RuntimeReadiness(
             runtime=self.runtime_type,
+            capability_id=_CAPABILITY_ID,
             status="ready",
             binary_present=True,
             version=version,
-            permitted_project_root=str(project_root),
+            permitted_project_root=str(permitted_root),
             working_directory=str(cwd),
         )
 
-    def _compose_argv(
-        self,
-        config: dict[str, Any],
-        prompt: str = "",
-        *,
-        model: str | None = None,
-    ) -> list[str]:
-        binary = config.get("binary") or "codex"
-        argv = [binary, *(config.get("args") or []), "exec", "--json", "--color", "never"]
-        permission_mode = config.get("permission_mode")
-        if permission_mode == "full_auto":
-            # Codex exposes automatic review, not the old generic approval flag.
-            # ``--approve-for-me`` already selects Codex's workspace-write
-            # automatic-review mode.  Codex rejects it when an explicit
-            # ``--sandbox`` flag is supplied, so do not append both.
-            # The dangerous bypass flag is never selected by the Agent runtime.
-            argv.append("--approve-for-me")
-        elif permission_mode == "read_only":
-            argv.extend(("--sandbox", "read-only"))
-        elif permission_mode in {"suggest_changes", "approval_required"}:
-            # Default Codex approval flow is the governed on-request mode.
-            pass
-
-        sandbox_mode = config.get("sandbox_mode")
-        if sandbox_mode is not None and permission_mode not in {"read_only", "full_auto"}:
-            argv.extend(("--sandbox", sandbox_mode))
-        if model:
-            argv.extend(("--model", model))
-        argv.append(prompt)
-        return argv
+    @staticmethod
+    def _compose_argv(binary: str, cwd: Path, prompt: str = "") -> list[str]:
+        # Operations Agent profiles that may reach this adapter are advisory.
+        # Workbench consumes the returned patch and applies it through its own
+        # guarded pipeline, so the runtime itself never needs write access.
+        return [
+            binary,
+            "exec",
+            "--json",
+            "--color",
+            "never",
+            "--ephemeral",
+            "--ignore-user-config",
+            "-c",
+            'shell_environment_policy.inherit="core"',
+            "-c",
+            _SHELL_ENVIRONMENT_POLICY,
+            "-c",
+            "shell_environment_policy.ignore_default_excludes=false",
+            "--sandbox",
+            "read-only",
+            "--cd",
+            str(cwd),
+            prompt,
+        ]
 
     def _compose_prompt(self, task: AgentTask) -> str:
         payload = task.input if isinstance(task.input, dict) else {}
@@ -209,25 +237,18 @@ class CodexRuntimeAdapter(RuntimeAdapter):
         if config_errors:
             yield event_error(task.task_id, "; ".join(config_errors), error_type="ConfigError")
             return
-        if task.provider not in {None, "openai", "openai-codex"}:
-            yield event_error(
-                task.task_id,
-                f"codex runtime does not support provider {task.provider!r}",
-                error_type="ConfigError",
-            )
-            return
 
-        binary = config.get("binary") or "codex"
-        resolved_binary = shutil.which(binary)
-        if resolved_binary is None:
+        try:
+            resolved_binary = self._configured_runner()
+        except ValueError as exc:
             yield event_error(
                 task.task_id,
-                f"codex binary not found: {binary!r}",
+                str(exc),
                 error_type="FileNotFoundError",
             )
             return
         try:
-            _project_root, cwd = self._resolve_paths(config)
+            cwd, _permitted_root = self._resolve_cwd(config)
         except ValueError as exc:
             yield event_error(task.task_id, str(exc), error_type="PathError")
             return
@@ -235,14 +256,9 @@ class CodexRuntimeAdapter(RuntimeAdapter):
         timeout_seconds = config.get("timeout_seconds") or _DEFAULT_TIMEOUT_SECONDS
         version = await self._detect_version(
             resolved_binary,
-            config.get("args") or [],
             timeout_seconds=min(timeout_seconds, _VERSION_TIMEOUT_SECONDS),
         )
-        argv = self._compose_argv(
-            config,
-            self._compose_prompt(task),
-            model=task.model,
-        )
+        argv = self._compose_argv(resolved_binary, cwd, self._compose_prompt(task))
 
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -251,22 +267,30 @@ class CodexRuntimeAdapter(RuntimeAdapter):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=str(cwd),
+                env=self._subprocess_env(),
+                **self._process_group_kwargs(),
             )
         except FileNotFoundError as exc:
-            yield event_error(
-                task.task_id, f"codex binary not found: {binary!r}", type(exc).__name__
-            )
+            yield event_error(task.task_id, "isolated Codex runner not found", type(exc).__name__)
             return
         except OSError as exc:
             yield event_error(task.task_id, f"failed to spawn codex: {exc}", type(exc).__name__)
             return
 
-        yield event_started(task.task_id)
-        yield event_state(
-            task.task_id,
-            {"runtime": self.runtime_type, "codex_version": version, "working_directory": str(cwd)},
-        )
+        stream = self._stream_process(task, proc, timeout_seconds, version)
+        try:
+            async for event in stream:
+                yield event
+        finally:
+            await stream.aclose()
 
+    async def _stream_process(
+        self,
+        task: AgentTask,
+        proc: asyncio.subprocess.Process,
+        timeout_seconds: float,
+        version: str | None,
+    ) -> AsyncIterator[dict[str, Any]]:
         accumulated_text: list[str] = []
         native_error: str | None = None
 
@@ -291,111 +315,284 @@ class CodexRuntimeAdapter(RuntimeAdapter):
                     yield translated
 
         try:
-            async with asyncio.timeout(timeout_seconds):
-                async for event in _read_events():
-                    if event["type"] == "text":
-                        accumulated_text.append(event.get("text", ""))
-                    elif event["type"] == "error":
-                        native_error = event.get("message") or "Codex reported an error"
-                        break
-                    yield event
-        except (TimeoutError, asyncio.CancelledError) as exc:
-            await self._stop_process(proc)
-            if isinstance(exc, asyncio.CancelledError):
-                raise
-            yield event_error(
+            yield event_started(task.task_id)
+            yield event_state(
                 task.task_id,
-                f"codex run timed out after {timeout_seconds}s",
-                error_type="TimeoutError",
+                {"runtime": self.runtime_type, "codex_version": version},
             )
-            return
+            try:
+                async with asyncio.timeout(timeout_seconds):
+                    async for event in _read_events():
+                        if event["type"] == "text":
+                            accumulated_text.append(event.get("text", ""))
+                        elif event["type"] == "error":
+                            native_error = event.get("message") or "Codex reported an error"
+                            break
+                        yield event
+            except TimeoutError:
+                yield event_error(
+                    task.task_id,
+                    f"codex run timed out after {timeout_seconds}s",
+                    error_type="TimeoutError",
+                )
+                return
 
-        returncode = await proc.wait()
-        if native_error is not None:
-            yield event_error(task.task_id, native_error, error_type="RuntimeInvocationError")
-            return
-        if returncode != 0:
-            stderr_tail = b""
-            if proc.stderr is not None:
-                stderr_tail = await proc.stderr.read()
-            tail = stderr_tail[-_STDERR_TAIL_BYTES:].decode(errors="replace")
-            detail = f": {tail}" if tail else ""
-            yield event_error(
+            if native_error is not None:
+                await self._stop_process(proc)
+                yield event_error(task.task_id, native_error, error_type="RuntimeInvocationError")
+                return
+
+            returncode = await proc.wait()
+            if returncode != 0:
+                stderr_tail = b""
+                if proc.stderr is not None:
+                    stderr_tail = await proc.stderr.read()
+                tail = stderr_tail[-_STDERR_TAIL_BYTES:].decode(errors="replace")
+                detail = f": {tail}" if tail else ""
+                yield event_error(
+                    task.task_id,
+                    f"codex exited with code {returncode}{detail}",
+                    error_type="ProcessExitError",
+                )
+                return
+
+            yield event_done(
                 task.task_id,
-                f"codex exited with code {returncode}{detail}",
-                error_type="ProcessExitError",
+                result={
+                    "runtime": self.runtime_type,
+                    "codex_version": version,
+                    "exit_code": returncode,
+                    "text": "".join(accumulated_text),
+                },
             )
-            return
-
-        yield event_done(
-            task.task_id,
-            result={
-                "runtime": self.runtime_type,
-                "codex_version": version,
-                "exit_code": returncode,
-                "text": "".join(accumulated_text),
-            },
-        )
+        finally:
+            await asyncio.shield(self._stop_process(proc))
 
     async def _detect_version(
         self,
         binary: str,
-        args: list[str] | None = None,
         timeout_seconds: float = _VERSION_TIMEOUT_SECONDS,
     ) -> str | None:
         proc: asyncio.subprocess.Process | None = None
         try:
             proc = await asyncio.create_subprocess_exec(
                 binary,
-                *(args or []),
                 "--version",
                 stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                env=self._subprocess_env(),
+                **self._process_group_kwargs(),
             )
             stdout, _stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_seconds)
         except TimeoutError:
-            if proc is not None and proc.returncode is None:
-                proc.kill()
-                await proc.wait()
             return None
         except OSError:
             return None
         except asyncio.CancelledError:
-            if proc is not None and proc.returncode is None:
-                proc.kill()
-                await proc.wait()
             raise
+        finally:
+            if proc is not None:
+                await asyncio.shield(self._stop_process(proc))
         line = stdout.decode(errors="replace").splitlines()[0].strip() if stdout else ""
-        match = _VERSION_RE.search(line) or _BARE_VERSION_RE.search(line)
+        match = _VERSION_RE.search(line)
         return match.group(0) if match else None
 
-    async def _stop_process(self, proc: asyncio.subprocess.Process) -> None:
-        if proc.returncode is not None:
-            return
-        proc.terminate()
-        try:
-            await asyncio.wait_for(proc.wait(), timeout=_KILL_GRACE_SECONDS)
-        except TimeoutError:
-            proc.kill()
-            await proc.wait()
+    @classmethod
+    def _probe_runner(cls, binary: str) -> bool:
+        """Synchronously verify the isolated runner before Fleet publication."""
 
-    def _resolve_paths(self, config: dict[str, Any]) -> tuple[Path, Path]:
-        project_root_raw = config.get("project_root") or config.get("cwd") or str(Path.cwd())
-        cwd_raw = config.get("cwd") or project_root_raw
-        project_root = Path(project_root_raw).expanduser().resolve()
-        cwd = Path(cwd_raw).expanduser().resolve()
-        if not project_root.is_dir():
-            raise ValueError(f"permitted project root is not a directory: {project_root}")
+        proc: subprocess.Popen[bytes] | None = None
+        try:
+            proc = subprocess.Popen(
+                [binary, "--version"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=cls._subprocess_env(),
+                **cls._process_group_kwargs(),
+            )
+            stdout, _stderr = proc.communicate(timeout=_VERSION_TIMEOUT_SECONDS)
+            if proc.returncode != 0:
+                return False
+            line = stdout.decode(errors="replace").splitlines()[0].strip() if stdout else ""
+            return _VERSION_RE.search(line) is not None
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        finally:
+            if proc is not None:
+                cls._stop_process_sync(proc)
+
+    @staticmethod
+    def _stop_process_sync(proc: subprocess.Popen[bytes]) -> None:
+        """Best-effort process-tree cleanup for the registration-time probe."""
+
+        pid = proc.pid
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/PID", str(pid), "/T", "/F"],
+                capture_output=True,
+                check=False,
+            )
+            if proc.returncode is None:
+                try:
+                    proc.wait(timeout=_KILL_GRACE_SECONDS)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait()
+            return
+
+        try:
+            os.killpg(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            return
+        deadline = time.monotonic() + _KILL_GRACE_SECONDS
+        while time.monotonic() < deadline:
+            try:
+                os.killpg(pid, 0)
+            except ProcessLookupError:
+                return
+            time.sleep(0.05)
+        try:
+            os.killpg(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            return
+
+    async def _stop_process(self, proc: asyncio.subprocess.Process) -> None:
+        pid = getattr(proc, "pid", None)
+        if pid is None:
+            if proc.returncode is None:
+                proc.terminate()
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=_KILL_GRACE_SECONDS)
+                except TimeoutError:
+                    proc.kill()
+                    await proc.wait()
+            return
+        elif os.name == "nt":
+            await asyncio.to_thread(
+                subprocess.run,
+                ["taskkill", "/PID", str(pid), "/T", "/F"],
+                capture_output=True,
+                check=False,
+            )
+        else:
+            try:
+                os.killpg(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                return
+
+        if os.name != "nt":
+            if not await self._wait_for_process_group_exit(pid, _KILL_GRACE_SECONDS):
+                try:
+                    os.killpg(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    return
+                await self._wait_for_process_group_exit(pid, _KILL_GRACE_SECONDS)
+        elif proc.returncode is None:
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=_KILL_GRACE_SECONDS)
+            except TimeoutError:
+                proc.kill()
+                await proc.wait()
+
+    @staticmethod
+    async def _wait_for_process_group_exit(pid: int, timeout_seconds: float) -> bool:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout_seconds
+        while True:
+            try:
+                os.killpg(pid, 0)
+            except ProcessLookupError:
+                return True
+            if loop.time() >= deadline:
+                return False
+            await asyncio.sleep(0.05)
+
+    @staticmethod
+    def _process_group_kwargs() -> dict[str, Any]:
+        if os.name == "nt":
+            return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+        return {"start_new_session": True}
+
+    @staticmethod
+    def _subprocess_env() -> dict[str, str]:
+        """Return the minimal non-secret environment visible to the isolated runner."""
+
+        return {
+            key: value
+            for key, value in os.environ.items()
+            if key.upper() in _SAFE_ENVIRONMENT_KEYS or key.upper().startswith("LC_")
+        }
+
+    @staticmethod
+    def _configured_runner() -> str:
+        raw = os.environ.get(_ISOLATED_RUNNER_ENV, "").strip()
+        if not raw:
+            raise ValueError(
+                "AGENT_CODEX_ISOLATED_RUNNER is required; direct Codex execution is disabled"
+            )
+        runner = Path(raw).expanduser()
+        if not runner.is_absolute():
+            raise ValueError("AGENT_CODEX_ISOLATED_RUNNER must be an absolute path")
+        try:
+            resolved = runner.resolve(strict=True)
+        except OSError as exc:
+            raise ValueError(f"isolated Codex runner is unavailable: {runner}") from exc
+        if not resolved.is_file():
+            raise ValueError(f"isolated Codex runner is not a file: {resolved}")
+        if not os.access(resolved, os.X_OK):
+            raise ValueError(f"isolated Codex runner is not executable: {resolved}")
+        return str(resolved)
+
+    @staticmethod
+    def _configured_roots() -> list[Path]:
+        raw = os.environ.get("AGENT_CODEX_ALLOWED_ROOTS", "").strip()
+        if not raw:
+            raise ValueError("AGENT_CODEX_ALLOWED_ROOTS is not configured on this Agent")
+        try:
+            values = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                "AGENT_CODEX_ALLOWED_ROOTS must be a JSON array of absolute paths"
+            ) from exc
+        if not isinstance(values, list) or not values:
+            raise ValueError("AGENT_CODEX_ALLOWED_ROOTS must be a non-empty JSON array")
+
+        roots: list[Path] = []
+        for value in values:
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError("AGENT_CODEX_ALLOWED_ROOTS entries must be non-empty paths")
+            root = Path(value).expanduser()
+            if not root.is_absolute():
+                raise ValueError("AGENT_CODEX_ALLOWED_ROOTS entries must be absolute paths")
+            try:
+                resolved = root.resolve(strict=True)
+            except OSError as exc:
+                raise ValueError(f"configured Codex worktree root is unavailable: {root}") from exc
+            if not resolved.is_dir():
+                raise ValueError(f"configured Codex worktree root is not a directory: {resolved}")
+            roots.append(resolved)
+        return roots
+
+    @classmethod
+    def _resolve_cwd(cls, config: dict[str, Any]) -> tuple[Path, Path]:
+        cwd_raw = config.get("cwd")
+        if not isinstance(cwd_raw, str) or not cwd_raw.strip():
+            raise ValueError("controller-owned working directory is required")
+        try:
+            cwd = Path(cwd_raw).expanduser().resolve(strict=True)
+        except OSError as exc:
+            raise ValueError(f"working directory is unavailable: {cwd_raw}") from exc
         if not cwd.is_dir():
             raise ValueError(f"working directory is not a directory: {cwd}")
-        try:
-            cwd.relative_to(project_root)
-        except ValueError as exc:
-            raise ValueError(
-                f"working directory {cwd} is outside permitted project root {project_root}"
-            ) from exc
-        return project_root, cwd
+        for root in cls._configured_roots():
+            try:
+                cwd.relative_to(root)
+            except ValueError:
+                continue
+            return cwd, root
+        raise ValueError("working directory is outside the Agent's permitted Codex roots")
 
     @staticmethod
     def _display_path(value: object) -> str | None:

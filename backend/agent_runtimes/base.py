@@ -21,19 +21,10 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-RUNTIME_CAPABILITY_STREAMING = "streaming"
-RUNTIME_CAPABILITY_TOOL_EVENTS = "tool_events"
-RUNTIME_CAPABILITY_PERSISTENT_SESSION = "persistent_session"
-RUNTIME_CAPABILITY_RESUMABLE = "resumable"
-RUNTIME_CAPABILITY_BROWSER = "browser"
-RUNTIME_CAPABILITY_SUBAGENTS = "subagents"
-RUNTIME_CAPABILITY_WORKSPACE_READ = "workspace_read"
-RUNTIME_CAPABILITY_WORKSPACE_WRITE = "workspace_write"
-RUNTIME_CAPABILITY_SCHEDULES = "schedules"
-RUNTIME_CAPABILITY_HEARTBEATS = "heartbeats"
-RUNTIME_CAPABILITY_AGENT_MESSAGING = "agent_messaging"
-RUNTIME_CAPABILITY_MODEL_SELECTION = "model_selection"
 
+RUNTIME_CAPABILITY_STREAMING = "streaming"
+RUNTIME_CAPABILITY_RESUMABLE = "resumable"
+RUNTIME_CAPABILITY_PERSISTENT_SESSION = "persistent_session"
 
 @dataclass(frozen=True)
 class RuntimeReadiness:
@@ -46,6 +37,7 @@ class RuntimeReadiness:
     """
 
     runtime: str
+    capability_id: str
     status: Literal["ready", "blocked"]
     binary_present: bool
     version: str | None = None
@@ -231,6 +223,7 @@ class RuntimeAdapter(ABC):
         ready = await self.health()
         return RuntimeReadiness(
             runtime=self.runtime_type,
+            capability_id=f"runtime.{self.runtime_type}",
             status="ready" if ready else "blocked",
             binary_present=ready,
             reason_code=None if ready else "unavailable",
@@ -248,3 +241,54 @@ class RuntimeAdapter(ABC):
         a session directory). Default is a no-op; adapters override as
         needed. Mirrors OpenAlice's ``bootstrap()`` pattern."""
         return None
+
+#: Keys shared by local stdio subprocess adapters.  The binding schema keeps
+#: task configuration to ``timeout_seconds``; these additional keys remain
+#: useful for direct edge invocations and are validated here before spawning.
+_COMMON_CONFIG_KEYS: tuple[str, ...] = ("binary", "cwd", "env", "args", "timeout_seconds")
+
+
+def validate_common_config(
+    config: dict[str, Any],
+    *,
+    default_binary: str = "pi",
+) -> list[str]:
+    """Validate the common subprocess configuration surface.
+
+    Runtime-specific adapters call this helper before validating their own
+    options.  Environment variables are deliberately restricted to strings:
+    ``asyncio.create_subprocess_exec`` ultimately hands them to the OS and
+    accepting arbitrary JSON values would produce a late, opaque ``TypeError``
+    during process creation.
+    """
+    errors: list[str] = []
+    binary = config.get("binary", default_binary)
+    if not isinstance(binary, str) or not binary.strip():
+        errors.append("'binary' must be a non-empty string")
+    elif "\x00" in binary:
+        errors.append("'binary' must not contain NUL bytes")
+
+    if "cwd" in config and config["cwd"] is not None:
+        cwd = config["cwd"]
+        if not isinstance(cwd, str) or not cwd.strip():
+            errors.append("'cwd' must be a non-empty string when provided")
+        elif "\x00" in cwd:
+            errors.append("'cwd' must not contain NUL bytes")
+
+    if "env" in config and config["env"] is not None:
+        env = config["env"]
+        if not isinstance(env, dict):
+            errors.append("'env' must be a dict when provided")
+        elif not all(isinstance(key, str) and isinstance(value, str) for key, value in env.items()):
+            errors.append("'env' must contain only string keys and values")
+
+    if "args" in config and config["args"] is not None:
+        args = config["args"]
+        if not isinstance(args, list) or not all(isinstance(arg, str) for arg in args):
+            errors.append("'args' must be a list of strings when provided")
+
+    if "timeout_seconds" in config and config["timeout_seconds"] is not None:
+        timeout = config["timeout_seconds"]
+        if not isinstance(timeout, (int, float)) or isinstance(timeout, bool) or timeout <= 0:
+            errors.append("'timeout_seconds' must be a positive number when provided")
+    return errors

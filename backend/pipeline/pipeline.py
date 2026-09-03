@@ -13,7 +13,7 @@ from backend.control.error_kinds import map_error_type, map_exception
 from backend.control.recorder import FreshnessInfo, record_run_measurement
 from backend.models.source import DataSource
 from backend.pipeline import events
-from backend.pipeline.error_taxonomy import effective_error_type, is_retryable
+from backend.pipeline.error_taxonomy import effective_error_type, is_captcha, is_retryable
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +113,36 @@ class PipelineResult:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
+async def _notify_task_failed(
+    task_id: str, source_id: str, *, error: str, error_type: str | None
+) -> None:
+    """Best-effort ``on_task_failed`` notification dispatch (W2 producer).
+
+    Fires matching notification rules with a synthetic failure payload so a
+    task failure can alert operators even though no records were collected.
+    Never masks the original failure — a notification error is logged and
+    swallowed.
+    """
+    try:
+        from backend.database import AsyncSessionLocal
+        from backend.pipeline import notifier_dispatch
+
+        async with AsyncSessionLocal() as session:
+            await notifier_dispatch.dispatch_notifications(
+                session,
+                source_id,
+                [],
+                trigger_event="on_task_failed",
+                failure_payload={
+                    "error": error,
+                    "error_type": error_type,
+                    "task_id": task_id,
+                },
+            )
+    except Exception:
+        logger.exception("[task:%s] failed to dispatch on_task_failed notification", task_id)
+
+
 async def run_pipeline(
     task_id: str,
     source: DataSource,
@@ -131,7 +161,6 @@ async def run_pipeline(
 
     started = datetime.now(timezone.utc)
     params = parameters or {}
-
     # Pre-step: auto-resolve chrome endpoint from a browser binding. Channels that
     # declare capabilities.session_affinity (opencli, skill) drive a real Chrome
     # from the shared pool, so a site-keyed binding lets them attach to a
@@ -240,6 +269,10 @@ async def run_pipeline(
                 error_kind=map_exception(exc),
                 raw={"stage": "collect", "error": str(exc), "error_type": error_type},
             )
+        if enable_notifications:
+            await _notify_task_failed(
+                task_id, source.id, error=str(exc), error_type=error_type
+            )
         return PipelineResult(success=False, source_id=source.id, error=str(exc))
 
     if not channel_result.success:
@@ -256,12 +289,61 @@ async def run_pipeline(
             )
         if is_retryable(channel_result.error_type):
             raise ChannelFetchError(channel_result.error or "collect failed")
+        if is_captcha(channel_result.error_type):
+            # Human-cleared challenge wall (Doubao captcha). Automatic retry
+            # would burn budget on the same wall and a permanent failure hides
+            # the recovery path, so instead pause the source (scheduler
+            # already skips disabled sources) and flag it for review — a human
+            # clears the wall, TTL expiry auto-resumes. Best-effort: a DB or
+            # actuator failure here must not mask the original collect error.
+            try:
+                from backend.config import get_settings
+                from backend.control.actuator import pause_source_for_captcha
+                from backend.database import AsyncSessionLocal
+
+                ttl = get_settings().control_pause_ttl_seconds
+                async with AsyncSessionLocal() as session:
+                    src = await session.get(DataSource, source.id)
+                    if src is not None:
+                        await pause_source_for_captcha(
+                            session,
+                            source=src,
+                            now=datetime.now(timezone.utc),
+                            ttl_seconds=ttl,
+                        )
+                        await session.commit()
+                        logger.warning(
+                            "[task:%s] captcha wall | paused source=%s (ttl=%ss, review_required)",
+                            task_id, source.id, ttl,
+                        )
+                        if run_id:
+                            await events.emit(
+                                run_id, "collect",
+                                "验证码拦截：数据源已暂停，等待人工处理",
+                                level="warning",
+                                detail={"captcha_paused": True, "pause_ttl_seconds": ttl},
+                            )
+            except Exception:
+                logger.exception("[task:%s] failed to pause source on captcha", task_id)
+            return PipelineResult(
+                success=False,
+                source_id=source.id,
+                error=channel_result.error,
+                metadata={"captcha_paused": True},
+            )
         if run_id:
             await _record_measurement_best_effort(
                 source_id=source.id, run_id=run_id,
                 fetch_latency_ms=int((datetime.now(timezone.utc) - step1_start).total_seconds() * 1000),
                 error_type=channel_result.error_type,
                 raw={"stage": "collect", "error": channel_result.error},
+            )
+        if enable_notifications:
+            await _notify_task_failed(
+                task_id,
+                source.id,
+                error=channel_result.error or "collect failed",
+                error_type=channel_result.error_type,
             )
         return PipelineResult(success=False, source_id=source.id, error=channel_result.error)
 
@@ -505,6 +587,12 @@ async def run_pipeline(
                 notify_summary = await notifier_dispatch.dispatch_notifications(
                     session, source.id, new_records
                 )
+                # W2 producer: rules scoped to on_ai_processed fire when AI
+                # enrichment actually ran on this batch.
+                if ai_count > 0:
+                    await notifier_dispatch.dispatch_notifications(
+                        session, source.id, new_records, trigger_event="on_ai_processed"
+                    )
             notifications_sent = notify_summary.get("sent", 0)
             notifications_failed = notify_summary.get("failed", 0)
             # AUDIT C12: report the real aggregate, not an unconditional

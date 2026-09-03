@@ -15,6 +15,15 @@ from backend.schemas.workflow import (
     WorkflowToolCapabilityPort,
 )
 from backend.workflow.bbx_tool_nodes import BBX_EXECUTOR_MODE, BBX_TOOL_CAPABILITY_ID
+from backend.workflow.gaojixing_certification import (
+    GAOJIXING_BATCH_CERTIFY_EXECUTOR,
+    GAOJIXING_BATCH_CERTIFY_TOOL_ID,
+)
+from backend.workflow.gaojixing_doubao import (
+    GAOJIXING_DOUBAO_BATCH_EXECUTOR,
+    GAOJIXING_DOUBAO_BATCH_TOOL_ID,
+    GAOJIXING_FEISHU_WEBHOOK_ENV,
+)
 from backend.workflow.joyai_vl_executor import (
     JOYAI_VL_INTERACTION_EXECUTOR,
     JOYAI_VL_TOOL_CAPABILITY_ID,
@@ -38,6 +47,7 @@ from backend.workflow.swarm_simulation import (
     SWARM_SIMULATION_EXECUTOR,
     SWARM_SIMULATION_TOOL_CAPABILITY_ID,
 )
+from backend.workflow.wigolo_tool_nodes import wigolo_tool_capabilities
 
 WORKFLOW_TOOL_PACKAGE = "opencli-admin"
 WORKFLOW_TOOL_PACKAGE_VERSION = "0.1.0"
@@ -423,8 +433,69 @@ def _tool_capabilities() -> list[WorkflowToolCapability]:
                 "icon": "Network",
             },
         ),
+        _realtime_tool(
+            id=GAOJIXING_DOUBAO_BATCH_TOOL_ID,
+            label="豆包证据批次采集",
+            description=(
+                "接收托管题包，并按规范2.2审计离线夹具或现有项目证据归档；"
+                "实时新搜索 Worker 尚未绑定。"
+            ),
+            input_type="batchRequest[]",
+            output_type="gaojixingBatchResult[]",
+            tags=["tool", "gaojixing", "doubao", "evidence", "batch"],
+            schema="tool-capability.gaojixing-doubao-batch.v1",
+            resources=["gaojixing_question_bank", "doubao_session", "evidence_store"],
+            executor=WorkflowToolCapabilityExecutor(
+                mode=GAOJIXING_DOUBAO_BATCH_EXECUTOR,
+                description=(
+                    "Runs offline_fixture, project_archive, or the non-mutating "
+                    "live_preflight; uploaded packages are archive audits and a new "
+                    "Doubao-search worker is not bound."
+                ),
+                params={
+                    "sourceMode": "offline_fixture",
+                    "fixtureId": "gaojixing-doubao-offline-v1",
+                    "feishuWebhookEnv": GAOJIXING_FEISHU_WEBHOOK_ENV,
+                },
+            ),
+            manifest_extra={
+                "execution": {
+                    "sourceModes": [
+                        "offline_fixture",
+                        "project_archive",
+                        "live_preflight",
+                    ],
+                    "newSearchEnabled": False,
+                }
+            },
+        ),
+        _realtime_tool(
+            id=GAOJIXING_BATCH_CERTIFY_TOOL_ID,
+            label="批次终审与交付",
+            description=(
+                "对规范2.2 raw、Markdown、进度、页面模块及截图引用、路径和哈希"
+                "做结构核验；不做视觉或OCR内容鉴真。"
+            ),
+            input_type="gaojixingBatchResult[]",
+            output_type="certificationReport[]",
+            tags=["tool", "gaojixing", "certification", "evidence"],
+            schema="tool-capability.gaojixing-batch-certification.v1",
+            resources=["gaojixing_project_root", "gaojixing_question_bank"],
+            executor=WorkflowToolCapabilityExecutor(
+                mode=GAOJIXING_BATCH_CERTIFY_EXECUTOR,
+                description=(
+                    "Structurally certifies an upstream fixture batch or a real规范2.2 "
+                    "project directory without visual or OCR authentication."
+                ),
+                params={
+                    "sourceMode": "offline_fixture",
+                    "fixtureId": "gaojixing-doubao-offline-v1",
+                },
+            ),
+        ),
         *[_native_intelligence_tool(action) for action in NATIVE_INTELLIGENCE_ACTIONS],
         *kats_tool_capabilities(),
+        *wigolo_tool_capabilities(),
     ]
 
 
@@ -464,6 +535,7 @@ def _realtime_tool(
     resources: list[str],
     executor: WorkflowToolCapabilityExecutor | None = None,
     catalog: dict[str, str] | None = None,
+    manifest_extra: dict[str, Any] | None = None,
 ) -> WorkflowToolCapability:
     return WorkflowToolCapability(
         id=id,
@@ -494,6 +566,7 @@ def _realtime_tool(
                 ]
             },
             "canvas": {"node": catalog is not None},
+            **(manifest_extra or {}),
             **(
                 {
                     "nodeCatalog": {

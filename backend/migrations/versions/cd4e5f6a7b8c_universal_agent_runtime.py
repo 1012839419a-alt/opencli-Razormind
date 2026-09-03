@@ -7,7 +7,7 @@ Revises: bc3d4e5f6a7b
 from copy import deepcopy
 
 import sqlalchemy as sa
-from alembic import op
+from alembic import context, op
 
 revision = "cd4e5f6a7b8c"
 down_revision = "bc3d4e5f6a7b"
@@ -16,10 +16,13 @@ depends_on = None
 
 
 def _has_table(bind, table: str) -> bool:
+    if context.is_offline_mode():
+        return True
     return table in sa.inspect(bind).get_table_names()
 
-
 def _has_column(bind, table: str, column: str) -> bool:
+    if context.is_offline_mode():
+        return False
     return column in {item["name"] for item in sa.inspect(bind).get_columns(table)}
 
 
@@ -83,6 +86,8 @@ def _downgrade_configuration(configuration: dict) -> dict:
 
 
 def _rewrite_agent_configurations(bind, transform) -> None:
+    if context.is_offline_mode():
+        return
     for table_name in ("operations_agent_drafts", "published_operations_agent_versions"):
         if not _has_table(bind, table_name):
             continue
@@ -100,7 +105,6 @@ def _rewrite_agent_configurations(bind, transform) -> None:
                     .where(table.c.id == row["id"])
                     .values(model_configuration=transform(configuration))
                 )
-
 
 def upgrade() -> None:
     bind = op.get_bind()
@@ -122,8 +126,6 @@ def upgrade() -> None:
                 "operations_agent_runs",
                 sa.Column("evidence_payload", sa.JSON(), nullable=True),
             )
-    _rewrite_agent_configurations(bind, _migrate_configuration)
-
 
 def downgrade() -> None:
     bind = op.get_bind()

@@ -1,13 +1,14 @@
-"""Chat dock AI-provider tool coverage: read (list_providers), write/propose
-(update_provider), and confirm (POST /chat/confirm) — the LLM round trip
-itself is out of scope (no prior art for mocking it in this repo); these
-exercise the exact tool-dispatch logic the LLM would trigger.
-"""
+"""Chat dock AI-provider and durable streaming coverage."""
+
+import json
+from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import event, select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+import backend.api.v1.chat as chat_api
 from backend.api.v1.chat import _build_proposal, _run_read_tool
 from backend.main import app
 from backend.models.identity import User, Workspace, WorkspaceMembership, WorkspaceRole
@@ -56,6 +57,315 @@ async def _authorize_chat(
 
     app.dependency_overrides[get_request_identity] = override_identity
     return identity, user, workspace
+
+
+class _NoToolCompletions:
+    async def create(self, **_kwargs):
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content="已完成只读检查。",
+                        tool_calls=None,
+                    )
+                )
+            ]
+        )
+
+
+def _no_tool_client():
+    return SimpleNamespace(chat=SimpleNamespace(completions=_NoToolCompletions()))
+
+
+class _FailingCompletions:
+    async def create(self, **_kwargs):
+        raise RuntimeError("model unavailable")
+
+
+class _WriteProposalCompletions:
+    def __init__(self, provider_id: str):
+        self.provider_id = provider_id
+
+    async def create(self, **_kwargs):
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content="",
+                        tool_calls=[
+                            SimpleNamespace(
+                                id="call-update-provider",
+                                function=SimpleNamespace(
+                                    name="update_provider",
+                                    arguments=json.dumps(
+                                        {"provider_id": self.provider_id, "enabled": False}
+                                    ),
+                                ),
+                            )
+                        ],
+                    )
+                )
+            ]
+        )
+
+
+# ── durable stream: public events survive replay without commit amplification ─
+@pytest.mark.asyncio
+async def test_no_tool_chat_stream_is_ordered_recoverable_and_commit_bounded(
+    client,
+    db_engine,
+    db_session,
+    monkeypatch,
+):
+    provider = await _make_provider(db_session)
+    provider_id = provider.id
+    await db_session.rollback()
+
+    stream_sessions = async_sessionmaker(
+        db_engine,
+        class_=AsyncSession,
+        expire_on_commit=False,
+        autoflush=False,
+    )
+    monkeypatch.setattr(chat_api, "AsyncSessionLocal", stream_sessions)
+
+    async def build_client(_provider):
+        return _no_tool_client()
+
+    monkeypatch.setattr(chat_api, "_build_client", build_client)
+
+    commit_count = 0
+
+    def count_commit(_connection):
+        nonlocal commit_count
+        commit_count += 1
+
+    event.listen(db_engine.sync_engine, "commit", count_commit)
+    try:
+        response = await client.post(
+            "/api/v1/chat/stream",
+            json={
+                "provider_id": provider_id,
+                "messages": [{"role": "user", "content": "检查当前状态"}],
+            },
+        )
+    finally:
+        event.remove(db_engine.sync_engine, "commit", count_commit)
+
+    assert response.status_code == 200
+    streamed = [json.loads(line) for line in response.text.splitlines() if line.strip()]
+    assert [item["sequence"] for item in streamed] == [1, 2, 3, 4, 5, 6]
+    assert [item["type"] for item in streamed] == [
+        "run.started",
+        "phase.changed",
+        "phase.changed",
+        "phase.changed",
+        "run.completed",
+        "reply",
+    ]
+    assert streamed[-1]["reply"] == {
+        "type": "message",
+        "content": "已完成只读检查。",
+        "proposal": None,
+    }
+    assert commit_count <= 4
+
+    await db_session.rollback()
+    run_id = response.headers["X-Agent-Run-Id"]
+    replay = await client.get(f"/api/v1/chat/runs/{run_id}/events")
+    assert replay.status_code == 200
+    assert replay.json()["data"] == streamed
+
+    run = await client.get(f"/api/v1/chat/runs/{run_id}")
+    assert run.status_code == 200
+    assert run.json()["data"]["status"] == "completed"
+    assert run.json()["data"]["reply"] == streamed[-1]["reply"]
+
+
+@pytest.mark.asyncio
+async def test_failed_chat_stream_persists_recoverable_terminal_event(
+    client,
+    db_engine,
+    db_session,
+    monkeypatch,
+):
+    provider = await _make_provider(db_session)
+    provider_id = provider.id
+    await db_session.rollback()
+    stream_sessions = async_sessionmaker(
+        db_engine,
+        class_=AsyncSession,
+        expire_on_commit=False,
+        autoflush=False,
+    )
+    monkeypatch.setattr(chat_api, "AsyncSessionLocal", stream_sessions)
+
+    async def build_client(_provider):
+        return SimpleNamespace(chat=SimpleNamespace(completions=_FailingCompletions()))
+
+    monkeypatch.setattr(chat_api, "_build_client", build_client)
+
+    response = await client.post(
+        "/api/v1/chat/stream",
+        json={
+            "provider_id": provider_id,
+            "messages": [{"role": "user", "content": "检查当前状态"}],
+        },
+    )
+
+    assert response.status_code == 200
+    streamed = [json.loads(line) for line in response.text.splitlines() if line.strip()]
+    assert [item["sequence"] for item in streamed] == [1, 2, 3, 4, 5]
+    assert [item["type"] for item in streamed] == [
+        "run.started",
+        "phase.changed",
+        "phase.changed",
+        "phase.changed",
+        "run.failed",
+    ]
+    assert streamed[-1]["status"] == 502
+    assert "model unavailable" in streamed[-1]["detail"]
+
+    await db_session.rollback()
+    run_id = response.headers["X-Agent-Run-Id"]
+    replay = await client.get(f"/api/v1/chat/runs/{run_id}/events")
+    assert replay.status_code == 200
+    assert replay.json()["data"] == streamed
+    run = await client.get(f"/api/v1/chat/runs/{run_id}")
+    assert run.json()["data"]["status"] == "failed"
+    assert "model unavailable" in run.json()["data"]["error"]
+
+
+@pytest.mark.asyncio
+async def test_writer_commit_failure_uses_fresh_session_for_recoverable_failure(
+    client,
+    db_engine,
+    db_session,
+    monkeypatch,
+):
+    provider = await _make_provider(db_session)
+    provider_id = provider.id
+    await db_session.rollback()
+    stream_sessions = async_sessionmaker(
+        db_engine,
+        class_=AsyncSession,
+        expire_on_commit=False,
+        autoflush=False,
+    )
+    monkeypatch.setattr(chat_api, "AsyncSessionLocal", stream_sessions)
+
+    async def build_client(_provider):
+        return _no_tool_client()
+
+    monkeypatch.setattr(chat_api, "_build_client", build_client)
+
+    commit_attempts = 0
+
+    def fail_first_writer_commit(_connection):
+        nonlocal commit_attempts
+        commit_attempts += 1
+        if commit_attempts == 2:
+            raise RuntimeError("injected writer commit failure")
+
+    event.listen(db_engine.sync_engine, "commit", fail_first_writer_commit)
+    try:
+        response = await client.post(
+            "/api/v1/chat/stream",
+            json={
+                "provider_id": provider_id,
+                "messages": [{"role": "user", "content": "检查当前状态"}],
+            },
+        )
+    finally:
+        event.remove(db_engine.sync_engine, "commit", fail_first_writer_commit)
+
+    assert response.status_code == 200
+    streamed = [json.loads(line) for line in response.text.splitlines() if line.strip()]
+    assert [item["sequence"] for item in streamed] == [1]
+    assert [item["type"] for item in streamed] == ["run.failed"]
+    assert streamed[0]["status"] == 500
+    assert streamed[0]["recovery"]
+    assert commit_attempts == 3
+
+    await db_session.rollback()
+    run_id = response.headers["X-Agent-Run-Id"]
+    replay = await client.get(f"/api/v1/chat/runs/{run_id}/events")
+    assert replay.status_code == 200
+    assert replay.json()["data"] == streamed
+    run = await client.get(f"/api/v1/chat/runs/{run_id}")
+    assert run.status_code == 200
+    assert run.json()["data"]["status"] == "failed"
+    assert run.json()["data"]["error"]
+
+
+@pytest.mark.asyncio
+async def test_write_tool_stream_returns_confirmable_durable_approval(
+    client,
+    db_engine,
+    db_session,
+    monkeypatch,
+):
+    provider = await _make_provider(db_session, enabled=True)
+    provider_id = provider.id
+    identity, _, workspace = await _authorize_chat(db_session, subject="stream-proposal-admin")
+    await db_session.rollback()
+    stream_sessions = async_sessionmaker(
+        db_engine,
+        class_=AsyncSession,
+        expire_on_commit=False,
+        autoflush=False,
+    )
+    monkeypatch.setattr(chat_api, "AsyncSessionLocal", stream_sessions)
+
+    async def optional_identity():
+        return identity
+
+    app.dependency_overrides[chat_api._optional_request_identity] = optional_identity
+
+    async def build_client(_provider):
+        return SimpleNamespace(
+            chat=SimpleNamespace(completions=_WriteProposalCompletions(provider_id))
+        )
+
+    monkeypatch.setattr(chat_api, "_build_client", build_client)
+
+    response = await client.post(
+        "/api/v1/chat/stream",
+        json={
+            "provider_id": provider_id,
+            "context": {"workspace_id": workspace.id},
+            "messages": [{"role": "user", "content": "停用这个模型提供商"}],
+        },
+    )
+
+    assert response.status_code == 200
+    streamed = [json.loads(line) for line in response.text.splitlines() if line.strip()]
+    assert [item["sequence"] for item in streamed] == [1, 2, 3, 4, 5, 6, 7]
+    assert [item["type"] for item in streamed] == [
+        "run.started",
+        "phase.changed",
+        "phase.changed",
+        "phase.changed",
+        "tool.completed",
+        "approval.required",
+        "reply",
+    ]
+    proposal = streamed[-1]["reply"]["proposal"]
+    assert proposal["workspace_id"] == workspace.id
+    assert proposal["work_item_id"]
+    assert proposal["proposal_version"]
+
+    await db_session.rollback()
+    run_id = response.headers["X-Agent-Run-Id"]
+    replay = await client.get(f"/api/v1/chat/runs/{run_id}/events")
+    assert replay.status_code == 200
+    assert replay.json()["data"] == streamed
+
+    confirmation = await client.post("/api/v1/chat/confirm", json={"proposal": proposal})
+    assert confirmation.status_code == 200
+    assert confirmation.json()["data"]["applied"] is True
+    await db_session.refresh(provider)
+    assert provider.enabled is False
 
 
 # ── read: list_providers ─────────────────────────────────────────────────────

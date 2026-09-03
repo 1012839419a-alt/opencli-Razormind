@@ -1,9 +1,21 @@
 """WorkflowProject compile and runtime endpoints."""
 
+import json
 import uuid
 from typing import Literal
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    Header,
+    HTTPException,
+    Query,
+    Response,
+    UploadFile,
+)
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,6 +28,10 @@ from backend.models.workflow_run import WorkflowRun as WorkflowRunRow
 from backend.schemas import workflow as workflow_schemas
 from backend.schemas.common import ApiResponse
 from backend.services import image_studio_service
+from backend.services.gaojixing_collection_service import (
+    GaojixingCollectionConflictError,
+    resume_collection,
+)
 from backend.services.plugin_registry_service import list_plugin_installations
 from backend.workflow.bbx_tool_nodes import list_bbx_tool_nodes
 from backend.workflow.capability_projection import build_workflow_capabilities
@@ -33,6 +49,15 @@ from backend.workflow.external_importer import import_external_workflow
 from backend.workflow.fleet_inventory import (
     build_workflow_fleet_inventory,
     match_workflow_fleet_capability,
+)
+from backend.workflow.managed_gaojixing_question_batches import (
+    MAX_QUESTION_BANK_BYTES,
+    ManagedQuestionBatchConflictError,
+    ManagedQuestionBatchError,
+    UnsupportedQuestionBatchFormatError,
+    accepts_managed_question_batch,
+    cleanup_managed_question_batch,
+    stage_managed_question_batch,
 )
 from backend.workflow.opencli_adapter_nodes import list_opencli_adapter_nodes
 from backend.workflow.opencli_hda_tracer import (
@@ -150,10 +175,12 @@ def get_opencli_adapter_nodes(
     access: Literal["read", "write"] | None = None,
     capability: Literal["fetch", "store"] | None = None,
     browser: bool | None = None,
-    preset_kind: workflow_schemas.WorkflowOpenCLIAdapterPresetKind
-    | None = Query(None, alias="presetKind"),
-    runtime_readiness: workflow_schemas.WorkflowOpenCLIAdapterReadiness
-    | None = Query(None, alias="runtimeReadiness"),
+    preset_kind: workflow_schemas.WorkflowOpenCLIAdapterPresetKind | None = Query(
+        None, alias="presetKind"
+    ),
+    runtime_readiness: workflow_schemas.WorkflowOpenCLIAdapterReadiness | None = Query(
+        None, alias="runtimeReadiness"
+    ),
     limit: int = Query(2000, ge=1, le=5000),
     refresh: bool = False,
 ) -> ApiResponse[workflow_schemas.WorkflowOpenCLIAdapterNodesResponse]:
@@ -291,6 +318,76 @@ async def start_run(
         session=db,
         graphon_client=graphon_client,
     )
+    await dispatch_materialized_image_jobs(db, projection.runId)
+    return ApiResponse.ok(projection)
+
+
+@router.post(
+    "/runs/question-bank",
+    response_model=ApiResponse[workflow_schemas.WorkflowRunProjection],
+    status_code=202,
+)
+async def start_run_from_question_bank(
+    question_bank: UploadFile = File(..., alias="questionBank"),
+    request: str = Form(...),
+    db: AsyncSession = Depends(get_db),
+    graphon_client: DifyGraphonClient = Depends(get_dify_graphon_client),
+) -> ApiResponse[workflow_schemas.WorkflowRunProjection]:
+    """Start a draft Run from one server-managed Gaojixing question package."""
+
+    try:
+        run_request = workflow_schemas.WorkflowRunStartRequest.model_validate_json(request)
+        if run_request.runId is not None:
+            raise HTTPException(
+                status_code=400,
+                detail="Question bank uploads always create a new server-assigned Run",
+            )
+        if not accepts_managed_question_batch(run_request.project):
+            raise HTTPException(
+                status_code=422,
+                detail="Question bank uploads require the governed Gaojixing workflow packages",
+            )
+        resolved_run_id = str(uuid.uuid4())
+        payload = await question_bank.read(MAX_QUESTION_BANK_BYTES + 1)
+        staged = stage_managed_question_batch(
+            payload,
+            filename=question_bank.filename or "",
+            run_id=resolved_run_id,
+        )
+    except UnsupportedQuestionBatchFormatError as exc:
+        raise HTTPException(status_code=415, detail=str(exc)) from exc
+    except ManagedQuestionBatchConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except HTTPException:
+        raise
+    except (ManagedQuestionBatchError, ValidationError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    finally:
+        await question_bank.close()
+
+    try:
+        projection = await start_workflow_run(
+            run_request.model_copy(
+                update={
+                    "runId": resolved_run_id,
+                    "sourceOutputs": {},
+                    "input": workflow_schemas.WorkflowRunInput(
+                        payload={"questionBatchRef": staged.question_batch_ref},
+                        source="operator",
+                    ),
+                },
+                deep=True,
+            ),
+            session=db,
+            graphon_client=graphon_client,
+        )
+    except Exception:
+        if staged.created:
+            cleanup_managed_question_batch(
+                staged.question_batch_ref,
+                expected_run_id=resolved_run_id,
+            )
+        raise
     await dispatch_materialized_image_jobs(db, projection.runId)
     return ApiResponse.ok(projection)
 
@@ -434,11 +531,7 @@ async def dispatch_materialized_image_jobs(db: AsyncSession, run_id: str) -> Non
     """
 
     jobs = list(
-        (
-            await db.execute(
-                select(ImageGenerationJob).where(ImageGenerationJob.run_id == run_id)
-            )
-        )
+        (await db.execute(select(ImageGenerationJob).where(ImageGenerationJob.run_id == run_id)))
         .scalars()
         .all()
     )
@@ -601,17 +694,47 @@ async def continue_run_with_source_outputs(
     worker_owned_nodes = {
         str(pending.get("nodeId"))
         for pending in checkpoint.pendingJobs
-        if pending.get("bindingId") == "workflow.media.image-generation"
-        and pending.get("nodeId")
+        if pending.get("bindingId") == "workflow.media.image-generation" and pending.get("nodeId")
     }
     if worker_owned_nodes.intersection(body.sourceOutputs):
         raise HTTPException(
             status_code=409,
-            detail=(
-                "Image generation outputs are accepted only from the platform job worker"
-            ),
+            detail=("Image generation outputs are accepted only from the platform job worker"),
         )
     projection = await continue_workflow_run_with_source_outputs(run_id, body, session=db)
+    if projection is None:
+        raise HTTPException(status_code=404, detail="Workflow run not found")
+    return ApiResponse.ok(projection)
+
+
+@router.post(
+    "/runs/{run_id}/gaojixing/resume",
+    response_model=ApiResponse[workflow_schemas.WorkflowRunProjection],
+    status_code=202,
+)
+async def resume_gaojixing_run(
+    run_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> ApiResponse[workflow_schemas.WorkflowRunProjection]:
+    """Explicitly requeue a human-cleared governed checkpoint."""
+
+    await _reject_workspace_scoped_run(db, run_id)
+    from backend.models.gaojixing_collection import GaojixingCollectionRun
+
+    job = await db.scalar(
+        select(GaojixingCollectionRun).where(
+            GaojixingCollectionRun.workflow_run_id == run_id
+        )
+    )
+    if job is None:
+        raise HTTPException(status_code=404, detail="Gaojixing collection not found")
+    try:
+        resumed = await resume_collection(db, job_id=job.id)
+    except GaojixingCollectionConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if resumed is None:
+        raise HTTPException(status_code=404, detail="Gaojixing collection not found")
+    projection = await get_workflow_run_projection(run_id, session=db)
     if projection is None:
         raise HTTPException(status_code=404, detail="Workflow run not found")
     return ApiResponse.ok(projection)

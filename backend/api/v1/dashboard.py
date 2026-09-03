@@ -96,6 +96,35 @@ def _parse_time_range(
     return None, None  # "all"
 
 
+def _delivery_summary(rows: list[tuple[str, str]]) -> dict[str, int]:
+    """Summarize submission and acknowledgement evidence without calling it delivery."""
+    summary = {
+        "attempts": len(rows),
+        "submitted": 0,
+        "awaiting_ack": 0,
+        "confirmed": 0,
+        "ack_failed": 0,
+        "submission_failed": 0,
+        "ack_not_required": 0,
+    }
+    accepted_statuses = {"sent", "success", "completed"}
+    for status, ack_status in rows:
+        if str(status).lower() not in accepted_statuses:
+            summary["submission_failed"] += 1
+            continue
+        summary["submitted"] += 1
+        normalized_ack = str(ack_status or "not_required").lower()
+        if normalized_ack == "acked":
+            summary["confirmed"] += 1
+        elif normalized_ack == "pending":
+            summary["awaiting_ack"] += 1
+        elif normalized_ack == "failed":
+            summary["ack_failed"] += 1
+        else:
+            summary["ack_not_required"] += 1
+    return summary
+
+
 @router.get("/stats", response_model=ApiResponse[dict])
 async def get_stats(
     range: str = Query(
@@ -161,6 +190,16 @@ async def get_stats(
         await db.execute(rec_q.where(CollectedRecord.status == "ai_processed"))
     ).scalar_one()
 
+    # Delivery evidence is deliberately a bounded, explicit sample window.
+    # "submitted" means transport accepted the attempt; only "confirmed"
+    # represents a positive acknowledgement from the receiver.
+    delivery_q = select(NotificationLog.status, NotificationLog.ack_status)
+    if since:
+        delivery_q = delivery_q.where(NotificationLog.created_at >= since)
+    if until:
+        delivery_q = delivery_q.where(NotificationLog.created_at < until)
+    delivery_summary = _delivery_summary((await db.execute(delivery_q)).all())
+
     # ── Recent task runs (time-filtered, last 10) ─────────────────────────────
     recent_q = (
         select(TaskRun, CollectionTask, DataSource)
@@ -198,6 +237,12 @@ async def get_stats(
             "records": {
                 "total": total_records,
                 "ai_processed": ai_processed_records,
+            },
+            "delivery": {
+                **delivery_summary,
+                "window": range,
+                "since": since.isoformat() if since else None,
+                "until": until.isoformat() if until else None,
             },
             "recent_runs": [
                 {

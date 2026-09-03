@@ -258,6 +258,7 @@ async def test_record_sink_invokes_enabled_writeback_with_resolved_records(
     details, outputs = await _execute_native_node(
         node,
         {"source": [{"raw": {"question": "q"}, "lineage": []}]},
+        {},
         "run-1",
         workflow_id="workflow-1",
         trace_id="trace-1",

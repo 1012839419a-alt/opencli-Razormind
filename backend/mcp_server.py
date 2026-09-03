@@ -88,7 +88,7 @@ def _transport_security() -> TransportSecuritySettings:
 
 mcp = MCPServer(
     "opencli-admin",
-    version="0.4.0",
+    version="0.4.1",
     instructions=(
         "For a new workflow, first inspect workflow node capabilities, then create a review-only "
         "draft from the operator's intent or preview explicit node patches, then compile it. "
@@ -335,10 +335,7 @@ async def run_published_workflow(
 
     return await _request(
         "POST",
-        (
-            f"/api/v1/workspaces/{workspace_id}/projects/{project_id}"
-            f"/workflows/{workflow_id}/runs"
-        ),
+        (f"/api/v1/workspaces/{workspace_id}/projects/{project_id}/workflows/{workflow_id}/runs"),
         headers={"Idempotency-Key": idempotency_key},
         json={"inputs": inputs, "response_mode": "async", "user": user},
     )

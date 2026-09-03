@@ -41,11 +41,14 @@ Environment variables:
     OPENCLI_CDP_ENDPOINT    Default Chrome CDP endpoint (default: http://localhost:19222)
     OPENCLI_DAEMON_PORT     Bridge daemon port (default: 19825)
     OPENCLI_TIMEOUT         opencli subprocess timeout in seconds (default: 120)
+    AGENT_CODEX_ISOLATED_RUNNER Absolute path to an administrator-owned, externally
+                            isolated Codex-compatible runner. Direct CLI execution
+                            is disabled.
+    AGENT_CODEX_ALLOWED_ROOTS JSON array of server-owned roots allowed for Codex cwd.
+                            Empty or invalid configuration disables Codex dispatch.
 """
 
 import asyncio
-import csv
-import io
 import json
 import logging
 import os
@@ -54,14 +57,22 @@ import shutil
 import signal
 import socket
 import subprocess
+import uuid
 from contextlib import asynccontextmanager
 from typing import Any
 from urllib.parse import urlparse
 from urllib.request import proxy_bypass
 
-import yaml
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel
+
+from backend.agent_runtime_dispatch import (
+    RuntimeInvokeRequest,
+    cleanup_cdp_tabs,
+    invoke_runtime,
+    parse_output,
+    snapshot_tab_ids,
+)
 
 # Imported directly from the registry submodule (not the `backend.agent_runtimes`
 # package __init__) so this module's import graph is pinned to what registry.py
@@ -92,10 +103,10 @@ def _resolve_bin(mode: str) -> str:  # noqa: ARG001
             if resolved:
                 return resolved
     return shutil.which(configured) or configured
+
+
 _DEFAULT_CDP = os.environ.get("OPENCLI_CDP_ENDPOINT", "http://localhost:19222")
-_BROWSER_PROFILE_KIND = os.environ.get(
-    "OPENCLI_BROWSER_PROFILE_KIND", "authenticated"
-)
+_BROWSER_PROFILE_KIND = os.environ.get("OPENCLI_BROWSER_PROFILE_KIND", "authenticated")
 _DAEMON_PORT = int(os.environ.get("OPENCLI_DAEMON_PORT", "19825"))
 _AGENT_PORT = int(os.environ.get("AGENT_PORT", "19823"))
 _CENTRAL_API_URL = os.environ.get("CENTRAL_API_URL", "").rstrip("/")
@@ -107,6 +118,67 @@ _AGENT_DEPLOY_TYPE = os.environ.get("AGENT_DEPLOY_TYPE", "docker")
 # True when the image was built with INSTALL_CHROME=true (Chrome bundled inside container).
 # False → Chrome runs on the host; localhost must be remapped to host.docker.internal.
 _AGENT_HAS_CHROME = os.environ.get("AGENT_HAS_CHROME", "false").lower() == "true"
+_RUNTIME_BUNDLE_MANIFEST = os.environ.get(
+    "BROWSER_RUNTIME_BUNDLE_MANIFEST",
+    "/opt/browser-runtime-bundles/opencli-default/1/manifest.json",
+)
+
+
+def _bundle_declared_runtimes() -> set[str]:
+    try:
+        with open(_RUNTIME_BUNDLE_MANIFEST, encoding="utf-8") as manifest_file:
+            manifest = json.load(manifest_file)
+    except (OSError, ValueError, TypeError):
+        return set()
+    if not isinstance(manifest, dict):
+        return set()
+    capabilities = manifest.get("capabilities", [])
+    if not isinstance(capabilities, list):
+        return set()
+    declared: set[str] = set()
+    for capability in capabilities:
+        if not isinstance(capability, dict):
+            continue
+        runtime = capability.get("runtime", "opentabs")
+        if isinstance(runtime, str):
+            declared.add(runtime)
+    return declared
+
+
+def _available_agent_runtimes() -> list[str]:
+    runtimes = list(available_runtimes())
+    declared = _bundle_declared_runtimes()
+    if "script-host" in declared and "script-host" not in runtimes:
+        runtimes.append("script-host")
+    return runtimes
+
+
+_EDGE_RUNTIME_TASK_CONFIG_KEYS = frozenset(
+    {
+        "action",
+        "agent_id",
+        "base_delay",
+        "breaker_threshold",
+        "chrome",
+        "input_wait_seconds",
+        "local",
+        "max_attempts",
+        "model",
+        "pack",
+        "permission_mode",
+        "plugin",
+        "poll_interval",
+        "provider",
+        "response_timeout_seconds",
+        "settle_seconds",
+        "suggested_wait_seconds",
+        "tab_id",
+        "timeout_seconds",
+    }
+)
+
+
+
 _AGENT_LABEL = os.environ.get("AGENT_LABEL", socket.gethostname())
 # Registration mode:
 #   http — LAN mode: agent POSTs its URL to center, center calls back via HTTP (default)
@@ -172,6 +244,7 @@ async def _kill_process_tree(proc: asyncio.subprocess.Process) -> None:
 
 async def _runtime_lineage(bin_path: str) -> dict[str, str]:
     """Measure the binaries/source used by this node; never echo declarations."""
+
     async def output(*argv: str, cwd: str | None = None) -> str:
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -184,7 +257,12 @@ async def _runtime_lineage(bin_path: str) -> dict[str, str]:
 
     repo_commit = await output("git", "rev-parse", "HEAD", cwd=_OHMYOPENCLI_ROOT)
     source_commit = await output(
-        "git", "log", "-1", "--format=%H", "--", "adapters/official-site/observe.js",
+        "git",
+        "log",
+        "-1",
+        "--format=%H",
+        "--",
+        "adapters/official-site/observe.js",
         cwd=_OHMYOPENCLI_ROOT,
     )
     version_text = await output(bin_path, "--version")
@@ -237,7 +315,7 @@ async def _register_with_center(advertise_url: str) -> None:
         "node_type": _AGENT_DEPLOY_TYPE,
         "label": _AGENT_LABEL,
         "agent_protocol": "http",
-        "runtimes": available_runtimes(),
+        "runtimes": _available_agent_runtimes(),
         "runtime_capabilities": available_runtime_capabilities(),
         "profile_kind": _BROWSER_PROFILE_KIND,
     }
@@ -318,11 +396,15 @@ async def _handle_ws_agent_task(ws, msg: dict) -> None:
 
     async def _send_result(result: dict) -> None:
         try:
-            await ws.send(json.dumps({
-                "type": "agent_result",
-                "request_id": request_id,
-                "result": result,
-            }))
+            await ws.send(
+                json.dumps(
+                    {
+                        "type": "agent_result",
+                        "request_id": request_id,
+                        "result": result,
+                    }
+                )
+            )
         except Exception as exc:
             logger.error("WS: failed to send agent_result for request_id=%s: %s", request_id, exc)
 
@@ -338,14 +420,17 @@ async def _handle_ws_agent_task(ws, msg: dict) -> None:
         try:
             adapter = get_runtime(runtime_type)
         except ValueError as exc:
-            logger.warning("WS agent_task request_id=%s: unknown runtime %r: %s",
-                            request_id, runtime_type, exc)
-            await _send_result({
-                "type": "error",
-                "task_id": request_id,
-                "message": str(exc),
-                "error_type": "ValueError",
-            })
+            logger.warning(
+                "WS agent_task request_id=%s: unknown runtime %r: %s", request_id, runtime_type, exc
+            )
+            await _send_result(
+                {
+                    "type": "error",
+                    "task_id": request_id,
+                    "message": str(exc),
+                    "error_type": "ValueError",
+                }
+            )
             return
 
         task = AgentTask(
@@ -365,22 +450,26 @@ async def _handle_ws_agent_task(ws, msg: dict) -> None:
         config_errors = adapter.validate_config(task.config)
         if config_errors:
             raise RuntimeInvocationError("; ".join(config_errors), error_type="ConfigError")
-        logger.info(
-            "WS agent_task started request_id=%s runtime=%s workflow=%s",
-            request_id,
-            runtime_type,
-            task.workflow,
-        )
+        readiness = await adapter.readiness(task.config)
+        if readiness.status != "ready":
+            raise RuntimeInvocationError(
+                readiness.reason or f"runtime {runtime_type!r} is not ready",
+                error_type=readiness.reason_code or "RuntimeNotReady",
+            )
 
         terminal_event: dict | None = None
         async for event in adapter.invoke(task):
             terminal_event = event
             try:
-                await ws.send(json.dumps({
-                    "type": "agent_event",
-                    "request_id": request_id,
-                    "event": event,
-                }))
+                await ws.send(
+                    json.dumps(
+                        {
+                            "type": "agent_event",
+                            "request_id": request_id,
+                            "event": event,
+                        }
+                    )
+                )
             except Exception as exc:
                 logger.error(
                     "WS: failed to send agent_event for request_id=%s: %s",
@@ -409,20 +498,24 @@ async def _handle_ws_agent_task(ws, msg: dict) -> None:
             request_id,
             exc,
         )
-        await _send_result({
-            "type": "error",
-            "task_id": request_id,
-            "message": str(exc),
-            "error_type": exc.error_type or type(exc).__name__,
-        })
+        await _send_result(
+            {
+                "type": "error",
+                "task_id": request_id,
+                "message": str(exc),
+                "error_type": exc.error_type or type(exc).__name__,
+            }
+        )
     except Exception as exc:
         logger.exception("WS agent_task request_id=%s: unexpected error: %s", request_id, exc)
-        await _send_result({
-            "type": "error",
-            "task_id": request_id,
-            "message": str(exc),
-            "error_type": type(exc).__name__,
-        })
+        await _send_result(
+            {
+                "type": "error",
+                "task_id": request_id,
+                "message": str(exc),
+                "error_type": type(exc).__name__,
+            }
+        )
 
 
 _ACTIVE_AGENT_TASKS: dict[str, asyncio.Task[None]] = {}
@@ -449,26 +542,28 @@ async def _register_via_ws(advertise_url: str) -> None:
     import websockets  # requires: pip install websockets
 
     ws_url = (
-        _CENTRAL_API_URL
-        .replace("https://", "wss://")
-        .replace("http://", "ws://")
-        .rstrip("/")
+        _CENTRAL_API_URL.replace("https://", "wss://").replace("http://", "ws://").rstrip("/")
         + "/api/v1/nodes/ws"
     )
-    _proxy = _center_proxy()
-    # Computed once (not per reconnect attempt): available_runtimes() does a
-    # handful of cheap shutil.which() checks, not worth repeating on every
-    # reconnect. A node's installed runtimes don't change without a restart.
-    register_payload = json.dumps({
-        "type": "register",
-        "agent_url": advertise_url,
-        "mode": _AGENT_MODE,
-        "node_type": _AGENT_DEPLOY_TYPE,
-        "label": _AGENT_LABEL,
-        "runtimes": available_runtimes(),
-        "runtime_capabilities": available_runtime_capabilities(),
-        "profile_kind": _BROWSER_PROFILE_KIND,
-    })
+    _proxy = _HTTPS_PROXY or _HTTP_PROXY or None
+    # Computed once (not per reconnect attempt): runtime availability includes
+    # fixed-binary compatibility probes and does not change without a restart.
+    runtimes = _available_agent_runtimes()
+    runtime_capabilities = available_runtime_capabilities()
+    for runtime in runtimes:
+        runtime_capabilities.setdefault(runtime, [])
+    register_payload = json.dumps(
+        {
+            "type": "register",
+            "agent_url": advertise_url,
+            "mode": _AGENT_MODE,
+            "node_type": _AGENT_DEPLOY_TYPE,
+            "label": _AGENT_LABEL,
+            "runtimes": runtimes,
+            "runtime_capabilities": runtime_capabilities,
+            "profile_kind": _BROWSER_PROFILE_KIND,
+        }
+    )
 
     attempt = 0
     while True:
@@ -486,9 +581,7 @@ async def _register_via_ws(advertise_url: str) -> None:
                         ws_url, additional_headers=headers, **connect_kwargs
                     )
                 except TypeError:
-                    connector = websockets.connect(
-                        ws_url, extra_headers=headers, **connect_kwargs
-                    )
+                    connector = websockets.connect(ws_url, extra_headers=headers, **connect_kwargs)
             else:
                 connector = websockets.connect(ws_url, **connect_kwargs)
             async with connector as ws:
@@ -533,8 +626,9 @@ async def _register_via_ws(advertise_url: str) -> None:
             return
         except Exception as exc:
             wait = min(attempt * 3, 60)
-            logger.warning("WS connection lost (attempt %d): %s — reconnecting in %ds",
-                           attempt, exc, wait)
+            logger.warning(
+                "WS connection lost (attempt %d): %s — reconnecting in %ds", attempt, exc, wait
+            )
             await asyncio.sleep(wait)
         finally:
             for task in tuple(_ACTIVE_AGENT_TASKS.values()):
@@ -548,8 +642,11 @@ _ws_task: asyncio.Task | None = None
 async def lifespan(app: FastAPI):
     global _ws_task
     if not _CENTRAL_API_URL or _AGENT_REGISTER == "off":
-        logger.info("Auto-registration disabled (CENTRAL_API_URL=%r AGENT_REGISTER=%s)",
-                    _CENTRAL_API_URL or "", _AGENT_REGISTER)
+        logger.info(
+            "Auto-registration disabled (CENTRAL_API_URL=%r AGENT_REGISTER=%s)",
+            _CENTRAL_API_URL or "",
+            _AGENT_REGISTER,
+        )
     elif _AGENT_REGISTER == "http":
         advertise_url = _detect_advertise_url()
         logger.info(
@@ -575,7 +672,7 @@ async def lifespan(app: FastAPI):
             pass
 
 
-app = FastAPI(title="OpenCLI Agent Server", version="0.4.0", lifespan=lifespan)
+app = FastAPI(title="OpenCLI Agent Server", version="0.4.1", lifespan=lifespan)
 
 
 class CollectRequest(BaseModel):
@@ -592,68 +689,6 @@ class CollectRequest(BaseModel):
     execution_id: str = ""
 
 
-async def _snapshot_tab_ids(cdp_endpoint: str) -> set[str]:
-    """Return the set of tab IDs currently open in Chrome."""
-    import httpx
-    try:
-        async with httpx.AsyncClient(timeout=5) as client:
-            resp = await client.get(f"{cdp_endpoint}/json/list")
-            return {t["id"] for t in resp.json() if "id" in t}
-    except Exception:
-        return set()
-
-
-async def _cleanup_cdp_tabs(cdp_endpoint: str, pre_existing_ids: set[str]) -> None:
-    """Close only tabs opened by opencli during collection.
-
-    Compares current tab list against pre_existing_ids (snapshotted before the
-    collect run) and closes only the new ones, preserving the user's existing tabs.
-    """
-    import httpx
-    try:
-        async with httpx.AsyncClient(timeout=5) as client:
-            resp = await client.get(f"{cdp_endpoint}/json/list")
-            tabs = resp.json()
-            remaining_pages = sum(1 for t in tabs if t.get("type") == "page")
-            for tab in tabs:
-                tab_id = tab.get("id", "")
-                if tab.get("type") == "page" and tab_id not in pre_existing_ids:
-                    try:
-                        await client.get(f"{cdp_endpoint}/json/close/{tab_id}")
-                        logger.info(
-                            "cleanup: closed new tab %s url=%s",
-                            tab_id,
-                            tab.get("url", "")[:80],
-                        )
-                        remaining_pages -= 1
-                    except Exception:
-                        pass
-            if remaining_pages == 0:
-                try:
-                    await client.put(f"{cdp_endpoint}/json/new")
-                except Exception:
-                    pass
-    except Exception as exc:
-        logger.warning("cleanup: could not close CDP tabs at %s: %s", cdp_endpoint, exc)
-
-
-def _parse_output(raw: str, fmt: str) -> list[dict]:
-    if fmt == "json":
-        start = next((i for i, c in enumerate(raw) if c in "{["), None)
-        if start is None:
-            raise ValueError(f"No JSON found: {raw[:200]!r}")
-        data = json.loads(raw[start:])
-        return data if isinstance(data, list) else [data]
-    if fmt == "yaml":
-        data = yaml.safe_load(raw)
-        if isinstance(data, list):
-            return data
-        return [data] if isinstance(data, dict) else [{"content": str(data)}]
-    if fmt == "csv":
-        return list(csv.DictReader(io.StringIO(raw.strip())))
-    return [{"content": raw}]
-
-
 @app.get("/health")
 def health() -> dict:
     bin_path = _resolve_bin(_AGENT_MODE)
@@ -663,6 +698,30 @@ def health() -> dict:
         "opencli_bin_exists": shutil.which(bin_path) is not None or os.path.isfile(bin_path),
         "default_cdp_endpoint": _DEFAULT_CDP,
     }
+
+
+@app.post("/runtime/invoke")
+async def invoke_runtime_http(
+    req: RuntimeInvokeRequest, authorization: str | None = Header(default=None)
+) -> dict:
+    _require_collect_auth(authorization)
+    if req.runtime == "codex":
+        raise HTTPException(
+            status_code=403,
+            detail="Codex runtime is only available through controller WS dispatch",
+        )
+    if req.runtime not in _bundle_declared_runtimes():
+        raise HTTPException(
+            status_code=403,
+            detail=f"runtime {req.runtime!r} is not declared by the installed bundle",
+        )
+    unsafe_keys = sorted(set(req.config) - _EDGE_RUNTIME_TASK_CONFIG_KEYS)
+    if unsafe_keys:
+        raise HTTPException(
+            status_code=400,
+            detail="edge runtime config cannot override: " + ", ".join(unsafe_keys),
+        )
+    return await invoke_runtime(str(uuid.uuid4()), req, cdp_endpoint=_DEFAULT_CDP)
 
 
 async def collect(req: CollectRequest) -> dict:
@@ -685,9 +744,11 @@ async def collect(req: CollectRequest) -> dict:
         # reaches the Chrome bridge daemon on the host machine.
         # Agents built with INSTALL_CHROME=true have their own Chrome and should
         # keep localhost as-is.
-        if (_AGENT_DEPLOY_TYPE == "docker"
-                and not _AGENT_HAS_CHROME
-                and hostname in ("localhost", "127.0.0.1", "::1")):
+        if (
+            _AGENT_DEPLOY_TYPE == "docker"
+            and not _AGENT_HAS_CHROME
+            and hostname in ("localhost", "127.0.0.1", "::1")
+        ):
             hostname = "host.docker.internal"
         env.pop("OPENCLI_CDP_ENDPOINT", None)
         env["OPENCLI_DAEMON_HOST"] = hostname
@@ -703,7 +764,7 @@ async def collect(req: CollectRequest) -> dict:
 
     pre_tab_ids: set[str] = set()
     if mode == "cdp":
-        pre_tab_ids = await _snapshot_tab_ids(cdp_ep)
+        pre_tab_ids = await snapshot_tab_ids(cdp_ep)
 
     proc = None
     try:
@@ -723,19 +784,19 @@ async def collect(req: CollectRequest) -> dict:
         if proc:
             await _kill_process_tree(proc)
         if mode == "cdp":
-            await _cleanup_cdp_tabs(cdp_ep, pre_tab_ids)
+            await cleanup_cdp_tabs(cdp_ep, pre_tab_ids)
         return {"success": False, "items": [], "error": "opencli timed out after 120s"}
     except Exception as exc:
         logger.exception("subprocess error | %s", exc)
         if mode == "cdp":
-            await _cleanup_cdp_tabs(cdp_ep, pre_tab_ids)
+            await cleanup_cdp_tabs(cdp_ep, pre_tab_ids)
         return {"success": False, "items": [], "error": str(exc)}
     finally:
         if req.execution_id:
             _ACTIVE_COLLECTS.pop(req.execution_id, None)
 
     if mode == "cdp":
-        await _cleanup_cdp_tabs(cdp_ep, pre_tab_ids)
+        await cleanup_cdp_tabs(cdp_ep, pre_tab_ids)
 
     stderr_str = stderr.decode().strip()
     stdout_str = stdout.decode()
@@ -747,7 +808,7 @@ async def collect(req: CollectRequest) -> dict:
         return {"success": False, "items": [], "error": f"opencli exit {rc}: {stderr_str}"}
 
     try:
-        items = _parse_output(stdout_str, req.format)
+        items = parse_output(stdout_str, req.format)
     except Exception as exc:
         logger.error("parse error | %s", exc)
         return {"success": False, "items": [], "error": f"parse error: {exc}"}
@@ -788,4 +849,5 @@ async def cancel_collect(
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(app, host="0.0.0.0", port=_AGENT_PORT, log_level="info")

@@ -91,6 +91,66 @@ class AgentContractV2(BaseModel):
         return self
 
 
+class AgentRuntimeBindingV1(BaseModel):
+    """Published binding from one Operations Agent version to an existing edge runtime."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["agent.runtime-binding.v1"]
+    agent_url: str = Field(min_length=1, max_length=512)
+    runtime: Literal["miniflow", "pi", "codex"]
+    workflow: str = Field(min_length=1, max_length=255)
+    config: dict[str, JsonValue] = Field(default_factory=dict)
+    dispatch_timeout_seconds: int = Field(
+        default=DEFAULT_DEEP_RUN_TIMEOUT_SECONDS,
+        ge=1,
+        le=MAX_DEEP_RUN_TIMEOUT_SECONDS,
+    )
+    execution_node_url: str | None = Field(default=None, min_length=1, max_length=512)
+    shared_filesystem_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=255,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+    )
+
+    @field_validator("config")
+    @classmethod
+    def config_is_task_scoped(cls, value: dict[str, JsonValue]) -> dict[str, JsonValue]:
+        unsupported = sorted(set(value) - {"timeout_seconds"})
+        if unsupported:
+            raise ValueError("runtime config is Fleet-owned; unsupported task keys: " + ", ".join(unsupported))
+        timeout = value.get("timeout_seconds")
+        if timeout is not None and (
+            not isinstance(timeout, (int, float))
+            or isinstance(timeout, bool)
+            or not 1 <= timeout <= MAX_DEEP_RUN_TIMEOUT_SECONDS
+        ):
+            raise ValueError(
+                "config.timeout_seconds must be between 1 and "
+                f"{MAX_DEEP_RUN_TIMEOUT_SECONDS}"
+            )
+        return value
+
+    @field_validator("agent_url")
+    @classmethod
+    def agent_url_is_http(cls, value: str) -> str:
+        normalized = value.rstrip("/")
+        if not normalized.startswith(("http://", "https://")):
+            raise ValueError("agent_url must be an http/https URL")
+        return normalized
+
+    @field_validator("execution_node_url")
+    @classmethod
+    def execution_node_url_is_http(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.rstrip("/")
+        if not normalized.startswith(("http://", "https://")):
+            raise ValueError("execution_node_url must be an http/https URL")
+        return normalized
+
+
 class AgentModelBindingV1(BaseModel):
     """Non-secret model selection; credentials are resolved by the edge runtime."""
 

@@ -81,17 +81,6 @@ def cancel_operations_agent_run(run_id: str) -> None:
         task.cancel()
 
 
-def _runtime_permission_mode(runtime: str, profile_mode: str) -> str:
-    """Translate the governed profile vocabulary to a CLI vocabulary.
-
-    Permission profiles are product-level and intentionally shared by every
-    Agent runtime.  Codex uses ``read_only`` for the same contract that the
-    product calls ``observe_only``; passing the product value through verbatim
-    makes an otherwise healthy Codex node reject the task as invalid config.
-    """
-    if runtime == "codex" and profile_mode == "observe_only":
-        return "read_only"
-    return profile_mode
 
 
 def _forget_dispatch(run_id: str, task: asyncio.Task[None]) -> None:
@@ -173,17 +162,12 @@ async def dispatch_operations_agent_run(run_id: str) -> None:
                 or isinstance(configured_timeout, bool)
                 or configured_timeout < binding.dispatch_timeout_seconds
             ):
+                # The edge runtime must not expire before the governed outer
+                # deep-run profile. Binding validation supplies the hard
+                # ceiling; this fills/raises the inner timeout to that profile.
                 runtime_config["timeout_seconds"] = binding.dispatch_timeout_seconds
-            runtime_config["permission_mode"] = _runtime_permission_mode(
-                str(selection["runtime"]), profile.mode
-            )
-            permissions = {
-                "mode": profile.mode,
-                "tool_scope": list(profile.tool_scope),
-                "resource_scope": list(profile.resource_scope),
-                "action_scope": list(profile.action_scope),
-                "tool_policy": contract.tool_policy,
-            }
+            runtime_config["permission_mode"] = profile.mode
+            permissions = contract.tool_policy
 
         state_contract_error: str | None = None
 

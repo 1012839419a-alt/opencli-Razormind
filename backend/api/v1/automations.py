@@ -14,17 +14,51 @@ from backend.schemas.automation import (
 from backend.schemas.common import ApiResponse
 from backend.schemas.operations_agent import OperationsAgentRunRead
 from backend.security.identity import RequestIdentity, get_request_identity
-from backend.security.workspace_rbac import WorkspacePermission, get_workspace_access, require_permission
-from backend.services.automation_schedule_service import (
-    AutomationBindingError,
-    create_bound_automation_run,
-    validate_automation_binding,
+from backend.security.workspace_rbac import (
+    WorkspacePermission,
+    get_workspace_access,
+    require_permission,
 )
 from backend.services.automation_starter_service import (
     install_starters,
     preview_starter_installation,
 )
+
 router = APIRouter(prefix="/workspaces/{workspace_id}/automations", tags=["automations"])
+
+@router.get(
+    "/starters/preview",
+    response_model=ApiResponse[StarterInstallationPreview],
+)
+async def preview_automation_starters(
+    workspace_id: str,
+    identity: RequestIdentity = Depends(get_request_identity),
+    db: AsyncSession = Depends(get_db),
+) -> ApiResponse:
+    access = await get_workspace_access(db, workspace_id, identity)
+    require_permission(access, WorkspacePermission.READ)
+    preview = await preview_starter_installation(db, workspace_id=workspace_id)
+    return ApiResponse.ok(preview)
+
+
+@router.post(
+    "/starters/install",
+    response_model=ApiResponse[StarterInstallationResult],
+)
+async def install_automation_starters(
+    workspace_id: str,
+    identity: RequestIdentity = Depends(get_request_identity),
+    db: AsyncSession = Depends(get_db),
+) -> ApiResponse:
+    access = await get_workspace_access(db, workspace_id, identity)
+    require_permission(access, WorkspacePermission.MANAGE_AGENT_IDENTITIES)
+    result = await install_starters(
+        db,
+        workspace_id=workspace_id,
+        created_by_user_id=access.user_id,
+    )
+    return ApiResponse.ok(result)
+
 
 @router.get(
     "/starters/preview",
@@ -68,9 +102,17 @@ async def list_automations(
 ) -> ApiResponse:
     access = await get_workspace_access(db, workspace_id, identity)
     require_permission(access, WorkspacePermission.READ)
-    rows = (await db.execute(
-        select(Automation).where(Automation.workspace_id == workspace_id).order_by(Automation.created_at)
-    )).scalars().all()
+    rows = (
+        (
+            await db.execute(
+                select(Automation)
+                .where(Automation.workspace_id == workspace_id)
+                .order_by(Automation.created_at)
+            )
+        )
+        .scalars()
+        .all()
+    )
     return ApiResponse.ok([AutomationRead.model_validate(row) for row in rows])
 
 
@@ -83,7 +125,9 @@ async def create_automation(
 ) -> ApiResponse:
     access = await get_workspace_access(db, workspace_id, identity)
     require_permission(access, WorkspacePermission.MANAGE_AGENT_IDENTITIES)
-    row = Automation(workspace_id=workspace_id, created_by_user_id=access.user_id, **body.model_dump())
+    row = Automation(
+        workspace_id=workspace_id, created_by_user_id=access.user_id, **body.model_dump()
+    )
     db.add(row)
     await db.flush()
     if row.enabled:
@@ -104,9 +148,11 @@ async def update_automation(
 ) -> ApiResponse:
     access = await get_workspace_access(db, workspace_id, identity)
     require_permission(access, WorkspacePermission.MANAGE_AGENT_IDENTITIES)
-    row = await db.scalar(select(Automation).where(
-        Automation.workspace_id == workspace_id, Automation.id == automation_id
-    ).with_for_update())
+    row = await db.scalar(
+        select(Automation)
+        .where(Automation.workspace_id == workspace_id, Automation.id == automation_id)
+        .with_for_update()
+    )
     if row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Automation not found")
     for field, value in body.model_dump(exclude_unset=True).items():

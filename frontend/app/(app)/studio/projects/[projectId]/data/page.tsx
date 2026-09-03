@@ -43,6 +43,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { listRecords } from '@/lib/api/endpoints'
 import { useProjectWorkflows, useRecords, useWorkspaceProjects } from '@/lib/api/hooks'
 import type { CollectedRecord } from '@/lib/api/types'
+import { serializeCsvCell } from '@/lib/csv'
 import { formatDateTime, formatFreshness, formatRelative, formatSourceDateTime } from '@/lib/format'
 import { cn } from '@/lib/utils'
 

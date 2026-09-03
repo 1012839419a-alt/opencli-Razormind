@@ -2,10 +2,11 @@
 
 from dataclasses import dataclass
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.models.automation import Automation
+from backend.models.identity import Workspace
 from backend.schemas.automation import (
     StarterInstallationPreview,
     StarterInstallationResult,
@@ -36,28 +37,33 @@ STARTER_DEFINITIONS: tuple[StarterDefinition, ...] = (
     StarterDefinition(
         key="daily-run-brief",
         name="运行简报 Agent",
-        prompt="Prepare a concise daily run brief from the latest workspace activity and open work.",
+        prompt=(
+            "Prepare a concise daily run brief from the latest workspace activity and open work."
+        ),
         schedule="daily@09:00",
     ),
     StarterDefinition(
         key="weekly-system-review",
         name="系统回顾 Agent",
-        prompt="Review the workspace system state, summarize trends, and identify actionable improvements.",
-        schedule="weekly@09:00",
+        prompt=(
+            "Review the workspace system state, summarize trends, and identify "
+            "actionable improvements."
+        ),
+        schedule="weekly@monday@09:00",
     ),
     StarterDefinition(
         key="anomaly-follow-up",
         name="异常跟进 Agent",
-        prompt="Review unresolved anomalies, gather evidence, and propose the next safe follow-up actions.",
-        schedule="weekdays@09:00",
+        prompt=(
+            "Review unresolved anomalies, gather evidence, and propose the next "
+            "safe follow-up actions."
+        ),
+        schedule="on_anomaly",
     ),
 )
 
-STARTER_KEYS: tuple[str, ...] = tuple(
-    definition.key for definition in STARTER_DEFINITIONS
-)
+STARTER_KEYS: tuple[str, ...] = tuple(definition.key for definition in STARTER_DEFINITIONS)
 AGENT_STARTERS = STARTER_DEFINITIONS
-
 
 
 def _preview(
@@ -70,9 +76,7 @@ def _preview(
             name=definition.name,
             installed=definition.key in installed_by_key,
             automation_id=(
-                installed_by_key[definition.key].id
-                if definition.key in installed_by_key
-                else None
+                installed_by_key[definition.key].id if definition.key in installed_by_key else None
             ),
         )
         for definition in STARTER_DEFINITIONS
@@ -116,6 +120,14 @@ async def install_starters(
     """
 
     async with session.begin_nested():
+        # A no-op UPDATE takes a real write lock on SQLite (where FOR UPDATE is
+        # ignored) and a row lock on PostgreSQL.  An empty starter set cannot be
+        # locked by the row query itself, so this serializes first installs.
+        await session.execute(
+            update(Workspace)
+            .where(Workspace.id == workspace_id)
+            .values(id=Workspace.id, updated_at=Workspace.updated_at)
+        )
         rows = (
             await session.scalars(
                 select(Automation)
@@ -123,7 +135,6 @@ async def install_starters(
                     Automation.workspace_id == workspace_id,
                     Automation.starter_key.in_(STARTER_KEYS),
                 )
-                .with_for_update()
             )
         ).all()
         installed_by_key = {row.starter_key: row for row in rows if row.starter_key}
@@ -144,7 +155,7 @@ async def install_starters(
                 session_mode=definition.session_mode,
                 approval_mode=definition.approval_mode,
                 project=definition.project(),
-                enabled=False,
+                enabled=True,
                 created_by_user_id=created_by_user_id,
             )
             session.add(row)
