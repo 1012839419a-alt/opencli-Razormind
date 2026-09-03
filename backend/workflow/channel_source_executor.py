@@ -133,6 +133,10 @@ def _feishu_overrides(values: dict[str, Any]) -> dict[str, Any]:
         "statusField": "status_field",
         "eligibleStatus": "eligible_status",
         "maxRows": "max_rows",
+        "pageSize": "page_size",
+        "viewId": "view_id",
+        "fieldNames": "field_names",
+        "sourceGroup": "source_group",
     }
     return {
         mapping.get(key, key): value

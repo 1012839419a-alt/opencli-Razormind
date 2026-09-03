@@ -470,7 +470,7 @@ class FeishuTableChannel(AbstractChannel):
         # CLI transport authenticates through the operator's local lark-cli
         # session, so probe one bounded row instead of requiring a second
         # encrypted bearer token.
-        if _text(resolved_config.get("transport")).lower() == "cli":
+        if str(resolved_config.get("transport") or "cli").lower() == "cli":
             try:
                 await self.fetch(
                     FetchContext(

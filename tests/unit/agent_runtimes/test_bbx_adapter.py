@@ -6,10 +6,14 @@ import pytest
 
 from backend.agent_runtimes.base import AgentTask
 from backend.agent_runtimes.bbx_adapter import (
+    _DOUBAO_CLICK_DELETE_MENU_EXPRESSION,
+    _DOUBAO_CONFIRM_DELETE_EXPRESSION,
     _DOUBAO_EXTRACTION_EXPRESSION,
+    _DOUBAO_OPEN_DELETE_MENU_EXPRESSION,
     BbxRuntimeAdapter,
     _active_tab,
     _answer_after_question,
+    _doubao_conversation_id,
     _has_answer_content,
     _looks_like_doubao_login_page,
     _suggested_keywords_from_page_text,
@@ -152,8 +156,9 @@ async def test_doubao_workflow_uses_bbx_browser_and_returns_structured_evidence(
 
     streamed_types: list[str] = []
 
-    async def fake_delete(self, task, tab_id, created_new):
+    async def fake_delete(self, task, tab_id, created_new, conversation_url):
         assert "evidence" in streamed_types
+        assert conversation_url == "https://www.doubao.com/chat/123"
         return True
 
     monkeypatch.setattr(
@@ -228,7 +233,8 @@ async def test_doubao_workflow_requeries_stale_input_reference(monkeypatch):
 
     monkeypatch.setattr(BbxRuntimeAdapter, "_run_cli", fake_run)
 
-    async def fake_delete(self, task, tab_id, created_new):
+    async def fake_delete(self, task, tab_id, created_new, conversation_url):
+        assert conversation_url == "https://www.doubao.com/chat/456"
         return True
 
     monkeypatch.setattr(
@@ -292,6 +298,7 @@ async def test_doubao_workflow_does_not_accept_time_label_as_answer(monkeypatch)
                 "settle_seconds": 0,
                 "response_timeout_seconds": 0,
                 "suggested_wait_seconds": 0,
+                "delete_menu_timeout_seconds": 0,
             },
         ),
     )
@@ -300,6 +307,78 @@ async def test_doubao_workflow_does_not_accept_time_label_as_answer(monkeypatch)
     assert response["status"] == "blocked"
     assert response["error_type"] == "doubao_response_incomplete"
     assert response["answer"] == ""
+
+
+@pytest.mark.asyncio
+async def test_delete_doubao_conversation_waits_for_entry_to_disappear(monkeypatch):
+    verification_checks = 0
+    expressions: list[str] = []
+
+    async def fake_call(self, task, command, tab_id, payload):
+        nonlocal verification_checks
+        assert command == "call"
+        assert tab_id == 7
+        expression = payload["params"]["expression"]
+        expressions.append(expression)
+        if expression in {
+            _DOUBAO_OPEN_DELETE_MENU_EXPRESSION,
+            _DOUBAO_CLICK_DELETE_MENU_EXPRESSION,
+            _DOUBAO_CONFIRM_DELETE_EXPRESSION,
+        }:
+            return {"value": True}
+        assert 'const conversationId = "123";' in expression
+        verification_checks += 1
+        return {"value": verification_checks >= 2}
+
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(BbxRuntimeAdapter, "_doubao_call", fake_call)
+    monkeypatch.setattr("backend.agent_runtimes.bbx_adapter.asyncio.sleep", no_sleep)
+
+    deleted = await BbxRuntimeAdapter()._delete_doubao_conversation(
+        AgentTask(task_id="delete", workflow="test"),
+        7,
+        True,
+        "https://www.doubao.com/chat/123",
+    )
+
+    assert deleted is True
+    assert expressions.count(_DOUBAO_CONFIRM_DELETE_EXPRESSION) == 1
+    assert verification_checks == 3
+
+
+@pytest.mark.asyncio
+async def test_delete_doubao_conversation_fails_when_entry_remains(monkeypatch):
+    async def fake_call(self, task, command, tab_id, payload):
+        expression = payload["params"]["expression"]
+        if expression in {
+            _DOUBAO_OPEN_DELETE_MENU_EXPRESSION,
+            _DOUBAO_CLICK_DELETE_MENU_EXPRESSION,
+            _DOUBAO_CONFIRM_DELETE_EXPRESSION,
+        }:
+            return {"value": True}
+        return {"value": False}
+
+    monkeypatch.setattr(BbxRuntimeAdapter, "_doubao_call", fake_call)
+
+    deleted = await BbxRuntimeAdapter()._delete_doubao_conversation(
+        AgentTask(
+            task_id="delete-timeout",
+            workflow="test",
+            config={"delete_verify_timeout_seconds": 0},
+        ),
+        7,
+        True,
+        "https://www.doubao.com/chat/123",
+    )
+
+    assert deleted is False
+
+
+def test_doubao_conversation_id_rejects_non_doubao_urls():
+    assert _doubao_conversation_id("https://www.doubao.com/chat/123") == "123"
+    assert _doubao_conversation_id("https://example.test/chat/123") is None
 
 
 def test_answer_after_question_requires_visible_answer_tail():

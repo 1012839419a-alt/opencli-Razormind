@@ -365,9 +365,9 @@ class DoubaoResearchChannel(AbstractChannel):
             try:
                 returncode, status_stdout, _ = await _run_doubao_command(status_command)
                 if returncode == 0:
-                    conversation_url = _conversation_url(status_stdout)
+                    conversation_url = _conversation_url(status_stdout) or conversation_url
             except Exception:
-                conversation_url = ""
+                pass
         return ChannelResult.ok(
             [
                 {

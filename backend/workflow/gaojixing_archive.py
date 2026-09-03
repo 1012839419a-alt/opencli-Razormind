@@ -74,12 +74,21 @@ def write_precleanup_capture_receipt(
         separators=(",", ":"),
     ).encode("utf-8")
     root = storage_root.resolve()
-    _atomic_write(root / relative_path, payload)
+    persisted_payload = _atomic_create_or_read(root / relative_path, payload)
+    _validate_precleanup_receipt_payload(
+        persisted_payload,
+        run_id=normalized_run_id,
+        workflow_id=workflow_id,
+        question=question,
+        package_digest=normalized_digest,
+        evidence_digest=evidence_digest,
+        evidence=evidence,
+    )
     return {
         "schema": PRE_CLEANUP_RECEIPT_SCHEMA,
         "persisted": True,
         "path": relative_path.as_posix(),
-        "sha256": hashlib.sha256(payload).hexdigest(),
+        "sha256": hashlib.sha256(persisted_payload).hexdigest(),
         "evidence_sha256": evidence_digest,
     }
 
@@ -343,9 +352,78 @@ def _atomic_write(path: Path, payload: bytes) -> None:
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary_path, path)
+        _fsync_directory(path.parent)
     finally:
         if temporary_path.exists():
             temporary_path.unlink()
+
+
+def _atomic_create_or_read(path: Path, payload: bytes) -> bytes:
+    """Create an immutable file once, or return the winning concurrent payload."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            os.link(temporary_path, path)
+        except FileExistsError:
+            existing = path.read_bytes()
+            _fsync_directory(path.parent)
+            return existing
+        _fsync_directory(path.parent)
+        return payload
+    finally:
+        if temporary_path.exists():
+            temporary_path.unlink()
+
+
+def _validate_precleanup_receipt_payload(
+    payload: bytes,
+    *,
+    run_id: str,
+    workflow_id: str | None,
+    question: str,
+    package_digest: str,
+    evidence_digest: str,
+    evidence: dict[str, Any],
+) -> None:
+    """Reject a corrupt or conflicting immutable receipt before acknowledging it."""
+
+    try:
+        document = json.loads(payload)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("precleanup_receipt_existing_payload_invalid") from exc
+    expected = {
+        "schema": PRE_CLEANUP_RECEIPT_SCHEMA,
+        "run_id": run_id,
+        "workflow_id": workflow_id,
+        "question": question,
+        "package_digest": package_digest,
+        "evidence_digest": evidence_digest,
+        "evidence": evidence,
+    }
+    if not isinstance(document, dict) or any(
+        document.get(key) != value for key, value in expected.items()
+    ):
+        raise ValueError("precleanup_receipt_existing_payload_conflict")
+
+
+def _fsync_directory(directory: Path) -> None:
+    """Persist a directory entry update where the platform exposes directory fsync."""
+
+    if os.name == "nt":
+        return
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    descriptor = os.open(directory, flags)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 __all__ = [

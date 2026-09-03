@@ -9,6 +9,7 @@ import re
 import shutil
 from collections.abc import AsyncIterator
 from typing import Any
+from urllib.parse import unquote, urlsplit
 
 from backend.agent_runtimes.base import (
     AgentTask,
@@ -498,7 +499,7 @@ class BbxRuntimeAdapter(RuntimeAdapter):
                 },
             )
             response["conversation_deleted"] = await self._delete_doubao_conversation(
-                task, tab_id, created_new
+                task, tab_id, created_new, conversation_url
             )
             await self._close_created_doubao_tab(task, tab_id, created_new)
             for event in _drain_bbx_events(task):
@@ -537,7 +538,7 @@ class BbxRuntimeAdapter(RuntimeAdapter):
             },
         )
         response["conversation_deleted"] = await self._delete_doubao_conversation(
-            task, tab_id, created_new
+            task, tab_id, created_new, conversation_url
         )
         await self._close_created_doubao_tab(task, tab_id, created_new)
         for event in _drain_bbx_events(task):
@@ -589,14 +590,22 @@ class BbxRuntimeAdapter(RuntimeAdapter):
             return
 
     async def _delete_doubao_conversation(
-        self, task: AgentTask, tab_id: int | str, created_new: bool
+        self,
+        task: AgentTask,
+        tab_id: int | str,
+        created_new: bool,
+        conversation_url: str,
     ) -> bool:
         """Delete only the temporary conversation created for this source item."""
-        if not created_new:
+        conversation_id = _doubao_conversation_id(conversation_url)
+        if not created_new or not conversation_id:
             return False
         try:
             opened: dict[str, Any] = {}
-            for _ in range(10):
+            open_deadline = asyncio.get_running_loop().time() + _nonnegative_number(
+                task.config.get("delete_menu_timeout_seconds"), 3.0
+            )
+            while True:
                 opened = await self._doubao_call(
                     task,
                     "call",
@@ -611,10 +620,10 @@ class BbxRuntimeAdapter(RuntimeAdapter):
                 )
                 if _evaluate_bool(opened) is True:
                     break
-                await asyncio.sleep(0.2)
-            if _evaluate_bool(opened) is not True:
-                return False
-            await asyncio.sleep(0.15)
+                remaining = open_deadline - asyncio.get_running_loop().time()
+                if remaining <= 0:
+                    return False
+                await asyncio.sleep(min(0.2, remaining))
             clicked = await self._doubao_call(
                 task,
                 "call",
@@ -629,26 +638,56 @@ class BbxRuntimeAdapter(RuntimeAdapter):
             )
             if _evaluate_bool(clicked) is not True:
                 return False
-            deadline = asyncio.get_running_loop().time() + 3.0
+            confirmed = await self._doubao_call(
+                task,
+                "call",
+                tab_id,
+                {
+                    "method": "page.evaluate",
+                    "params": {
+                        "expression": _DOUBAO_CONFIRM_DELETE_EXPRESSION,
+                        "returnByValue": True,
+                    },
+                },
+            )
+            if _evaluate_bool(confirmed) is not True:
+                return False
+            verification_expression = _doubao_verify_delete_expression(conversation_id)
+            verify_deadline = asyncio.get_running_loop().time() + _nonnegative_number(
+                task.config.get("delete_verify_timeout_seconds"), 5.0
+            )
+            required_observations = max(
+                1,
+                int(
+                    _nonnegative_number(
+                        task.config.get("delete_stable_observations"), 2.0
+                    )
+                ),
+            )
+            stable_observations = 0
             while True:
-                confirmed = await self._doubao_call(
+                verified = await self._doubao_call(
                     task,
                     "call",
                     tab_id,
                     {
                         "method": "page.evaluate",
                         "params": {
-                            "expression": _DOUBAO_CONFIRM_DELETE_EXPRESSION,
+                            "expression": verification_expression,
                             "returnByValue": True,
                         },
                     },
                 )
-                if _evaluate_bool(confirmed) is True:
-                    await asyncio.sleep(0.2)
-                    return True
-                if asyncio.get_running_loop().time() >= deadline:
+                if _evaluate_bool(verified) is True:
+                    stable_observations += 1
+                    if stable_observations >= required_observations:
+                        return True
+                else:
+                    stable_observations = 0
+                remaining = verify_deadline - asyncio.get_running_loop().time()
+                if remaining <= 0:
                     return False
-                await asyncio.sleep(0.15)
+                await asyncio.sleep(min(0.15, remaining))
         except RuntimeInvocationError:
             return False
 
@@ -1006,6 +1045,39 @@ _DOUBAO_CONFIRM_DELETE_EXPRESSION = r'''(() => {
   button.click();
   return true;
 })()'''
+
+
+def _doubao_conversation_id(conversation_url: str) -> str | None:
+    try:
+        parsed = urlsplit(conversation_url)
+    except ValueError:
+        return None
+    if (parsed.hostname or "").casefold().rstrip(".") not in {
+        "doubao.com",
+        "www.doubao.com",
+    }:
+        return None
+    parts = [unquote(part) for part in parsed.path.split("/") if part]
+    return parts[1] if len(parts) == 2 and parts[0] == "chat" and parts[1] else None
+
+
+def _doubao_verify_delete_expression(conversation_id: str) -> str:
+    encoded_id = json.dumps(conversation_id, ensure_ascii=False)
+    return rf'''(() => {{
+  const conversationId = {encoded_id};
+  const dialog = Array.from(document.querySelectorAll('[role="dialog"], [role="alertdialog"]'))
+    .find((node) => String(node.textContent || '').includes('确定删除对话'));
+  if (dialog) return false;
+  if (document.getElementById(`conversation_${{conversationId}}`)) return false;
+  return !Array.from(document.querySelectorAll('a[href]')).some((node) => {{
+    try {{
+      return decodeURIComponent(new URL(node.getAttribute('href'), location.href).pathname)
+        .replace(/\/$/, '') === `/chat/${{conversationId}}`;
+    }} catch (_error) {{
+      return false;
+    }}
+  }});
+}})()'''
 
 
 def _question_from_task(task: AgentTask) -> str:

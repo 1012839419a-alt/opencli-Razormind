@@ -13,6 +13,22 @@ def test_feishu_source_accepts_snake_case_max_rows_runtime_override():
     assert _feishu_overrides({"max_rows": 1000}) == {"max_rows": 1000}
 
 
+def test_feishu_source_maps_all_camel_case_runtime_overrides():
+    assert _feishu_overrides(
+        {
+            "pageSize": 200,
+            "viewId": "view-1",
+            "fieldNames": ["编号", "推荐追问"],
+            "sourceGroup": "recommendations",
+        }
+    ) == {
+        "page_size": 200,
+        "view_id": "view-1",
+        "field_names": ["编号", "推荐追问"],
+        "source_group": "recommendations",
+    }
+
+
 @pytest.mark.asyncio
 async def test_feishu_source_applies_snake_case_row_filter_overrides(monkeypatch):
     source = SimpleNamespace(

@@ -22,6 +22,16 @@ from backend.workflow.opencli_hda_tracer import (
 )
 
 
+def _persisted_capture_receipt():
+    return {
+        "schema": "gaojixing.pre-cleanup-receipt.v1",
+        "persisted": True,
+        "path": "pre-cleanup-evidence/run/capture.json",
+        "sha256": "a" * 64,
+        "evidence_sha256": "b" * 64,
+    }
+
+
 def test_compiled_doubao_adapter_selects_live_gaojixing_path():
     node = SimpleNamespace(
         id="doubao-research",
@@ -242,6 +252,15 @@ async def test_capture_agent_mode_dispatches_native_runtime_and_maps_browser_evi
     async def fake_send(agent_url, task, on_event, timeout):
         captured.update({"agent_url": agent_url, "task": task, "timeout": timeout})
         await on_event({"type": "text", "text": "working"})
+        await on_event(
+            {
+                "type": "evidence",
+                "evidence": {
+                    "kind": "doubao.capture.pre_cleanup",
+                    "response": {"answer": "answer", "conversation_deleted": False},
+                },
+            }
+        )
         return {
             "type": "done",
             "result": {
@@ -264,6 +283,11 @@ async def test_capture_agent_mode_dispatches_native_runtime_and_maps_browser_evi
         "http://host.docker.internal:19824"
     ])
     monkeypatch.setattr("backend.ws_agent_manager.send_agent_task", fake_send)
+    monkeypatch.setattr(
+        runtime,
+        "write_precleanup_capture_receipt",
+        lambda *_args, **_kwargs: _persisted_capture_receipt(),
+    )
 
     result = await capture_live_doubao(
         package=package,
@@ -334,13 +358,7 @@ async def test_capture_agent_mode_can_dispatch_bbx_on_the_same_vnc_agent(monkeyp
 
     def fake_write_receipt(storage_root, **kwargs):
         persisted_receipts.append({"storage_root": storage_root, **kwargs})
-        return {
-            "schema": "gaojixing.pre-cleanup-receipt.v1",
-            "persisted": True,
-            "path": "pre-cleanup-evidence/run/capture.json",
-            "sha256": "a" * 64,
-            "evidence_sha256": "b" * 64,
-        }
+        return _persisted_capture_receipt()
 
     async def fake_send(agent_url, task, on_event, timeout):
         captured.update({"agent_url": agent_url, "task": task, "timeout": timeout})
@@ -418,14 +436,64 @@ async def test_agent_capture_fails_closed_when_conversation_cleanup_is_unconfirm
     async def fake_select(_session, _adapter_config):
         return "http://agent-1:19823", "bbx"
 
-    async def fake_send(_agent_url, _task, _on_event, timeout):
+    async def fake_send(_agent_url, _task, on_event, timeout):
         assert timeout >= 30
+        await on_event(
+            {
+                "type": "evidence",
+                "evidence": {
+                    "kind": "doubao.capture.pre_cleanup",
+                    "response": {"answer": "完整回答", "conversation_deleted": False},
+                },
+            }
+        )
         return {
             "type": "done",
             "result": {
                 "text": (
                     '{"status":"completed","answer":"完整回答",'
                     '"answer_complete":true,"conversation_deleted":false,'
+                    '"links":[],"suggested_keywords":[]}'
+                )
+            },
+        }
+
+    monkeypatch.setattr(runtime, "_select_local_agent", fake_select)
+    monkeypatch.setattr("backend.ws_agent_manager.send_agent_task", fake_send)
+    monkeypatch.setattr(
+        runtime,
+        "write_precleanup_capture_receipt",
+        lambda *_args, **_kwargs: _persisted_capture_receipt(),
+    )
+
+    result = await runtime._capture_live_doubao_via_agent(
+        package=package,
+        adapter_config={},
+        session=None,
+        workflow_id="workflow",
+        run_id="run",
+    )
+
+    assert result.success is False
+    assert result.error_type == "doubao_conversation_cleanup_failed"
+
+
+@pytest.mark.asyncio
+async def test_agent_capture_rejects_deleted_conversation_without_durable_receipt(monkeypatch):
+    package = build_question_package(
+        node_params={"question": "q"}, adapter_config={}, runtime_payload={}
+    )
+
+    async def fake_select(_session, _adapter_config):
+        return "http://agent-1:19823", "bbx"
+
+    async def fake_send(_agent_url, _task, _on_event, timeout):
+        return {
+            "type": "done",
+            "result": {
+                "text": (
+                    '{"status":"completed","answer":"完整回答",'
+                    '"answer_complete":true,"conversation_deleted":true,'
                     '"links":[],"suggested_keywords":[]}'
                 )
             },
@@ -443,7 +511,7 @@ async def test_agent_capture_fails_closed_when_conversation_cleanup_is_unconfirm
     )
 
     assert result.success is False
-    assert result.error_type == "doubao_conversation_cleanup_failed"
+    assert result.error_type == "doubao_capture_persistence_missing"
 
 
 def test_capture_mapping_keeps_package_and_independent_evidence():
@@ -472,6 +540,7 @@ def test_capture_mapping_keeps_package_and_independent_evidence():
     assert mapped["dedupe"] == {
         "type": "source-identity",
         "field": "conversation_url",
+        "identity": "https://www.doubao.com/chat/123",
         "value": "https://www.doubao.com/chat/123",
         "status": "unique",
     }
@@ -502,6 +571,20 @@ def test_capture_mapping_does_not_invent_malformed_optional_evidence():
         "items": [],
     }
     assert evidence["conversation"] == {"status": "unknown", "url": None}
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("https://www.doubao.com:443/chat/123", False),
+        ("https://doubao.com?conversation=123", False),
+        ("https://www.doubao.com./chat/123", False),
+        ("https://doubao.com.evil.test/source", True),
+        ("https://example.test/source", True),
+    ],
+)
+def test_external_evidence_url_filters_normalized_doubao_hosts(url, expected):
+    assert runtime._is_external_evidence_url(url) is expected
 
 
 class _Emitter:
@@ -653,11 +736,20 @@ async def test_hda_live_source_preserves_feishu_identity_and_business_number(mon
     assert raw["dedupe"] == {
         "type": "source-identity",
         "field": "source_row_id",
+        "identity": "rec-23",
         "value": "rec-23",
         "status": "unique",
     }
     assert item["lineage"][-1]["sourceRowId"] == "rec-23"
     assert item["lineage"][-1]["sourceNumber"] == "23"
+    partial_details = emitter.events[-2][2]["details"]
+    assert partial_details["sourceRecords"] == [
+        {
+            "source_row_id": "rec-23",
+            "source_number": "23",
+            "source_fields": {"编号": "23", "推荐追问": "宝宝DHA"},
+        }
+    ]
 
 
 @pytest.mark.asyncio
@@ -875,6 +967,38 @@ async def test_replay_preserves_provenance_for_webhook_delivery(
         input=source_input,
         model_copy=lambda *, update, deep: SimpleNamespace(**{**source_request.__dict__, **update}),
     )
+    persisted_evidence = {
+        "mode": mode,
+        "provenance": provenance,
+        "packageDigest": "digest",
+        "runId": "source-run",
+        "workflowId": "workflow",
+        "nodeId": "source",
+        "answer": {"artifactId": "artifact", "text": "persisted answer"},
+        "citations": {"items": []},
+        "conversation": {"url": "https://example.test/conversation"},
+    }
+    event_details = {
+        "channelType": "doubao_research",
+        "capabilityId": "chat-ai.capture",
+        "artifacts": ["artifact"],
+        "evidence": [persisted_evidence],
+    }
+    if mode == "live":
+        event_details.update(
+            {
+                "packages": [{"digest": "digest"}],
+                "sourceRecords": [
+                    {
+                        "source_row_id": "rec-23",
+                        "source_number": "23",
+                        "source_fields": {"编号": "23", "推荐追问": "宝宝DHA"},
+                    }
+                ],
+            }
+        )
+    else:
+        event_details["package"] = {"digest": "digest"}
     source_run = SimpleNamespace(
         projection=SimpleNamespace(status="completed", workflowId="workflow"),
         studio_workflow_version_id="version",
@@ -884,23 +1008,7 @@ async def test_replay_preserves_provenance_for_webhook_delivery(
             SimpleNamespace(
                 nodeId="source",
                 eventType="partial",
-                details={
-                    "channelType": "doubao_research",
-                    "capabilityId": "chat-ai.capture",
-                    "package": {"digest": "digest"},
-                    "artifactId": "artifact",
-                    "evidence": {
-                        "mode": mode,
-                        "provenance": provenance,
-                        "packageDigest": "digest",
-                        "runId": "source-run",
-                        "workflowId": "workflow",
-                        "nodeId": "source",
-                        "answer": {"artifactId": "artifact", "text": "persisted answer"},
-                        "citations": {"items": []},
-                        "conversation": {"url": "https://example.test/conversation"},
-                    },
-                },
+                details=event_details,
             ),
             SimpleNamespace(nodeId="source", eventType="completed"),
         ],
@@ -949,6 +1057,11 @@ async def test_replay_preserves_provenance_for_webhook_delivery(
     replay_raw = request.sourceOutputs["source"][0]["raw"]
     assert replay_raw["gaojixing"]["artifactId"] == "artifact"
     assert replay_raw["gaojixing"]["provenance"] == provenance
+    if mode == "live":
+        assert replay_raw["source_row_id"] == "rec-23"
+        assert replay_raw["source_number"] == "23"
+        assert replay_raw["source_fields"] == {"编号": "23", "推荐追问": "宝宝DHA"}
+        assert replay_raw["dedupe"]["identity"] == "rec-23"
     assert request.sourceOutputs["source"][0]["lineage"][0]["mode"] == "persisted-replay"
     assert start.await_args.kwargs["replay_source_node_ids"] == {"source"}
 

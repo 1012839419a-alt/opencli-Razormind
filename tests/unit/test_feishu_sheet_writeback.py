@@ -274,6 +274,57 @@ async def test_record_sink_invokes_enabled_writeback_with_resolved_records(
     assert outputs[0]["recordId"] == "record-1"
 
 
+@pytest.mark.asyncio
+async def test_record_sink_writeback_requires_authoritative_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "backend.workflow.opencli_hda_tracer._store_record_sink_outputs",
+        AsyncMock(return_value=([], 0)),
+    )
+    sync = AsyncMock()
+    monkeypatch.setattr(
+        "backend.workflow.opencli_hda_tracer.sync_feishu_sheet_writeback", sync
+    )
+    node = SimpleNamespace(
+        id="records",
+        kind="sink",
+        capability="store",
+        adapter=None,
+        depends_on=["source"],
+        params={},
+        runtime={
+            "binding": {
+                "binding_id": "workflow.record-sink.records",
+                "input": {
+                    "target": "records",
+                    "feishuWriteback": {
+                        "enabled": True,
+                        "spreadsheetToken": "spreadsheet",
+                        "sheetId": "sheet-id",
+                    },
+                },
+            }
+        },
+    )
+
+    with pytest.raises(
+        writeback.FeishuSheetWritebackError,
+        match="authoritative record storage",
+    ):
+        await _execute_native_node(
+            node,
+            {"source": [{"raw": {"question": "q"}, "lineage": []}]},
+            {},
+            "run-1",
+            workflow_id="workflow-1",
+            trace_id="trace-1",
+            session=None,
+        )
+
+    sync.assert_not_awaited()
+
+
 def test_source_identity_is_stable_when_doubao_conversation_changes() -> None:
     first = _stored_reference()
     second = _stored_reference()

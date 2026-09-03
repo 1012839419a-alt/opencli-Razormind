@@ -207,6 +207,33 @@ async def test_collect_tolerates_status_failure(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("status_outcome", ["empty", "exception"])
+async def test_collect_preserves_ask_conversation_url_when_status_has_none(
+    monkeypatch, status_outcome
+):
+    seeded_url = "https://www.doubao.com/chat/from-ask"
+
+    async def fake_run(command):
+        if command[2] == "ask":
+            return (
+                0,
+                '[{"Role":"assistant","Text":"回答"},'
+                f'{{"Role":"system","Text":"会话","Url":"{seeded_url}"}}]',
+                "",
+            )
+        if status_outcome == "exception":
+            raise RuntimeError("status unavailable")
+        return 0, '[{"Status":"Connected","Url":"https://www.doubao.com/chat"}]', ""
+
+    monkeypatch.setattr("backend.channels.doubao_research_channel._run_doubao_command", fake_run)
+
+    result = await DoubaoResearchChannel().collect({"question": "测试"}, {})
+
+    assert result.success
+    assert result.items[0]["conversation_url"] == seeded_url
+
+
+@pytest.mark.asyncio
 async def test_collect_classifies_captcha_block(monkeypatch):
     async def fake_run(command):
         return (

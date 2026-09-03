@@ -235,6 +235,23 @@ async def test_health_check_cli_transport_uses_local_session_without_source_toke
 
 
 @pytest.mark.asyncio
+async def test_health_check_defaults_to_cli_transport(monkeypatch):
+    channel = FeishuTableChannel()
+    observed = {}
+    config = _config()
+    config.pop("transport")
+
+    async def fetch(ctx):
+        observed["ctx"] = ctx
+        return FetchResult(items=[], has_more=False)
+
+    monkeypatch.setattr(channel, "fetch", fetch)
+
+    assert await channel.health_check(config) is True
+    assert observed["ctx"].config["page_size"] == 1
+
+
+@pytest.mark.asyncio
 async def test_health_check_cli_transport_reports_failed_local_probe(monkeypatch):
     channel = FeishuTableChannel()
 

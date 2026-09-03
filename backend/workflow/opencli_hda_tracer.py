@@ -2292,72 +2292,116 @@ async def replay_downstream_from_persisted_gaojixing_source(
             for event in source_run.events
         )
         details = _read_dict(partial.details) if partial is not None else {}
-        package = _read_dict(details.get("package"))
-        evidence = _read_dict(details.get("evidence"))
-        package_digest = _read_string(package.get("digest"))
-        artifact_id = _read_string(details.get("artifactId"))
-        answer = _read_dict(evidence.get("answer"))
-        citations = _read_dict(evidence.get("citations"))
-        conversation = _read_dict(evidence.get("conversation"))
-        answer_text = _read_string(answer.get("text"))
+        evidence_value = details.get("evidence")
+        evidences = (
+            _read_dict_list(evidence_value)
+            if isinstance(evidence_value, list)
+            else [_read_dict(evidence_value)]
+        )
+        artifact_value = details.get("artifacts")
+        artifacts = (
+            [_read_string(value) for value in artifact_value]
+            if isinstance(artifact_value, list)
+            else [_read_string(details.get("artifactId"))]
+        )
+        packages = _read_dict_list(details.get("packages"))
+        if not packages:
+            shared_package = _read_dict(details.get("package"))
+            packages = [deepcopy(shared_package) for _ in evidences]
+        source_records = _read_dict_list(details.get("sourceRecords"))
+        if not source_records:
+            source_records = [{} for _ in evidences]
         if (
             not completed
-            or not package_digest
-            or not artifact_id
-            or not answer_text
-            or evidence.get("packageDigest") != package_digest
-            or evidence.get("runId") != source_run_id
-            or evidence.get("workflowId") != expected_workflow_id
-            or evidence.get("nodeId") != node_id
-            or answer.get("artifactId") != artifact_id
+            or not evidences
+            or len(artifacts) != len(evidences)
+            or len(packages) != len(evidences)
+            or len(source_records) != len(evidences)
         ):
             raise ValueError(f"Persisted Gaojixing source {node_id} lacks completed evidence")
 
-        conversation_url = _read_string(conversation.get("url"))
-        raw: dict[str, Any] = {
-            "content": answer_text,
-            "citations": deepcopy(citations.get("items", [])),
-            "conversation_url": conversation_url or "",
-            "gaojixing": {
+        replayed_items: list[dict[str, Any]] = []
+        for index, (package, evidence, artifact_id, source_record) in enumerate(
+            zip(packages, evidences, artifacts, source_records, strict=True)
+        ):
+            package_digest = _read_string(package.get("digest"))
+            answer = _read_dict(evidence.get("answer"))
+            citations = _read_dict(evidence.get("citations"))
+            conversation = _read_dict(evidence.get("conversation"))
+            answer_text = _read_string(answer.get("text"))
+            if (
+                not package_digest
+                or not artifact_id
+                or not answer_text
+                or evidence.get("packageDigest") != package_digest
+                or evidence.get("runId") != source_run_id
+                or evidence.get("workflowId") != expected_workflow_id
+                or evidence.get("nodeId") != node_id
+                or answer.get("artifactId") != artifact_id
+            ):
+                raise ValueError(
+                    f"Persisted Gaojixing source {node_id} lacks completed evidence"
+                )
+
+            conversation_url = _read_string(conversation.get("url"))
+            source_row_id = _read_string(source_record.get("source_row_id"))
+            source_number = _read_string(source_record.get("source_number"))
+            source_fields = _read_dict(source_record.get("source_fields"))
+            raw: dict[str, Any] = {
+                "content": answer_text,
+                "citations": deepcopy(citations.get("items", [])),
+                "conversation_url": conversation_url or "",
+                "gaojixing": {
+                    "mode": evidence.get("mode"),
+                    "provenance": evidence.get("provenance"),
+                    "capabilityId": details.get("capabilityId"),
+                    "package": deepcopy(package),
+                    "artifactId": artifact_id,
+                    "evidence": deepcopy(evidence),
+                },
+                "packageDigest": package_digest,
+                "questionPackage": deepcopy(package),
+                "answerArtifactId": artifact_id,
                 "mode": evidence.get("mode"),
                 "provenance": evidence.get("provenance"),
-                "capabilityId": details.get("capabilityId"),
-                "package": deepcopy(package),
-                "artifactId": artifact_id,
-                "evidence": deepcopy(evidence),
-            },
-            "packageDigest": package_digest,
-            "questionPackage": deepcopy(package),
-            "answerArtifactId": artifact_id,
-            "mode": evidence.get("mode"),
-            "provenance": evidence.get("provenance"),
-        }
-        if conversation_url:
-            raw["dedupe"] = {
-                "type": "source-identity",
-                "field": "conversation_url",
-                "value": conversation_url,
-                "status": "unique",
             }
-        source_outputs[node_id] = [
-            {
-                "raw": raw,
-                "lineage": [
-                    {
-                        "nodeId": node_id,
-                        "sourceGroup": _source_group(node, node_id),
-                        "artifact": "gaojixing.capture",
-                        "artifactId": artifact_id,
-                        "packageDigest": package_digest,
-                        "runId": source_run_id,
-                        "workflowId": expected_workflow_id,
-                        "mode": "persisted-replay",
-                        "provenance": evidence.get("provenance"),
-                        "index": 0,
-                    }
-                ],
-            }
-        ]
+            if source_row_id:
+                raw["source_row_id"] = source_row_id
+            if source_number:
+                raw["source_number"] = source_number
+            if source_fields:
+                raw["source_fields"] = deepcopy(source_fields)
+            dedupe_value = source_row_id or conversation_url
+            if dedupe_value:
+                raw["dedupe"] = {
+                    "type": "source-identity",
+                    "field": "source_row_id" if source_row_id else "conversation_url",
+                    "identity": dedupe_value,
+                    "value": dedupe_value,
+                    "status": "unique",
+                }
+            replayed_items.append(
+                {
+                    "raw": raw,
+                    "lineage": [
+                        {
+                            "nodeId": node_id,
+                            "sourceGroup": _source_group(node, node_id),
+                            "artifact": "gaojixing.capture",
+                            "artifactId": artifact_id,
+                            "packageDigest": package_digest,
+                            "runId": source_run_id,
+                            "workflowId": expected_workflow_id,
+                            "mode": "persisted-replay",
+                            "provenance": evidence.get("provenance"),
+                            "index": index,
+                            "sourceRowId": source_row_id,
+                            "sourceNumber": source_number,
+                        }
+                    ],
+                }
+            )
+        source_outputs[node_id] = replayed_items
 
     request = source_run.request.model_copy(
         update={
@@ -3974,6 +4018,7 @@ async def _execute_gaojixing_source(
             mapped["dedupe"] = {
                 "type": "source-identity",
                 "field": "source_row_id",
+                "identity": source_row_id,
                 "value": source_row_id,
                 "status": "unique",
             }
@@ -4047,6 +4092,14 @@ def _emit_gaojixing_source_partial(
             "packages": packages,
             "artifacts": [item["raw"]["gaojixing"]["artifactId"] for item in mapped_items],
             "evidence": evidences,
+            "sourceRecords": [
+                {
+                    "source_row_id": _read_string(item["raw"].get("source_row_id")),
+                    "source_number": _read_string(item["raw"].get("source_number")),
+                    "source_fields": deepcopy(_read_dict(item["raw"].get("source_fields"))),
+                }
+                for item in mapped_items
+            ],
             "lineage": _lineage_pointer(node),
         },
     )
@@ -5070,8 +5123,12 @@ async def _execute_native_node(
             # The local record is authoritative. Commit it before crossing the
             # host bridge boundary so a slow or failed sheet request cannot hold
             # or roll back the database transaction.
-            if session is not None:
-                await commit_session(session)
+            if session is None:
+                raise FeishuSheetWritebackError(
+                    "authoritative_record_storage_unavailable",
+                    "Feishu sheet writeback requires authoritative record storage",
+                )
+            await commit_session(session)
             writeback_details = await sync_feishu_sheet_writeback(
                 binding_input.get("feishuWriteback"),
                 stored_refs,

@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any
+from urllib.parse import urlsplit
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -258,6 +259,9 @@ async def _capture_live_doubao_via_agent(
         "response_timeout_seconds",
         "suggested_wait_seconds",
         "stable_observations",
+        "delete_menu_timeout_seconds",
+        "delete_verify_timeout_seconds",
+        "delete_stable_observations",
     ):
         if key in adapter_config:
             config[key] = adapter_config[key]
@@ -422,6 +426,16 @@ async def _capture_live_doubao_via_agent(
         return _agent_failure(
             "Local Agent did not confirm that the Doubao answer was complete",
             "doubao_response_incomplete",
+            agent_url=agent_url,
+            agent_runtime=runtime,
+        )
+    if (
+        not isinstance(durable_capture_receipt, dict)
+        or durable_capture_receipt.get("persisted") is not True
+    ):
+        return _agent_failure(
+            "Doubao evidence was not durably persisted before conversation cleanup",
+            "doubao_capture_persistence_missing",
             agent_url=agent_url,
             agent_runtime=runtime,
         )
@@ -607,11 +621,11 @@ def _is_external_evidence_url(value: Any) -> bool:
     url = _string(value)
     if not url or not url.startswith(("http://", "https://")):
         return False
-    host_and_path = url.split("://", 1)[-1].casefold()
-    return not (
-        host_and_path.startswith("doubao.com/")
-        or host_and_path.startswith("www.doubao.com/")
-    )
+    try:
+        hostname = (urlsplit(url).hostname or "").casefold().rstrip(".")
+    except ValueError:
+        return False
+    return bool(hostname) and hostname not in {"doubao.com", "www.doubao.com"}
 
 
 def _urls_in_value(value: Any) -> list[str]:
@@ -703,6 +717,7 @@ def map_capture_item(
         mapped["dedupe"] = {
             "type": "source-identity",
             "field": "conversation_url",
+            "identity": conversation_url,
             "value": conversation_url,
             "status": "unique",
         }

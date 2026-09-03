@@ -3,10 +3,12 @@ param(
     [string]$Prefix = "http://+:18765/",
     [string]$EnvFile = "",
     [string[]]$AllowedSheetTargets = @(),
+    [ValidateRange(1, 3600)][int]$ProcessTimeoutSeconds = 120,
     [switch]$LibraryOnly
 )
 
 $ErrorActionPreference = "Stop"
+$script:processTimeoutSeconds = $ProcessTimeoutSeconds
 
 $configuredEnvironment = @{}
 if ($EnvFile) {
@@ -79,7 +81,8 @@ function Invoke-LocalCli {
     param(
         [Parameter(Mandatory = $true)][string]$Name,
         [Parameter(Mandatory = $false)][string[]]$Arguments = @(),
-        [Parameter(Mandatory = $false)][AllowEmptyString()][string]$StandardInput
+        [Parameter(Mandatory = $false)][AllowEmptyString()][string]$StandardInput,
+        [Parameter(Mandatory = $false)][ValidateRange(1, 3600)][int]$TimeoutSeconds = $script:processTimeoutSeconds
     )
     # Invoke the native npm shim directly. Running the PowerShell wrapper as a
     # child process can normalize escaped newlines inside JSON cell values into
@@ -110,18 +113,31 @@ function Invoke-LocalCli {
     foreach ($argument in $Arguments) { $startInfo.ArgumentList.Add([string]$argument) }
     $process = [System.Diagnostics.Process]::new()
     $process.StartInfo = $startInfo
-    $process.Start() | Out-Null
-    if ($startInfo.RedirectStandardInput) {
-        $process.StandardInput.Write($StandardInput)
-        $process.StandardInput.Close()
-    }
-    $stdout = $process.StandardOutput.ReadToEnd()
-    $stderr = $process.StandardError.ReadToEnd()
-    $process.WaitForExit()
-    return [pscustomobject]@{
-        returncode = $process.ExitCode
-        stdout = $stdout
-        stderr = $stderr
+    try {
+        $process.Start() | Out-Null
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+        if ($startInfo.RedirectStandardInput) {
+            $process.StandardInput.Write($StandardInput)
+            $process.StandardInput.Close()
+        }
+        $timeoutMilliseconds = [int]($TimeoutSeconds * 1000)
+        if (-not $process.WaitForExit($timeoutMilliseconds)) {
+            try { $process.Kill($true) } catch { $process.Kill() }
+            $process.WaitForExit()
+            throw "$Name timed out after $TimeoutSeconds seconds"
+        }
+        # Complete redirected stream reads after process exit so full output is
+        # retained without allowing pipe buffers to deadlock the child.
+        $stdout = $stdoutTask.GetAwaiter().GetResult()
+        $stderr = $stderrTask.GetAwaiter().GetResult()
+        return [pscustomobject]@{
+            returncode = $process.ExitCode
+            stdout = $stdout
+            stderr = $stderr
+        }
+    } finally {
+        $process.Dispose()
     }
 }
 
