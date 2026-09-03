@@ -14,6 +14,7 @@ BlockReasonCategory = Literal[
 ]
 
 FETCH_PERMISSION_REQUIRED = "fetch_permission_required"
+FEISHU_WRITE_PERMISSION_REQUIRED = "feishu_write_permission_required"
 OPENCLI_WRITE_APPROVAL_REQUIRED = "opencli_write_approval_required"
 OPENCLI_WRITE_PERMISSION_REQUIRED = "opencli_write_permission_required"
 SEND_PERMISSION_REQUIRED = "send_permission_required"
@@ -91,6 +92,14 @@ WORKFLOW_BLOCK_REASON_TAXONOMY: dict[str, WorkflowBlockReasonDefinition] = {
         category="missing_permission",
         stable_fields=("code", "source", "details.bindingId", "details.requiredPermission"),
         description="Source fetch is blocked because canFetchNetwork is false.",
+    ),
+    FEISHU_WRITE_PERMISSION_REQUIRED: WorkflowBlockReasonDefinition(
+        code=FEISHU_WRITE_PERMISSION_REQUIRED,
+        category="missing_permission",
+        stable_fields=("code", "source", "details.bindingId", "details.requiredPermission"),
+        description=(
+            "Feishu sheet synchronization is blocked because external mutation is disabled."
+        ),
     ),
     OPENCLI_WRITE_APPROVAL_REQUIRED: WorkflowBlockReasonDefinition(
         code=OPENCLI_WRITE_APPROVAL_REQUIRED,
@@ -193,6 +202,7 @@ def block_reason_category(code: str) -> BlockReasonCategory | None:
 __all__ = [
     "BlockReasonCategory",
     "FETCH_PERMISSION_REQUIRED",
+    "FEISHU_WRITE_PERMISSION_REQUIRED",
     "MISSING_ADAPTER_RESOURCE",
     "MISSING_DELIVERY_PROJECTION",
     "MISSING_OPENCLI_COMMAND",

@@ -258,7 +258,7 @@ class FeishuTableChannel(AbstractChannel):
 
     # Legacy pre-matrix implementation retained below only as an intermediate merge
     # artifact; the matrix-aware implementation later in the class is authoritative.
-    async def _fetch_with_lark_cli(self, ctx: FetchContext) -> FetchResult:
+    async def _fetch_with_lark_cli_legacy(self, ctx: FetchContext) -> FetchResult:
         config = ctx.config
         bridge_url = _text(config.get("cli_bridge_url") or os.getenv("LARK_CLI_BRIDGE_URL"))
         if bridge_url:
@@ -398,7 +398,7 @@ class FeishuTableChannel(AbstractChannel):
             },
         )
 
-    async def _rows_to_result(
+    async def _rows_to_result_legacy(
         self, ctx: FetchContext, records: list[dict[str, Any]]
     ) -> list[dict[str, Any]]:
         config = ctx.config
@@ -584,8 +584,29 @@ class FeishuTableChannel(AbstractChannel):
     async def health_check(
         self, config: dict[str, Any] | None = None, source_id: str | None = None
     ) -> bool:
-        errors = await self.validate_config(config or {})
-        if errors or not source_id:
+        resolved_config = config or {}
+        errors = await self.validate_config(resolved_config)
+        if errors:
+            return False
+
+        # ``transport=cli`` authenticates with the operator's local lark-cli
+        # session (directly or through the host bridge), so requiring a second
+        # encrypted bearer credential here would report a false negative. Probe
+        # one bounded row through the same public fetch seam used by collection.
+        if _text(resolved_config.get("transport")).lower() == "cli":
+            try:
+                await self.fetch(
+                    FetchContext(
+                        config={**resolved_config, "page_size": 1, "max_rows": 1},
+                        params={},
+                        source_id=source_id,
+                    )
+                )
+            except Exception:
+                return False
+            return True
+
+        if not source_id:
             return False
         from backend.auth.manager import AuthManager
 

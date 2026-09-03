@@ -269,16 +269,21 @@ async def _capture_live_doubao_via_agent(
         "blocked JSON below immediately. Do not invent URLs or data. Return ONLY one "
         "JSON object, with no Markdown fence or commentary, using this shape: "
         '{"status":"completed","answer":"...","answer_complete":true,'
-        '"conversation_deleted":true,"data":[],"links":[],'
+        '"conversation_deleted":true,"data":[],"links":[],"search_keywords":[],'
+        '"search_keyword_count":0,"reference_count":0,"video_contents":[],'
         '"conversation_url":"https://www.doubao.com/chat/<id>",'
         '"session_share_data":[],"suggested_keywords":[]}. '
         'For a verification wall use {"status":"blocked","error_type":"captcha_challenge",'
         '"message":"human verification is required","answer":"",'
         '"answer_complete":false,"conversation_deleted":false,"data":[],"links":[],'
+        '"search_keywords":[],"search_keyword_count":0,"reference_count":0,'
+        '"video_contents":[],'
         '"conversation_url":"","session_share_data":[],"suggested_keywords":[]}. '
         "The conversation_url must be the actual current Doubao chat URL, if visible. "
         "links must contain only observed source URLs. suggested_keywords must contain "
-        "the follow-up questions/keywords actually shown by Doubao."
+        "the follow-up questions actually shown by Doubao. search_keywords and the two "
+        "counts must contain only the visible search summary. video_contents must contain "
+        "only visible video-card titles or descriptions."
     )
     task = {
         "runtime": runtime,
@@ -426,6 +431,8 @@ async def _capture_live_doubao_via_agent(
         "raw_answer": text,
         "session_share_data": share_data or [],
         "suggested_keywords": structured.get("suggested_keywords", []),
+        "search_keywords": structured.get("search_keywords", []),
+        "video_contents": structured.get("video_contents", []),
         "search_keyword_count": response_data.get("search_keyword_count"),
         "reference_count": response_data.get("reference_count"),
         "citations": citations,

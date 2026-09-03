@@ -485,6 +485,8 @@ class BbxRuntimeAdapter(RuntimeAdapter):
                 "conversation_url": conversation_url,
                 "session_share_data": share_data or [],
                 "suggested_keywords": suggested_keywords,
+                "search_keywords": _string_list(value.get("search_keywords")),
+                "video_contents": _string_list(value.get("video_contents")),
                 "page_text": page_text,
                 "conversation_deleted": conversation_deleted,
             }
@@ -509,6 +511,8 @@ class BbxRuntimeAdapter(RuntimeAdapter):
             "conversation_url": conversation_url,
             "session_share_data": share_data or [],
             "suggested_keywords": suggested_keywords,
+            "search_keywords": _string_list(value.get("search_keywords")),
+            "video_contents": _string_list(value.get("video_contents")),
             "search_keyword_count": value.get("search_keyword_count"),
             "reference_count": value.get("reference_count"),
         }
@@ -880,6 +884,20 @@ _DOUBAO_EXTRACTION_EXPRESSION = r'''(() => {
     .map((node) => compact(node.innerText || node.textContent))
     .filter((value, index, values) => value && values.indexOf(value) === index)
     .slice(0, 20) : [];
+  const search_keywords = root ? Array.from(root.querySelectorAll(
+    '[data-plugin-identifier*="search_query_result_block"] [class*="query"], ' +
+    '[data-plugin-identifier*="search_query_result_block"] [class*="keyword"]'
+  )).map((node) => compact(node.innerText || node.textContent))
+    .filter((value, index, values) => value && values.indexOf(value) === index)
+    .slice(0, 50) : [];
+  const video_contents = root ? Array.from(root.querySelectorAll(
+    '[data-plugin-identifier*="video"], a[href*="douyin.com/video"], ' +
+    'a[href*="douyin.com/note"]'
+  )).map((node) => {
+    const container = node.closest('[data-plugin-identifier], article, li') || node;
+    return compact(container.innerText || container.textContent || node.getAttribute('aria-label'));
+  }).filter((value, index, values) => value && values.indexOf(value) === index)
+    .slice(0, 20) : [];
   const links = root ? Array.from(root.querySelectorAll('a[href]'))
     .map((node) => ({url: node.href, title: compact(node.innerText || node.textContent)}))
     .filter((item) => /^https?:/i.test(item.url) &&
@@ -905,6 +923,8 @@ _DOUBAO_EXTRACTION_EXPRESSION = r'''(() => {
     is_generating,
     links,
     suggested_keywords,
+    search_keywords,
+    video_contents,
     search_keyword_count: summary ? Number(summary[1]) : null,
     reference_count: summary ? Number(summary[2]) : null,
     conversation_url: location.href,

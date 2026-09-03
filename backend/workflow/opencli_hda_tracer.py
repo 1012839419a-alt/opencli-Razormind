@@ -54,6 +54,7 @@ from backend.workflow.bbx_tool_nodes import (
     invoke_bbx_tool,
 )
 from backend.workflow.block_reasons import (
+    FEISHU_WRITE_PERMISSION_REQUIRED,
     FETCH_PERMISSION_REQUIRED,
     MISSING_DELIVERY_PROJECTION,
     MISSING_SOURCE_CREDENTIAL,
@@ -73,6 +74,11 @@ from backend.workflow.dify_event_adapter import execute_dify_graphon_run
 from backend.workflow.dify_grants import resolve_dify_ephemeral_grants
 from backend.workflow.dify_graphon_client import DifyGraphonClient
 from backend.workflow.event_mirror import publish_workflow_run_event_mirror
+from backend.workflow.feishu_sheet_writeback import (
+    FeishuSheetWritebackError,
+    feishu_writeback_enabled,
+    sync_feishu_sheet_writeback,
+)
 from backend.workflow.fleet_inventory import match_workflow_fleet_capability
 from backend.workflow.gaojixing_runtime import (
     GAOJIXING_CHANNEL_TYPE,
@@ -1190,16 +1196,18 @@ async def start_workflow_run(
             continue
 
         if _is_first_loop_native_node(node):
-            browser_tool_block = _opentabs_tool_block_reason(
+            runtime_block = _opentabs_tool_block_reason(
                 node,
                 body.project.agentPermissions,
-            ) or _bbx_tool_block_reason(node, body.project.agentPermissions)
-            if browser_tool_block is not None:
+            ) or _bbx_tool_block_reason(
+                node, body.project.agentPermissions
+            ) or _feishu_writeback_block_reason(node, body.project.agentPermissions)
+            if runtime_block is not None:
                 emitter.emit(
                     node,
                     "blocked",
-                    message=browser_tool_block.message,
-                    block_reason=browser_tool_block,
+                    message=runtime_block.message,
+                    block_reason=runtime_block,
                 )
                 outputs_by_node[node.id] = []
                 continue
@@ -1248,6 +1256,22 @@ async def start_workflow_run(
                 await _persist_emitter_events(run_id, emitter, session=session)
                 if session is not None and _is_native_intelligence_node(node):
                     await commit_session(session)
+                continue
+            except FeishuSheetWritebackError as exc:
+                reason = WorkflowRunBlockReason(
+                    code=exc.code,
+                    message=exc.message,
+                    source="feishu_sheet_writeback",
+                    details={"nodeId": node.id, **exc.details},
+                )
+                emitter.emit(
+                    node,
+                    "failed",
+                    message=exc.message,
+                    block_reason=reason,
+                    details=reason.details,
+                )
+                await _persist_emitter_events(run_id, emitter, session=session)
                 continue
             except (HygieneConfigError, HygieneInvariantError) as exc:
                 reason = WorkflowRunBlockReason(
@@ -4106,6 +4130,20 @@ async def _execute_native_node(
         stored_refs = [
             _append_lineage(item, node, step="store", run_id=run_id) for item in stored_refs
         ]
+        writeback_details: dict[str, Any] | None = None
+        if binding_id == RECORD_SINK_BINDING_ID and feishu_writeback_enabled(
+            binding_input.get("feishuWriteback")
+        ):
+            # The local record is authoritative. Commit it before crossing the
+            # host bridge boundary so a slow or failed sheet request cannot hold
+            # or roll back the database transaction.
+            if session is not None:
+                await commit_session(session)
+            writeback_details = await sync_feishu_sheet_writeback(
+                binding_input.get("feishuWriteback"),
+                stored_refs,
+                run_id=run_id,
+            )
         return (
             {
                 "bindingId": binding_id,
@@ -4117,6 +4155,7 @@ async def _execute_native_node(
                 ),
                 "skippedRecordCount": skipped_count,
                 "storedRefs": stored_refs,
+                **({"feishuWriteback": writeback_details} if writeback_details else {}),
                 "lineage": _lineage_pointer(node),
             },
             stored_refs,
@@ -5196,6 +5235,32 @@ def _source_fetch_block_reason(
             "bindingId": SOURCE_FETCH_BINDING_ID,
             "provider": binding_input.get("provider"),
             "channelType": binding_input.get("channelType"),
+        },
+    )
+
+
+def _feishu_writeback_block_reason(
+    node: CompiledWorkflowNode,
+    permissions: object,
+) -> WorkflowRunBlockReason | None:
+    if _binding_id(node) != RECORD_SINK_BINDING_ID:
+        return None
+    binding_input = _binding_input(node)
+    if not feishu_writeback_enabled(binding_input.get("feishuWriteback")):
+        return None
+    if bool(getattr(permissions, "canMutateExternalSites", False)):
+        return None
+    return WorkflowRunBlockReason(
+        code=FEISHU_WRITE_PERMISSION_REQUIRED,
+        message=(
+            "Feishu result synchronization is enabled, but "
+            "agentPermissions.canMutateExternalSites is false."
+        ),
+        source="workflow_permissions",
+        details={
+            "nodeId": node.id,
+            "bindingId": RECORD_SINK_BINDING_ID,
+            "requiredPermission": "canMutateExternalSites",
         },
     )
 

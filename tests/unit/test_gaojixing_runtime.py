@@ -251,7 +251,10 @@ async def test_capture_agent_mode_dispatches_native_runtime_and_maps_browser_evi
                     '"links":[{"url":"https://example.test/source"}],'
                     '"conversation_url":"https://www.doubao.com/chat/123",'
                     '"session_share_data":{"url":"https://www.doubao.com/chat/123"},'
-                    '"suggested_keywords":["follow-up"]}'
+                    '"suggested_keywords":["follow-up"],'
+                    '"search_keywords":["search term"],'
+                    '"search_keyword_count":1,"reference_count":1,'
+                    '"video_contents":["video card"]}'
                 )
             },
         }
@@ -286,6 +289,10 @@ async def test_capture_agent_mode_dispatches_native_runtime_and_maps_browser_evi
     assert item["links"] == [{"url": "https://example.test/source"}]
     assert item["conversation_url"] == "https://www.doubao.com/chat/123"
     assert item["suggested_keywords"] == ["follow-up"]
+    assert item["search_keywords"] == ["search term"]
+    assert item["search_keyword_count"] == 1
+    assert item["reference_count"] == 1
+    assert item["video_contents"] == ["video card"]
     assert item["provenance"] == "agent:codex:browser:opencli"
 
 

@@ -127,6 +127,8 @@ def _structured_response(text: str) -> dict[str, Any]:
             or parsed.get("recommended_keywords")
             or []
         )
+        search_keywords = parsed.get("search_keywords") or parsed.get("searched_keywords") or []
+        video_contents = parsed.get("video_contents") or parsed.get("videos") or []
         if not isinstance(data, (list, dict, str)):
             data = []
         if not isinstance(links, (list, dict, str)):
@@ -135,6 +137,10 @@ def _structured_response(text: str) -> dict[str, Any]:
             share_data = []
         if not isinstance(suggested, list):
             suggested = [suggested] if suggested else []
+        if not isinstance(search_keywords, list):
+            search_keywords = [search_keywords] if search_keywords else []
+        if not isinstance(video_contents, list):
+            video_contents = [video_contents] if video_contents else []
         return {
             "answer": str(answer).strip(),
             "data": data,
@@ -142,6 +148,12 @@ def _structured_response(text: str) -> dict[str, Any]:
             "response_data": parsed,
             "session_share_data": share_data,
             "suggested_keywords": [str(item).strip() for item in suggested if str(item).strip()],
+            "search_keywords": [
+                str(item).strip() for item in search_keywords if str(item).strip()
+            ],
+            "video_contents": [
+                str(item).strip() for item in video_contents if str(item).strip()
+            ],
             "raw_answer": raw,
         }
     return {
@@ -151,6 +163,8 @@ def _structured_response(text: str) -> dict[str, Any]:
         "response_data": {},
         "session_share_data": [],
         "suggested_keywords": [],
+        "search_keywords": [],
+        "video_contents": [],
         "raw_answer": raw,
     }
 
