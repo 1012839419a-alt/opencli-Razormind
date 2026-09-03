@@ -83,7 +83,7 @@ async def process_with_ai(
     records actually enriched.
 
     ai_config keys:
-        processor_type: claude | openai | local
+        processor_type: claude | openai | local | paw
         model: model name
         prompt_template: Jinja2 template
         provider_id: model-provider runtime PR-F — governed ModelProvider reference; wins
@@ -138,8 +138,24 @@ async def process_with_ai(
         config=resolved_config,
     )
 
+    if len(result.enrichments) != len(records) or any(
+        not isinstance(index, int) or index < 0 or index >= len(records)
+        for index in result.failed_indices
+    ):
+        logger.error(
+            "processor.contract_invalid | processor_type=%s records=%d "
+            "enrichments=%d failed_indices=%r",
+            processor_type,
+            len(records),
+            len(result.enrichments),
+            result.failed_indices,
+        )
+        return 0
+
     enriched = 0
-    for record, enrichment in zip(records, result.enrichments):
+    for index, (record, enrichment) in enumerate(zip(records, result.enrichments)):
+        if index in result.failed_indices:
+            continue
         record.ai_enrichment = enrichment
         record.status = "ai_processed"
         enriched += 1

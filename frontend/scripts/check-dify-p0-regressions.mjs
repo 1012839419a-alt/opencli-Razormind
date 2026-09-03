@@ -231,20 +231,24 @@ test('Studio uses the managed backend import boundary and explains exact blocker
   assert.match(commandStrip, /difyReport\.blockers\.length/)
 })
 
-test('plugin center is registry-backed and never executes plugin-owned frontend code', async () => {
-  const [catalog, page, dialog] = await Promise.all([
+test('plugin center is workspace-scoped, registry-backed, and never executes plugin-owned frontend code', async () => {
+  const [catalog, page, dialog, templateRoute] = await Promise.all([
     readFrontendSource('lib/plugins/backend-plugin-catalog.ts'),
     readFrontendSource('app/(app)/plugins/page.tsx'),
     readFrontendSource('components/plugins/dify-package-import-dialog.tsx'),
+    readFrontendSource('app/(app)/studio/templates/page.tsx'),
   ])
 
-  assert.match(catalog, /fetch\("\/api\/v1\/plugins"/)
-  assert.match(catalog, /fetch\("\/api\/v1\/plugins\/import\/dify"/)
+  assert.match(catalog, /pluginPath\(workspaceId\)/)
+  assert.match(catalog, /\/api\/v1\/workspaces\/\$\{encodeURIComponent\(workspaceId\)\}\/plugins/)
   assert.match(catalog, /Authorization/)
-  assert.match(page, /useBackendPluginCatalog/)
-  assert.match(page, /backendUnavailable:\s*true/)
+  assert.match(catalog, /updatePluginInstallation/)
+  assert.match(page, /PluginSubtypeTabs/)
+  assert.match(page, /TemplateCatalog workspaceId=\{workspaceId\}/)
   assert.match(page, /不会把它们标记成“已安装”/)
+  assert.match(dialog, /workspaceId/)
   assert.match(dialog, /只登记元数据，不执行包内代码/)
+  assert.match(templateRoute, /type: 'template'/)
   for (const source of [catalog, page, dialog]) {
     assert.doesNotMatch(source, /eval\s*\(/)
     assert.doesNotMatch(source, /new\s+Function\s*\(/)

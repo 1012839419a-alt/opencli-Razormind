@@ -7,8 +7,8 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from backend.models.base import TimestampMixin
 
 if TYPE_CHECKING:
-    from backend.models.source import DataSource
     from backend.models.record import CollectedRecord
+    from backend.models.source import DataSource
 
 
 class CollectionTask(TimestampMixin):
@@ -29,6 +29,19 @@ class CollectionTask(TimestampMixin):
     # pending | running | completed | failed | cancelled
     status: Mapped[str] = mapped_column(String(50), nullable=False, default="pending")
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Recovery creates a new task and never mutates the failed source task.
+    retry_of_task_id: Mapped[Optional[str]] = mapped_column(
+        String(36),
+        ForeignKey("collection_tasks.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    recovery_mode: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    recovery_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    initiating_actor: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    recovery_idempotency_key: Mapped[Optional[str]] = mapped_column(
+        String(255), nullable=True, unique=True
+    )
 
     # Relationships
     source: Mapped["DataSource"] = relationship("DataSource", back_populates="tasks")
@@ -37,6 +50,12 @@ class CollectionTask(TimestampMixin):
     )
     records: Mapped[list["CollectedRecord"]] = relationship(
         "CollectedRecord", back_populates="task", cascade="all, delete-orphan"
+    )
+    retry_of: Mapped[Optional["CollectionTask"]] = relationship(
+        "CollectionTask", remote_side="CollectionTask.id", back_populates="recoveries"
+    )
+    recoveries: Mapped[list["CollectionTask"]] = relationship(
+        "CollectionTask", back_populates="retry_of", foreign_keys=[retry_of_task_id]
     )
 
 

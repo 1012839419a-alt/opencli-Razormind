@@ -1,0 +1,145 @@
+---
+title: 'Run Gaojixing Live Collection Through the Latest Workflow'
+type: 'bugfix'
+created: '2026-08-24'
+status: 'done'
+review_loop_iteration: 0
+baseline_commit: 'f0390d4c4c1029347255b0eb94112ba1b00b998c'
+context: []
+---
+
+<frozen-after-approval reason="human-owned intent — do not modify unless human renegotiates">
+
+## Intent
+
+**Problem:** The deployed Gaojixing runtime is not traceable to the latest branch: four recent runs used the wrong trigger path, one could not bind the certified browser, and the only real run stopped after 38 of 723 questions when Doubao exposed no recommended-follow-up chips. Captured evidence is stored in the archive but is not materialized as project Records, so downstream agents cannot consume it through the normal data surface.
+
+**Approach:** Make the repository-owned published workflow, job claimant, certified Doubao driver, evidence contract, and project data sink operate as one versioned path. Prove the path with a one-question live canary before any full question-bank run.
+
+## Boundaries & Constraints
+
+**Always:** Use the immutable published workflow endpoint and resume the same WorkflowRun after collection; deploy API, claimant, browser tooling, and schema from one identifiable commit; preserve raw response, formal chat URL, copied share URL, screenshots, digests, checkpoints, and lineage; represent genuinely absent optional UI modules explicitly rather than inventing evidence; keep credentials and browser-session details out of logs and artifacts; retain captcha reconciliation without resubmitting the question.
+
+**Ask First:** Running the 723-question bank; weakening any core answer, URL, screenshot, digest, or source-chain requirement; changing credentials or external Hermes schedules; destructive cleanup of existing runs, archives, or records.
+
+**Never:** Use the legacy direct-run endpoint to imitate the published schedule graph; accept fixture-only or preflight-only success; report completion while the job is merely queued; fabricate recommended follow-ups; mix host scripts, images, or source files from different revisions; include the unrelated project-portability or Agent Home work.
+
+## I/O & Edge-Case Matrix
+
+| Scenario | Input / State | Expected Output / Behavior | Error Handling |
+|----------|---------------|----------------------------|----------------|
+| Live canary | Published workflow plus a staged `B001` ecommerce-oriented JSON question bank and authenticated Doubao CDP session | One durable job is claimed, one question is captured and certified, the same run completes, and an agent-consumable Record links to the archive evidence | Fail closed with a typed, actionable reason and retain resumable state |
+| No follow-up chips | Stable answer page has core evidence but Doubao renders no recommendation module | Capture records an explicit absence; core evidence can still pass without fabricated fields | Fail only if the module is present but extraction is inconsistent, or another core field is missing |
+| Captcha or ambiguity | Verification challenge, unstable page, or uncertain chat binding | Job enters waiting reconciliation and preserves the current checkpoint | Resume the same run after human verification; never ask the question twice |
+| Claimant unavailable | API queues a job but no compatible worker claims it | Readiness/health identifies the claimant failure before the canary is accepted | Do not treat Hermes gateway liveness or a queued event as success |
+
+</frozen-after-approval>
+
+## Code Map
+
+- `backend/api/v1/studio_workflows.py` -- published multipart question-bank entry and same-run resume boundary.
+- `backend/workflow/gaojixing_worker_runtime.py` -- executor dispatch and repository-owned job execution contract.
+- `backend/workflow/gaojixing_collection_runner.py` -- durable lease, per-question checkpoints, reconciliation, and finalization.
+- `backend/workflow/gaojixing_doubao_driver.py` -- OpenCLI/CDP collection and page-evidence extraction.
+- `backend/workflow/gaojixing_doubao.py` -- question-bank parsing and evidence audit semantics.
+- `backend/workflow/opencli_hda_tracer.py` -- four-node execution, certification, delivery, and Record/lineage persistence.
+- `backend/workflow/gaojixing_archive.py` -- immutable raw evidence and archive manifests.
+- `docker-compose.yml` and `.env.example` -- reproducible API, claimant, browser, storage, and version configuration.
+- `frontend/lib/workflow/gaojixing-doubao-workflow.ts` -- canonical four-node published graph and upload contract.
+- `tests/integration/test_workflow_gaojixing_hda.py`, `tests/unit/test_gaojixing_collection_service.py`, `tests/unit/test_gaojixing_doubao_driver.py`, `tests/unit/test_gaojixing_workflow_tools.py`, `frontend/scripts/check-gaojixing-doubao-workflow.mjs` -- targeted regression surfaces.
+
+## Tasks & Acceptance
+
+**Execution:**
+- [x] `docker-compose.yml`, `.env.example`, and runtime startup code -- make the claimant and browser dependencies repository-owned, health-checkable, and revision-identifiable.
+- [x] Published-run API and Gaojixing runtime modules -- keep one durable run from upload through claim, capture, certification, delivery, and typed failure/reconciliation.
+- [x] Driver and evidence audit modules -- distinguish absent optional recommendation UI from broken extraction without weakening core evidence.
+- [x] HDA tracer/data persistence -- materialize each certified question as a project Record with links and digests that preserve the raw evidence chain.
+- [x] Targeted backend/frontend tests -- cover the matrix, trigger routing, claimant readiness, same-run resume, and Record lineage.
+- [x] Live environment -- rebuild from this branch and execute one `B001` ecommerce canary through the published endpoint.
+
+**Acceptance Criteria:**
+- Given the deployed revision and a valid one-question bank, when the published workflow starts, then trace state progresses from waiting through a claimed collection job to certified workflow completion on the same run ID.
+- Given a certified capture, when project data is queried, then at least one Record for that run exposes the answer and traceable links/digests to raw JSON, formal chat/share URLs, and distinct top/answer/bottom screenshots.
+- Given a page with no recommendation module, when evidence is audited, then absence is recorded truthfully and does not alone abort the batch; missing core evidence still fails closed.
+- Given the canary result, when runtime identity is inspected, then API and claimant report the branch commit and no deployed Gaojixing module differs from it.
+
+## Spec Change Log
+
+## Design Notes
+
+The canary question bank is `{"phase1":[],"phase2":[{"id":"B001","question":"高吉星藻油 DHA 孕妇款在哪里可以买到？请列出官方旗舰店、京东或天猫的在售规格、价格区间和可访问的商品链接。"}]}`. A successful canary authorizes no automatic expansion to the full bank. Archive files remain the immutable evidence source; the project Record is an indexed, agent-facing projection with provenance, not a second editable copy.
+
+## Verification
+
+**Commands:**
+- `uv run --extra dev pytest -q --no-cov tests/integration/test_workflow_gaojixing_hda.py tests/unit/test_gaojixing_collection_service.py tests/unit/test_gaojixing_doubao_driver.py tests/unit/test_gaojixing_workflow_tools.py tests/unit/test_migration_heads.py` -- targeted backend and deployed-schema contracts pass without applying the repository-wide coverage gate to a focused run.
+- `pnpm --dir frontend install --frozen-lockfile && node --test frontend/scripts/check-gaojixing-doubao-workflow.mjs` -- frontend graph and multipart contracts pass.
+- `docker compose config` -- deployment topology resolves without machine-specific source overlays.
+
+**Live verification evidence (2026-08-24):**
+- Deployed commit/image: `e299ca2b0ed695885b3fcdb56afbaeccf997d8e3` / `opencli-admin-api:gjx-live-e299ca2`; API healthy with zero restarts and authenticated config reporting `task_executor=local` plus the same runtime revision.
+- Published canary run: `521c3b6a-8969-460c-a370-db110ae28f94`; durable collection job: `d645f1e8-6b45-44f7-9963-0764639bc62d`; final workflow state `completed`, `valid=true`, 41 trace events, and every workflow node completed.
+- Record projection: one run-scoped B001 Record `f5368e2f-2f03-4d1c-8261-6057d7ee0513` under source key `gaojixing-certified-archive:521c3b6a-8969-460c-a370-db110ae28f94`; standard title/content/url fields and certification lineage are present.
+- Evidence chain: archive core files present; `required_missing=[]`; formal chat and share URLs present; 13 reference links include `item.jd.com`, `mall.jd.com`, and `www.taobao.com`; 5 distinct screenshots carry per-artifact SHA-256 values.
+- Digest agreement: archived `raw/B001.json` and the Record both report `599d2736dbe4c2c22f86031f7307cf8804e5db72f5ab2204486c7c34f9ba9e57`; batch evidence digest is `6622816185f49ae01af47e146eae6d82a9b16a5f04f27dffa071ac1db3baf357`.
+
+**Manual checks (if no CLI):**
+- Inspect the canary trace, collection checkpoint, archive manifest/files, and project Record; all share the same run ID and evidence digests, and the deployed revision equals this branch commit.
+
+## Suggested Review Order
+
+**Durable workflow execution**
+
+- Follow the published run from claimant wait through certified delivery.
+  [`opencli_hda_tracer.py:3808`](../../backend/workflow/opencli_hda_tracer.py#L3808)
+
+- Keep Windows worker staging bounded and recoverable per run.
+  [`gaojixing_collection_runner.py:106`](../../backend/workflow/gaojixing_collection_runner.py#L106)
+
+**Certified browser evidence**
+
+- Pin the authenticated browser and reject unavailable endpoints without fallback.
+  [`gaojixing_doubao_driver.py:304`](../../backend/workflow/gaojixing_doubao_driver.py#L304)
+
+- Distinguish absent optional follow-ups from visible extraction failures.
+  [`gaojixing_doubao_driver.py:836`](../../backend/workflow/gaojixing_doubao_driver.py#L836)
+
+- Fail certification on projection gaps or evidence changes.
+  [`gaojixing_certification.py:27`](../../backend/workflow/gaojixing_certification.py#L27)
+
+- Project standard fields plus resolvable artifact digests.
+  [`gaojixing_certification.py:112`](../../backend/workflow/gaojixing_certification.py#L112)
+
+**Agent-facing persistence**
+
+- Expand certified batches into one lineage-bearing Record per question.
+  [`opencli_hda_tracer.py:4357`](../../backend/workflow/opencli_hda_tracer.py#L4357)
+
+- Isolate managed sources by run to prevent provenance overwrite.
+  [`opencli_hda_tracer.py:4509`](../../backend/workflow/opencli_hda_tracer.py#L4509)
+
+**Deployment identity**
+
+- Build the local API claimant from the checked-out revision.
+  [`docker-compose.yml:145`](../../docker-compose.yml#L145)
+
+- Keep Celery claimants on the identical image and revision contract.
+  [`docker-compose.yml:256`](../../docker-compose.yml#L256)
+
+- Expose runtime identity only through authenticated system configuration.
+  [`system.py:56`](../../backend/api/v1/system.py#L56)
+
+**Compatibility and regression gates**
+
+- Recognize the deployed merged migration head without startup loops.
+  [`c0d1e2f3a4b5_add_gaojixing_conversation_cleanup.py:10`](../../backend/migrations/versions/c0d1e2f3a4b5_add_gaojixing_conversation_cleanup.py#L10)
+
+- Exercise atomic certification, artifact digests, and run-scoped sources.
+  [`test_gaojixing_workflow_tools.py:957`](../../tests/unit/test_gaojixing_workflow_tools.py#L957)
+
+- Verify endpoint fail-closed and optional-module semantics.
+  [`test_gaojixing_doubao_driver.py:97`](../../tests/unit/test_gaojixing_doubao_driver.py#L97)
+
+- Assert deployment revision survives API and trace projections.
+  [`test_auth_api.py:44`](../../tests/integration/test_auth_api.py#L44)

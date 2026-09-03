@@ -32,7 +32,7 @@ test('persistent application chrome stays outside the routed animation boundary'
   assert.match(shell, /className="[^"]*relative[^"]*z-0[^"]*overflow-x-clip[^"]*bg-background[^"]*"/)
 })
 
-test('sidebar consolidates tasks, notifications, automation, and agents into clear work areas', async () => {
+test('sidebar keeps automation separate from Agent surfaces', async () => {
   const [navigation, sidebar] = await Promise.all([
     read('lib/navigation.ts'),
     read('components/shell/app-sidebar.tsx'),
@@ -42,8 +42,9 @@ test('sidebar consolidates tasks, notifications, automation, and agents into cle
     '概览',
     '任务与通知',
     '项目',
+    'Coding Workbench',
     '插件中心',
-    '自动化与 Agent',
+    '自动化与智能体',
     '执行资源',
     '成果与数据',
     '模型与连接',
@@ -53,9 +54,10 @@ test('sidebar consolidates tasks, notifications, automation, and agents into cle
 
   assert.match(navigation, /href: '\/inbox'/)
   assert.match(navigation, /match: \['\/inbox', '\/tasks', '\/notifications'\]/)
-  assert.match(navigation, /match: \['\/sources', '\/schedules', '\/agents', '\/skills'\]/)
-  assert.match(navigation, /match: \['\/nodes', '\/workers'\]/)
-  assert.match(navigation, /match: \['\/providers', '\/control\/actions'\]/)
+  assert.match(navigation, /match: \['\/schedules', '\/plans', '\/agents', '\/skills'\]/)
+  assert.match(navigation, /match: \['\/nodes', '\/workers', '\/browsers'\]/)
+  assert.match(navigation, /match: \['\/providers'\]/)
+  assert.match(navigation, /href: '\/control\/actions'[\s\S]{0,120}match: \['\/control'\]/)
   for (const group of ['工作台', '构建', '运行与数据', '管理']) {
     assert.match(navigation, new RegExp(`label: '${group}'`))
   }
@@ -66,53 +68,58 @@ test('sidebar consolidates tasks, notifications, automation, and agents into cle
   assert.doesNotMatch(sidebar, /新建工作/)
 })
 
-test('records use a scalable source-to-table explorer with pagination and raw evidence detail', async () => {
+test('records use a scalable schema-adaptive table with pagination and raw evidence detail', async () => {
   const records = await read('app/(app)/records/page.tsx')
 
-  assert.match(records, /lg:grid-cols-\[15rem_minmax\(0,1fr\)\]/)
-  assert.doesNotMatch(records, /grid min-h-\[38rem\] overflow-hidden/)
-  assert.match(records, /min-h-\[20rem\]/)
-  assert.match(records, /min-h-\[32rem\]/)
-  assert.match(records, /aria-label="成果数据集"/)
-  assert.match(records, /useSources\(\{ page: 1, limit: 100 \}\)/)
+  assert.match(records, /DATA_EXPLORER_TABS/)
+  assert.match(records, /useRecords\(\{/)
+  assert.doesNotMatch(records, /useSources|selectedSourceId/)
+  assert.match(records, /const MAX_VISIBLE_FIELDS = 7/)
   assert.match(records, /limit: PAGE_SIZE/)
   assert.match(records, /visibleFields/)
+  assert.match(records, /aria-label="当前数据字段"/)
+  assert.match(records, /<Table className="min-w-max">/)
   assert.match(records, /第 \{page\.toLocaleString/)
   assert.match(records, /<Sheet open=\{Boolean\(selectedRecord\)\}/)
+  assert.match(records, /<LineagePanel record=\{selectedRecord\}/)
   assert.match(records, /标准化数据/)
   assert.match(records, /原始数据/)
 })
 
 test('task and automation sibling routes share their consolidated route tabs', async () => {
-  const [tabs, inbox, tasks, notifications, sources, schedules, agents, skills] = await Promise.all([
+  const [tabs, inbox, tasks, notifications, schedules, plans, agents, skills] = await Promise.all([
     read('components/shell/route-tabs.tsx'),
     read('app/(app)/inbox/page.tsx'),
     read('app/(app)/tasks/page.tsx'),
     read('app/(app)/notifications/page.tsx'),
-    read('app/(app)/sources/page.tsx'),
     read('app/(app)/schedules/page.tsx'),
+    read('app/(app)/plans/page.tsx'),
     read('app/(app)/agents/page.tsx'),
     read('app/(app)/skills/page.tsx'),
   ])
 
-  for (const label of ['待处理', '工作项', '通知规则', '数据源', '调度', 'Agent', '技能']) {
+  for (const label of ['待处理', '工作项', '通知规则', '调度', '计划', 'Agent', '技能']) {
     assert.match(tabs, new RegExp(`label: '${label}'`))
   }
   for (const page of [inbox, tasks, notifications]) {
     assert.match(page, /ACTION_CENTER_TABS/)
   }
-  for (const page of [sources, schedules, agents, skills]) {
+  for (const page of [schedules, plans, agents, skills]) {
     assert.match(page, /AUTOMATION_TABS/)
   }
+  assert.match(sources, /redirect\('\/records'\)/)
+  assert.match(schedules, /redirect\('\/operations-agents'\)/)
 })
 
-test('studio uses ordinary creation choices while Agent stays global', async () => {
-  const [studio, templates, shell, header, agentDock] = await Promise.all([
+test('studio keeps Agent conversation global while management has its own entry', async () => {
+  const [studio, templates, shell, header, agentBubble, agentDock, transition] = await Promise.all([
     read('app/(app)/studio/page.tsx'),
     read('app/(app)/studio/templates/page.tsx'),
     read('components/shell/app-shell.tsx'),
     read('components/shell/app-header.tsx'),
+    read('components/shell/global-agent-bubble.tsx'),
     read('components/shell/global-agent-dock.tsx'),
+    read('components/motion/app-route-transition.tsx'),
   ])
 
   assert.match(studio, /\/studio\/templates\?workspace=/)
@@ -126,8 +133,12 @@ test('studio uses ordinary creation choices while Agent stays global', async () 
   assert.match(templates, /搜索模板、节点或用途/)
   assert.match(templates, /可复用的执行链路/)
   assert.doesNotMatch(templates, /改用 Agent 创建/)
+  assert.match(shell, /<GlobalAgentBubble onClick=\{\(\) => \{ setAgentPrompt\(''\); setAgentOpen\(true\) \}\} \/>/)
   assert.match(shell, /<GlobalAgentDock open=\{agentOpen\}/)
-  assert.match(header, /打开全局 Agent/)
+  assert.match(header, /href="\/operations-agents"/)
+  assert.doesNotMatch(header, /onOpenAgent/)
+  assert.match(agentBubble, /fixed bottom-4 right-4/)
+  assert.match(agentBubble, /aria-label="打开全局 Agent"/)
   assert.match(agentDock, /当前上下文/)
   assert.match(agentDock, /new URLSearchParams\(window\.location\.search\)/)
   assert.match(agentDock, /workspace_id: workspaceId/)
@@ -141,11 +152,12 @@ test('studio uses ordinary creation choices while Agent stays global', async () 
   assert.match(agentDock, /work_item_id\?: string \| null/)
   assert.match(agentDock, /workspace_id\?: string \| null/)
   assert.match(agentDock, /proposal_version\?: string \| null/)
-  assert.match(agentDock, /apiClient\.post\('\/chat\/confirm', \{ proposal \}\)/)
+  assert.match(agentDock, /apiClient\.post\('\/chat\/confirm', \{ proposal: proposalToConfirm \}\)/)
   assert.match(agentDock, /status === 409/)
   assert.match(agentDock, /仅在后端能解析出唯一授权范围时允许确认写操作/)
   assert.match(agentDock, /\/chat\/confirm/)
   assert.match(agentDock, /queryClient\.invalidateQueries/)
+  assert.match(transition, /'\/operations-agents'/)
 })
 
 test('SSGOI boundary is pathname-keyed, interruptible, and reduced-motion safe', async () => {

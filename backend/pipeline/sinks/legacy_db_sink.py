@@ -86,6 +86,7 @@ class LegacyDbSink:
                 session, ctx.task_id, ctx.source_id, triples,
                 channel_type=ctx.provider, forward_to_odp=self.forward_to_odp,
                 identities=identities,
+                lineage=ctx.lineage_envelope(),
             )
             await session.commit()
 

@@ -9,6 +9,7 @@ from backend.database import AsyncSessionLocal
 from backend.models.task import CollectionTask, TaskRun
 from backend.pipeline import events
 from backend.pipeline.error_taxonomy import effective_error_type
+from backend.pipeline.domain_limiter import domain_slot
 from backend.pipeline.pipeline import run_pipeline
 
 logger = logging.getLogger(__name__)
@@ -42,6 +43,7 @@ async def run_collection_pipeline(
     merged_params: dict = {}
     agent_id: str | None = None
     trigger_type: str = "manual"
+    recovery_mode: str | None = None
 
     async with AsyncSessionLocal() as session:
         task = await session.get(CollectionTask, task_id)
@@ -63,6 +65,7 @@ async def run_collection_pipeline(
         merged_params = {**task.parameters, **parameters}
         agent_id = task.agent_id
         trigger_type = task.trigger_type
+        recovery_mode = task.recovery_mode
         await session.commit()
 
     # Emit trigger event after committing the run row
@@ -166,11 +169,18 @@ async def run_collection_pipeline(
         {k: v for k, v in (agent_config or {}).items() if k != "prompt_template"},
     )
 
-    # ── Phase 3: run pipeline (no session held during collection) ─────────────
-    # Hold a per-domain slot for the run so the fleet stays polite to a site even
-    # when many sources target it (in-process cap; cross-worker would need Redis).
-    from backend.pipeline.domain_limiter import domain_slot
+    # The legacy task runner knows the durable task/run and worker identities.
+    # Source/binding revisions, acquisition execution, runtime, trace, and
+    # artifacts remain null unless an upstream handoff establishes them; this
+    # path deliberately does not infer an acquisition-to-record bridge.
+    from backend.pipeline.sinks.base import CollectionLineage
 
+    collection_lineage = CollectionLineage(
+        task_id=task_id,
+        source_id=source.id,
+        collection_run_id=run_id,
+        worker_id=worker_id,
+    )
     async with domain_slot(source):
         try:
             pipeline_result = await run_pipeline(
@@ -179,6 +189,7 @@ async def run_collection_pipeline(
                 parameters=merged_params,
                 agent_config=agent_config,
                 run_id=run_id,
+                enable_notifications=recovery_mode != "recollect",
             )
         except Exception as exc:
             # run_pipeline only re-raises errors its taxonomy classified as

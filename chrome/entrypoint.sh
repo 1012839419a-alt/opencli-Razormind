@@ -59,14 +59,12 @@ if [ -n "${BROWSER_STARTUP_PAGES:-}" ]; then
   if [ -n "$STARTUP_PAGE_OUTPUT" ]; then mapfile -t STARTUP_PAGES <<< "$STARTUP_PAGE_OUTPUT"; fi
 fi
 
-BROWSER_ENGINE="${BROWSER_ENGINE-chromium}"
+BROWSER_ENGINE="${BROWSER_ENGINE:-chromium}"
 CHROME_BIN="$(node /usr/local/bin/resolve-browser-executable.mjs "$BROWSER_ENGINE")" || {
   echo "[entrypoint] Browser engine resolution failed for $BROWSER_ENGINE" >&2
   exit 1
 }
 echo "[entrypoint] Browser engine: $BROWSER_ENGINE"
-
-
 start_chrome() {
   find /home/chrome/.config/chromium -name 'SingletonLock' -o -name 'SingletonCookie' -o -name 'SingletonSocket' 2>/dev/null | xargs rm -f 2>/dev/null || true
   "$CHROME_BIN" --remote-debugging-port=9222 --remote-debugging-address=0.0.0.0 --remote-allow-origins='*' --no-sandbox --disable-dev-shm-usage --user-data-dir=/home/chrome/.config/chromium --window-size=1280,900 "${CHROME_EXTRA_FLAGS[@]}" "$@"

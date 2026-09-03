@@ -22,10 +22,10 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 
-// Keep in sync with backend/models/agent.py's "claude | openai | local" comment
-// and AIAgentCreate.processor_type — the schema stores a plain str, so this is
-// a UX constraint, not an enum enforced server-side.
-const PROCESSOR_TYPES = ['claude', 'openai', 'local'] as const
+// Keep in sync with backend/models/agent.py's supported processor types. The
+// schema stores a plain str, so this is a UX constraint, not an enum enforced
+// server-side.
+const PROCESSOR_TYPES = ['claude', 'openai', 'local', 'paw'] as const
 type ProcessorType = (typeof PROCESSOR_TYPES)[number]
 
 // Mirrors the label map in app/(app)/agents/page.tsx (kept local/duplicated
@@ -34,6 +34,7 @@ const PROCESSOR_LABEL: Record<ProcessorType, string> = {
   claude: 'Claude',
   openai: 'OpenAI',
   local: '本地模型',
+  paw: 'PAW 本地富化',
 }
 
 // Sentinel for "no linked provider" — Select items need a non-empty value.
@@ -120,6 +121,10 @@ export function AgentFormDialog({
     event.preventDefault()
     if (!form.name.trim()) {
       toast.error('请填写 Agent 名称')
+      return
+    }
+    if (form.processor_type === 'paw' && !form.prompt_template.trim()) {
+      toast.error('PAW Agent 必须填写提示词模板')
       return
     }
 
@@ -216,6 +221,11 @@ export function AgentFormDialog({
                     ))}
                   </SelectContent>
                 </Select>
+                {form.processor_type === 'paw' ? (
+                  <FieldDescription>
+                    使用固定、离线的 PAW sidecar。仅发送渲染后的短提示词；程序身份与就绪状态由运行时健康检查管理。
+                  </FieldDescription>
+                ) : null}
               </Field>
 
               <Field>
@@ -280,10 +290,14 @@ export function AgentFormDialog({
                 onChange={(event) =>
                   setForm((current) => ({ ...current, prompt_template: event.target.value }))
                 }
+                required={form.processor_type === 'paw'}
                 placeholder="发送给模型的系统提示词"
                 rows={6}
                 className="font-mono text-xs"
               />
+              {form.processor_type === 'paw' ? (
+                <FieldDescription>PAW 必须使用非空的短提示词模板。</FieldDescription>
+              ) : null}
             </Field>
 
             <Field orientation="horizontal" className="items-center justify-between">
@@ -310,11 +324,15 @@ export function AgentFormDialog({
                   onChange={(event) =>
                     setForm((current) => ({ ...current, processor_config: event.target.value }))
                   }
-                  placeholder='{"temperature": 0.3}'
+                  placeholder={form.processor_type === 'paw' ? '{"max_tokens": 256, "output_schema": {"type": "object"}}' : '{"temperature": 0.3}'}
                   rows={4}
                   className="font-mono text-xs"
                 />
-                <FieldDescription>传给处理器的额外参数，留空表示使用默认配置。</FieldDescription>
+                <FieldDescription>
+                  {form.processor_type === 'paw'
+                    ? '仅可设置 max_tokens（1–512）和 output_schema；程序、缓存、URL 与离线模式由部署配置固定。'
+                    : '传给处理器的额外参数，留空表示使用默认配置。'}
+                </FieldDescription>
               </Field>
             </div>
           </details>

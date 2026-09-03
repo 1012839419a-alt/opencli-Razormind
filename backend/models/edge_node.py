@@ -39,6 +39,8 @@ class EdgeNode(TimestampMixin):
     # node hasn't registered since this field was added, or registered over the
     # HTTP (non-WS) path, which doesn't carry runtime advertisement.
     runtimes: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    # Per-runtime capability names measured by the edge adapter registry.
+    runtime_capabilities: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
 
 
 class EdgeNodeEvent(TimestampMixin):

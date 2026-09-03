@@ -3,7 +3,7 @@
 import { useMemo, useState } from 'react'
 import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
-import { motion } from 'motion/react'
+import { useQueryClient } from '@tanstack/react-query'
 import {
   Bot,
   BrainCircuit,
@@ -19,14 +19,15 @@ import {
   Puzzle,
   Rss,
   Search,
-  Settings2,
   Webhook,
   Wrench,
 } from 'lucide-react'
 
-import { Ripple } from '@/components/motion/ripple'
+import { toast } from 'sonner'
+
 import { DifyPackageImportDialog } from '@/components/plugins/dify-package-import-dialog'
 import { RssCatalogImportDialog } from '@/components/plugins/rss-catalog-import-dialog'
+import { TemplateCatalog } from '@/components/plugins/template-catalog'
 import { EmptyState } from '@/components/shell/data-states'
 import { PageContainer } from '@/components/shell/page-container'
 import { Badge } from '@/components/ui/badge'
@@ -48,10 +49,13 @@ import {
   type PluginProviderIcon,
 } from '@/lib/plugins/provider-catalog'
 import {
+  updatePluginInstallation,
   useBackendPluginCatalog,
   type BackendPluginInstallation,
 } from '@/lib/plugins/backend-plugin-catalog'
+import { useGovernedWorkspaces, useMyWorkspaces } from '@/lib/api/hooks'
 import {
+  NODE_CAPABILITY_CATALOG_QUERY_KEY,
   nodeCapabilityReadinessLabel,
   nodeCapabilityReadinessTone,
   type BackendNodeCapabilityCatalog,
@@ -64,14 +68,16 @@ import { backendNodeCapabilityIsRunnable } from '@/lib/workflow/backend-node-cap
 import { getWorkflowNodeCatalog, type WorkflowNodeCatalogItem } from '@/lib/workflow/node-catalog'
 import { localizeNodeText } from '@/lib/workflow/node-i18n'
 import { useWorkflowCapabilities } from '@/lib/workflow/use-workflow-capabilities'
-
 type PluginPageTab = 'installed' | 'capabilities' | 'marketplace'
+type PluginSubtype = 'source' | 'template' | 'tool' | 'agent' | 'trigger' | 'extension'
 type PluginCategoryFilter = 'all' | PluginProviderCategory
+
 type ProviderState = 'ready' | 'partial' | 'configuration' | 'unavailable' | 'marketplace'
 type RegistryPluginProvider = PluginProvider & {
   installation?: BackendPluginInstallation
   backendUnavailable?: boolean
   nodeCatalog?: boolean
+  catalogCategories?: PluginCategoryFilter[]
 }
 
 type ProviderNodeView = {
@@ -112,9 +118,44 @@ const BUNDLED_PROVIDER_ID_BY_KEY: Record<string, string> = {
 function isPluginPageTab(value: string | null): value is PluginPageTab {
   return value === 'installed' || value === 'capabilities' || value === 'marketplace'
 }
+function isPluginSubtype(value: string | null): value is PluginSubtype {
+  return value === 'source'
+    || value === 'template'
+    || value === 'tool'
+    || value === 'agent'
+    || value === 'trigger'
+    || value === 'extension'
+}
 
 function isPluginCategory(value: string | null): value is PluginCategoryFilter {
   return PLUGIN_PROVIDER_CATEGORIES.some((item) => item.key === value)
+}
+function providerMatchesSubtype(
+  provider: RegistryPluginProvider,
+  subtype: PluginSubtype,
+): boolean {
+  if (provider.nodeCatalog) {
+    const category = subtype === 'source'
+      ? 'datasource'
+      : subtype === 'tool'
+        ? 'tool'
+        : subtype === 'agent'
+          ? 'agent'
+          : subtype === 'trigger'
+            ? 'trigger'
+            : subtype === 'extension'
+              ? 'extension'
+              : null
+    return category !== null && provider.catalogCategories?.includes(category) === true
+  }
+  if (subtype === 'source') return provider.category === 'datasource'
+  if (subtype === 'tool') return provider.category === 'tool'
+  if (subtype === 'agent') return provider.category === 'agent'
+  if (subtype === 'trigger') return provider.category === 'trigger'
+  if (subtype === 'extension') {
+    return provider.category === 'extension' || provider.category === 'bundle'
+  }
+  return false
 }
 
 function providerState(
@@ -156,6 +197,44 @@ function providerStateTone(state: ProviderState): string {
   return 'border-border bg-muted/30 text-muted-foreground'
 }
 
+function PluginSubtypeTabs({
+  active,
+  onSelect,
+}: {
+  active: PluginSubtype
+  onSelect: (tab: PluginSubtype) => void
+}) {
+  const tabs: Array<[PluginSubtype, string]> = [
+    ['source', '源库'],
+    ['template', '模板'],
+    ['tool', '工具'],
+    ['agent', 'Agent'],
+    ['trigger', '触发器'],
+    ['extension', '扩展'],
+  ]
+  return (
+    <nav aria-label="插件类型" className="no-scrollbar overflow-x-auto">
+      <div className="inline-flex min-w-max items-center gap-1 rounded-lg bg-muted p-1">
+        {tabs.map(([key, label]) => (
+          <button
+            key={key}
+            type="button"
+            aria-current={active === key ? 'page' : undefined}
+            onClick={() => onSelect(key)}
+            className={cn(
+              'relative min-h-10 rounded-md px-4 text-sm font-medium transition-colors',
+              active === key
+                ? 'bg-background text-foreground shadow-sm'
+                : 'text-muted-foreground hover:text-foreground',
+            )}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+    </nav>
+  )
+}
 function PluginPageTabs({
   active,
   onSelect,
@@ -163,42 +242,35 @@ function PluginPageTabs({
   active: PluginPageTab
   onSelect: (tab: PluginPageTab) => void
 }) {
+  const tabs: Array<[PluginPageTab, string]> = [
+    ['installed', '已安装'],
+    ['capabilities', '能力目录'],
+    ['marketplace', '探索市场'],
+  ]
   return (
-    <nav aria-label="插件页面" className="no-scrollbar overflow-x-auto">
+    <nav aria-label="插件中心视图" className="no-scrollbar overflow-x-auto">
       <div className="inline-flex min-w-max items-center gap-1 rounded-lg bg-muted p-1">
-        {([
-          ['installed', '已安装'],
-          ['capabilities', '节点能力'],
-          ['marketplace', '探索市场'],
-        ] as const).map(([key, label]) => {
-          const selected = active === key
-          return (
-            <button
-              key={key}
-              type="button"
-              aria-current={selected ? 'page' : undefined}
-              onClick={() => onSelect(key)}
-              className={cn(
-                'relative min-h-10 overflow-hidden rounded-md px-4 text-sm font-medium transition-colors',
-                selected ? 'text-foreground' : 'text-muted-foreground hover:text-foreground',
-              )}
-            >
-              {selected ? (
-                <motion.span
-                  layoutId="plugin-page-tab"
-                  className="absolute inset-0 rounded-md border bg-background shadow-sm"
-                  transition={{ type: 'spring', stiffness: 430, damping: 38, mass: 0.55 }}
-                />
-              ) : null}
-              <span className="relative">{label}</span>
-              <Ripple />
-            </button>
-          )
-        })}
+        {tabs.map(([key, label]) => (
+          <button
+            key={key}
+            type="button"
+            aria-current={active === key ? 'page' : undefined}
+            onClick={() => onSelect(key)}
+            className={cn(
+              'relative min-h-10 rounded-md px-4 text-sm font-medium transition-colors',
+              active === key
+                ? 'bg-background text-foreground shadow-sm'
+                : 'text-muted-foreground hover:text-foreground',
+            )}
+          >
+            {label}
+          </button>
+        ))}
       </div>
     </nav>
   )
 }
+
 
 function ProviderCard({
   provider,
@@ -271,13 +343,17 @@ function ProviderDetails({
   nodes,
   state,
   opencliAdapterCount,
+  workspaceId,
   onImportRss,
+  onToggleInstallation,
 }: {
   provider: RegistryPluginProvider
   nodes: ProviderNodeView[]
   state: ProviderState
   opencliAdapterCount: number
+  workspaceId: string | null
   onImportRss: () => void
+  onToggleInstallation: (installation: BackendPluginInstallation) => void
 }) {
   const Icon = PROVIDER_ICONS[provider.icon]
   const installation = provider.installation
@@ -335,6 +411,15 @@ function ProviderDetails({
                     : '系统内置'}
               </div>
             </div>
+            {!installation.bundled ? (
+              <Button
+                variant="outline"
+                className="col-span-2 min-h-9"
+                onClick={() => onToggleInstallation(installation)}
+              >
+                {installation.enabled ? '停用此工作区插件' : '启用此工作区插件'}
+              </Button>
+            ) : null}
           </section>
         ) : null}
 
@@ -468,7 +553,11 @@ function ProviderDetails({
         )}
 
         {!provider.marketplace && installation?.runtimeStatus !== 'BLOCKED' && hasRunnableNode ? (
-          <Button className="w-full" nativeButton={false} render={<Link href="/studio" />}>
+          <Button
+            className="w-full"
+            nativeButton={false}
+            render={<Link href={workspaceId ? `/studio?workspace=${encodeURIComponent(workspaceId)}` : '/studio'} />}
+          >
             在工作流中使用
           </Button>
         ) : installation?.runtimeStatus === 'BLOCKED' ? (
@@ -492,10 +581,33 @@ function ProviderDetails({
 export default function PluginHubPage() {
   const router = useRouter()
   const searchParams = useSearchParams()
+  const queryClient = useQueryClient()
+  const workspaces = useGovernedWorkspaces()
+  const legacyWorkspaces = useMyWorkspaces()
   const rawTab = searchParams.get('tab')
   const rawCategory = searchParams.get('category')
+  const rawSubtype = searchParams.get('type')
   const activeTab: PluginPageTab = isPluginPageTab(rawTab) ? rawTab : 'installed'
+  const activeSubtype: PluginSubtype = isPluginSubtype(rawSubtype)
+    ? rawSubtype
+    : rawTab === 'capabilities'
+      ? 'tool'
+      : 'source'
   const activeCategory: PluginCategoryFilter = isPluginCategory(rawCategory) ? rawCategory : 'all'
+  const workspaceParam = searchParams.get('workspace')
+  const legacyWorkspace = legacyWorkspaces.data?.find((workspace) => workspace.id === workspaceParam)
+  const workspaceId = workspaces.data?.find((workspace) =>
+    workspace.id === workspaceParam
+      || (legacyWorkspace !== undefined && (
+        workspace.slug === legacyWorkspace.slug
+        || `governed-${workspace.slug}` === legacyWorkspace.slug
+      )),
+  )?.id ?? workspaces.data?.[0]?.id ?? null
+  const workspaceError = workspaces.error instanceof Error
+    ? workspaces.error.message
+    : workspaces.error
+      ? '工作区读取失败'
+      : null
   const [query, setQuery] = useState('')
   const [selectedProvider, setSelectedProvider] = useState<RegistryPluginProvider | null>(null)
   const [rssImportOpen, setRssImportOpen] = useState(false)
@@ -504,14 +616,14 @@ export default function PluginHubPage() {
     installations,
     error: pluginError,
     loading: pluginLoading,
-  } = useBackendPluginCatalog(true)
+  } = useBackendPluginCatalog(workspaceId)
   const {
     capabilities,
     nodeCatalog,
     error: capabilityError,
     catalogError,
     loading: capabilityLoading,
-  } = useWorkflowCapabilities(true)
+  } = useWorkflowCapabilities(true, workspaceId)
   const {
     summary,
     error: opencliError,
@@ -542,7 +654,15 @@ export default function PluginHubPage() {
     router.push(queryString ? `/plugins?${queryString}` : '/plugins', { scroll: false })
   }
 
-  const availableProviders = useMemo(() => {
+  function updateSubtype(type: PluginSubtype) {
+    const params = new URLSearchParams(searchParams.toString())
+    if (activeTab === 'installed') params.delete('tab')
+    else params.set('tab', activeTab)
+    params.set('type', type)
+    router.push(`/plugins?${params.toString()}`, { scroll: false })
+  }
+
+  const availableProviders = (() => {
     const source: RegistryPluginProvider[] = activeTab === 'marketplace'
       ? PLUGIN_PROVIDERS.filter((provider) => provider.marketplace)
       : activeTab === 'capabilities'
@@ -557,18 +677,18 @@ export default function PluginHubPage() {
                 backendUnavailable: true,
               }))
             : []
-    return source
-  }, [activeTab, installations, nodeCatalog, pluginError])
+    return source.filter((provider) => providerMatchesSubtype(provider, activeSubtype))
+  })()
 
-  const categoryCounts = useMemo(() => {
+  const categoryCounts = (() => {
     const counts = new Map<PluginCategoryFilter, number>([['all', availableProviders.length]])
     for (const provider of availableProviders) {
       counts.set(provider.category, (counts.get(provider.category) ?? 0) + 1)
     }
     return counts
-  }, [availableProviders])
+  })()
 
-  const providers = useMemo(() => {
+  const providers = (() => {
     const needle = query.trim().toLowerCase()
     return availableProviders.filter((provider) => {
       if (activeCategory !== 'all' && provider.category !== activeCategory) return false
@@ -577,38 +697,82 @@ export default function PluginHubPage() {
         .toLowerCase()
         .includes(needle)
     })
-  }, [activeCategory, availableProviders, query])
+  })()
+
 
   const activeCategoryLabel = activeCategory === 'all'
     ? '全部插件'
     : pluginProviderCategoryLabel(activeCategory)
-  const sectionTitle = activeTab === 'installed'
-    ? `${activeCategoryLabel} · 已安装`
+  const subtypeLabel: Record<PluginSubtype, string> = {
+    source: '源库',
+    template: '模板',
+    tool: '工具',
+    agent: 'Agent',
+    trigger: '触发器',
+    extension: '扩展',
+  }
+  const sectionTitle = `${subtypeLabel[activeSubtype]} · ${activeCategoryLabel}`
+  const sectionDescription = activeSubtype === 'template'
+    ? '从已登记的模板创建项目；模板创建会沿用当前工作区权限和项目生命周期。'
     : activeTab === 'capabilities'
-      ? '节点能力 · 插件中心'
-      : `${activeCategoryLabel} · 市场`
-  const sectionDescription = activeTab === 'capabilities'
-    ? '查看插件注册的节点功能实现、运行绑定、输入输出与依赖状态；Studio 使用同一份后端能力目录。'
-    : activeCategory === 'bundle'
-    ? '预制包封装重复流程；打开后可查看包含的能力，并在 Studio 中直接使用。'
-    : activeTab === 'installed'
-      ? '按 Provider 管理能力、运行状态和配置。具体节点在 Studio 中选择。'
-      : '浏览可安装的 Provider；安装前会校验包信息、权限和运行适配器。'
+      ? '查看插件注册的节点功能实现、运行绑定、输入输出与依赖状态；Studio 使用同一份后端能力目录。'
+      : '管理当前工作区已安装的 Provider。未安装、未启用或缺少运行绑定的能力会明确显示为受阻。'
 
   const topTabs = (
-    <div className="flex w-full flex-wrap items-center justify-between gap-3">
-      <PluginPageTabs active={activeTab} onSelect={(tab) => updateRoute({ tab })} />
-      <Button
-        variant="outline"
-        size="sm"
-        className="min-h-10"
-        onClick={() => setDifyImportOpen(true)}
-      >
-        <Download aria-hidden="true" className="size-4" />
-        安装插件包
-      </Button>
+    <div className="flex w-full flex-col gap-3">
+      <div className="flex w-full flex-wrap items-center justify-between gap-3">
+        <PluginPageTabs active={activeTab} onSelect={(tab) => updateRoute({ tab })} />
+        <div className="flex flex-wrap items-center gap-2">
+          <select
+            aria-label="插件工作区"
+            className="min-h-10 rounded-md border bg-background px-3 text-sm"
+            value={workspaceId ?? ''}
+            onChange={(event) => {
+              const params = new URLSearchParams(searchParams.toString())
+              if (event.target.value) params.set('workspace', event.target.value)
+              else params.delete('workspace')
+              router.push(`/plugins?${params.toString()}`, { scroll: false })
+            }}
+            disabled={workspaces.isLoading || !workspaces.data?.length}
+          >
+            <option value="">选择工作区</option>
+            {workspaces.data?.map((workspace) => (
+              <option key={workspace.id} value={workspace.id}>{workspace.name}</option>
+            ))}
+          </select>
+          <Button
+            variant="outline"
+            size="sm"
+            className="min-h-10"
+            onClick={() => setDifyImportOpen(true)}
+            disabled={!workspaceId}
+          >
+            <Download aria-hidden="true" className="size-4" />
+            安装插件包
+          </Button>
+        </div>
+      </div>
+      <PluginSubtypeTabs active={activeSubtype} onSelect={updateSubtype} />
     </div>
   )
+  async function toggleInstallation(installation: BackendPluginInstallation) {
+    if (!workspaceId) return
+    try {
+      await updatePluginInstallation(workspaceId, installation.id, {
+        enabled: !installation.enabled,
+      })
+      await queryClient.invalidateQueries({
+        queryKey: ['plugin-installations', workspaceId],
+      })
+      await queryClient.invalidateQueries({
+        queryKey: [...NODE_CAPABILITY_CATALOG_QUERY_KEY, workspaceId],
+      })
+      setSelectedProvider(null)
+      toast.success(installation.enabled ? '插件已停用' : '插件已启用')
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : '插件状态更新失败')
+    }
+  }
 
   return (
     <PageContainer
@@ -668,15 +832,19 @@ export default function PluginHubPage() {
             </div>
           </div>
 
-          {pluginError || catalogError || capabilityError || opencliError ? (
+          {workspaceError || pluginError || catalogError || capabilityError || opencliError ? (
             <div className="mb-4 flex items-start gap-3 rounded-lg border border-warning/30 bg-warning/5 p-3 text-xs">
               <CircleAlert aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-warning" />
               <div>
                 <div className="font-medium">
-                  {pluginError ? '后端插件注册表暂时不可用' : '部分 Provider 状态暂时不可用'}
+                  {workspaceError
+                    ? '工作区访问不可用'
+                    : pluginError
+                      ? '后端插件注册表暂时不可用'
+                      : '部分 Provider 状态暂时不可用'}
                 </div>
                 <p className="mt-1 text-muted-foreground">
-                  {pluginError ?? catalogError ?? capabilityError ?? opencliError}
+                  {workspaceError ?? pluginError ?? catalogError ?? capabilityError ?? opencliError}
                 </p>
                 {pluginError ? (
                   <p className="mt-1 text-muted-foreground">
@@ -687,83 +855,76 @@ export default function PluginHubPage() {
             </div>
           ) : null}
 
-          {activeTab === 'capabilities' && nodeCatalog ? (
-            <section aria-label="后端节点能力摘要" className="mb-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-              <CapabilityMetric label="节点总数" value={nodeCatalog.summary.total} detail={`${nodeCatalog.categories.length} 个分类`} />
-              <CapabilityMetric label="可运行" value={nodeCatalogCounts.runnable} detail="已验证运行绑定" />
-              <CapabilityMetric label="组合能力" value={nodeCatalogCounts.composed} detail="预览，不计入可运行" />
-              <CapabilityMetric
-                label="待补齐"
-                value={nodeCatalogCounts.pending}
-                detail="受阻或需要插件"
-              />
-            </section>
-          ) : null}
-
-          {(pluginLoading || capabilityLoading || opencliLoading) &&
-          (installations === null || capabilities === null) ? (
-            <div className="grid min-h-48 place-items-center rounded-md border border-dashed">
-              <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                <Loader2 aria-hidden="true" className="size-4 animate-spin" />
-                正在读取插件状态
-              </div>
-            </div>
-          ) : providers.length ? (
-            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-              {providers.map((provider) => {
-                const providerNodes = providerNodeViews(provider, nodeCatalog, nodesById)
-                const state = providerState(provider, providerNodes, summary.adapterCount)
-                const capabilityCount = provider.id === 'opencli'
-                  ? summary.adapterCount
-                  : providerNodes.length
-                const metric = provider.id === 'opencli'
-                  ? `${capabilityCount} 个网站`
-                  : capabilityCount > 0
-                    ? `${capabilityCount} 项能力`
-                    : '查看详情'
-                return (
-                  <ProviderCard
-                    key={provider.installation?.id ?? provider.id}
-                    provider={provider}
-                    state={state}
-                    metric={metric}
-                    onOpen={() => {
-                      if (provider.id === 'opencli') {
-                        router.push('/plugins/opencli')
-                        return
-                      }
-                      setSelectedProvider(provider)
-                    }}
-                  />
-                )
-              })}
-            </div>
+          {activeSubtype === 'template' ? (
+            <TemplateCatalog workspaceId={workspaceId} />
           ) : (
-            <EmptyState
-              title={activeTab === 'installed'
-                ? pluginError
-                  ? '插件注册表不可用'
-                  : `${activeCategoryLabel}中没有匹配项`
-                : activeTab === 'capabilities'
-                  ? '暂无已登记的节点能力'
-                  : `${activeCategoryLabel}暂未上架`}
-              description={query
-                ? '清除搜索词或切换分类后再试。'
-                : '切换到其他分类，或通过“安装插件包”接入本地 Provider。'}
-            />
-          )}
+            <>
+              {activeTab === 'capabilities' && nodeCatalog ? (
+                <section aria-label="后端节点能力摘要" className="mb-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+                  <CapabilityMetric label="节点总数" value={nodeCatalog.summary.total} detail={`${nodeCatalog.categories.length} 个分类`} />
+                  <CapabilityMetric label="可运行" value={nodeCatalogCounts.runnable} detail="已验证运行绑定" />
+                  <CapabilityMetric label="组合能力" value={nodeCatalogCounts.composed} detail="预览，不计入可运行" />
+                  <CapabilityMetric label="待补齐" value={nodeCatalogCounts.pending} detail="受阻或需要插件" />
+                </section>
+              ) : null}
 
-          {activeTab === 'marketplace' ? (
-            <div className="mt-4 flex items-start gap-3 rounded-lg border border-dashed p-4">
-              <Settings2 aria-hidden="true" className="mt-0.5 size-4 text-muted-foreground" />
-              <div>
-                <div className="text-sm font-medium">市场目录已与安装执行分离</div>
-                <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                  当前页面只展示可安装包。真正安装需要插件运行时完成下载、校验、权限确认和 Provider 注册。
-                </p>
-              </div>
-            </div>
-          ) : null}
+              {(pluginLoading || capabilityLoading || opencliLoading) &&
+              (installations === null || capabilities === null) ? (
+                <div className="grid min-h-48 place-items-center rounded-md border border-dashed">
+                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                    <Loader2 aria-hidden="true" className="size-4 animate-spin" />
+                    正在读取插件状态
+                  </div>
+                </div>
+              ) : providers.length ? (
+                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                  {providers.map((provider) => {
+                    const providerNodes = providerNodeViews(
+                      provider,
+                      nodeCatalog,
+                      nodesById,
+                      activeCategory,
+                    )
+                    const state = providerState(provider, providerNodes, summary.adapterCount)
+                    const capabilityCount = provider.id === 'opencli'
+                      ? summary.adapterCount
+                      : providerNodes.length
+                    const metric = provider.id === 'opencli'
+                      ? `${capabilityCount} 个网站`
+                      : capabilityCount > 0
+                        ? `${capabilityCount} 项能力`
+                        : '查看详情'
+                    return (
+                      <ProviderCard
+                        key={provider.installation?.id ?? provider.id}
+                        provider={provider}
+                        state={state}
+                        metric={metric}
+                        onOpen={() => {
+                          if (provider.id === 'opencli') {
+                            router.push(
+                              workspaceId
+                                ? `/plugins/opencli?workspace=${encodeURIComponent(workspaceId)}`
+                                : '/plugins/opencli',
+                            )
+                            return
+                          }
+                          setSelectedProvider(provider)
+                        }}
+                      />
+                    )
+                  })}
+                </div>
+              ) : (
+                <EmptyState
+                  title={pluginError ? '插件注册表不可用' : `${activeCategoryLabel}中没有匹配项`}
+                  description={query
+                    ? '清除搜索词或切换分类后再试。'
+                    : '切换到其他分类，或通过“安装插件包”接入当前工作区的 Provider。'}
+                />
+              )}
+            </>
+          )}
         </main>
       </div>
 
@@ -776,10 +937,21 @@ export default function PluginHubPage() {
         {selectedProvider ? (
           <ProviderDetails
             provider={selectedProvider}
-            nodes={providerNodeViews(selectedProvider, nodeCatalog, nodesById)}
+            nodes={providerNodeViews(
+              selectedProvider,
+              nodeCatalog,
+              nodesById,
+              activeCategory,
+            )}
+            workspaceId={workspaceId}
             state={providerState(
               selectedProvider,
-              providerNodeViews(selectedProvider, nodeCatalog, nodesById),
+              providerNodeViews(
+                selectedProvider,
+                nodeCatalog,
+                nodesById,
+                activeCategory,
+              ),
               summary.adapterCount,
             )}
             opencliAdapterCount={summary.adapterCount}
@@ -787,6 +959,7 @@ export default function PluginHubPage() {
               setSelectedProvider(null)
               setRssImportOpen(true)
             }}
+            onToggleInstallation={toggleInstallation}
           />
         ) : null}
       </Sheet>
@@ -795,15 +968,16 @@ export default function PluginHubPage() {
       <DifyPackageImportDialog
         open={difyImportOpen}
         onOpenChange={setDifyImportOpen}
+        workspaceId={workspaceId}
         onImported={(installation) => {
           setSelectedProvider(backendProviderFromInstallation(installation))
-          updateRoute({ tab: 'installed' })
+          updateSubtype(pluginSubtypeForInstallation(installation))
         }}
       />
+
     </PageContainer>
   )
 }
-
 function backendProviderFromInstallation(
   installation: BackendPluginInstallation,
 ): RegistryPluginProvider {
@@ -841,6 +1015,9 @@ function backendProviderFromInstallation(
 function backendNodeCatalogProvider(
   catalog: BackendNodeCapabilityCatalog,
 ): RegistryPluginProvider {
+  const catalogCategories = [
+    ...new Set(catalog.nodes.map(backendNodeProviderCategory)),
+  ]
   return {
     id: 'backend-node-capabilities',
     name: 'OpenCLI 节点能力',
@@ -858,6 +1035,7 @@ function backendNodeCatalogProvider(
     ],
     bundled: true,
     nodeCatalog: true,
+    catalogCategories,
   }
 }
 
@@ -865,6 +1043,7 @@ function providerNodeViews(
   provider: RegistryPluginProvider,
   catalog: BackendNodeCapabilityCatalog | null,
   legacyNodesById: Map<string, WorkflowNodeCatalogItem>,
+  activeCategory: PluginCategoryFilter = 'all',
 ): ProviderNodeView[] {
   const referencedIds = new Set(provider.nodeIds)
   const installation = provider.installation
@@ -874,7 +1053,10 @@ function providerNodeViews(
   }
 
   const backendNodes = (catalog?.nodes ?? []).filter((node) => {
-    if (provider.nodeCatalog) return true
+    if (provider.nodeCatalog) {
+      return activeCategory === 'all'
+        || backendNodeProviderCategory(node) === activeCategory
+    }
     if (referencedIds.has(node.id)) return true
     return installation ? node.provider === installation.providerKey : false
   })
@@ -884,6 +1066,17 @@ function providerNodeViews(
     const node = legacyNodesById.get(id)
     return node ? [providerNodeViewFromLegacy(node)] : []
   })
+}
+
+function backendNodeProviderCategory(
+  node: BackendNodeCapabilityDefinition,
+): PluginProviderCategory {
+  if (node.category === 'ai') return 'model'
+  if (node.category === 'agent') return 'agent'
+  if (node.category === 'tool') return 'tool'
+  if (node.category === 'plugin' && node.kind === 'source') return 'datasource'
+  if (node.category === 'plugin' && node.kind === 'schedule') return 'trigger'
+  return 'extension'
 }
 
 function providerNodeViewFromBackend(node: BackendNodeCapabilityDefinition): ProviderNodeView {
@@ -925,6 +1118,16 @@ function pluginCategoryFromInstallation(
   if (types.has('datasource')) return 'datasource'
   if (types.has('trigger')) return 'trigger'
   if (types.has('agent_strategy')) return 'agent'
+  if (types.has('endpoint')) return 'extension'
+  return 'tool'
+}
+function pluginSubtypeForInstallation(
+  installation: BackendPluginInstallation,
+): PluginSubtype {
+  const types = new Set(installation.pluginTypes)
+  if (types.has('datasource')) return 'source'
+  if (types.has('agent_strategy')) return 'agent'
+  if (types.has('trigger')) return 'trigger'
   if (types.has('endpoint')) return 'extension'
   return 'tool'
 }

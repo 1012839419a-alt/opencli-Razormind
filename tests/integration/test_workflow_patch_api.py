@@ -587,6 +587,64 @@ async def test_demand_draft_assembles_xiaohongshu_need_into_native_nodes(client)
 
 
 @pytest.mark.asyncio
+async def test_demand_draft_routes_competitor_research_to_doubao(client):
+    project = _valid_workflow_project()
+    text = (
+        "围绕高吉星燕窝酸 DHA 藻油，持续发现同类竞品；"
+        "标签和搜索词必须由这条需求生成。先按每批 5 条轮转，"
+        "核验品牌、产品、配方、价格、渠道、监管、投诉、召回和检测风险；"
+        "只有含可读取具体 URL 的实体才能标记 grounded。"
+    )
+
+    response = await client.post(
+        "/api/v1/workflows/demand-draft",
+        json={"project": project, "text": text, "locale": "zh-CN"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["valid"] is True
+    assert data["missing_capabilities"] == []
+
+    adapters = {adapter["id"]: adapter for adapter in data["project"]["adapters"]}
+    adapter = adapters["source-doubao-research-capture"]
+    assert adapter["provider"] == "doubao_research"
+    assert adapter["config"]["channelType"] == "doubao_research"
+    assert adapter["config"]["settle_seconds"] == 240
+
+    nodes = {node["id"]: node for node in data["project"]["nodes"]}
+    source = nodes["source-doubao-research"]
+    assert source["ui"]["catalogId"] == "intelligence.source.doubao-research"
+    assert source["ui"]["label"] == "高吉星燕窝酸 DHA 藻油 · 需求研究"
+    assert source["params"]["question"] == text
+    assert source["params"]["rotationBatchSize"] == 5
+    assert source["params"]["demand"]["labelSource"] == "demand"
+    assert source["params"]["demand"]["labels"] == [
+        "高吉星燕窝酸 DHA 藻油",
+        "竞品",
+        "品牌",
+        "产品",
+        "配方",
+        "价格",
+        "渠道",
+        "监管",
+        "投诉",
+        "召回",
+        "检测",
+        "风险",
+    ]
+    assert "source-linux-do" not in nodes
+    assert "source-36kr" not in nodes
+
+    runtime_nodes = {
+        node["id"]: node for node in data["compile"]["plan"]["runtime"]["nodes"]
+    }
+    runtime_source = runtime_nodes["source-doubao-research"]
+    assert runtime_source["runtime"]["binding"]["binding_id"] == "workflow.source.fetch"
+    assert runtime_source["runtime"]["binding"]["input"]["channelType"] == "doubao_research"
+
+
+@pytest.mark.asyncio
 async def test_demand_draft_assembles_multi_source_need_through_merge(client):
     project = _valid_workflow_project()
 

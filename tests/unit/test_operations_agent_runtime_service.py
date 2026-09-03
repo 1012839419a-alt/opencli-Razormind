@@ -1,6 +1,7 @@
 import asyncio
+import pytest
 
-from sqlalchemy import update
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.models.identity import Team, User, Workspace
@@ -16,7 +17,8 @@ from backend.services import operations_agent_runtime_service
 def _model_configuration() -> dict:
     return {
         "agent_contract": {
-            "schema_version": "agent.contract.v1",
+            "schema_version": "agent.contract.v2",
+            "role": "operations_reviewer",
             "input_schema": {
                 "type": "object",
                 "properties": {"target_id": {"type": "string"}},
@@ -31,15 +33,46 @@ def _model_configuration() -> dict:
                 "type": "object",
                 "properties": {"last_target_id": {"type": "string"}},
             },
+            "required_capabilities": ["streaming", "tool_events"],
+            "tool_policy": {"allow": ["read"]},
+            "budget": {"max_turns": 8},
+            "quality_gates": [],
+            "evidence_requirements": [],
         },
         "runtime_binding": {
-            "schema_version": "agent.runtime-binding.v1",
-            "agent_url": "http://agent-runtime.test:19823",
-            "runtime": "pi",
+            "schema_version": "agent.runtime-binding.v2",
             "workflow": "operations-agent",
+            "preferred_agent_urls": ["http://agent-runtime.test:19823"],
+            "preferred_runtimes": ["pi"],
+            "model_binding": {
+                "schema_version": "agent.model-binding.v1",
+                "provider": "openrouter",
+                "model": "anthropic/claude-sonnet",
+                "auth_profile": "operations",
+            },
             "config": {},
         },
     }
+
+
+def _stub_runtime_selection(monkeypatch, runtime: str = "pi") -> None:
+    async def select_agent_runtime(*args, **kwargs):
+        return {
+            "schema_version": "agent.runtime-selection.v1",
+            "agent_url": "http://agent-runtime.test:19823",
+            "runtime": runtime,
+            "workflow": "operations-agent",
+            "capabilities": ["model_selection", "streaming", "tool_events"],
+            "provider": "openrouter",
+            "model": "anthropic/claude-sonnet",
+            "auth_profile": "operations",
+        }
+
+    monkeypatch.setattr(
+        operations_agent_runtime_service,
+        "select_agent_runtime",
+        select_agent_runtime,
+    )
 
 
 async def _seed_run(db_session) -> OperationsAgentRun:
@@ -101,22 +134,30 @@ async def _seed_run(db_session) -> OperationsAgentRun:
     return run
 
 
+@pytest.mark.parametrize("runtime", ["pi", "codex"])
 async def test_dispatch_uses_existing_runtime_protocol_and_validates_result(
-    db_engine, db_session, monkeypatch
+    db_engine, db_session, monkeypatch, runtime
 ):
     run = await _seed_run(db_session)
     session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
     monkeypatch.setattr(operations_agent_runtime_service, "AsyncSessionLocal", session_factory)
+    _stub_runtime_selection(monkeypatch, runtime=runtime)
     captured_task = {}
 
     async def send_agent_task(agent_url, task, on_event, timeout):
         captured_task.update(task)
         assert agent_url == "http://agent-runtime.test:19823"
-        assert timeout == 600.0
+        assert timeout == 1800.0
         await on_event(
             {
                 "type": "state",
                 "state": {"last_target_id": "daily-news"},
+            }
+        )
+        await on_event(
+            {
+                "type": "audit",
+                "audit": {"action": "read", "api_key": "must-not-persist"},
             }
         )
         return {
@@ -133,14 +174,60 @@ async def test_dispatch_uses_existing_runtime_protocol_and_validates_result(
     await operations_agent_runtime_service.dispatch_operations_agent_run(run.id)
 
     await db_session.refresh(run)
-    assert captured_task["runtime"] == "pi"
+    assert captured_task["runtime"] == runtime
     assert captured_task["instructions"] == "Inspect the requested target"
     assert captured_task["input"] == {"target_id": "daily-news"}
     assert captured_task["config"]["permission_mode"] == "observe_only"
+    assert captured_task["config"]["timeout_seconds"] == 1800
     assert run.status == "completed"
     assert run.state_payload == {"last_target_id": "daily-news"}
     assert run.output_payload == {"summary": "Target inspected"}
     assert run.error_message is None
+    assert run.execution_binding["runtime"] == runtime
+    assert run.evidence_payload["schema_version"] == "agent.run-evidence.v1"
+    assert run.evidence_payload["audit"][1]["api_key"] == "[REDACTED]"
+
+
+async def test_duplicate_dispatch_is_harmless_after_queued_claim(
+    db_engine,
+    db_session,
+    monkeypatch,
+):
+    run = await _seed_run(db_session)
+    session_factory = async_sessionmaker(
+        db_engine,
+        class_=AsyncSession,
+        expire_on_commit=False,
+    )
+    monkeypatch.setattr(operations_agent_runtime_service, "AsyncSessionLocal", session_factory)
+    _stub_runtime_selection(monkeypatch)
+    started = asyncio.Event()
+    release = asyncio.Event()
+    calls = 0
+
+    async def send_agent_task(agent_url, task, on_event, timeout):
+        nonlocal calls
+        calls += 1
+        started.set()
+        await release.wait()
+        return {"type": "done", "result": {"summary": "Target inspected"}}
+
+    monkeypatch.setattr(
+        operations_agent_runtime_service,
+        "send_agent_task",
+        send_agent_task,
+    )
+    first = asyncio.create_task(
+        operations_agent_runtime_service.dispatch_operations_agent_run(run.id)
+    )
+    await started.wait()
+    await operations_agent_runtime_service.dispatch_operations_agent_run(run.id)
+    release.set()
+    await first
+
+    await db_session.refresh(run)
+    assert calls == 1
+    assert run.status == "completed"
 
 
 async def test_dispatch_fails_closed_when_runtime_output_breaks_contract(
@@ -149,6 +236,7 @@ async def test_dispatch_fails_closed_when_runtime_output_breaks_contract(
     run = await _seed_run(db_session)
     session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
     monkeypatch.setattr(operations_agent_runtime_service, "AsyncSessionLocal", session_factory)
+    _stub_runtime_selection(monkeypatch)
 
     async def send_agent_task(agent_url, task, on_event, timeout):
         return {"type": "done", "result": {"unexpected": True}}
@@ -165,6 +253,48 @@ async def test_dispatch_fails_closed_when_runtime_output_breaks_contract(
     assert run.status == "failed"
     assert run.output_payload is None
     assert "output_schema" in run.error_message
+
+
+async def test_dispatch_fails_closed_when_required_evidence_is_missing(
+    db_engine, db_session, monkeypatch
+):
+    run = await _seed_run(db_session)
+    version = await db_session.scalar(
+        select(PublishedOperationsAgentVersion).where(
+            PublishedOperationsAgentVersion.operations_agent_id == run.operations_agent_id
+        )
+    )
+    configuration = _model_configuration()
+    configuration["agent_contract"]["evidence_requirements"] = ["citation"]
+    version.model_configuration = configuration
+    await db_session.commit()
+    session_factory = async_sessionmaker(
+        db_engine,
+        class_=AsyncSession,
+        expire_on_commit=False,
+    )
+    monkeypatch.setattr(
+        operations_agent_runtime_service,
+        "AsyncSessionLocal",
+        session_factory,
+    )
+    _stub_runtime_selection(monkeypatch)
+
+    async def send_agent_task(agent_url, task, on_event, timeout):
+        return {"type": "done", "result": {"summary": "No evidence"}}
+
+    monkeypatch.setattr(
+        operations_agent_runtime_service,
+        "send_agent_task",
+        send_agent_task,
+    )
+
+    await operations_agent_runtime_service.dispatch_operations_agent_run(run.id)
+
+    await db_session.refresh(run)
+    assert run.status == "failed"
+    assert "citation" in run.error_message
+    assert run.evidence_payload["lineage"][0]["type"] == "agent_runtime"
 
 
 async def test_dispatch_rejects_automatic_profile_without_governed_gateway(
@@ -198,6 +328,7 @@ async def test_paused_run_is_not_overwritten_by_terminal_result(db_engine, db_se
     run = await _seed_run(db_session)
     session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
     monkeypatch.setattr(operations_agent_runtime_service, "AsyncSessionLocal", session_factory)
+    _stub_runtime_selection(monkeypatch)
 
     async def send_agent_task(agent_url, task, on_event, timeout):
         async with session_factory() as session:

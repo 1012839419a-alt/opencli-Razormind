@@ -15,13 +15,17 @@ from backend.scheduler import (
 
 
 @pytest.fixture(autouse=True)
-def _reset_warned_bad_cron():
+def _reset_warned_bad_cron(monkeypatch):
     """AUDIT C2's warn-once cache is a process-lifetime module-level set by
     design — reset it around every test so test execution order can't leak
     warn state between cases (see triage doc P3-6 on shared process state)."""
     import backend.scheduler as sched_module
 
     sched_module._warned_bad_cron.clear()
+    monkeypatch.setattr(
+        "backend.services.automation_schedule_service.dispatch_due_automations",
+        AsyncMock(return_value=[]),
+    )
     yield
     sched_module._warned_bad_cron.clear()
 
@@ -308,6 +312,36 @@ async def test_scheduler_loop_dispatches_once_when_fire_in_window():
     mock_fires.assert_called_once_with(
         "* * * * *", "sched-fire", t0, t1, name="every minute"
     )
+
+
+@pytest.mark.asyncio
+async def test_scheduler_loop_recovers_queued_scheduled_agent_runs():
+    from backend.scheduler import _scheduler_loop
+
+    t0 = datetime(2024, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+    t1 = datetime(2024, 6, 1, 12, 1, 0, tzinfo=timezone.utc)
+    iteration = 0
+
+    async def mock_sleep(_seconds):
+        nonlocal iteration
+        iteration += 1
+        if iteration >= 3:
+            raise asyncio.CancelledError()
+
+    recover = AsyncMock(return_value=["scheduled-run-1"])
+    with (
+        patch("asyncio.sleep", side_effect=mock_sleep),
+        patch("backend.scheduler._now", side_effect=[t0, t1]),
+        patch("backend.scheduler._get_enabled_schedules", new=AsyncMock(return_value=[])),
+        patch("backend.executor.get_executor", return_value=AsyncMock()),
+        patch(
+            "backend.services.scheduled_run_recovery.recover_queued_scheduled_runs_local",
+            recover,
+        ),
+    ):
+        await _scheduler_loop()
+
+    recover.assert_awaited_once()
 
 
 @pytest.mark.asyncio

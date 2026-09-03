@@ -57,6 +57,7 @@ class OpenTabsRuntimeAdapter(RuntimeAdapter):
         resume_by_id=False,
         checkpoint="none",
         concurrent_sessions=True,
+        features=frozenset({"browser", "tool_events"}),
     )
 
     def validate_config(self, config: dict[str, Any]) -> list[str]:

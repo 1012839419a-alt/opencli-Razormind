@@ -106,23 +106,19 @@ IMAGE_TAG=source docker compose -f docker-compose.yml -f docker-compose.build.ym
 
 ## 浏览器引擎与 CloakBrowser
 
-内置浏览器默认使用 Chromium。需要切换到 CloakBrowser 时，先在未提交的 `.env` 中设置构建和运行配置；`BROWSER_ENGINE` 必须与镜像构建时的变体一致：
+内置浏览器默认使用 Chromium。需要切换到 CloakBrowser 时，先在未提交的 .env 中设置构建和运行配置；BROWSER_ENGINE 必须与镜像构建时的变体一致：
 
 ~~~bash
-# .env（仅填写自己的运行环境；不要提交真实 license key）
 BROWSER_ENGINE=cloakbrowser
 CLOAKBROWSER_VERSION=0.5.10
 CLOAKBROWSER_CACHE_DIR=/opt/cloakbrowser/cache
 CLOAKBROWSER_LICENSE_KEY=your-runtime-license-key
 
-# 第一步：使用固定版本构建匹配的浏览器镜像
 docker compose -f docker-compose.yml -f docker-compose.build.yml build agent-1
-
-# 第二步：只使用已构建镜像启动内置浏览器
 docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --no-build agent-1
 ~~~
 
-`CLOAKBROWSER_VERSION` 只作为构建参数使用，`CLOAKBROWSER_LICENSE_KEY` 只在运行时注入，不会写入镜像。请遵守 CloakBrowser 的许可证和密钥保管要求，不要把密钥写入仓库、Dockerfile、构建参数或日志。CloakBrowser 不解决 CAPTCHA，也不内置代理轮换；实际可用性仍取决于站点、网络、账号状态和上游版本，不保证对任意站点都有效。引擎启动失败会直接报告，**不自动降级**到 Chromium 或其他引擎。
+CLOAKBROWSER_VERSION 只作为构建参数使用，CLOAKBROWSER_LICENSE_KEY 只在运行时注入，不会写入镜像。不要把密钥写入仓库、Dockerfile、构建参数或日志。引擎启动失败会直接报告，不自动降级到 Chromium。
 
 ## Restart recovery and support
 

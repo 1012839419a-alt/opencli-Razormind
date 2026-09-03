@@ -4,8 +4,9 @@ import { test } from 'node:test'
 
 const read = (path) => readFile(new URL(`../${path}`, import.meta.url), 'utf8')
 
-test('inbox is built only from currently available operational APIs', async () => {
+test('inbox combines existing operational signals with server-backed human approvals', async () => {
   const page = await read('app/(app)/inbox/page.tsx')
+  const approvalDetail = await read('components/inbox/queue-detail.tsx')
   const hooks = await read('lib/api/hooks.ts')
   const endpoints = await read('lib/api/endpoints.ts')
 
@@ -16,17 +17,21 @@ test('inbox is built only from currently available operational APIs', async () =
   assert.match(hooks, /export function useInfiniteTasks/)
   assert.match(hooks, /export function useInfiniteNotificationLogs/)
   assert.match(hooks, /export function useInfiniteControlActions/)
-  assert.match(endpoints, /listNotificationLogs = \(params\?: \{ rule_id\?: string; page\?: number; limit\?: number \}\)/)
+  assert.match(
+    endpoints,
+    /listNotificationLogs = \(params\?: \{\s*rule_id\?: string;\s*page\?: number;\s*limit\?: number;\s*\}\) =>/,
+  )
   assert.doesNotMatch(page, /useMyWorkspaces|useOperationsInbox|\/workspaces|operations-inbox/)
 })
 
 test('inbox uses a Linear-style queue while preserving destinations for underlying records', async () => {
   const page = await read('app/(app)/inbox/page.tsx')
+  const detail = await read('components/inbox/queue-detail.tsx')
 
   assert.match(page, /data-testid="inbox-workbench"/)
   assert.match(page, /lg:h-\[calc\(100dvh-3\.5rem\)\]/)
   assert.match(page, /data-testid="inbox-queue-scroll"/)
-  assert.match(page, /data-testid="inbox-detail-scroll"/)
+  assert.match(detail, /data-testid="inbox-detail-scroll"/)
   assert.doesNotMatch(page, /<PageContainer/)
   assert.doesNotMatch(page, /className="overflow-hidden rounded-xl border bg-card shadow-sm"/)
   assert.match(page, /ACTION_CENTER_TABS/)
@@ -43,7 +48,7 @@ test('inbox uses a Linear-style queue while preserving destinations for underlyi
   assert.match(page, /href: `\/tasks\/\$\{task\.id\}`/)
   assert.match(page, /href: '\/notifications'/)
   assert.match(page, /href: '\/control\/actions'/)
-  assert.match(page, /href=\{`\/sources\/\$\{item\.sourceId\}`\}/)
+  assert.match(detail, /href=\{`\/sources\/\$\{item\.sourceId\}`\}/)
 })
 
 test('inbox preserves queue state and progressively loads hundreds-scale signal sets', async () => {
@@ -65,8 +70,8 @@ test('inbox preserves queue state and progressively loads hundreds-scale signal 
 test('inbox renders explicit initial, partial, empty, and total failure states', async () => {
   const page = await read('app/(app)/inbox/page.tsx')
 
-  assert.match(page, /const isInitialLoading = queries\.every/)
-  assert.match(page, /const isTotalFailure = queries\.every/)
+  assert.match(page, /const isInitialLoading =\s+queries\.every/)
+  assert.match(page, /const isTotalFailure =\s+queries\.every/)
   assert.match(page, /const partialFailures =/)
   assert.match(page, /暂时无法读取，其余信号仍可处理/)
   assert.match(page, /当前视图已经清空/)

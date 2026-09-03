@@ -5,13 +5,20 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.database import get_db
 from backend.models.source import DataSource
 from backend.models.task import TaskRun, TaskRunEvent
 from backend.schemas.common import ApiResponse, PaginationMeta
-from backend.schemas.task import CollectionTaskRead, TaskRunRead, TaskTriggerRequest
+from backend.schemas.task import (
+    CollectionTaskRead,
+    TaskRecoveryRead,
+    TaskRecoveryRequest,
+    TaskRunRead,
+    TaskTriggerRequest,
+)
 from backend.services import source_service, task_service
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
@@ -93,6 +100,98 @@ async def get_task(task_id: str, db: AsyncSession = Depends(get_db)) -> ApiRespo
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
     return ApiResponse.ok(CollectionTaskRead.model_validate(task))
+
+
+@router.post("/{task_id}/recover", response_model=ApiResponse[TaskRecoveryRead], status_code=202)
+async def recover_task(
+    task_id: str,
+    body: TaskRecoveryRequest,
+    db: AsyncSession = Depends(get_db),
+) -> ApiResponse:
+    """Start a new, notification-free recovery task for one failed task."""
+    task = await task_service.get_task(db, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    existing = await task_service.get_recovery_by_idempotency_key(db, body.idempotency_key)
+    if existing:
+        if existing.retry_of_task_id != task_id:
+            raise HTTPException(status_code=409, detail="Idempotency key belongs to another task")
+        return ApiResponse.ok(
+            TaskRecoveryRead(
+                task_id=existing.id,
+                retry_of_task_id=task_id,
+                status=existing.status,
+                recovery_mode=existing.recovery_mode or body.mode,
+                idempotency_replayed=True,
+            )
+        )
+
+    if task.status != "failed":
+        raise HTTPException(status_code=409, detail="Only failed tasks can be recovered")
+
+    source = await source_service.get_source(db, task.source_id)
+    if not source:
+        raise HTTPException(status_code=404, detail="Source not found")
+    if not source.enabled:
+        raise HTTPException(status_code=400, detail="Source is disabled")
+
+    in_flight = await task_service.get_inflight_recovery(db, task_id)
+    if in_flight:
+        raise HTTPException(status_code=409, detail="A recovery is already in progress")
+
+    try:
+        recovery = await task_service.create_task(
+            db,
+            source_id=task.source_id,
+            trigger_type="recovery",
+            parameters=dict(task.parameters),
+            priority=task.priority,
+            agent_id=task.agent_id,
+            retry_of_task_id=task.id,
+            recovery_mode=body.mode,
+            recovery_reason=body.reason,
+            initiating_actor=body.initiating_actor,
+            recovery_idempotency_key=body.idempotency_key,
+        )
+        await db.commit()
+    except IntegrityError:
+        # A concurrent request may win the unique idempotency constraint after
+        # the read above. Re-read it and return the durable winner.
+        await db.rollback()
+        existing = await task_service.get_recovery_by_idempotency_key(db, body.idempotency_key)
+        if not existing or existing.retry_of_task_id != task_id:
+            raise HTTPException(status_code=409, detail="Recovery request conflicts")
+        return ApiResponse.ok(
+            TaskRecoveryRead(
+                task_id=existing.id,
+                retry_of_task_id=task_id,
+                status=existing.status,
+                recovery_mode=existing.recovery_mode or body.mode,
+                idempotency_replayed=True,
+            )
+        )
+
+    from backend.executor import get_executor
+
+    try:
+        await get_executor().dispatch_collection(recovery.id, dict(recovery.parameters))
+    except Exception as exc:
+        failed_recovery = await task_service.get_task(db, recovery.id)
+        if failed_recovery:
+            failed_recovery.status = "failed"
+            failed_recovery.error_message = f"Recovery dispatch failed: {exc}"
+            await db.commit()
+        raise HTTPException(status_code=503, detail="Recovery could not be dispatched") from exc
+
+    return ApiResponse.ok(
+        TaskRecoveryRead(
+            task_id=recovery.id,
+            retry_of_task_id=task_id,
+            status=recovery.status,
+            recovery_mode=body.mode,
+        )
+    )
 
 
 @router.get("/{task_id}/runs", response_model=ApiResponse[list[TaskRunRead]])

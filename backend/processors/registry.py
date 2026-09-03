@@ -28,6 +28,7 @@ def _load_all_processors() -> None:
         external_http_processor,
         local_processor,
         openai_processor,
+        paw_processor,
     )
 
 

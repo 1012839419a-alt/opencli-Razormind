@@ -1,0 +1,104 @@
+{
+  "blockers": [],
+  "changeId": "workflow-editor-design-pipeline-v090",
+  "evidence": [
+    "openspec/changes/workflow-editor-design-pipeline-v090/qa.md",
+    "DESIGN.md",
+    "MOTION.md",
+    "openspec/changes/workflow-editor-design-pipeline-v090/toolchain-plan.json"
+  ],
+  "extensions": {
+    "legacy": {
+      "artifactRoot": "openspec/changes/workflow-editor-design-pipeline-v090",
+      "capabilities": {
+        "fallbacks": [],
+        "missing": []
+      },
+      "decisions": [
+        "Treat reference sites and DESIGN.md templates as attributed evidence, not product authority"
+      ],
+      "designSynthesis": {
+        "manifest": "openspec/changes/workflow-editor-design-pipeline-v090/design-synthesis.json",
+        "output": "DESIGN.md",
+        "stage": "implementation",
+        "status": "ready-to-implement"
+      },
+      "gbrain": {
+        "detected": false,
+        "paths": [],
+        "syncPlanned": false
+      },
+      "motion": {
+        "implementationLibrary": "unknown",
+        "motionSpec": "openspec/changes/workflow-editor-design-pipeline-v090/motion.md",
+        "reducedMotion": "pending",
+        "required": false
+      },
+      "openSpec": {
+        "changeId": "workflow-editor-design-pipeline-v090",
+        "detected": true,
+        "paths": [
+          "openspec/changes/workflow-editor-design-pipeline-v090"
+        ]
+      },
+      "projectRoot": ".",
+      "qa": {
+        "evidenceRoot": "openspec/changes/workflow-editor-design-pipeline-v090/qa.md",
+        "scores": {},
+        "status": "not-run"
+      },
+      "surfaces": [
+        "DESIGN.md"
+      ]
+    },
+    "legacyEvents": {
+      "count": 5,
+      "sha256": "8b58ec40b73e5c04546d9be0f9f4411db0b7d3a6e601728cd4f7539b4a0f4084"
+    },
+    "legacyStatus": "in-progress",
+    "unknown": {
+      "motionFoundation": {
+        "path": "MOTION.md",
+        "posture": "minimal",
+        "primitiveRegistry": "design-pipeline.motion-primitives.v1",
+        "selectedPrimitives": [
+          "reveal.trim-line"
+        ],
+        "sha256": "31c6d70594b5c0c7d396544ff84a2e31e30795c657a24592869cf5f26094331e",
+        "status": "ready"
+      }
+    }
+  },
+  "foundations": {
+    "design": {
+      "path": "DESIGN.md",
+      "sha256": "150086d05ca2940d2e741501de2f3d86c99454415d846abf832c0a752d8ffbd6",
+      "status": "ready",
+      "validator": "designer-pipeline foundation check --kind design"
+    },
+    "motion": {
+      "path": "MOTION.md",
+      "sha256": "31c6d70594b5c0c7d396544ff84a2e31e30795c657a24592869cf5f26094331e",
+      "status": "ready",
+      "validator": "designer-pipeline foundation check --kind motion"
+    }
+  },
+  "lastEventSeq": 5,
+  "migration": {
+    "sourceNextField": "nextActions",
+    "sourcePhaseField": "phase",
+    "sourceSchema": "design-pipeline.state.v1",
+    "sourceSha256": "e2d93306d0d4113b496a067613a494c4cf97fdff9bd0889ec11816444ec7e3d5",
+    "sourceStatus": "in-progress"
+  },
+  "nextActions": [
+    "Use the validated foundations for future workflow editor design changes."
+  ],
+  "phase": "archive",
+  "registryVersion": "design-pipeline.phases.v2",
+  "revision": 5,
+  "sceneRuntime": null,
+  "schema": "design-pipeline.state.v2",
+  "status": "complete",
+  "updatedAt": "2026-08-26T15:54:15.485Z"
+}

@@ -76,7 +76,12 @@ import {
 } from "@/lib/workflow/workflow-outline"
 import { findWorkflowProjectNodeByCanvasId } from "@/lib/workflow/node-path"
 import {
+  collectorKindForCatalogId,
+  createCollectorSource,
+  isCollectorNodeParams,
   isOpenCLISourceSlotArray,
+  type CollectorNodeParams,
+  type CollectorSourceDefinition,
   type OpenCLISourceSlot,
 } from "@/lib/workflow/node-catalog"
 import {
@@ -112,6 +117,10 @@ import {
   workflowStatusText,
 } from "./inspector-shell"
 import { cn } from "@/lib/utils"
+import {
+  FeishuBitableTargetEditor,
+  type FeishuBitableTargetParams,
+} from "./feishu-bitable-target-editor"
 
 const edgeTypeOptions = [
   { value: "workflow", label: "默认（贝塞尔曲线）" },
@@ -1589,6 +1598,13 @@ export function Inspector({ compact = false, onClose }: { compact?: boolean; onC
   const openCLISources = isOpenCLISourceSlotArray(configurationNode?.params.sources)
     ? configurationNode.params.sources
     : undefined
+  const collectorKind = collectorKindForCatalogId(configurationNode?.ui?.catalogId)
+  const collectorParams = collectorKind && isCollectorNodeParams(
+    configurationNode?.params,
+    collectorKind,
+  )
+    ? configurationNode.params as CollectorNodeParams
+    : undefined
   const publicParameterPanel = parameterInterfaceView ? (
     <section className="space-y-2 rounded-[3px] border border-[#35404b] bg-[#101216]/84 p-3">
       <div>
@@ -1672,6 +1688,12 @@ export function Inspector({ compact = false, onClose }: { compact?: boolean; onC
         ) : (
           <>
         {publicParameterPanel}
+        {configurationNode?.ui?.catalogId === "intelligence.sink.feishu-bitable" ? (
+          <FeishuBitableTargetEditor
+            params={(configurationNode.params ?? {}) as FeishuBitableTargetParams}
+            onChange={(patch) => updateWorkflowNodeParams(configurationNodeId, patch)}
+          />
+        ) : null}
         <section className="space-y-3 rounded-[3px] border border-[#20242a] bg-[#101216]/84 p-3">
           <div>
             <SectionCaption>{copy.businessConfig}</SectionCaption>
@@ -1789,6 +1811,16 @@ export function Inspector({ compact = false, onClose }: { compact?: boolean; onC
             sources={openCLISources}
             language={language}
             onChange={(sources) => updateWorkflowNodeParams(configurationNodeId, { sources })}
+          />
+        ) : null}
+
+        {collectorParams && collectorKind ? (
+          <CollectorSourceEditor
+            key={configurationNodeId}
+            kind={collectorKind}
+            params={collectorParams}
+            language={language}
+            onChange={(params) => updateWorkflowNodeParams(configurationNodeId, params)}
           />
         ) : null}
 
@@ -2107,6 +2139,220 @@ function findImplementationNode(node: WorkflowProjectNode | undefined): Workflow
     if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return false
     return (candidate as { id?: unknown }).id === implementationNodeId
   })
+}
+
+function CollectorSourceEditor({
+  kind,
+  params,
+  language,
+  onChange,
+}: {
+  kind: "web" | "api" | "rss" | "cli"
+  params: CollectorNodeParams
+  language: WorkflowLanguage
+  onChange: (params: CollectorNodeParams) => void
+}) {
+  const isZh = language === "zh-CN"
+  const updateSource = (index: number, patch: Partial<CollectorSourceDefinition>) => {
+    onChange({
+      ...params,
+      sources: params.sources.map((source, sourceIndex) => (
+        sourceIndex === index
+          ? { ...source, ...patch } as CollectorSourceDefinition
+          : source
+      )),
+    })
+  }
+  const removeSource = (index: number) => {
+    onChange({
+      ...params,
+      sources: params.sources.filter((_, sourceIndex) => sourceIndex !== index),
+    })
+  }
+  const moveSource = (index: number, direction: -1 | 1) => {
+    const nextIndex = index + direction
+    if (nextIndex < 0 || nextIndex >= params.sources.length) return
+    const sources = [...params.sources]
+    const [source] = sources.splice(index, 1)
+    sources.splice(nextIndex, 0, source)
+    onChange({ ...params, sources })
+  }
+  const addSource = () => {
+    const source = createCollectorSource(kind, `${kind}-${params.sources.length + 1}`)
+    onChange({ ...params, sources: [...params.sources, source] })
+  }
+  const sourceTypeLabel = {
+    web: isZh ? "网页" : "Web",
+    api: "API",
+    rss: "RSS",
+    cli: "CLI",
+  }[kind]
+  const previewItems = collectorPreviewItems({ items: [] })
+
+  return (
+    <section className="space-y-3 rounded-md border border-ops-line bg-ops-panel p-3">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <SectionCaption>{isZh ? `${sourceTypeLabel} 来源` : `${sourceTypeLabel} sources`}</SectionCaption>
+          <p className="mt-1 text-2xs leading-relaxed text-zinc-400">
+            {isZh
+              ? "来源按顺序并行执行；凭证只能引用已保存的 credential。"
+              : "Sources run in order-preserving parallel fan-out; credentials are references only."}
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={addSource}
+          className="inline-flex h-7 items-center gap-1 rounded-xs border border-ops-line px-2 font-mono text-2xs text-primary-400 hover:border-primary-500"
+        >
+          <Plus className="size-3" />
+          {isZh ? "添加来源" : "Add source"}
+        </button>
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          disabled
+          className="rounded-xs border border-ops-line px-2 py-1 font-mono text-3xs text-zinc-500 disabled:opacity-60"
+        >
+          {isZh ? "测试全部" : "Test all"}
+        </button>
+        <button
+          type="button"
+          disabled
+          className="rounded-xs border border-ops-line px-2 py-1 font-mono text-3xs text-zinc-500 disabled:opacity-60"
+        >
+          {isZh ? "重试失败项" : "Retry failed"}
+        </button>
+        <span className="font-mono text-3xs text-zinc-500">
+          publishedAt / fetchedAt
+        </span>
+      </div>
+
+      {params.sources.map((source, index) => (
+        <div key={source.sourceId} className="space-y-2 rounded-md border border-ops-line bg-ops-raised p-3">
+          <div className="flex items-center justify-between gap-2">
+            <span className="font-mono text-2xs text-zinc-300">{source.sourceId}</span>
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                aria-label={isZh ? "上移来源" : "Move source up"}
+                disabled={index === 0}
+                onClick={() => moveSource(index, -1)}
+                className="rounded-xs border border-ops-line px-1.5 py-1 font-mono text-3xs text-zinc-400 disabled:opacity-40"
+              >
+                ↑
+              </button>
+              <button
+                type="button"
+                aria-label={isZh ? "下移来源" : "Move source down"}
+                disabled={index === params.sources.length - 1}
+                onClick={() => moveSource(index, 1)}
+                className="rounded-xs border border-ops-line px-1.5 py-1 font-mono text-3xs text-zinc-400 disabled:opacity-40"
+              >
+                ↓
+              </button>
+              <button
+                type="button"
+                aria-label={isZh ? "移除来源" : "Remove source"}
+                onClick={() => removeSource(index)}
+                className="rounded-xs border border-ops-line px-1.5 py-1 text-signal-danger"
+              >
+                <Trash2 className="size-3" />
+              </button>
+            </div>
+          </div>
+
+          <label className="block space-y-1">
+            <span className="font-mono text-3xs uppercase tracking-wider text-zinc-500">
+              {isZh ? "名称" : "Name"}
+            </span>
+            <Input
+              value={source.name ?? ""}
+              className={houdiniInputClass}
+              onChange={(event) => updateSource(index, { name: event.target.value })}
+            />
+          </label>
+
+          {source.kind === "web" || source.kind === "api" ? (
+            <label className="block space-y-1">
+              <span className="font-mono text-3xs uppercase tracking-wider text-zinc-500">URL</span>
+              <Input
+                value={source.url}
+                className={houdiniInputClass}
+                onChange={(event) => updateSource(index, { url: event.target.value })}
+              />
+            </label>
+          ) : null}
+
+          {source.kind === "rss" ? (
+            <label className="block space-y-1">
+              <span className="font-mono text-3xs uppercase tracking-wider text-zinc-500">Feed URL</span>
+              <Input
+                value={source.feedUrl}
+                className={houdiniInputClass}
+                onChange={(event) => updateSource(index, { feedUrl: event.target.value })}
+              />
+            </label>
+          ) : null}
+
+          {source.kind === "api" ? (
+            <label className="block space-y-1">
+              <span className="font-mono text-3xs uppercase tracking-wider text-zinc-500">
+                {isZh ? "凭证引用（可选）" : "Credential reference (optional)"}
+              </span>
+              <Input
+                value={source.credentialRef ?? ""}
+                placeholder="credential://api-example"
+                className={houdiniInputClass}
+                onChange={(event) => updateSource(index, {
+                  credentialRef: event.target.value || undefined,
+                  credentialScheme: event.target.value
+                    ? source.credentialScheme ?? "bearer"
+                    : undefined,
+                })}
+              />
+            </label>
+          ) : null}
+
+          {source.kind === "cli" ? (
+            <label className="block space-y-1">
+              <span className="font-mono text-3xs uppercase tracking-wider text-zinc-500">
+                {isZh ? "已注册 adapterNodeId" : "Registered adapterNodeId"}
+              </span>
+              <Input
+                value={source.adapterNodeId}
+                className={houdiniInputClass}
+                onChange={(event) => updateSource(index, { adapterNodeId: event.target.value })}
+              />
+              <p className="text-3xs leading-relaxed text-zinc-500">
+                {isZh
+                  ? "仅允许填写目录中的只读 adapter；不接受 Shell 或 commandLine。"
+                  : "Only registered read adapters are allowed; Shell and commandLine are not accepted."}
+              </p>
+            </label>
+          ) : null}
+        </div>
+      ))}
+
+      {params.sources.length === 0 ? (
+        <p className="rounded-xs border border-dashed border-ops-line p-3 text-2xs text-zinc-500">
+          {isZh ? "尚未配置来源。" : "No sources configured."}
+        </p>
+      ) : null}
+      {previewItems.length > 0 ? (
+        <div className="space-y-1 border-t border-ops-line pt-2">
+          {previewItems.map((item, index) => (
+            <div key={index} className="font-mono text-3xs text-zinc-500">{String(item)}</div>
+          ))}
+        </div>
+      ) : null}
+    </section>
+  )
+}
+
+function collectorPreviewItems(output: { items: unknown[] }) {
+  return output.items.slice(0, 50)
 }
 
 function OpenCLISourceEditor({

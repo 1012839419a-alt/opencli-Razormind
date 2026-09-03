@@ -1,9 +1,9 @@
 'use client'
 
 import { useQueryClient } from '@tanstack/react-query'
-import { Bot, Check, Loader2, Send, ShieldCheck, X } from 'lucide-react'
-import { usePathname } from 'next/navigation'
-import { FormEvent, KeyboardEvent, useEffect, useState } from 'react'
+import { Bot, Check, Loader2, Plus, Send, ShieldCheck, X } from 'lucide-react'
+import { usePathname, useSearchParams } from 'next/navigation'
+import { FormEvent, KeyboardEvent, useEffect, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
@@ -15,8 +15,18 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Textarea } from '@/components/ui/textarea'
+import {
+  closeAgentConversation,
+  createAgentConversation,
+  getAgentConversation,
+  listAgentConversations,
+  sendAgentConversationMessage,
+  type AgentConversation,
+  type AgentConversationContext,
+  type AgentConversationDetail,
+  type AgentConversationProposal,
+} from '@/lib/api/agent-conversations'
 import { apiClient } from '@/lib/api/client'
-import type { ApiResponse } from '@/lib/api/types'
 import { ROUTE_LABELS } from '@/lib/navigation'
 
 type AgentMessage = {
@@ -24,21 +34,38 @@ type AgentMessage = {
   content: string
 }
 
-type AgentProposal = {
-  tool: string
-  args: Record<string, unknown>
-  summary: string
-  diff: string
-  work_item_id?: string | null
-  workspace_id?: string | null
-  proposal_version?: string | null
-}
+type AgentProposal = AgentConversationProposal
 
 type AgentReply = {
   type: 'message' | 'proposal'
   content?: string | null
   proposal?: AgentProposal | null
 }
+
+function restoreConversation(detail: AgentConversationDetail) {
+  const restoredMessages: AgentMessage[] = []
+  let restoredProposal: AgentProposal | null = null
+  let restoredError: string | null = null
+
+  for (const turn of [...detail.turns].sort((left, right) => left.sequence - right.sequence)) {
+    if (turn.user_content) {
+      restoredMessages.push({ role: 'user', content: turn.user_content })
+    }
+    const response = turn.response as AgentReply | null | undefined
+    if (response?.type === 'proposal' && response.proposal) {
+      restoredProposal = response.proposal
+    } else if (response?.type === 'message') {
+      const content = response.content?.trim()
+      if (content) restoredMessages.push({ role: 'assistant', content })
+    }
+    if (turn.status === 'failed' && turn.error_message) {
+      restoredError = turn.error_message
+    }
+  }
+
+  return { messages: restoredMessages, proposal: restoredProposal, error: restoredError }
+}
+
 
 export function GlobalAgentDock({
   open,
@@ -50,58 +77,199 @@ export function GlobalAgentDock({
   initialPrompt?: string
 }) {
   const pathname = usePathname()
+  const searchParams = useSearchParams()
   const queryClient = useQueryClient()
+  const navigationParams = new URLSearchParams(searchParams.toString())
+  const workspaceId = navigationParams.get('workspace')
+  const context: AgentConversationContext = {
+    surface: ROUTE_LABELS[pathname] ?? pathname,
+    project_id: navigationParams.get('project')
+      ?? pathname.match(/^\/studio\/projects\/([^/]+)/)?.[1]
+      ?? null,
+    workflow_id: navigationParams.get('workflow'),
+    run_id: navigationParams.get('run'),
+    source_id: navigationParams.get('source')
+      ?? pathname.match(/^\/sources\/([^/]+)/)?.[1]
+      ?? null,
+  }
+  const storageKey = workspaceId ? `opencli:agent-session:${workspaceId}` : null
+  const [sessions, setSessions] = useState<AgentConversation[]>([])
+  const [sessionId, setSessionId] = useState<string | null>(null)
+  const [loadedWorkspaceId, setLoadedWorkspaceId] = useState<string | null>(null)
   const [messages, setMessages] = useState<AgentMessage[]>([])
   const [input, setInput] = useState('')
   const [proposal, setProposal] = useState<AgentProposal | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [sending, setSending] = useState(false)
   const [confirming, setConfirming] = useState(false)
+  const [loadingSessions, setLoadingSessions] = useState(false)
+  const [loadingConversation, setLoadingConversation] = useState(false)
+  const [closing, setClosing] = useState(false)
+  const skipConversationLoadRef = useRef<string | null>(null)
+
   useEffect(() => {
-    if (open && initialPrompt) {
-      setInput(initialPrompt)
-    }
+    if (open && initialPrompt) setInput(initialPrompt)
   }, [initialPrompt, open])
+
+  useEffect(() => {
+    skipConversationLoadRef.current = null
+    if (!open) return
+    setLoadingSessions(false)
+    setLoadingConversation(false)
+    setLoadedWorkspaceId(null)
+    setSessions([])
+    setSessionId(null)
+    setMessages([])
+    setProposal(null)
+    setError(null)
+    if (!workspaceId || !storageKey) return
+
+    let cancelled = false
+    setLoadingSessions(true)
+    void listAgentConversations(workspaceId)
+      .then((nextSessions) => {
+        if (cancelled) return
+        const storedId = window.localStorage.getItem(storageKey)
+        const storedSession = storedId
+          ? nextSessions.find((session) => session.id === storedId)
+          : undefined
+        const selectedId = storedSession?.id ?? nextSessions[0]?.id ?? null
+        setSessions(nextSessions)
+        setLoadedWorkspaceId(workspaceId)
+        setSessionId(selectedId)
+        if (selectedId) window.localStorage.setItem(storageKey, selectedId)
+        else window.localStorage.removeItem(storageKey)
+      })
+      .catch((reason) => {
+        if (!cancelled) {
+          setLoadedWorkspaceId(workspaceId)
+          setError(reason instanceof Error ? reason.message : '会话列表暂时不可用')
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingSessions(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [open, storageKey, workspaceId])
+
+  useEffect(() => {
+    if (!open || !workspaceId || !sessionId || loadedWorkspaceId !== workspaceId) return
+    if (skipConversationLoadRef.current === sessionId) {
+      skipConversationLoadRef.current = null
+      return
+    }
+    let cancelled = false
+    setLoadingConversation(true)
+    setMessages([])
+    setProposal(null)
+    setError(null)
+    void getAgentConversation(sessionId)
+      .then((detail) => {
+        if (cancelled) return
+        const restored = restoreConversation(detail)
+        setMessages(restored.messages)
+        setProposal(restored.proposal)
+        setError(restored.error)
+      })
+      .catch((reason) => {
+        if (!cancelled) setError(reason instanceof Error ? reason.message : '会话恢复失败')
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingConversation(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [loadedWorkspaceId, open, sessionId, workspaceId])
+
+  function startNewSession() {
+    setSessionId(null)
+    setMessages([])
+    setProposal(null)
+    setError(null)
+    setInput('')
+    if (storageKey) window.localStorage.removeItem(storageKey)
+  }
+
+  function selectSession(nextId: string) {
+    setError(null)
+    setSessionId(nextId || null)
+    if (storageKey && nextId) window.localStorage.setItem(storageKey, nextId)
+    else if (storageKey) window.localStorage.removeItem(storageKey)
+  }
+
+  async function closeSession() {
+    if (!sessionId || closing) return
+    setClosing(true)
+    setError(null)
+    try {
+      await closeAgentConversation(sessionId)
+      const nextSessions = sessions.map((session) => (
+        session.id === sessionId ? { ...session, status: 'closed' as const } : session
+      ))
+      const nextSelected = nextSessions.find(
+        (session) => session.id !== sessionId && session.status === 'active',
+      )?.id ?? null
+      setSessions(nextSessions)
+      setSessionId(nextSelected)
+      setMessages([])
+      setProposal(null)
+      if (storageKey && nextSelected) window.localStorage.setItem(storageKey, nextSelected)
+      else if (storageKey) window.localStorage.removeItem(storageKey)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '关闭会话失败')
+    } finally {
+      setClosing(false)
+    }
+  }
 
   async function sendMessage(event?: FormEvent) {
     event?.preventDefault()
     const content = input.trim()
     if (!content || sending || proposal) return
+    if (!workspaceId) {
+      setError('当前 Workspace 不明确，无法保存 Agent 会话。请先选择一个 Workspace。')
+      return
+    }
 
-    const nextMessages = [...messages, { role: 'user' as const, content }]
-    setMessages(nextMessages)
     setInput('')
     setError(null)
     setSending(true)
     try {
-      const searchParams = new URLSearchParams(window.location.search)
-      const workspaceId = searchParams.get('workspace')
-      const projectId = searchParams.get('project')
-        ?? pathname.match(/^\/studio\/projects\/([^/]+)/)?.[1]
-        ?? null
-      const workflowId = searchParams.get('workflow')
-      const sourceId = searchParams.get('source')
-        ?? pathname.match(/^\/sources\/([^/]+)/)?.[1]
-        ?? null
-      const response = await apiClient.post<ApiResponse<AgentReply>>('/chat', {
-        messages: nextMessages,
-        context: {
-          surface: ROUTE_LABELS[pathname] ?? pathname,
-          pathname,
-          search: searchParams.toString(),
+      let activeSessionId = sessionId
+      if (!activeSessionId) {
+        const created = await createAgentConversation({
           workspace_id: workspaceId,
-          project_id: projectId,
-          workflow_id: workflowId,
-          source_id: sourceId,
-        },
+          title: 'Global Agent session',
+          context,
+        })
+        activeSessionId = created.id
+        setSessions((current) => [created, ...current.filter((session) => session.id !== created.id)])
+        setLoadedWorkspaceId(workspaceId)
+        skipConversationLoadRef.current = created.id
+        setSessionId(created.id)
+        if (storageKey) window.localStorage.setItem(storageKey, created.id)
+      }
+
+      const result = await sendAgentConversationMessage(activeSessionId, {
+        request_id: crypto.randomUUID(),
+        content,
+        context,
       })
-      const reply = response.data.data
-      if (reply.type === 'proposal' && reply.proposal) {
+      setMessages((current) => [...current, { role: 'user', content }])
+      if (result.turn.status === 'failed') {
+        setError(result.turn.error_message ?? 'Agent 暂时不可用')
+        return
+      }
+      const reply = result.turn.response as AgentReply | null | undefined
+      if (reply?.type === 'proposal' && reply.proposal) {
         setProposal(reply.proposal)
       } else {
         setMessages((current) => [
           ...current,
-          { role: 'assistant', content: reply.content?.trim() || '没有返回内容。' },
+          { role: 'assistant', content: reply?.content?.trim() || '没有返回内容。' },
         ])
       }
     } catch (reason) {
@@ -142,6 +310,9 @@ export function GlobalAgentDock({
     void sendMessage()
   }
 
+  const selectedSession = sessions.find((session) => session.id === sessionId)
+  const canClose = Boolean(selectedSession?.status === 'active' && !sending && !confirming && !closing)
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
@@ -157,11 +328,60 @@ export function GlobalAgentDock({
             当前上下文：{ROUTE_LABELS[pathname] ?? pathname}。读取可直接执行，写入操作先生成确认提案。
             未明确指定 Workspace 时，仅在后端能解析出唯一授权范围时允许确认写操作。
           </DialogDescription>
+          <div className="flex items-center gap-2">
+            <select
+              value={sessionId ?? ''}
+              onChange={(event) => selectSession(event.target.value)}
+              disabled={loadingSessions || sending || confirming || closing}
+              aria-label="选择 Agent 会话"
+              className="min-w-0 flex-1 rounded-xs border bg-background px-2 py-1 text-xs"
+            >
+              <option value="">新会话</option>
+              {sessions.map((session) => (
+                <option key={session.id} value={session.id}>
+                  {session.title || `会话 ${session.id.slice(0, 8)}`}（{session.status === 'active' ? '进行中' : '已关闭'}）
+                </option>
+              ))}
+            </select>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={startNewSession}
+              disabled={sending || confirming || closing}
+              aria-label="新建 Agent 会话"
+            >
+              <Plus aria-hidden />
+              新建
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              onClick={() => void closeSession()}
+              disabled={!canClose}
+              aria-label="关闭当前 Agent 会话"
+              title="关闭当前会话"
+            >
+              <X aria-hidden />
+            </Button>
+          </div>
         </DialogHeader>
 
         <ScrollArea className="min-h-0 flex-1">
           <div className="space-y-3 p-4" aria-live="polite">
-            {messages.length === 0 ? (
+            {!workspaceId ? (
+              <div className="rounded-md border border-warning/40 bg-warning/10 p-4 text-xs" role="alert">
+                当前 Workspace 不明确，暂不保存会话。请先从一个明确的 Workspace 页面打开 Agent。
+              </div>
+            ) : null}
+            {loadingSessions || loadingConversation ? (
+              <div className="flex items-center gap-2 text-xs text-muted-foreground" role="status">
+                <Loader2 className="size-3.5 animate-spin" aria-hidden />
+                {loadingSessions ? '正在加载会话' : '正在恢复会话'}
+              </div>
+            ) : null}
+            {messages.length === 0 && !loadingConversation ? (
               <div className="rounded-md border border-dashed p-4">
                 <div className="flex items-center gap-2 text-sm font-medium">
                   <ShieldCheck className="size-4 text-success" aria-hidden />
@@ -238,11 +458,22 @@ export function GlobalAgentDock({
             placeholder="告诉 Agent 你要查询或执行什么…"
             aria-label="给全局 Agent 的消息"
             className="max-h-36 min-h-20 resize-none rounded-xs"
-            disabled={sending || confirming}
+            disabled={sending || confirming || selectedSession?.status === 'closed'}
           />
           <div className="mt-2 flex items-center justify-between gap-3">
             <span className="text-3xs text-muted-foreground">Enter 发送 · Shift+Enter 换行</span>
-            <Button type="submit" size="sm" disabled={!input.trim() || sending || confirming || Boolean(proposal)}>
+            <Button
+              type="submit"
+              size="sm"
+              disabled={
+                !input.trim()
+                || sending
+                || confirming
+                || closing
+                || Boolean(proposal)
+                || selectedSession?.status === 'closed'
+              }
+            >
               {sending ? <Loader2 className="animate-spin" aria-hidden /> : <Send aria-hidden />}
               发送
             </Button>

@@ -16,8 +16,7 @@ def register_runtime(cls: type) -> type:
 def get_runtime(runtime_type: str) -> "RuntimeAdapter":
     if runtime_type not in _REGISTRY:
         raise ValueError(
-            f"Unknown runtime type: {runtime_type!r}. "
-            f"Available: {list(_REGISTRY.keys())}"
+            f"Unknown runtime type: {runtime_type!r}. Available: {list(_REGISTRY.keys())}"
         )
     return _REGISTRY[runtime_type]
 
@@ -30,8 +29,8 @@ def list_runtime_types() -> list[str]:
 
 def available_runtimes() -> list[str]:
     """Runtime types whose adapter reports itself actually usable on this
-    node (binary on PATH, sidecar reachable, etc.) via the adapter's cheap
-    sync ``is_available()`` classmethod. This is what the ws register
+    node (binary on PATH, sidecar reachable, compatibility probe, etc.) via
+    the adapter's sync ``is_available()`` classmethod. This is what the ws register
     handshake advertises to the center — never the full registry, since a
     node may not have every runtime's binary installed (Docker image
     layering, design notes §6)."""
@@ -43,13 +42,28 @@ def available_runtimes() -> list[str]:
     return available
 
 
+def available_runtime_capabilities() -> dict[str, list[str]]:
+    """Capability manifests for runtimes that are usable on this node."""
+
+    capabilities: dict[str, list[str]] = {}
+    for runtime_type, instance in _REGISTRY.items():
+        is_available = getattr(type(instance), "is_available", None)
+        if is_available is not None and is_available():
+            capabilities[runtime_type] = sorted(instance.capabilities.names())
+    return capabilities
+
+
 def _load_all_runtimes() -> None:
     """Import all agent-runtime adapter modules to trigger registration."""
     from backend.agent_runtimes import (  # noqa: F401
         bbx_adapter,
+        codex_adapter,
+        hermes_adapter,
         miniflow_adapter,
+        openclaw_adapter,
         opentabs_adapter,
         pi_adapter,
+        prime_agent_adapter,
     )
 
 

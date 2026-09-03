@@ -39,6 +39,9 @@ class NotificationLog(TimestampMixin):
         String(36), ForeignKey("notification_rules.id", ondelete="CASCADE"), nullable=False
     )
     record_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    # Collection provenance copied from the originating record. Nullable for
+    # historical/manual notifications and records created before the envelope.
+    lineage: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # sent | failed
     status: Mapped[str] = mapped_column(String(50), nullable=False)
     response_data: Mapped[dict | None] = mapped_column(JSON, nullable=True)

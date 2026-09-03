@@ -40,9 +40,20 @@ export interface CanvasSettings {
   collabProvider: "off" | "broadcast" | "yjs"
   yjsRoom: string
   yjsUrl: string
+  yjsEnabled: boolean
+  yjsConnected: boolean
 }
 
-interface SettingsState extends CanvasSettings {
+export function resolveYjsUrl(): string {
+  const configured = process.env.NEXT_PUBLIC_YJS_URL?.trim()
+  if (configured) return configured
+  if (typeof window === "undefined") return ""
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:"
+  return `${protocol}//${window.location.host}`
+}
+
+export interface SettingsState extends CanvasSettings {
+
   set: <K extends keyof CanvasSettings>(key: K, value: CanvasSettings[K]) => void
   patch: (partial: Partial<CanvasSettings>) => void
   reset: () => void
@@ -73,8 +84,10 @@ export const DEFAULT_SETTINGS: CanvasSettings = {
   showControls: true,
   showBackground: true,
   collabProvider: "off",
-  yjsRoom: "workflow-demo",
-  yjsUrl: "wss://demos.yjs.dev",
+  yjsRoom: "",
+  yjsUrl: "",
+  yjsEnabled: false,
+  yjsConnected: false,
 }
 
 export const useSettingsStore = create<SettingsState>((set) => ({

@@ -216,17 +216,25 @@ def discord_messages_to_events(
     return events
 
 
-def post_batch_sync(events: list[dict[str, Any]]) -> dict[str, Any]:
+def post_batch_sync(
+    events: list[dict[str, Any]], *, receipt_context: dict[str, Any] | None = None
+) -> dict[str, Any]:
     if not events:
         return {"accepted": 0, "duplicates": 0, "rejected": 0, "sent": 0}
     url = f"{ingest_base_url()}/v1/ingest/batch"
+    request_body: dict[str, Any] = {"events": events}
+    if receipt_context is not None:
+        request_body["receipt_context"] = receipt_context
     with httpx.Client(timeout=INGEST_TIMEOUT) as client:
-        resp = client.post(url, json={"events": events})
+        resp = client.post(url, json=request_body)
         resp.raise_for_status()
         data = resp.json()
-    return {
+    result = {
         "accepted": int(data.get("accepted", 0)),
         "duplicates": int(data.get("duplicates", 0)),
         "rejected": int(data.get("rejected", 0)),
         "sent": len(events),
     }
+    if isinstance(data.get("ingress_receipt"), dict):
+        result["ingress_receipt"] = data["ingress_receipt"]
+    return result

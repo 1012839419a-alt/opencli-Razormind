@@ -2,7 +2,7 @@
 set -e
 
 HAVE_CHROME=false
-if [ "${AGENT_HAS_CHROME:-false}" = "true" ]; then HAVE_CHROME=true; fi
+if command -v chromium >/dev/null 2>&1; then HAVE_CHROME=true; fi
 
 BROWSER_RUNTIME_BUNDLE_ROOT="${BROWSER_RUNTIME_BUNDLE_ROOT:-/opt/browser-runtime-bundles}"
 BROWSER_RUNTIME_BUNDLE_MANIFEST="${BROWSER_RUNTIME_BUNDLE_MANIFEST:-$BROWSER_RUNTIME_BUNDLE_ROOT/opencli-default/2/manifest.json}"
@@ -28,15 +28,9 @@ if [ -n "${BROWSER_STARTUP_PAGES:-}" ]; then
   STARTUP_PAGE_OUTPUT="$(node -e 'const pages=JSON.parse(process.argv[1]); if(!Array.isArray(pages)||pages.length>10||pages.some((item)=>typeof item!=="string"||!/^https?:\/\//.test(item))) process.exit(1); process.stdout.write(pages.join("\n"));' "$BROWSER_STARTUP_PAGES")"
   if [ -n "$STARTUP_PAGE_OUTPUT" ]; then mapfile -t STARTUP_PAGES <<< "$STARTUP_PAGE_OUTPUT"; fi
 fi
+if [ "${#STARTUP_PAGES[@]}" -eq 0 ]; then STARTUP_PAGES=(https://www.doubao.com/chat); fi
 
 if [ "$HAVE_CHROME" = "true" ]; then
-  BROWSER_ENGINE="${BROWSER_ENGINE-chromium}"
-  CHROME_BIN="$(node /usr/local/bin/resolve-browser-executable.mjs "$BROWSER_ENGINE")" || {
-    echo "[agent] Browser engine resolution failed for $BROWSER_ENGINE" >&2
-    exit 1
-  }
-  echo "[agent] Browser engine: $BROWSER_ENGINE"
-
   export OPENCLI_CDP_ENDPOINT="http://localhost:9222"
   echo "[agent] Chrome detected — starting embedded browser stack"
   CHROME_PROFILE=/home/agent/.config/chromium
@@ -48,12 +42,34 @@ if [ "$HAVE_CHROME" = "true" ]; then
   Xvfb :99 -screen 0 1280x900x24 -nolisten tcp &
   export DISPLAY=:99
   sleep 1
+  export CHROME_HOSTNAME="${CHROME_HOSTNAME:-${HOSTNAME:-agent-1}}"
+  envsubst '${CHROME_HOSTNAME}' \
+    < /etc/nginx/conf.d/cdp.conf.template \
+    > /etc/nginx/conf.d/cdp.conf
+  nginx -g 'daemon off;' &
+  x11vnc -display :99 -nopw -listen 0.0.0.0 -xkb -forever -shared &
+  websockify --web /usr/share/novnc 6080 localhost:5900 &
+
+  BBX_EXTENSION_ID="$(tr -d '\r\n' < /etc/browser-bridge-extension-id)"
+  if [ -n "$BBX_EXTENSION_ID" ]; then
+    bbx install "$BBX_EXTENSION_ID" --browser chromium \
+      || echo "[agent] WARNING: Browser Bridge native host install failed"
+  else
+    echo "[agent] WARNING: Browser Bridge extension ID is missing"
+  fi
+  (while true; do
+    bbx-daemon
+    echo "[agent] BBX daemon exited, restarting in 1s..."
+    sleep 1
+  done) &
+  echo "[agent] BBX daemon started on ${BBX_TCP_HOST:-127.0.0.1}:${BBX_TCP_PORT:-19826}"
+
   find "$CHROME_PROFILE" -name 'SingletonLock' -o -name 'SingletonCookie' -o -name 'SingletonSocket' 2>/dev/null | xargs rm -f 2>/dev/null || true
 
   DAEMON_JS="$(npm root -g)/@jackwener/opencli/dist/src/daemon.js"
   if [ -f "$DAEMON_JS" ]; then
     (while true; do
-      OPENCLI_DAEMON_LISTEN=127.0.0.1 node "$DAEMON_JS"
+      env -u OPENCLI_DAEMON_PORT OPENCLI_DAEMON_LISTEN=127.0.0.1 node "$DAEMON_JS"
       echo "[agent] Bridge daemon exited, restarting in 1s..."
       sleep 1
     done) &
@@ -62,9 +78,15 @@ if [ "$HAVE_CHROME" = "true" ]; then
     echo "[agent] WARNING: Bridge daemon not found at $DAEMON_JS"
   fi
 
+  BROWSER_ENGINE="${BROWSER_ENGINE:-chromium}"
+  CHROME_BIN="$(node /usr/local/bin/resolve-browser-executable.mjs "$BROWSER_ENGINE")" || {
+    echo "[agent] Browser engine resolution failed for $BROWSER_ENGINE" >&2
+    exit 1
+  }
+  echo "[agent] Browser engine: $BROWSER_ENGINE"
   start_chrome() {
     find "$CHROME_PROFILE" -name 'SingletonLock' -o -name 'SingletonCookie' -o -name 'SingletonSocket' 2>/dev/null | xargs rm -f 2>/dev/null || true
-    "$CHROME_BIN" --remote-debugging-port=9222 --remote-debugging-address=127.0.0.1 --remote-allow-origins='*' --no-sandbox --disable-dev-shm-usage --user-data-dir="$CHROME_PROFILE" "${CHROME_EXTRA_FLAGS[@]}" "$@"
+    "$CHROME_BIN" --remote-debugging-port=9222 --remote-debugging-address=127.0.0.1 --remote-allow-origins='*' --no-sandbox --disable-dev-shm-usage --no-first-run --no-default-browser-check --disable-session-crashed-bubble --user-data-dir="$CHROME_PROFILE" --profile-directory=Default "${CHROME_EXTRA_FLAGS[@]}" --window-size=1280,900 "$@"
   }
   run_runtime_self_check() {
     for _ in $(seq 1 30); do

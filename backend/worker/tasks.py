@@ -1,14 +1,28 @@
 """Celery tasks for async pipeline execution."""
 
 import asyncio
+from datetime import UTC, datetime
 import logging
 from typing import Any
 
 from celery import Task
 
+from backend.worker.control_plane_client import post_control_plane
 from backend.worker.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
+
+
+@celery_app.task(name="run_gaojixing_collection")
+def run_gaojixing_collection(job_id: str) -> str:
+    """Advance durable GJX work and explicitly requeue global-lease contention."""
+
+    from backend.workflow.gaojixing_worker_runtime import execute_collection_job
+
+    outcome = _run_async(execute_collection_job(job_id))
+    if outcome in {"busy", "resume_pending"}:
+        run_gaojixing_collection.apply_async(kwargs={"job_id": job_id}, countdown=2)
+    return outcome
 
 
 @celery_app.task(name="run_acquisition")
@@ -304,6 +318,35 @@ def run_scheduled_collection(
     )
 
 
+@celery_app.task(
+    name="dispatch_scheduled_operations_agent_run",
+    autoretry_for=(Exception,),
+    retry_backoff=True,
+    retry_backoff_max=300,
+    retry_jitter=True,
+    max_retries=5,
+)
+def dispatch_scheduled_operations_agent_run(run_id: str) -> dict:
+    """Durably ask the API process that owns Fleet WS state to execute one run."""
+    return post_control_plane(
+        f"/api/v1/internal/operations-agent-runs/{run_id}/dispatch"
+    )
+
+
+@celery_app.task(name="run_automation_scheduler_tick")
+def run_automation_scheduler_tick() -> dict:
+    """Claim due Automations and enqueue every queued scheduled run for dispatch."""
+    result = post_control_plane(
+        "/api/v1/internal/automations/scheduler/tick",
+        {"fired_at": datetime.now(UTC).isoformat()},
+    )
+    queued_run_ids = result.get("data", {}).get("queued_run_ids", [])
+    for run_id in queued_run_ids:
+        dispatch_scheduled_operations_agent_run.delay(run_id)
+    result["dispatch_enqueued_run_ids"] = queued_run_ids
+    return result
+
+
 @celery_app.task(name="send_notification")
 def send_notification(rule_id: str, record_id: str) -> dict:
     """Send a single notification for a rule/record pair."""
@@ -340,6 +383,7 @@ async def _send_notification_async(rule_id: str, record_id: str) -> dict:
             event=rule.trigger_event,
             source_id=record.source_id,
             record_id=record.id,
+            lineage=record.lineage,
             data=record.normalized_data,
             ai_enrichment=record.ai_enrichment,
         )

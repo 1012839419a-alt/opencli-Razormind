@@ -20,7 +20,7 @@ class IdentitySettings:
     audience: str
     jwks_url: str = ""
     bootstrap_admin_token: str = ""
-    secret_key: str = "change-me-in-production"
+    secret_key: str = ""
 
     @classmethod
     def from_env(cls) -> IdentitySettings:
@@ -145,10 +145,13 @@ def identity_dependency(
         if local_claims and local_claims.get("auth_method") == "local":
             return RequestIdentity(
                 subject="local-admin",
-                name=local_claims.get("name") or "本地管理员",
-                username=local_claims.get("username"),
+                email=_string_claim(local_claims, "email"),
+                name=_string_claim(local_claims, "name") or "本地管理员",
+                username=_string_claim(local_claims, "username"),
+                picture=_string_claim(local_claims, "picture"),
                 is_platform_admin=True,
                 auth_method="local",
+                claims=local_claims,
             )
         if resolved.bootstrap_admin_token and hmac.compare_digest(
             token, resolved.bootstrap_admin_token

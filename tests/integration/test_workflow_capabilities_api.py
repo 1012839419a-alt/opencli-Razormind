@@ -126,12 +126,7 @@ async def _native_lifecycle_capability(client, monkeypatch, tools):
     monkeypatch.setattr(
         "backend.workflow.capability_projection.list_workflow_tool_capabilities",
         lambda: registry.model_copy(
-            update={
-                "tools": [
-                    tool for tool in registry.tools if tool.id not in native_ids
-                ]
-                + tools
-            }
+            update={"tools": [tool for tool in registry.tools if tool.id not in native_ids] + tools}
         ),
     )
     response = await client.get("/api/v1/workflows/capabilities")
@@ -184,9 +179,7 @@ async def test_compile_reports_webhook_notify_contract_without_live_delivery(cli
 
 
 @pytest.mark.asyncio
-async def test_native_lifecycle_readiness_requires_exact_complete_action_set(
-    client, monkeypatch
-):
+async def test_native_lifecycle_readiness_requires_exact_complete_action_set(client, monkeypatch):
     tools = _native_lifecycle_tools()
 
     capability = await _native_lifecycle_capability(client, monkeypatch, tools)
@@ -238,11 +231,7 @@ async def test_native_lifecycle_readiness_fails_closed_for_invalid_action_set(
     client, monkeypatch, case, expected_detail
 ):
     tools = _native_lifecycle_tools()
-    target = next(
-        tool
-        for tool in tools
-        if tool.executor.params.get("action") == "report.answers"
-    )
+    target = next(tool for tool in tools if tool.executor.params.get("action") == "report.answers")
     if case == "missing":
         tools.remove(target)
     elif case == "duplicate":
@@ -328,6 +317,7 @@ async def test_workflow_capabilities_project_real_backend_surfaces(client, monke
         "intelligence.source.rsshub",
         "intelligence.source.rss-bridge",
         "intelligence.source.http",
+        "intelligence.source.doubao-research",
     ):
         assert catalog[source_id]["status"] == "runnable"
         assert catalog[source_id]["backendAvailable"] is True
@@ -336,6 +326,11 @@ async def test_workflow_capabilities_project_real_backend_surfaces(client, monke
             {"name": "out", "type": "items[]"}
         ]
         assert "network.fetch" in catalog[source_id]["manifest"]["permissions"]
+    assert catalog["intelligence.source.doubao-research"]["channelType"] == "doubao_research"
+    assert (
+        "canFetchNetwork"
+        in catalog["intelligence.source.doubao-research"]["manifest"]["permissions"]
+    )
     assert catalog["intelligence.source.opencli-slot"]["status"] == "runnable"
     assert catalog["intelligence.source.opencli-slot"]["backendAvailable"] is True
     assert catalog["intelligence.source.opencli-slot"]["runtimeBinding"]
@@ -467,6 +462,7 @@ async def test_workflow_capabilities_project_real_backend_surfaces(client, monke
         "crawl4ai",
         "doubao_research",
         "douyin_detail",
+        "feishu_table",
         "opencli",
         "rss",
         "skill",
@@ -502,15 +498,12 @@ async def test_workflow_capabilities_project_real_backend_surfaces(client, monke
     assert triggers["trigger.webhook"]["status"] == "runnable"
     assert triggers["trigger.webhook"]["missing"] == []
     assert triggers["trigger.webhook"]["runtimeBinding"] == "workflow.trigger.webhook_input"
-    assert triggers["trigger.webhook"]["manifest"]["contract"]["status"] == (
-        "dispatch_only"
+    assert triggers["trigger.webhook"]["manifest"]["contract"]["status"] == ("dispatch_only")
+    assert triggers["trigger.webhook"]["manifest"]["contract"]["configGate"] == {"required": []}
+    assert (
+        "workflow-webhook-ingress-api"
+        in triggers["trigger.webhook"]["manifest"]["contract"]["fixtureCoverage"]["cases"]
     )
-    assert triggers["trigger.webhook"]["manifest"]["contract"]["configGate"] == {
-        "required": []
-    }
-    assert "workflow-webhook-ingress-api" in triggers["trigger.webhook"]["manifest"][
-        "contract"
-    ]["fixtureCoverage"]["cases"]
 
     resources = {item["id"]: item for item in data["resources"]}
     fleet_resource = resources["resource.workflow-fleet-runtime"]
@@ -689,9 +682,7 @@ def test_opencli_adapter_catalog_coalesces_concurrent_discovery(monkeypatch):
         return subprocess.CompletedProcess(
             args=args[0],
             returncode=0,
-            stdout=json.dumps(
-                [{"site": "bbc", "name": "news", "access": "read", "args": []}]
-            ),
+            stdout=json.dumps([{"site": "bbc", "name": "news", "access": "read", "args": []}]),
             stderr="",
         )
 

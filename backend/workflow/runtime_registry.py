@@ -63,12 +63,15 @@ MERGE_BINDING_ID = "workflow.flow.merge"
 ROUTER_ROUTE_BINDING_ID = "workflow.router.route"
 RECORD_ACCEPTANCE_BINDING_ID = "workflow.gate.record-acceptance"
 RECORD_SINK_BINDING_ID = "workflow.record-sink.records"
+FEISHU_BITABLE_SINK_BINDING_ID = "workflow.feishu-bitable.records"
 INBOX_STORE_BINDING_ID = "workflow.inbox.store"
 WEBHOOK_NOTIFY_BINDING_ID = "workflow.notifier.webhook.send"
 NOTIFY_SEND_BINDING_ID = "workflow.notify.send"
 EXTERNAL_TOOL_BINDING_ID = "workflow.external-tool.capability"
 IMAGE_GENERATION_BINDING_ID = "workflow.media.image-generation"
 IMAGE_ASSET_BINDING_ID = "workflow.media.image-asset"
+COLLECTOR_SOURCE_TYPES = {"web", "api", "rss", "cli"}
+COLLECTOR_BINDING_PREFIX = "collection.source."
 SUPPORTED_TOOL_EXECUTOR_MODES = {
     "fixture",
     "okx_market_ticker_snapshot",
@@ -79,8 +82,25 @@ SUPPORTED_TOOL_EXECUTOR_MODES = {
     "opentabs",
     "bbx",
     "kats_runtime",
+    "gaojixing_doubao_batch",
+    "gaojixing_batch_certify",
 }
 _LEGACY_DATA_OPERATOR_PACK_VERSION = "1.0.0"
+_SENSITIVE_CONFIG_KEYS = {
+    "accesstoken",
+    "authorization",
+    "authtoken",
+    "bearertoken",
+    "clientsecret",
+    "cookie",
+    "password",
+    "secret",
+    "token",
+    "apikey",
+    "xapikey",
+    "xapikey",
+    "refreshtoken",
+}
 
 
 class WorkflowRuntimeBinding(BaseModel):
@@ -145,6 +165,8 @@ def resolve_runtime_metadata(
         metadata = _resolve_router_route_node(node, node_id=resolved_node_id)
     elif _is_record_acceptance_gate(node):
         metadata = _resolve_record_acceptance_gate(node, node_id=resolved_node_id)
+    elif _is_feishu_bitable_sink(node):
+        metadata = _resolve_feishu_bitable_sink(node, node_id=resolved_node_id)
     elif _is_record_sink(node):
         metadata = _resolve_record_sink(node, node_id=resolved_node_id)
     elif _is_inbox_store_node(node):
@@ -412,6 +434,7 @@ def _resolve_source_fetch_node(
     node_id: str,
 ) -> dict[str, Any]:
     config = adapter.config if adapter else {}
+    collector_type = _collector_source_type(node)
     provider = (
         adapter.provider if adapter else _read_string(node.params.get("provider")) or "workflow"
     )
@@ -421,6 +444,7 @@ def _resolve_source_fetch_node(
         or _read_string(config.get("channelType"))
         or _read_string(config.get("channel_type"))
         or _read_string(config.get("channel"))
+        or collector_type
         or provider
     )
     live_mode = (
@@ -432,20 +456,44 @@ def _resolve_source_fetch_node(
     source_id = _read_string(node.params.get("sourceId")) or _read_string(
         node.params.get("dataSourceId")
     )
+    sources = [
+        _sanitize_runtime_config(source)
+        for source in node.params.get("sources", [])
+        if isinstance(source, dict)
+    ]
+    execution = _sanitize_runtime_config(_read_dict(node.params.get("execution")))
+    if collector_type:
+        mismatched_sources = [
+            _read_string(source.get("sourceId")) or "<unknown>"
+            for source in sources
+            if _read_string(source.get("kind")) != collector_type
+        ]
+        if mismatched_sources:
+            raise ValueError(
+                f"collector source kind mismatch for {collector_type}: "
+                + ", ".join(mismatched_sources)
+            )
     return {
         "binding": {
             "status": "bound",
-            "binding_id": SOURCE_FETCH_BINDING_ID,
+            "binding_id": (
+                f"{COLLECTOR_BINDING_PREFIX}{collector_type}"
+                if collector_type
+                else SOURCE_FETCH_BINDING_ID
+            ),
             "runtime": "workflow",
-            "channel": "source",
+            "channel": "collector" if collector_type else "source",
             "input": {
                 "provider": provider,
                 "channelType": channel_type,
                 "liveMode": live_mode,
                 "sourceId": source_id,
                 "adapterMode": adapter.mode if adapter else None,
-                "adapterConfig": config,
-                "params": dict(node.params),
+                "adapterConfig": _sanitize_runtime_config(config),
+                "params": _sanitize_runtime_config(dict(node.params)),
+                "collectorType": collector_type,
+                "sources": sources,
+                "execution": execution,
                 "outputPort": "items[]",
             },
         },
@@ -453,7 +501,11 @@ def _resolve_source_fetch_node(
             "node_id": node_id,
             "provider": provider,
             "channelType": channel_type,
-            "dispatch": "runtime_source_binding",
+            "dispatch": (
+                "collector_multi_source_fanout"
+                if collector_type in COLLECTOR_SOURCE_TYPES
+                else "runtime_source_binding"
+            ),
         },
     }
 
@@ -506,9 +558,7 @@ def _resolve_data_operator_node(
     operator_id = _read_string(node.params.get("operatorId"))
     pack_version_provided = "packVersion" in node.params
     requested_pack_version = _read_string(node.params.get("packVersion"))
-    resolved_pack_version = (
-        requested_pack_version or _LEGACY_DATA_OPERATOR_PACK_VERSION
-    )
+    resolved_pack_version = requested_pack_version or _LEGACY_DATA_OPERATOR_PACK_VERSION
     spec = (
         resolve_data_operator(operator_id, resolved_pack_version)
         if operator_id and (requested_pack_version or not pack_version_provided)
@@ -718,6 +768,41 @@ def _resolve_record_sink(node: WorkflowProjectNode, *, node_id: str) -> dict[str
     }
 
 
+def _resolve_feishu_bitable_sink(node: WorkflowProjectNode, *, node_id: str) -> dict[str, Any]:
+    values = {
+        key: _read_string(node.params.get(key)) for key in ("connectionId", "appToken", "tableId")
+    }
+    field_map = _read_dict(node.params.get("fieldMap"))
+    missing = [key for key, value in values.items() if value is None]
+    if not field_map:
+        missing.append("fieldMap")
+    if missing:
+        return {
+            "missing_runtime": _dump_missing_runtime(
+                WorkflowMissingRuntime(
+                    code=MISSING_RUNTIME_PARAMETER,
+                    node_id=node_id,
+                    kind=node.kind,
+                    capability=node.capability,
+                    required_params=missing,
+                    message="Feishu Bitable delivery requires connectionId, appToken, and tableId.",
+                )
+            )
+        }
+    return {
+        "binding": {
+            "status": "bound",
+            "binding_id": FEISHU_BITABLE_SINK_BINDING_ID,
+            "runtime": "workflow",
+            "channel": "feishu-bitable",
+            "input": {
+                **values,
+                "fieldMap": field_map,
+            },
+        }
+    }
+
+
 def _resolve_inbox_store_node(node: WorkflowProjectNode, *, node_id: str) -> dict[str, Any]:
     queue = _read_string(node.params.get("queue")) or "workflow-inbox"
     return {
@@ -800,9 +885,7 @@ def _resolve_external_tool_capability(node: WorkflowProjectNode, *, node_id: str
     if tool.status != "runnable":
         readiness = _read_dict(tool.manifest.get("readiness"))
         missing_reasons = [
-            value
-            for value in readiness.get("missingReasons", [])
-            if isinstance(value, str)
+            value for value in readiness.get("missingReasons", []) if isinstance(value, str)
         ]
         return {
             "external_tool": {
@@ -867,12 +950,8 @@ def _resolve_external_tool_capability(node: WorkflowProjectNode, *, node_id: str
                 ),
                 "executorMode": executor_mode,
                 "toolLabel": tool.label,
-                "inputPort": (
-                    tool.inputPorts[0].type if tool.inputPorts else "unknown"
-                ),
-                "outputPort": (
-                    tool.outputPorts[0].type if tool.outputPorts else "unknown"
-                ),
+                "inputPort": (tool.inputPorts[0].type if tool.inputPorts else "unknown"),
+                "outputPort": (tool.outputPorts[0].type if tool.outputPorts else "unknown"),
                 "transportBindingId": EXTERNAL_TOOL_BINDING_ID,
                 "actionBindingId": action_binding_id,
                 "fixtureOutput": executor.get("output"),
@@ -1154,7 +1233,11 @@ def _is_source_fetch_node(
     node: WorkflowProjectNode,
     adapter: WorkflowAdapterBinding | None,
 ) -> bool:
-    return node.kind == "source" and node.capability == "fetch" and adapter is not None
+    return (
+        node.kind == "source"
+        and node.capability == "fetch"
+        and (adapter is not None or _collector_source_type(node) is not None)
+    )
 
 
 def _is_collection_output(node: WorkflowProjectNode) -> bool:
@@ -1184,9 +1267,7 @@ def _data_operator_kind(node: WorkflowProjectNode) -> str | None:
 def _is_dedupe_node(node: WorkflowProjectNode) -> bool:
     if (node.internals and node.internals.nodes) or node.topicCollapse or node.miniNetwork:
         return False
-    return _read_string(
-        (node.ui or {}).get("catalogId")
-    ) == "intelligence.processing.dedupe" or (
+    return _read_string((node.ui or {}).get("catalogId")) == "intelligence.processing.dedupe" or (
         node.kind == "agent" and node.capability == "dedupe"
     )
 
@@ -1215,6 +1296,10 @@ def _is_record_sink(node: WorkflowProjectNode) -> bool:
     return _read_string((node.ui or {}).get("catalogId")) == "intelligence.sink.records" or (
         node.kind == "sink" and node.capability == "store"
     )
+
+
+def _is_feishu_bitable_sink(node: WorkflowProjectNode) -> bool:
+    return _read_string((node.ui or {}).get("catalogId")) == "intelligence.sink.feishu-bitable"
 
 
 def _is_inbox_store_node(node: WorkflowProjectNode) -> bool:
@@ -1412,6 +1497,34 @@ def _read_string_list(value: Any) -> list[str]:
 
 def _read_dict(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
+
+
+def _collector_source_type(node: WorkflowProjectNode) -> str | None:
+    catalog_id = _read_string((node.ui or {}).get("catalogId"))
+    if catalog_id and catalog_id.startswith(COLLECTOR_BINDING_PREFIX):
+        catalog_kind = catalog_id.rsplit(".", 1)[-1]
+        if catalog_kind in COLLECTOR_SOURCE_TYPES:
+            return catalog_kind
+    configured_kind = (
+        _read_string(node.params.get("collectorType"))
+        or _read_string(node.params.get("sourceType"))
+    )
+    return configured_kind if configured_kind in COLLECTOR_SOURCE_TYPES else None
+
+
+def _sanitize_runtime_config(value: Any) -> Any:
+    """Keep references while removing secret material from runtime metadata."""
+    if isinstance(value, list):
+        return [_sanitize_runtime_config(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    sanitized: dict[str, Any] = {}
+    for key, item in value.items():
+        normalized = "".join(character for character in str(key).lower() if character.isalnum())
+        if normalized in _SENSITIVE_CONFIG_KEYS:
+            continue
+        sanitized[str(key)] = _sanitize_runtime_config(item)
+    return sanitized
 
 
 def _dump_missing_runtime(missing_runtime: WorkflowMissingRuntime) -> dict[str, Any]:

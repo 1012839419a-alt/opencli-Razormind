@@ -296,6 +296,33 @@ install_python() {
   fi
   touch "$AGENT_DIR/backend/__init__.py"
 
+  # ── Download runtime adapters and MiniFlow for native Agents ──────────────
+  RUNTIME_BUNDLE="$AGENT_DIR/agent-runtime.tar.gz"
+  RUNTIME_BUNDLE_URL="${CENTRAL_API_URL%/}/api/v1/nodes/install/agent-runtime.tar.gz"
+  command -v tar >/dev/null 2>&1 || die "tar is required to install Agent runtime packages"
+  info "Downloading Agent runtime packages from center..."
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL "${AUTH_HEADER[@]}" "$RUNTIME_BUNDLE_URL" -o "$RUNTIME_BUNDLE"
+  elif command -v wget >/dev/null 2>&1; then
+    if [[ -n "$AGENT_API_TOKEN" ]]; then
+      wget --header="Authorization: Bearer $AGENT_API_TOKEN" \
+        -qO "$RUNTIME_BUNDLE" "$RUNTIME_BUNDLE_URL"
+    else
+      wget -qO "$RUNTIME_BUNDLE" "$RUNTIME_BUNDLE_URL"
+    fi
+  else
+    die "Neither curl nor wget found — cannot download Agent runtime packages"
+  fi
+  tar -tzf "$RUNTIME_BUNDLE" | while IFS= read -r entry; do
+    [[ "$entry" == backend/agent_runtimes/*.py \
+      || "$entry" == backend/miniflow/*.py \
+      || "$entry" == backend/security/*.py ]] || \
+      die "Unexpected path in Agent runtime package: $entry"
+  done
+  tar --no-same-owner --no-same-permissions -xzf "$RUNTIME_BUNDLE" -C "$AGENT_DIR"
+  rm -f "$RUNTIME_BUNDLE"
+  info "Installed Agent runtime packages under $AGENT_DIR/backend"
+
   # ── Install Python dependencies ───────────────────────────────────────────
   info "Installing Python dependencies..."
   VENV_DIR="$AGENT_DIR/venv"
@@ -312,25 +339,24 @@ install_python() {
   # ── Check / install opencli ───────────────────────────────────────────────
   if command -v npm >/dev/null 2>&1; then
     if [ -t 0 ]; then
-      read -r -p "Install or upgrade OpenCLI 1.8.6 and Pi 0.83.0 via npm? [Y/n] " _reply </dev/tty || _reply="Y"
+      read -r -p "Install or upgrade managed OpenCLI 1.8.7 and Pi 0.83.0 via npm? [Y/n] " _reply </dev/tty || _reply="Y"
     else
       _reply="Y"
-      info "Installing pinned OpenCLI 1.8.6 and Pi 0.83.0 via npm (non-interactive)..."
+      info "Installing pinned OpenCLI 1.8.7 and Pi 0.83.0 via npm (non-interactive)..."
     fi
     if [[ "${_reply:-Y}" =~ ^[Yy]$ ]]; then
-      npm install -g @jackwener/opencli@1.8.6 @earendil-works/pi-coding-agent@0.83.0
+      npm install -g @jackwener/opencli@1.8.7 @earendil-works/pi-coding-agent@0.83.0
       PATCH_FILE="$AGENT_DIR/patch-opencli.js"
       curl -fsSL "${AUTH_HEADER[@]}" \
         "$CENTRAL_API_URL/api/v1/nodes/install/patch-opencli.js" -o "$PATCH_FILE"
       node "$PATCH_FILE"
       info "opencli: $(opencli --version 2>/dev/null | head -1 || echo 'installed')"
-      info "pi: $(pi --version 2>/dev/null | head -1 || echo 'installed')"
     else
       warn "Skipped — opencli channel will be unavailable"
     fi
   else
     warn "npm not found — opencli channel will be unavailable"
-    warn "  Install Node.js 22+ from https://nodejs.org then run: npm install -g @jackwener/opencli@1.8.6 @earendil-works/pi-coding-agent@0.83.0"
+    warn "  Install Node.js 26+ from https://nodejs.org then run: npm install -g @jackwener/opencli@1.8.7 @earendil-works/pi-coding-agent@0.83.0"
   fi
 
   # Organization-specific adapter packs are optional and never fetched implicitly.

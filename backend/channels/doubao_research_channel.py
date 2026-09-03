@@ -1,8 +1,13 @@
 """Collect a cited Doubao research answer through the installed OpenCLI adapter."""
 
+import asyncio
+import json
+import math
 import os
 import re
 from typing import Any
+
+import httpx
 
 from backend.channels.base import (
     AbstractChannel,
@@ -14,9 +19,8 @@ from backend.channels.base import (
 )
 from backend.channels.registry import register_channel
 
-_URL_RE = re.compile(r"https?://[^\s<>\[\](){}'\"]+", re.IGNORECASE)
+_URL_RE = re.compile(r"https?://[^\s<>\]\[\](){}\"']+", re.IGNORECASE)
 _TRAILING_URL_PUNCTUATION = ".,;:!?\uff0c\u3002\uff1b\uff1a\uff01\uff1f"
-#: OpenCLI adapter reports a captcha wall this way (verified on opencli 1.8.6).
 _CAPTCHA_MARKERS = (
     "verification challenge",
     "captcha",
@@ -24,10 +28,6 @@ _CAPTCHA_MARKERS = (
     "人机验证",
     "验证码",
 )
-#: Transient CDP/browser race conditions — retrying the same question in the
-#: same session usually succeeds once the navigation settles. Classified as
-#: ``ConnectionError`` (retryable in error_taxonomy) so the thick ``fetch()``
-#: retry loop picks them up, while a captcha wall (above) is NOT retried.
 _TRANSIENT_CDP_MARKERS = (
     "CDP connection is not open",
     "Inspected target navigated or closed",
@@ -66,8 +66,83 @@ def _answer(rows: list[dict[str, Any]]) -> str:
     ).strip()
 
 
+def _structured_response(text: str) -> dict[str, Any]:
+    """Decode Doubao JSON while retaining the complete provider response."""
+    raw = text.strip()
+    candidates = [raw]
+    fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw, re.DOTALL | re.IGNORECASE)
+    if fenced:
+        candidates.insert(0, fenced.group(1))
+    start, end = raw.find("{"), raw.rfind("}")
+    if start >= 0 and end > start:
+        candidates.append(raw[start : end + 1])
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if not isinstance(parsed, dict):
+            continue
+        answer = parsed.get("answer") or parsed.get("content") or raw
+        data = (
+            parsed.get("data")
+            or parsed.get("details")
+            or parsed.get("answer_data")
+            or parsed.get("result")
+            or parsed.get("key_points")
+            or []
+        )
+        links = (
+            parsed.get("links")
+            or parsed.get("references")
+            or parsed.get("sources")
+            or parsed.get("urls")
+            or []
+        )
+        share_data = (
+            parsed.get("session_share_data")
+            or parsed.get("conversation_share_data")
+            or parsed.get("share_data")
+            or parsed.get("share_urls")
+            or []
+        )
+        suggested = (
+            parsed.get("suggested_keywords")
+            or parsed.get("suggested_keys")
+            or parsed.get("recommend_keywords")
+            or parsed.get("recommended_keywords")
+            or []
+        )
+        if not isinstance(data, (list, dict, str)):
+            data = []
+        if not isinstance(links, (list, dict, str)):
+            links = []
+        if not isinstance(share_data, (list, dict, str)):
+            share_data = []
+        if not isinstance(suggested, list):
+            suggested = [suggested] if suggested else []
+        return {
+            "answer": str(answer).strip(),
+            "data": data,
+            "links": links,
+            "response_data": parsed,
+            "session_share_data": share_data,
+            "suggested_keywords": [str(item).strip() for item in suggested if str(item).strip()],
+            "raw_answer": raw,
+        }
+    return {
+        "answer": raw,
+        "data": [],
+        "links": [],
+        "response_data": {},
+        "session_share_data": [],
+        "suggested_keywords": [],
+        "raw_answer": raw,
+    }
+
+
 def _conversation_url(stdout: str) -> str:
-    """Extract https://www.doubao.com/chat/<id> from `doubao status -f json` output."""
+    """Extract the active Doubao chat URL from status output."""
     try:
         rows = _parse_opencli_rows(stdout)
     except Exception:
@@ -80,23 +155,125 @@ def _conversation_url(stdout: str) -> str:
 
 
 def _is_captcha_block(stderr: str, stdout: str) -> bool:
-    """True when the adapter reports a captcha/verification wall."""
     text = f"{stderr} {stdout}".lower()
     return any(marker in text for marker in _CAPTCHA_MARKERS)
 
 
 def _is_transient_cdp_fault(stderr: str, stdout: str) -> bool:
-    """True when the adapter hit a CDP/browser race (navigation, closed tab,
-    session teardown) — retrying the same question usually succeeds."""
+    """Return whether OpenCLI hit a retryable browser/CDP race."""
     text = f"{stderr} {stdout}"
     return any(marker in text for marker in _TRANSIENT_CDP_MARKERS)
 
 
+def _structured_response(text: str) -> dict[str, Any]:
+    """Decode the JSON response requested by the Doubao research prompt.
+
+    Doubao may wrap the JSON in a markdown fence or add a short preamble. Keep
+    the raw answer as the fallback so a formatting deviation never discards
+    the research result.
+    """
+    raw = text.strip()
+    candidates = [raw]
+    fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw, re.DOTALL | re.IGNORECASE)
+    if fenced:
+        candidates.insert(0, fenced.group(1))
+    start, end = raw.find("{"), raw.rfind("}")
+    if start >= 0 and end > start:
+        candidates.append(raw[start : end + 1])
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if isinstance(parsed, dict):
+            answer = parsed.get("answer") or parsed.get("content") or raw
+            share_data = (
+                parsed.get("session_share_data")
+                or parsed.get("conversation_share_data")
+                or parsed.get("share_data")
+                or parsed.get("share_urls")
+                or []
+            )
+            response_data = (
+                parsed.get("data")
+                or parsed.get("details")
+                or parsed.get("answer_data")
+                or parsed.get("result")
+                or parsed.get("key_points")
+                or []
+            )
+            links = (
+                parsed.get("links")
+                or parsed.get("references")
+                or parsed.get("sources")
+                or parsed.get("urls")
+                or []
+            )
+            suggested = (
+                parsed.get("suggested_keywords")
+                or parsed.get("suggested_keys")
+                or parsed.get("recommend_keywords")
+                or parsed.get("recommended_keywords")
+                or []
+            )
+            if not isinstance(share_data, (list, dict, str)):
+                share_data = []
+            if not isinstance(response_data, (list, dict, str)):
+                response_data = []
+            if not isinstance(links, (list, dict, str)):
+                links = []
+            if not isinstance(suggested, list):
+                suggested = [suggested] if suggested else []
+            return {
+                "answer": str(answer).strip(),
+                "data": response_data,
+                "links": links,
+                "response_data": parsed,
+                "session_share_data": share_data,
+                "suggested_keywords": [
+                    str(item).strip() for item in suggested if str(item).strip()
+                ],
+                "raw_answer": raw,
+            }
+    return {
+        "answer": raw,
+        "data": [],
+        "links": [],
+        "response_data": {},
+        "session_share_data": [],
+        "suggested_keywords": [],
+        "raw_answer": raw,
+    }
+
+
 async def _run_doubao_command(command: list[str]) -> tuple[int, str, str]:
     """Late import avoids the channel registry's legacy OpenCLI import cycle."""
+    bridge_url = str(os.getenv("DOUBAO_CLI_BRIDGE_URL") or "").strip()
+    if bridge_url:
+        try:
+            async with httpx.AsyncClient(timeout=130, follow_redirects=False) as client:
+                headers: dict[str, str] = {}
+                bridge_token = str(os.getenv("DOUBAO_CLI_BRIDGE_TOKEN") or "").strip()
+                if bridge_token:
+                    headers["X-Lark-CLI-Bridge-Token"] = bridge_token
+                response = await client.post(
+                    bridge_url,
+                    json={"command": command[2] if len(command) > 2 else "", "args": command[3:]},
+                    headers=headers,
+                )
+                response.raise_for_status()
+                payload = response.json()
+            return (
+                int(payload.get("returncode", 1)),
+                str(payload.get("stdout", "")),
+                str(payload.get("stderr", "")),
+            )
+        except (httpx.HTTPError, ValueError, TypeError, KeyError) as exc:
+            return 1, "", f"Doubao CLI bridge failed: {exc}"
+
     from backend.channels.opencli_channel import _run_opencli
 
-    return await _run_opencli(command, os.environ.copy())
+    return await _run_opencli(command)
 
 
 def _opencli_binary() -> str:
@@ -125,12 +302,24 @@ class DoubaoResearchChannel(AbstractChannel):
     channel_type = "doubao_research"
     capabilities = Capabilities(auth_kind="session", session_affinity=True, default_rate="6/min")
 
+    async def readiness_code(self, config: dict[str, Any] | None = None) -> str | None:
+        """Return a machine-readable session readiness failure when available."""
+
+        return None
+
     async def collect(self, config: dict[str, Any], parameters: dict[str, Any]) -> ChannelResult:
         question = str(parameters.get("question") or config.get("question") or "").strip()
         if not question:
             return ChannelResult.fail("'question' is required for doubao_research channel")
 
         extract_citations = bool(config.get("extract_citations", True))
+        try:
+            settle_seconds = float(config.get("settle_seconds", 0))
+        except (TypeError, ValueError):
+            return ChannelResult.fail("'settle_seconds' must be a non-negative number")
+        if not math.isfinite(settle_seconds) or settle_seconds < 0:
+            return ChannelResult.fail("'settle_seconds' must be a non-negative number")
+        site_session = str(config.get("site_session", "ephemeral"))
         # Prompt wording belongs to the research brief.  Appending a fixed
         # instruction made the browser adapter lose its active conversation;
         # extract URLs from the returned answer without altering the query.
@@ -143,7 +332,7 @@ class DoubaoResearchChannel(AbstractChannel):
             "-f",
             "json",
             "--site-session",
-            str(config.get("site_session", "ephemeral")),
+            site_session,
         ]
         try:
             returncode, stdout, stderr = await _run_doubao_command(command)
@@ -157,10 +346,6 @@ class DoubaoResearchChannel(AbstractChannel):
             )
 
         if returncode:
-            # Classify: captcha walls (human-cleared — never auto-retry) and
-            # transient CDP races (retryable) get structured error_types so
-            # the runner / thick fetch() can act on them; anything else stays
-            # a generic failure instead of a permanent misclassification.
             if _is_captcha_block(stderr, stdout):
                 error_type = "captcha_challenge"
             elif _is_transient_cdp_fault(stderr, stdout):
@@ -171,8 +356,31 @@ class DoubaoResearchChannel(AbstractChannel):
                 f"opencli doubao ask exited with code {returncode}: {stderr[:500]}",
                 error_type=error_type,
             )
+        if settle_seconds:
+            await asyncio.sleep(settle_seconds)
+            read_command = [
+                _opencli_binary(),
+                "doubao",
+                "read",
+                "-f",
+                "json",
+                "--site-session",
+                site_session,
+            ]
+            try:
+                returncode, stdout, stderr = await _run_doubao_command(read_command)
+            except Exception as exc:
+                return ChannelResult.fail(
+                    f"Doubao read failed: {exc}", error_type=type(exc).__name__
+                )
+            if returncode:
+                return ChannelResult.fail(
+                    f"opencli doubao read exited with code {returncode}: {stderr[:500]}",
+                    error_type="ConnectionError" if _is_transient_cdp_fault(stderr, stdout) else None,
+                )
         try:
-            answer = _answer(_parse_opencli_rows(stdout))
+            response_rows = _parse_opencli_rows(stdout)
+            answer = _answer(response_rows)
         except Exception as exc:
             return ChannelResult.fail(
                 f"Failed to parse Doubao answer: {exc}", error_type=type(exc).__name__
@@ -180,10 +388,20 @@ class DoubaoResearchChannel(AbstractChannel):
         if not answer:
             return ChannelResult.fail("Doubao returned no assistant text")
 
-        # Best-effort conversation URL: `doubao status -f json` exposes the
-        # active chat id (https://www.doubao.com/chat/<id>).  This is a
-        # read-only query against the same browser session; a failure here
-        # must not fail the collect — the answer is already in hand.
+        structured = _structured_response(answer)
+        content = structured["answer"]
+        citations_text = " ".join(
+            [
+                structured["raw_answer"],
+                json.dumps(structured["session_share_data"], ensure_ascii=False),
+            ]
+        )
+        citations = _citations(citations_text) if extract_citations else []
+        links = structured["links"] or citations
+        response_data = structured["response_data"] or {
+            "answer": content,
+            "links": citations,
+        }
         conversation_url = ""
         if config.get("capture_conversation_url", True):
             status_command = [
@@ -193,24 +411,29 @@ class DoubaoResearchChannel(AbstractChannel):
                 "-f",
                 "json",
                 "--site-session",
-                str(config.get("site_session", "ephemeral")),
+                site_session,
             ]
             try:
-                rc, so, se = await _run_doubao_command(status_command)
-                if rc == 0:
-                    conversation_url = _conversation_url(so)
+                returncode, status_stdout, _ = await _run_doubao_command(status_command)
+                if returncode == 0:
+                    conversation_url = _conversation_url(status_stdout)
             except Exception:
                 conversation_url = ""
-
-        citations = _citations(answer) if extract_citations else []
         return ChannelResult.ok(
             [
                 {
                     "title": question,
-                    "content": answer,
+                    "content": content,
                     "author": "doubao",
                     "question": question,
                     "conversation_url": conversation_url,
+                    "answer": content,
+                    "data": structured["data"],
+                    "links": links,
+                    "response_data": response_data,
+                    "raw_answer": structured["raw_answer"],
+                    "session_share_data": structured["session_share_data"],
+                    "suggested_keywords": structured["suggested_keywords"],
                     "citations": citations,
                     "citation_count": len(citations),
                     "citation_capture": (
@@ -222,43 +445,9 @@ class DoubaoResearchChannel(AbstractChannel):
             citation_capture="answer_url_extraction" if extract_citations else "disabled",
         )
 
-    async def validate_config(self, config: dict[str, Any]) -> list[str]:
-        return (
-            []
-            if str(config.get("question") or "").strip()
-            else ["'question' is required for doubao_research channel"]
-        )
-
     async def fetch(self, ctx: FetchContext) -> FetchResult:
-        """Thick-contract entry point: migrate doubao onto the runner protocol
-        (``type(chan).fetch is not AbstractChannel.fetch``) and own a bounded
-        retry on TRANSIENT faults only.
-
-        ``collect()`` stays the single source of truth for prompt construction
-        and evidence output; this override adds the retry loop around it:
-        - captcha walls (``captcha_challenge``) are never auto-retried — the
-          pipeline's captcha branch (PR #65) pauses the source for a human
-          instead;
-        - non-retryable failures (``error_taxonomy.is_retryable`` False) fail
-          immediately;
-        - transient faults (CDP races classified as ``ConnectionError``,
-          timeouts) retry with exponential backoff up to ``max_retries``
-          (default 3, config key ``max_retries``; ``retry_base_delay``
-          seconds, default 2).
-
-        ``ctx.http`` is deliberately not threaded into ``collect()`` — the
-        transport is a local opencli subprocess, not an HTTP request the
-        runner's RateLimitedClient was built for (same trade-off documented in
-        ``opencli_channel.fetch()``).
-        """
-        import asyncio
-
+        """Run the subprocess collector with bounded retry for transient failures."""
         from backend.pipeline.error_taxonomy import is_retryable
-
-        # Local captcha marker (equals error_taxonomy.CAPTCHA_CHALLENGE, which
-        # PR #65 exposes as is_captcha()) — kept inline so this PR merges
-        # independently of #65.
-        _CAPTCHA = "captcha_challenge"
 
         max_retries = int(ctx.config.get("max_retries", 3))
         base_delay = float(ctx.config.get("retry_base_delay", 2.0))
@@ -267,7 +456,9 @@ class DoubaoResearchChannel(AbstractChannel):
             result = await self.collect(ctx.config, ctx.params)
             if result.success:
                 return FetchResult(items=result.items, metadata=result.metadata)
-            if result.error_type == _CAPTCHA or not is_retryable(result.error_type):
+            if result.error_type == "captcha_challenge" or not is_retryable(
+                result.error_type
+            ):
                 raise ChannelFetchError(
                     result.error or "doubao collect failed",
                     error_type=result.error_type,
@@ -275,7 +466,15 @@ class DoubaoResearchChannel(AbstractChannel):
             last = result
             if attempt < max_retries:
                 await asyncio.sleep(base_delay * (2**attempt))
+        assert last is not None
         raise ChannelFetchError(
             last.error or "doubao collect failed",
             error_type=last.error_type,
+        )
+
+    async def validate_config(self, config: dict[str, Any]) -> list[str]:
+        return (
+            []
+            if str(config.get("question") or "").strip()
+            else ["'question' is required for doubao_research channel"]
         )

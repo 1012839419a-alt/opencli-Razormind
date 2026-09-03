@@ -77,12 +77,18 @@ def _system_payload() -> dict:
         "fleet_network_provider": settings.fleet_network_provider,
         "netbird_mode": settings.netbird_mode,
         "opencli_cdp_endpoint": settings.opencli_cdp_endpoint,
-        "agent_pool_endpoints": settings.cdp_endpoints,
+        "agent_pool_endpoints": [
+            endpoint.strip()
+            for endpoint in settings.agent_pool_endpoints.split(",")
+            if endpoint.strip()
+        ],
+        "effective_cdp_endpoints": settings.cdp_endpoints,
         "llm_request_timeout_seconds": settings.llm_request_timeout_seconds,
         "llm_max_concurrency": settings.llm_max_concurrency,
         "control_mode": settings.control_mode,
         "control_kill_switch": settings.control_kill_switch,
         "image_tag": settings.image_tag,
+        "runtime_revision": settings.opencli_runtime_revision,
         "database_kind": "sqlite" if settings.is_sqlite else "postgresql",
         "api_auth_configured": bool(settings.api_auth_token),
         "oidc_configured": bool(os.getenv("OIDC_ISSUER") and os.getenv("OIDC_AUDIENCE")),

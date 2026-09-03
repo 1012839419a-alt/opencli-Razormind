@@ -423,14 +423,11 @@ async def test_raw_output_opencli_hda_executes_live_channel_inline(
             {},
         )
     ]
-    events = (await client.get(f"/api/v1/workflows/runs/{data['runId']}/events")).json()[
-        "data"
-    ]
+    events = (await client.get(f"/api/v1/workflows/runs/{data['runId']}/events")).json()["data"]
     source_partial = next(
         event
         for event in events
-        if event["nodeId"] == "multi-source-opencli::source-bbc"
-        and event["eventType"] == "partial"
+        if event["nodeId"] == "multi-source-opencli::source-bbc" and event["eventType"] == "partial"
     )
     assert source_partial["details"]["itemCount"] == 1
     assert source_partial["details"]["agentDispatch"]["protocol"] == "local"
@@ -443,9 +440,25 @@ async def test_raw_output_opencli_hda_executes_live_channel_inline(
     record = (await db_session.execute(select(CollectedRecord))).scalar_one()
     assert record.workflow_id == project["id"]
     assert record.workflow_run_id == data["runId"]
-    assert record.raw_data["_workflowLineage"][0]["nodeId"] == (
-        "multi-source-opencli::source-bbc"
+    assert record.raw_data["_workflowLineage"][0]["nodeId"] == ("multi-source-opencli::source-bbc")
+    assert sink_partial["details"]["storedRefs"][0]["outcome"] == "stored"
+
+    duplicate_response = await client.post("/api/v1/workflows/runs", json={"project": project})
+    assert duplicate_response.status_code == 202, duplicate_response.text
+    duplicate_events = (
+        await client.get(
+            f"/api/v1/workflows/runs/{duplicate_response.json()['data']['runId']}/events"
+        )
+    ).json()["data"]
+    duplicate_sink_partial = next(
+        event
+        for event in duplicate_events
+        if event["nodeId"] == "record-sink" and event["eventType"] == "partial"
     )
+    assert duplicate_sink_partial["details"]["storedRecordCount"] == 0
+    assert duplicate_sink_partial["details"]["skippedRecordCount"] == 1
+    assert duplicate_sink_partial["details"]["storedRefs"][0]["outcome"] == "skipped"
+    assert duplicate_sink_partial["details"]["storedRefs"][0]["recordId"] == record.id
 
 
 def _native_first_loop_project() -> dict:
@@ -1058,8 +1071,7 @@ async def test_opencli_hda_trace_accepts_ai_source_slots_without_static_internal
     assert data["dispatches"][0]["sourceBindingRevisionId"] == "binding-video-r3"
     assert data["dispatches"][0]["sourceBindingRevisionNumber"] == 3
     assert (
-        data["dispatches"][0]["iii"]["payload"]["source_binding_revision_id"]
-        == "binding-video-r3"
+        data["dispatches"][0]["iii"]["payload"]["source_binding_revision_id"] == "binding-video-r3"
     )
     assert data["dispatches"][1]["site"] == "xiaohongshu"
 
@@ -1070,9 +1082,7 @@ async def test_opencli_hda_collects_per_source_failures_without_blocking_package
     monkeypatch,
 ):
     project = _multi_source_opencli_hda_project()
-    project["nodes"][0]["params"] = {
-        "execution": {"failureMode": "collect-per-source"}
-    }
+    project["nodes"][0]["params"] = {"execution": {"failureMode": "collect-per-source"}}
 
     async def fake_dispatch(dispatch, fleet_match, *, node):
         if dispatch.sourceGroup == "video":
@@ -1113,12 +1123,11 @@ async def test_opencli_hda_collects_per_source_failures_without_blocking_package
     states = {state["nodeId"]: state for state in data["nodeStates"]}
     assert states["multi-source-opencli"]["status"] == "completed"
     assert states["multi-source-opencli::source-xiaohongshu"]["status"] == "failed"
-    events = (
-        await client.get("/api/v1/workflows/runs/run-collect-per-source/events")
-    ).json()["data"]
+    events = (await client.get("/api/v1/workflows/runs/run-collect-per-source/events")).json()[
+        "data"
+    ]
     assert not any(
-        event["nodeId"] == "multi-source-opencli"
-        and event["eventType"] == "blocked"
+        event["nodeId"] == "multi-source-opencli" and event["eventType"] == "blocked"
         for event in events
     )
 
@@ -1129,9 +1138,7 @@ async def test_opencli_hda_collect_per_source_blocks_package_when_all_sources_fa
     monkeypatch,
 ):
     project = _multi_source_opencli_hda_project()
-    project["nodes"][0]["params"] = {
-        "execution": {"failureMode": "collect-per-source"}
-    }
+    project["nodes"][0]["params"] = {"execution": {"failureMode": "collect-per-source"}}
 
     async def fake_dispatch(dispatch, fleet_match, *, node):
         return [], {
@@ -1163,13 +1170,10 @@ async def test_opencli_hda_collect_per_source_blocks_package_when_all_sources_fa
     assert states["multi-source-opencli::source-bilibili"]["status"] == "failed"
     assert states["multi-source-opencli::source-xiaohongshu"]["status"] == "failed"
     events = (
-        await client.get(
-            "/api/v1/workflows/runs/run-collect-per-source-all-failed/events"
-        )
+        await client.get("/api/v1/workflows/runs/run-collect-per-source-all-failed/events")
     ).json()["data"]
     assert not any(
-        event["nodeId"] == "multi-source-opencli"
-        and event["eventType"] == "completed"
+        event["nodeId"] == "multi-source-opencli" and event["eventType"] == "completed"
         for event in events
     )
 
@@ -1670,14 +1674,11 @@ async def test_workflow_run_blocks_unapproved_or_unauthorized_opencli_write(
     )
 
     assert response.status_code == 202
-    events = (
-        await client.get(f"/api/v1/workflows/runs/{run_id}/events")
-    ).json()["data"]
+    events = (await client.get(f"/api/v1/workflows/runs/{run_id}/events")).json()["data"]
     blocked = next(
         event
         for event in events
-        if event["nodeId"] == "tool-twitter-post"
-        and event["eventType"] == "blocked"
+        if event["nodeId"] == "tool-twitter-post" and event["eventType"] == "blocked"
     )
     assert blocked["blockReason"]["code"] == expected_code
     assert dispatched == []
@@ -1762,13 +1763,9 @@ async def test_workflow_run_dispatches_accepted_authorized_opencli_write(
     assert fleet_matches[0].selected.endpoint == "http://agent-x:19823"
 
     events = (
-        await client.get(
-            "/api/v1/workflows/runs/run-opencli-write-authorized/events"
-        )
+        await client.get("/api/v1/workflows/runs/run-opencli-write-authorized/events")
     ).json()["data"]
-    action_events = [
-        event for event in events if event["nodeId"] == "tool-twitter-post"
-    ]
+    action_events = [event for event in events if event["nodeId"] == "tool-twitter-post"]
     assert [event["eventType"] for event in action_events] == [
         "queued",
         "started",
@@ -1777,9 +1774,7 @@ async def test_workflow_run_dispatches_accepted_authorized_opencli_write(
         "tool_call_completed",
         "completed",
     ]
-    tool_call = next(
-        event for event in action_events if event["eventType"] == "tool_call_started"
-    )
+    tool_call = next(event for event in action_events if event["eventType"] == "tool_call_started")
     assert tool_call["details"]["resourceRequirement"]["mutationMode"] == "write"
     resource_resolution = tool_call["details"]["resourceResolution"]
     assert resource_resolution["status"] == "resolved"
@@ -2418,9 +2413,7 @@ async def test_workflow_run_executes_live_http_sources(
         async def request(self, method, url, **kwargs):
             assert method == "GET"
             expected_query = (
-                {"format": "json", "q": "OpenCLI"}
-                if url.endswith("/bilibili")
-                else None
+                {"format": "json", "q": "OpenCLI"} if url.endswith("/bilibili") else None
             )
             assert kwargs["params"] == expected_query
             return FakeResponse(live_payloads[url])

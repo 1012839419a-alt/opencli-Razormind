@@ -59,6 +59,51 @@ async def test_process_with_ai_enriches_records():
     assert result == 2
 
 
+@pytest.mark.asyncio
+async def test_process_with_ai_keeps_failed_records_unenriched():
+    records = [MagicMock(), MagicMock()]
+    for record in records:
+        record.ai_enrichment = None
+        record.status = "normalized"
+
+    mock_processor = AsyncMock()
+    mock_processor.process = AsyncMock(
+        return_value=ProcessingResult(
+            success=False,
+            enrichments=[{}, {"summary": "second"}],
+            failed_indices={0},
+        )
+    )
+
+    with patch("backend.pipeline.ai_processor.get_processor", return_value=mock_processor):
+        result = await process_with_ai(records, {"processor_type": "paw"}, resolve_provider=False)
+
+    assert records[0].ai_enrichment is None
+    assert records[0].status == "normalized"
+    assert records[1].ai_enrichment == {"summary": "second"}
+    assert records[1].status == "ai_processed"
+    assert result == 1
+
+
+
+@pytest.mark.asyncio
+async def test_process_with_ai_rejects_malformed_processor_result(caplog):
+    records = [MagicMock(), MagicMock()]
+    for record in records:
+        record.ai_enrichment = None
+        record.status = "normalized"
+    mock_processor = AsyncMock()
+    mock_processor.process = AsyncMock(
+        return_value=ProcessingResult(success=True, enrichments=[{"summary": "only-one"}])
+    )
+
+    with patch("backend.pipeline.ai_processor.get_processor", return_value=mock_processor):
+        result = await process_with_ai(records, {"processor_type": "paw"}, resolve_provider=False)
+
+    assert result == 0
+    assert all(record.ai_enrichment is None and record.status == "normalized" for record in records)
+    assert _logged(caplog, "processor.contract_invalid")
+
 # ─── model-provider runtime PR-F (decision #9): DataSource.ai_config <-> ModelProvider ─────
 # soft dual-track convergence at the ai_config -> processor-config seam.
 
