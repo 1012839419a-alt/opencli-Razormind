@@ -7,8 +7,81 @@ import json
 import os
 import tempfile
 from copy import deepcopy
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+PRE_CLEANUP_RECEIPT_SCHEMA = "gaojixing.pre-cleanup-receipt.v1"
+
+
+def write_precleanup_capture_receipt(
+    storage_root: Path,
+    *,
+    run_id: str,
+    workflow_id: str | None,
+    question: str,
+    package_digest: str,
+    evidence: dict[str, Any],
+) -> dict[str, Any]:
+    """Durably spool one capture before its remote conversation is deleted.
+
+    The returned receipt is safe to attach to workflow events and records: it
+    contains a path relative to the configured Gaojixing storage root, never a
+    host path. Identical evidence for the same question is idempotent, while a
+    materially different retry receives a distinct file.
+    """
+
+    normalized_run_id = run_id.strip()
+    if not normalized_run_id:
+        raise ValueError("precleanup_receipt_run_id_required")
+    if not question.strip():
+        raise ValueError("precleanup_receipt_question_required")
+    normalized_digest = package_digest.strip().lower()
+    if len(normalized_digest) != 64 or any(
+        character not in "0123456789abcdef" for character in normalized_digest
+    ):
+        raise ValueError("precleanup_receipt_package_digest_invalid")
+    if not isinstance(evidence, dict):
+        raise ValueError("precleanup_receipt_evidence_invalid")
+
+    evidence_bytes = json.dumps(
+        evidence,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    evidence_digest = hashlib.sha256(evidence_bytes).hexdigest()
+    run_key = hashlib.sha256(normalized_run_id.encode("utf-8")).hexdigest()
+    relative_path = (
+        Path("pre-cleanup-evidence")
+        / run_key[:20]
+        / f"{normalized_digest[:20]}-{evidence_digest[:20]}.json"
+    )
+    document = {
+        "schema": PRE_CLEANUP_RECEIPT_SCHEMA,
+        "recorded_at": datetime.now(UTC).isoformat(),
+        "run_id": normalized_run_id,
+        "workflow_id": workflow_id,
+        "question": question,
+        "package_digest": normalized_digest,
+        "evidence_digest": evidence_digest,
+        "evidence": deepcopy(evidence),
+    }
+    payload = json.dumps(
+        document,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    root = storage_root.resolve()
+    _atomic_write(root / relative_path, payload)
+    return {
+        "schema": PRE_CLEANUP_RECEIPT_SCHEMA,
+        "persisted": True,
+        "path": relative_path.as_posix(),
+        "sha256": hashlib.sha256(payload).hexdigest(),
+        "evidence_sha256": evidence_digest,
+    }
 
 
 def write_question_capture(project_root: Path, capture: dict[str, Any]) -> str:
@@ -276,9 +349,11 @@ def _atomic_write(path: Path, payload: bytes) -> None:
 
 
 __all__ = [
+    "PRE_CLEANUP_RECEIPT_SCHEMA",
     "finalize_archive",
     "promote_capture_artifacts",
     "promote_verification_artifact",
     "read_question_capture",
+    "write_precleanup_capture_receipt",
     "write_question_capture",
 ]

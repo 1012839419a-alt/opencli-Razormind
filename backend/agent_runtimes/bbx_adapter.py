@@ -17,6 +17,7 @@ from backend.agent_runtimes.base import (
     RuntimeInvocationError,
     event_done,
     event_error,
+    event_evidence,
     event_started,
     event_tool_call,
     event_tool_result,
@@ -471,9 +472,6 @@ class BbxRuntimeAdapter(RuntimeAdapter):
         answer = _select_doubao_answer(value.get("answer"), answer_tail)
         answer = _remove_suggested_keyword_tail(answer, suggested_keywords)
         if not answer_complete or not _answer_ready(answer, answer_tail, question):
-            conversation_deleted = await self._delete_doubao_conversation(
-                task, tab_id, created_new
-            )
             response = {
                 "status": "blocked",
                 "error_type": "doubao_response_incomplete",
@@ -488,8 +486,20 @@ class BbxRuntimeAdapter(RuntimeAdapter):
                 "search_keywords": _string_list(value.get("search_keywords")),
                 "video_contents": _string_list(value.get("video_contents")),
                 "page_text": page_text,
-                "conversation_deleted": conversation_deleted,
+                "conversation_deleted": False,
             }
+            for event in _drain_bbx_events(task):
+                yield event
+            yield event_evidence(
+                task.task_id,
+                {
+                    "kind": "doubao.capture.pre_cleanup",
+                    "response": dict(response),
+                },
+            )
+            response["conversation_deleted"] = await self._delete_doubao_conversation(
+                task, tab_id, created_new
+            )
             await self._close_created_doubao_tab(task, tab_id, created_new)
             for event in _drain_bbx_events(task):
                 yield event
@@ -515,7 +525,17 @@ class BbxRuntimeAdapter(RuntimeAdapter):
             "video_contents": _string_list(value.get("video_contents")),
             "search_keyword_count": value.get("search_keyword_count"),
             "reference_count": value.get("reference_count"),
+            "conversation_deleted": False,
         }
+        for event in _drain_bbx_events(task):
+            yield event
+        yield event_evidence(
+            task.task_id,
+            {
+                "kind": "doubao.capture.pre_cleanup",
+                "response": dict(response),
+            },
+        )
         response["conversation_deleted"] = await self._delete_doubao_conversation(
             task, tab_id, created_new
         )

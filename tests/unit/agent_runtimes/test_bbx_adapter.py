@@ -150,26 +150,35 @@ async def test_doubao_workflow_uses_bbx_browser_and_returns_structured_evidence(
 
     monkeypatch.setattr(BbxRuntimeAdapter, "_run_cli", fake_run)
 
+    streamed_types: list[str] = []
+
     async def fake_delete(self, task, tab_id, created_new):
+        assert "evidence" in streamed_types
         return True
 
     monkeypatch.setattr(
         BbxRuntimeAdapter, "_delete_doubao_conversation", fake_delete, raising=False
     )
-    events = await _collect(
-        BbxRuntimeAdapter(),
+    events = []
+    async for event in BbxRuntimeAdapter().invoke(
         AgentTask(
             task_id="bbx-doubao",
             workflow="workflow.gaojixing.doubao.browser",
             input={"question": "q", "message": "q"},
             config={"settle_seconds": 0},
-        ),
-    )
+        )
+    ):
+        streamed_types.append(event["type"])
+        events.append(event)
 
     assert calls[0] == ["call", "tabs.create", '{"url":"https://www.doubao.com/chat"}']
     assert calls[-1] == ["call", "tabs.close", '{"tabId":7}']
     assert sum(args[3] == "page.evaluate" for args in calls if len(args) > 3) >= 3
     assert events[-1]["type"] == "done"
+    evidence = next(event for event in events if event["type"] == "evidence")
+    assert evidence["evidence"]["kind"] == "doubao.capture.pre_cleanup"
+    assert evidence["evidence"]["response"]["answer"] == "answer"
+    assert evidence["evidence"]["response"]["conversation_deleted"] is False
     response = __import__("json").loads(events[-1]["result"]["text"])
     assert response["answer"] == "answer"
     assert response["links"] == [{"url": "https://example.test/source", "title": "source"}]

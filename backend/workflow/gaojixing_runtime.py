@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass
+from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 
@@ -20,7 +22,9 @@ from backend.channels.doubao_research_channel import (
     _citations,
     _structured_response,
 )
+from backend.config import get_settings
 from backend.models.edge_node import EdgeNode
+from backend.workflow.gaojixing_archive import write_precleanup_capture_receipt
 
 GAOJIXING_CAPABILITY_ID = "chat-ai.capture"
 GAOJIXING_CHANNEL_TYPE = "doubao_research"
@@ -290,6 +294,7 @@ async def _capture_live_doubao_via_agent(
         "workflow": "workflow.gaojixing.doubao.browser",
         "instructions": instructions,
         "input": {
+            "question": package.question,
             "message": (
                 f"Research this exact question and capture the complete visible result:\n"
                 f"{package.question}"
@@ -303,7 +308,7 @@ async def _capture_live_doubao_via_agent(
         "permissions": {
             "mode": "full_auto",
             "tool_scope": ["bbx.browser" if runtime == "bbx" else "opencli.browser"],
-            "action_scope": ["doubao.ask", "doubao.read"],
+            "action_scope": ["doubao.ask", "doubao.read", "doubao.delete"],
             "workflow_id": workflow_id,
             "run_id": run_id,
         },
@@ -312,16 +317,39 @@ async def _capture_live_doubao_via_agent(
             "answer",
             "links",
             "conversation_url",
-        "suggested_keywords",
-        "answer_complete",
-        "conversation_deleted",
+            "suggested_keywords",
+            "answer_complete",
+            "conversation_deleted",
         ],
     }
 
     events: list[dict[str, Any]] = []
+    durable_capture_receipt: dict[str, Any] | None = None
 
     async def on_event(event: dict[str, Any]) -> None:
-        events.append(event)
+        nonlocal durable_capture_receipt
+        captured_event = deepcopy(event)
+        evidence = captured_event.get("evidence")
+        if (
+            captured_event.get("type") == "evidence"
+            and isinstance(evidence, dict)
+            and evidence.get("kind") == "doubao.capture.pre_cleanup"
+        ):
+            if not run_id:
+                raise RuntimeError(
+                    "A workflow run id is required before Doubao conversation cleanup"
+                )
+            durable_capture_receipt = await asyncio.to_thread(
+                write_precleanup_capture_receipt,
+                Path(get_settings().gaojixing_run_storage_path),
+                run_id=run_id,
+                workflow_id=workflow_id,
+                question=package.question,
+                package_digest=package.digest,
+                evidence=evidence,
+            )
+            evidence["durable_receipt"] = durable_capture_receipt
+        events.append(captured_event)
 
     try:
         from backend.ws_agent_manager import send_agent_task
@@ -441,6 +469,7 @@ async def _capture_live_doubao_via_agent(
         "provenance": f"agent:{runtime}:browser:{'bbx' if runtime == 'bbx' else 'opencli'}",
         "agent_runtime": runtime,
         "agent_url": agent_url,
+        "capture_receipt": durable_capture_receipt,
     }
     return ChannelResult.ok(
         [item],

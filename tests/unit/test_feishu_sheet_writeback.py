@@ -72,7 +72,7 @@ def test_doubao_result_projection_preserves_enriched_evidence_and_links() -> Non
     assert row["正式会话链接"] == "https://www.doubao.com/chat/123"
     assert row["分享链接"] == "https://www.doubao.com/chat/share-123"
     assert row["证据状态"] == "通过"
-    assert row["运行ID"] == "doubao-question-G0268-3"
+    assert row["运行ID"] == "doubao-run-run-1-question-G0268-3"
 
 
 def test_projection_columns_and_labels_are_configurable() -> None:
@@ -150,7 +150,7 @@ async def test_sync_posts_to_host_bridge_and_returns_verified_receipt(
     assert captured["url"] == "http://host.docker.internal:18765/feishu/sheets/append"
     assert captured["headers"]["X-Lark-CLI-Bridge-Token"] == "secret"
     assert captured["json"]["idempotency_column"] == "运行ID"
-    assert captured["json"]["rows"][0][-1] == "doubao-question-G0268-3"
+    assert captured["json"]["rows"][0][-1] == "doubao-run-run-1-question-G0268-3"
     assert result == {
         "enabled": True,
         "status": "synced",
@@ -286,8 +286,8 @@ def test_source_identity_is_stable_when_doubao_conversation_changes() -> None:
     )
 
     run_id_index = columns.index("运行ID")
-    assert rows[0][run_id_index] == "doubao-question-G0268-3"
-    assert rows[1][run_id_index] == "doubao-question-G0268-3"
+    assert rows[0][run_id_index] == "doubao-run-run-1-question-G0268-3"
+    assert rows[1][run_id_index] == "doubao-run-run-1-question-G0268-3"
 
 
 def test_projection_combines_root_question_and_followup_sequence() -> None:
@@ -312,7 +312,32 @@ def test_projection_combines_root_question_and_followup_sequence() -> None:
 
     row = dict(zip(columns, rows[0], strict=True))
     assert row["题号"] == "G0001-2"
-    assert row["运行ID"] == "doubao-row-recv-followup-2"
+    assert row["运行ID"] == "doubao-run-run-1-row-recv-followup-2"
+
+
+def test_writeback_idempotency_is_scoped_to_source_row_and_run() -> None:
+    reference = _stored_reference()
+    reference["raw"]["source_row_id"] = "rec-23"
+
+    columns, first_rows = build_feishu_writeback_rows(
+        [reference],
+        {"stage": "非品牌题"},
+        run_id="run-1",
+    )
+    _, replay_rows = build_feishu_writeback_rows(
+        [reference],
+        {"stage": "非品牌题"},
+        run_id="run-1",
+    )
+    _, next_run_rows = build_feishu_writeback_rows(
+        [reference],
+        {"stage": "非品牌题"},
+        run_id="run-2",
+    )
+
+    idempotency_index = columns.index("运行ID")
+    assert first_rows[0][idempotency_index] == replay_rows[0][idempotency_index]
+    assert first_rows[0][idempotency_index] != next_run_rows[0][idempotency_index]
 
 
 @pytest.mark.asyncio

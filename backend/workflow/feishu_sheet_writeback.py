@@ -472,11 +472,12 @@ def _share_url(value: Any) -> str | None:
 
 
 def _idempotency_key(reference: dict[str, Any], raw: dict[str, Any], *, run_id: str) -> str:
+    run_scope = _text(run_id) or "unknown-run"
     source_row = _first_text(
         raw.get("source_row_id"), _dict(raw.get("source_record")).get("record_id")
     )
     if source_row:
-        return f"doubao-row-{source_row}"
+        return f"doubao-run-{run_scope}-row-{source_row}"
     source_fields = _dict(raw.get("source_fields"))
     source_number = _first_text(
         raw.get("source_number"),
@@ -485,13 +486,13 @@ def _idempotency_key(reference: dict[str, Any], raw: dict[str, Any], *, run_id: 
         source_fields.get("序号"),
     )
     if source_number:
-        return f"doubao-question-{source_number}"
+        return f"doubao-run-{run_scope}-question-{source_number}"
     conversation_url = _text(raw.get("conversation_url")) or ""
     match = _DOUBAO_CHAT_RE.search(conversation_url)
     if match:
-        return f"doubao-{match.group(1)}"
+        return f"doubao-run-{run_scope}-conversation-{match.group(1)}"
     record_id = _text(reference.get("recordId"))
-    return f"workflow-{record_id or run_id}"
+    return f"doubao-run-{run_scope}-record-{record_id or 'unknown-record'}"
 
 
 def _writeback_bridge_url() -> str | None:

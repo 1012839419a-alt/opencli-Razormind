@@ -3819,7 +3819,25 @@ async def _execute_gaojixing_source(
     del trace_id
     adapter_config = _gaojixing_adapter_config(node)
     source_group = _source_group(node, node.id)
-    upstream_items = _upstream_outputs(node, outputs_by_node) or [None]
+    upstream_items = _upstream_outputs(node, outputs_by_node)
+    if node.depends_on and not upstream_items:
+        outputs_by_node[node.id] = []
+        emitter.emit(
+            node,
+            "completed",
+            message="Live Gaojixing source received no eligible upstream items",
+            details={
+                "bindingId": SOURCE_FETCH_BINDING_ID,
+                "channelType": GAOJIXING_CHANNEL_TYPE,
+                "inputItemCount": 0,
+                "outputItemCount": 0,
+                "mode": "live",
+                "lineage": _lineage_pointer(node),
+            },
+        )
+        return
+    if not upstream_items:
+        upstream_items = [None]
     mapped_items: list[dict[str, Any]] = []
     evidences: list[dict[str, Any]] = []
     packages: list[dict[str, Any]] = []
