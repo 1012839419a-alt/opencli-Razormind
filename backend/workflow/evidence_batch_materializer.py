@@ -56,7 +56,8 @@ _MAX_RECORD_REFERENCES = 1000
 
 
 def _canonical_hash(value: dict[str, Any]) -> str:
-    return sha256(json.dumps(value, sort_keys=True, separators=(",", ":"), default=str).encode()).hexdigest()
+    payload = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+    return sha256(payload.encode()).hexdigest()
 
 
 def _batch_id(command: IIICollectionCommandV1, attempt: IIICollectionAttemptV1) -> str:
@@ -81,7 +82,8 @@ def _legacy_status(materialization_status: str) -> str:
 
 
 def _recovery_action(status: str) -> str:
-    return "none" if status in {"completed", "completed_empty", "partial", "failed_definitive"} else "reconcile_evidence_batch"
+    terminal_statuses = {"completed", "completed_empty", "partial", "failed_definitive"}
+    return "none" if status in terminal_statuses else "reconcile_evidence_batch"
 
 
 def _reference(value: dict[str, Any]) -> dict[str, Any]:
@@ -178,7 +180,9 @@ async def _read(
         item_count=manifest.item_count,
         record_count=int(manifest.counts.get("record_present", 0)),
         counts={name: int(manifest.counts.get(name, 0)) for name in _COUNT_NAMES},
-        record_references=[EvidenceBatchRecordReferenceV1(**value) for value in manifest.record_references],
+        record_references=[
+            EvidenceBatchRecordReferenceV1(**value) for value in manifest.record_references
+        ],
         blocker=None if status in _TERMINAL else manifest.finalization_reason,
         recovery_action=_recovery_action(status),
         query_fingerprint=manifest.query_fingerprint,
@@ -189,7 +193,15 @@ async def _read(
     )
 
 
-_COUNT_NAMES = ("expected", "record_present", "inserted", "duplicate_existing", "rejected", "dlq", "unknown")
+_COUNT_NAMES = (
+    "expected",
+    "record_present",
+    "inserted",
+    "duplicate_existing",
+    "rejected",
+    "dlq",
+    "unknown",
+)
 _TERMINAL = {"completed", "completed_empty", "partial", "failed_definitive"}
 
 
@@ -506,7 +518,10 @@ async def _reconcile(
         delegation_request = delegation(command, attempt, common["batch_id"])
         for offset in range(0, len(exact_keys), _MAX_QUERY_KEYS):
             exact = await post_reconciliation_query(
-                build_exact_request(delegation_request, exact_keys[offset : offset + _MAX_QUERY_KEYS])
+                build_exact_request(
+                    delegation_request,
+                    exact_keys[offset : offset + _MAX_QUERY_KEYS],
+                )
             )
             if (
                 common["query_fingerprint"] is not None
@@ -523,7 +538,11 @@ async def _reconcile(
             }
             for key in exact_keys[offset : offset + _MAX_QUERY_KEYS]:
                 result = result_by_key.get((str(key.source_id), key.event_id))
-                if result is None or result["classification"] != "present" or "record" not in result:
+                if (
+                    result is None
+                    or result["classification"] != "present"
+                    or "record" not in result
+                ):
                     counts["unknown"] += 1
                     continue
                 if len(common["record_references"]) >= _MAX_RECORD_REFERENCES:

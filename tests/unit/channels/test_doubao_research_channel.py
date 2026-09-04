@@ -20,7 +20,6 @@ def test_citations_preserve_order_and_strip_punctuation():
     ]
 
 
-# merge marker
 def test_conversation_url_extracts_chat_id():
     status = (
         '[{"Status": "Connected", "Url": '
@@ -38,42 +37,6 @@ def test_conversation_url_ignores_root_chat():
 
 def test_conversation_url_tolerates_garbage():
     assert _conversation_url("not json at all") == ""
-# merge-base marker
-# incoming marker
-def test_structured_response_preserves_share_data_and_keywords():
-    response = _structured_response(
-        "```json\n"
-        '{"answer":"结论", "session_share_data":[{"url":"https://doubao.com/share/1"}], '
-        '"suggested_keywords":["DHA 食物"]}\n```'
-    )
-
-    assert response["answer"] == "结论"
-    assert response["session_share_data"] == [{"url": "https://doubao.com/share/1"}]
-    assert response["suggested_keywords"] == ["DHA 食物"]
-# end marker
-
-
-def test_structured_response_preserves_data_and_links():
-    response = _structured_response(
-        '{"answer":"结论", "data":{"items":["一","二"]}, '
-        '"links":[{"title":"来源","url":"https://example.com/source"}], '
-        '"session_share_data":[], "suggested_keywords":[]}'
-    )
-
-    assert response["data"] == {"items": ["一", "二"]}
-    assert response["links"] == [{"title": "来源", "url": "https://example.com/source"}]
-    assert response["response_data"]["data"] == {"items": ["一", "二"]}
-
-
-def test_structured_response_accepts_doubao_suggested_keys_alias():
-    response = _structured_response(
-        '{"answer":"结论", "session_share_data":"", '
-        '"suggested_keys":["深海鱼", "DHA 鸡蛋"], "citations":[]}'
-    )
-
-    assert response["suggested_keywords"] == ["深海鱼", "DHA 鸡蛋"]
-
-
 def test_structured_response_preserves_share_data_and_keywords():
     response = _structured_response(
         "```json\n"
@@ -105,6 +68,8 @@ def test_structured_response_accepts_doubao_suggested_keys_alias():
     )
 
     assert response["suggested_keywords"] == ["深海鱼", "DHA 鸡蛋"]
+
+
 
 
 @pytest.mark.asyncio

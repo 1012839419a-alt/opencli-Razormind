@@ -85,15 +85,6 @@ from backend.workflow.dify_grants import resolve_dify_ephemeral_grants
 from backend.workflow.dify_graphon_client import DifyGraphonClient
 from backend.workflow.event_mirror import publish_workflow_run_event_mirror
 from backend.workflow.fleet_inventory import match_workflow_fleet_capability
-from backend.workflow.gaojixing_runtime import (
-    GAOJIXING_CHANNEL_TYPE,
-    GAOJIXING_EXECUTION_MODES,
-    GAOJIXING_LIVE_MODE,
-    GaojixingReadinessError,
-    build_question_package,
-    capture_live_doubao,
-    map_capture_item,
-)
 from backend.workflow.gaojixing_certification import (
     GAOJIXING_BATCH_CERTIFY_EXECUTOR,
     GAOJIXING_BATCH_CERTIFY_TOOL_ID,
@@ -104,13 +95,18 @@ from backend.workflow.gaojixing_doubao import (
     GAOJIXING_DOUBAO_BATCH_TOOL_ID,
     execute_gaojixing_doubao_batch,
 )
+from backend.workflow.gaojixing_runtime import (
+    GAOJIXING_CHANNEL_TYPE,
+    GAOJIXING_EXECUTION_MODES,
+    GAOJIXING_LIVE_MODE,
+    GaojixingReadinessError,
+    build_question_package,
+    capture_live_doubao,
+    map_capture_item,
+)
 from backend.workflow.http_source_executor import (
     WorkflowHTTPSourceExecutionError,
     execute_workflow_http_source,
-)
-from backend.workflow.channel_source_executor import (
-    WorkflowChannelSourceExecutionError,
-    execute_workflow_channel_source,
 )
 from backend.workflow.intelligence_store import (
     IntelligenceStoreError,
@@ -1266,7 +1262,9 @@ async def start_workflow_run(
                     node,
                     "partial",
                     message="Live channel source loaded as workflow items",
-                    batch=_node_batch_reference(body.project.id, run_id, node, item_count=len(live_items)),
+                    batch=_node_batch_reference(
+                        body.project.id, run_id, node, item_count=len(live_items)
+                    ),
                     details={
                         "bindingId": SOURCE_FETCH_BINDING_ID,
                         "channelType": binding_input.get("channelType"),
@@ -3795,7 +3793,6 @@ async def _execute_gaojixing_source(
 ) -> None:
     """Run live Gaojixing once for every upstream keyword item."""
     del trace_id
-    binding_input = _binding_input(node)
     adapter_config = _gaojixing_adapter_config(node)
     source_group = _source_group(node, node.id)
     upstream_items = _upstream_outputs(node, outputs_by_node) or [None]

@@ -376,7 +376,11 @@ class DoubaoResearchChannel(AbstractChannel):
             if returncode:
                 return ChannelResult.fail(
                     f"opencli doubao read exited with code {returncode}: {stderr[:500]}",
-                    error_type="ConnectionError" if _is_transient_cdp_fault(stderr, stdout) else None,
+                    error_type=(
+                        "ConnectionError"
+                        if _is_transient_cdp_fault(stderr, stdout)
+                        else None
+                    ),
                 )
         try:
             response_rows = _parse_opencli_rows(stdout)

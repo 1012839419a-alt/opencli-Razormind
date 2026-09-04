@@ -214,9 +214,12 @@ async def test_send_agent_task_supports_async_on_event():
     async def fake_send(payload):
         if payload["type"] == "agent_task":
             request_id = payload["request_id"]
-            await mgr.resolve_agent_event(request_id, {"event": {"type": "started", "task_id": request_id}})
+            await mgr.resolve_agent_event(
+                request_id, {"event": {"type": "started", "task_id": request_id}}
+            )
             mgr.resolve_agent_result(
-                request_id, {"result": {"type": "done", "task_id": request_id, "result": {"ok": True}}}
+                request_id,
+                {"result": {"type": "done", "task_id": request_id, "result": {"ok": True}}},
             )
 
     ws.send_json = AsyncMock(side_effect=fake_send)
@@ -239,7 +242,9 @@ async def test_send_agent_task_timeout():
     mgr.register_connection("http://agent:19823", ws)
 
     with pytest.raises(TimeoutError, match="did not complete agent_task"):
-        await mgr.send_agent_task("http://agent:19823", {"runtime": "pi"}, lambda e: None, timeout=0.05)
+        await mgr.send_agent_task(
+            "http://agent:19823", {"runtime": "pi"}, lambda e: None, timeout=0.05
+        )
 
     sent_frames = [call.args[0] for call in ws.send_json.await_args_list]
     assert [frame["type"] for frame in sent_frames] == ["agent_task", "cancel"]

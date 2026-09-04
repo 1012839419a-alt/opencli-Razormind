@@ -52,7 +52,11 @@ LINK_AGGREGATOR_DOMAINS = {
     "elink.io",
 }
 
-EMAIL_RE = re.compile(r"(?<![A-Za-z0-9._%+\-/=])[A-Za-z0-9._%+\-]+@[A-Za-z0-9](?:[A-Za-z0-9\-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9\-]{0,61}[A-Za-z0-9])?)+")
+EMAIL_RE = re.compile(
+    r"(?<![A-Za-z0-9._%+\-/=])[A-Za-z0-9._%+\-]+@"
+    r"[A-Za-z0-9](?:[A-Za-z0-9\-]{0,61}[A-Za-z0-9])?"
+    r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9\-]{0,61}[A-Za-z0-9])?)+"
+)
 OBFUSCATED_RE = re.compile(
     r"([A-Za-z0-9._%+\-]+)\s*[\(\[\{]\s*(?:at|@)\s*[\)\]\}]\s*([A-Za-z0-9.\-]+)\s*[\(\[\{]\s*(?:dot|\.)\s*[\)\]\}]\s*([A-Za-z]{2,})",
     re.IGNORECASE,
@@ -69,8 +73,14 @@ def classify_url(url: str) -> dict:
             return {"kind": "invalid", "domain": None, "url": url}
         if host in SOCIAL_DOMAINS or any(host.endswith("." + d) for d in SOCIAL_DOMAINS):
             return {"kind": "social", "domain": host, "url": url}
-        if host in LINK_AGGREGATOR_DOMAINS or any(host.endswith("." + d) for d in LINK_AGGREGATOR_DOMAINS):
-            return {"kind": "link_aggregator", "domain": host, "url": url}
+        if host in LINK_AGGREGATOR_DOMAINS or any(
+            host.endswith("." + d) for d in LINK_AGGREGATOR_DOMAINS
+        ):
+            return {
+                "kind": "link_aggregator",
+                "domain": host,
+                "url": url,
+            }
         return {"kind": "personal_or_business", "domain": host, "url": url}
     except Exception as e:
         return {"kind": "invalid", "domain": None, "url": url, "error": str(e)}
@@ -112,7 +122,10 @@ def main():
     )
     parser.add_argument("--text", help="Text to scan for emails")
     parser.add_argument("--text-file", help="Path to UTF-8 file to scan for emails")
-    parser.add_argument("--classify-url", help="Classify a single URL (social/link_aggregator/personal_or_business)")
+    parser.add_argument(
+        "--classify-url",
+        help="Classify a single URL (social/link_aggregator/personal_or_business)",
+    )
     args = parser.parse_args()
 
     output = {}
@@ -121,7 +134,7 @@ def main():
     if args.text:
         output["emails"] = extract_emails(args.text)
     elif args.text_file:
-        with open(args.text_file, "r", encoding="utf-8", errors="ignore") as fh:
+        with open(args.text_file, encoding="utf-8", errors="ignore") as fh:
             output["emails"] = extract_emails(fh.read())
     if not output:
         output = {"error": True, "message": "provide --text, --text-file, or --classify-url"}

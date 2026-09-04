@@ -1,7 +1,6 @@
 """One-off helper: list Discord channels from discord-cli stats."""
 import json
 import subprocess
-import sys
 
 proc = subprocess.run(["discord", "stats", "--json"], capture_output=True, text=True, check=True)
 data = json.loads(proc.stdout)
@@ -49,5 +48,6 @@ recent.sort(key=lambda c: c.get("last_msg", ""), reverse=True)
 for ch in recent[:20]:
     print(
         f"{ch.get('msg_count',0):>4}  {ch['channel_id']}  "
-        f"{ch.get('guild_name','?')}/{ch.get('channel_name','?')}  last={ch.get('last_msg','')[:10]}"
+        f"{ch.get('guild_name','?')}/{ch.get('channel_name','?')}  "
+        f"last={ch.get('last_msg','')[:10]}"
     )

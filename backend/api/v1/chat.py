@@ -15,9 +15,10 @@ import asyncio
 import json
 import logging
 import re
+from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Literal
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -76,7 +77,14 @@ async def _flush_activity() -> None:
 
 def _tool_public_description(name: str, args: dict[str, Any]) -> tuple[str, str, str | None]:
     label, target_type = _PUBLIC_TOOL_LABELS.get(name, ("执行操作", "系统对象"))
-    target_id = next((str(args[key]) for key in ("source_id", "schedule_id", "provider_id") if args.get(key)), None)
+    target_id = next(
+        (
+            str(args[key])
+            for key in ("source_id", "schedule_id", "provider_id")
+            if args.get(key)
+        ),
+        None,
+    )
     return label, target_type, target_id
 
 
@@ -288,12 +296,22 @@ async def _create_durable_run(body: ChatRequest, identity: RequestIdentity | Non
             )
             session.add(agent_session)
             await session.flush()
-        goal = next((message.content for message in reversed(body.messages) if message.role == "user"), "")
+        goal = next(
+            (
+                message.content
+                for message in reversed(body.messages)
+                if message.role == "user"
+            ),
+            "",
+        )
         run = AgentRun(
             session_id=agent_session.id,
             status="queued",
             goal=goal,
-            request_payload={"messages": [message.model_dump() for message in body.messages], "context": body.context or {}},
+            request_payload={
+                "messages": [message.model_dump() for message in body.messages],
+                "context": body.context or {},
+            },
         )
         session.add(run)
         await session.commit()
@@ -1040,7 +1058,8 @@ async def _chat_xml(
     *,
     tool_trace: list[dict[str, Any]] | None = None,
 ) -> ChatExecution:
-    """Tool loop for XML-style models (parse <tool_use> from content, feed results back as text)."""
+    """Tool loop for XML-style models (parse <tool_use> from content, feed results
+    back as text)."""
     messages: list[dict[str, Any]] = [{"role": "system", "content": system + XML_TOOL_TEXT}]
     messages += [{"role": m.role, "content": m.content} for m in body.messages]
     tool_trace = tool_trace if tool_trace is not None else []
@@ -1048,7 +1067,11 @@ async def _chat_xml(
     for _step in range(MAX_TOOL_STEPS):
         await db.commit()
         try:
-            response = await client.chat.completions.create(model=model, messages=messages, max_tokens=1024)
+            response = await client.chat.completions.create(
+                model=model,
+                messages=messages,
+                max_tokens=1024,
+            )
         except Exception as exc:
             logger.error("chat(xml) llm error | %s", exc)
             raise HTTPException(status_code=502, detail=f"模型调用失败: {exc}") from exc

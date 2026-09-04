@@ -1,4 +1,4 @@
-from typing import Literal, Optional
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -29,11 +29,11 @@ RecordSortOrder = Literal["asc", "desc"]
 
 @router.get("", response_model=ApiResponse[list[CollectedRecordRead]])
 async def list_records(
-    source_id: Optional[str] = None,
-    task_id: Optional[str] = None,
-    project_id: Optional[str] = None,
-    status: Optional[str] = None,
-    search: Optional[str] = Query(None),
+    source_id: str | None = None,
+    task_id: str | None = None,
+    project_id: str | None = None,
+    status: str | None = None,
+    search: str | None = Query(None),
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
     sort_by: RecordSortField = Query("created_at"),
@@ -90,7 +90,7 @@ async def batch_delete_records(
 
 @router.delete("", response_model=ApiResponse[dict])
 async def clear_all_records(
-    source_id: Optional[str] = Query(None),
+    source_id: str | None = Query(None),
     db: AsyncSession = Depends(get_db),
 ) -> ApiResponse:
     deleted = await record_service.delete_all_records(db, source_id=source_id)

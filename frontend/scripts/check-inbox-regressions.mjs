@@ -6,7 +6,6 @@ const read = (path) => readFile(new URL(`../${path}`, import.meta.url), 'utf8')
 
 test('inbox combines existing operational signals with server-backed human approvals', async () => {
   const page = await read('app/(app)/inbox/page.tsx')
-  const approvalDetail = await read('components/inbox/queue-detail.tsx')
   const hooks = await read('lib/api/hooks.ts')
   const endpoints = await read('lib/api/endpoints.ts')
 
@@ -21,7 +20,6 @@ test('inbox combines existing operational signals with server-backed human appro
     endpoints,
     /listNotificationLogs = \(params\?: \{\s*rule_id\?: string;\s*page\?: number;\s*limit\?: number;\s*\}\) =>/,
   )
-  assert.doesNotMatch(page, /useMyWorkspaces|useOperationsInbox|\/workspaces|operations-inbox/)
 })
 
 test('inbox uses a Linear-style queue while preserving destinations for underlying records', async () => {

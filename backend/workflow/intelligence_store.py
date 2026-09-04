@@ -6,7 +6,7 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any, TypeVar
+from typing import Any
 
 from pydantic import ValidationError
 from sqlalchemy import select, update
@@ -52,7 +52,6 @@ from backend.workflow.workflow_run_events import append_workflow_run_events
 
 DEFAULT_LEASE_DURATION = timedelta(minutes=5)
 MAX_TRANSACTION_ATTEMPTS = 3
-T = TypeVar("T")
 FaultHook = Callable[[str], None]
 
 
@@ -1067,7 +1066,7 @@ class IntelligenceStore:
             self.fault_hook(stage)
 
 
-async def run_intelligence_transaction(
+async def run_intelligence_transaction[T](
     session_factory: async_sessionmaker[AsyncSession],
     operation: Callable[[IntelligenceStore], Awaitable[T]],
     *,

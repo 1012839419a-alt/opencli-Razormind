@@ -56,7 +56,10 @@ def normalize(raw: str) -> dict:
 def main():
     sys.stdout.reconfigure(encoding="utf-8", newline="\n")
     parser = argparse.ArgumentParser(
-        description="Normalize one channel input (handle, channel id, or full URL) into a canonical /about URL"
+        description=(
+            "Normalize one channel input (handle, channel id, or full URL) "
+            "into a canonical /about URL"
+        )
     )
     parser.add_argument("channel", help="Channel id (UCxxx), handle (@name), or URL")
     args = parser.parse_args()
