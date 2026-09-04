@@ -27,9 +27,11 @@ class SourceMeasurement(BaseModel):
     duplicate_rate: float
 
     freshness_lag_seconds: int | None = None
+    cursor_advanced: bool
 
     odp_stream_lag: int | None = None
     odp_pending: int | None = None
+    dlq_count: int = 0
 
     #: {ErrorKind.value: count} — PR-Control-3. Reuses the SAME taxonomy the
     #: persisted backend.models.source_measurement.SourceMeasurement.error_kinds

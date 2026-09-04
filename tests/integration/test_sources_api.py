@@ -357,7 +357,7 @@ async def test_control_state_with_run_evidence(client, db_session, sample_source
     monkeypatch.delenv("ODP_DATABASE_URL", raising=False)
     monkeypatch.delenv("ODP_INGEST_URL", raising=False)
 
-    from datetime import datetime
+    from datetime import UTC, datetime
 
     from backend.models.task import CollectionTask, TaskRun, TaskRunEvent
 
@@ -371,7 +371,7 @@ async def test_control_state_with_run_evidence(client, db_session, sample_source
     run = TaskRun(
         task_id=task.id,
         status="completed",
-        finished_at=datetime(2026, 7, 2, tzinfo=datetime.UTC),
+        finished_at=datetime(2026, 7, 2, tzinfo=UTC),
         duration_ms=1000,
         records_collected=9,
     )
@@ -427,7 +427,7 @@ async def test_control_state_degraded_when_errors(
     monkeypatch.delenv("ODP_DATABASE_URL", raising=False)
     monkeypatch.delenv("ODP_INGEST_URL", raising=False)
 
-    from datetime import datetime
+    from datetime import UTC, datetime
 
     from backend.models.task import CollectionTask, TaskRun, TaskRunEvent
 
@@ -441,7 +441,7 @@ async def test_control_state_degraded_when_errors(
     run = TaskRun(
         task_id=task.id,
         status="completed",
-        finished_at=datetime(2026, 7, 2, tzinfo=datetime.UTC),
+        finished_at=datetime(2026, 7, 2, tzinfo=UTC),
         duration_ms=1000,
         records_collected=1,
     )
@@ -485,7 +485,7 @@ async def test_control_state_trend_fallback_for_pre_measurement_source(
     monkeypatch.delenv("ODP_DATABASE_URL", raising=False)
     monkeypatch.delenv("ODP_INGEST_URL", raising=False)
 
-    from datetime import datetime
+    from datetime import UTC, datetime
 
     from backend.models.task import CollectionTask, TaskRun, TaskRunEvent
 
@@ -501,8 +501,8 @@ async def test_control_state_trend_fallback_for_pre_measurement_source(
         run = TaskRun(
             task_id=task.id,
             status="completed",
-            created_at=datetime(2026, 7, day, tzinfo=datetime.UTC),
-            finished_at=datetime(2026, 7, day, tzinfo=datetime.UTC),
+            created_at=datetime(2026, 7, day, tzinfo=UTC),
+            finished_at=datetime(2026, 7, day, tzinfo=UTC),
             duration_ms=1000,
             records_collected=stored,
         )
@@ -546,14 +546,14 @@ async def test_control_state_trend_fallback_for_pre_measurement_source(
 
 
 async def _seed_measurement_row(session, source_id: str, **overrides):
-    from datetime import datetime
+    from datetime import UTC, datetime
 
     from backend.models.source_measurement import SourceMeasurement as SourceMeasurementRow
 
     kwargs = dict(
         source_id=source_id,
         run_id="row-run-1",
-        measured_at=datetime(2026, 7, 2, tzinfo=datetime.UTC),
+        measured_at=datetime(2026, 7, 2, tzinfo=UTC),
         accepted=5,
         duplicates=0,
         rejected=0,
@@ -930,14 +930,14 @@ async def test_control_state_classification_flips_with_objective_override(
     create_resp = await client.post("/api/v1/sources", json=sample_source_data)
     source_id = create_resp.json()["data"]["id"]
 
-    from datetime import datetime
+    from datetime import UTC, datetime
 
     from backend.models.source_measurement import SourceMeasurement as SourceMeasurementRow
 
     row = SourceMeasurementRow(
         source_id=source_id,
         run_id="row-run-1",
-        measured_at=datetime(2026, 7, 2, tzinfo=datetime.UTC),
+        measured_at=datetime(2026, 7, 2, tzinfo=UTC),
         accepted=97,
         duplicates=0,
         rejected=3,
