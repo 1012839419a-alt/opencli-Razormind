@@ -1,7 +1,6 @@
 import {
   Activity,
   Blocks,
-  Code2,
   Database,
   LayoutDashboard,
   PanelsTopLeft,
@@ -46,7 +45,6 @@ export const NAV_GROUPS: NavGroup[] = [
     label: '构建',
     items: [
       { href: '/studio', label: '项目', icon: PanelsTopLeft, match: ['/studio', '/canvas'] },
-      { href: '/agent-workbench', label: 'Coding Workbench', icon: Code2 },
       { href: '/plugins', label: '插件中心', icon: Blocks },
       {
         href: '/operations-agents',
