@@ -223,6 +223,7 @@ async def test_dangerous_suggestion_downgrades_and_preserves_original_in_ledger(
     get_settings.cache_clear()
     try:
         source = await _make_source(db_session)
+        await _seed_measurement_row(db_session, source.id, error_kinds={"auth_failed": 1})
         await _seed_evidence(
             db_session,
             samples=10,
