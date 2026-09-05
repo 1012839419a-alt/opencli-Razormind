@@ -14,8 +14,9 @@ never by rewriting the pipeline.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Any, Protocol, Sequence
+from typing import Any, Protocol
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,7 +76,7 @@ class CollectionLineage:
         return values
 
     @classmethod
-    def from_dict(cls, values: dict[str, Any] | None) -> "CollectionLineage | None":
+    def from_dict(cls, values: dict[str, Any] | None) -> CollectionLineage | None:
         if values is None:
             return None
         fields = {

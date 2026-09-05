@@ -38,7 +38,10 @@ def report_keys(
     report: IIICollectionExpectedKeyReportV1, command: IIICollectionCommandV1
 ) -> tuple[list[OdpRecordKey], bool]:
     try:
-        expected = [OdpRecordKey(UUID(key["source_id"]), key["event_id"]) for key in report.expected_keys]
+        expected = [
+            OdpRecordKey(UUID(key["source_id"]), key["event_id"])
+            for key in report.expected_keys
+        ]
         command_source = UUID(command.odp_source_id)
     except (KeyError, TypeError, ValueError):
         return [], True
@@ -57,7 +60,11 @@ def receipt_outcomes(
     result: dict[OdpRecordKey, str] = {}
     for receipt in receipts:
         outcomes = receipt.outcomes
-        observed = {(item.get("source_id"), item.get("event_id")) for item in outcomes if isinstance(item, dict)}
+        observed = {
+            (item.get("source_id"), item.get("event_id"))
+            for item in outcomes
+            if isinstance(item, dict)
+        }
         if len(outcomes) != len(expected) or observed != expected:
             return None
         for key in keys:
@@ -65,7 +72,8 @@ def receipt_outcomes(
                 (
                     item.get("outcome")
                     for item in outcomes
-                    if item.get("source_id") == str(key.source_id) and item.get("event_id") == key.event_id
+                    if item.get("source_id") == str(key.source_id)
+                    and item.get("event_id") == key.event_id
                 ),
                 None,
             )

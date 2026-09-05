@@ -19,7 +19,7 @@ from backend.models.iii_collection import (
     IIICollectionExpectedKeyReportV1,
     IIICollectionIngressReceiptV1,
 )
-from backend.odp.query_client import OdpQueryUnavailable, OdpRecordKey
+from backend.odp.query_client import OdpQueryUnavailableError, OdpRecordKey
 from backend.security.identity import RequestIdentity, get_request_identity
 from backend.workflow.evidence_batch_materialization_facts import receipt_outcomes
 from backend.workflow.evidence_batch_materializer import (
@@ -195,39 +195,72 @@ async def test_materialization_requires_exact_presence_and_projects_completed(
                     }
                 ],
             }
-        return {**_base(request), "mode": "attempt_page", "records": [record], "results": [], "as_of": "2026-08-30T00:00:00Z"}
+        return {
+            **_base(request),
+            "mode": "attempt_page",
+            "records": [record],
+            "results": [],
+            "as_of": "2026-08-30T00:00:00Z",
+        }
 
-    monkeypatch.setattr("backend.workflow.evidence_batch_materializer.post_reconciliation_query", query)
+    monkeypatch.setattr(
+        "backend.workflow.evidence_batch_materializer.post_reconciliation_query",
+        query,
+    )
     response = await client.post(f"{route(scope)}/{command.id}/materialize")
     assert response.status_code == 200
     data = response.json()["data"]
     assert data["materializationStatus"] == "completed"
     assert data["legacyStatus"] == "completed"
-    assert data["recordReferences"] == [{"sourceId": command.odp_source_id, "eventId": "event-1", "odpRecordId": 42, "committedAt": "2026-08-30T00:00:00Z"}]
+    assert data["recordReferences"] == [
+        {
+            "sourceId": command.odp_source_id,
+            "eventId": "event-1",
+            "odpRecordId": 42,
+            "committedAt": "2026-08-30T00:00:00Z",
+        }
+    ]
     assert "receipt-secret" not in response.text
 
 
 @pytest.mark.asyncio
-async def test_declared_successful_zero_materializes_without_odp_query(client, db_session, monkeypatch):
+async def test_declared_successful_zero_materializes_without_odp_query(
+    client, db_session, monkeypatch
+):
     scope = await create_scoped_run(db_session)
 
     async def no_dispatch(db, *, command):
         _, outbound = await _attempt_and_outbound(db, command.id)
         return outbound
 
-    monkeypatch.setattr("backend.api.v1.iii_collections.dispatch_collection_attempt", no_dispatch)
-    monkeypatch.setattr("backend.api.v1.iii_collections.get_settings", lambda: SimpleNamespace(iii_lifecycle_token="bridge-token"))
+    monkeypatch.setattr(
+        "backend.api.v1.iii_collections.dispatch_collection_attempt",
+        no_dispatch,
+    )
+    monkeypatch.setattr(
+        "backend.api.v1.iii_collections.get_settings",
+        lambda: SimpleNamespace(iii_lifecycle_token="bridge-token"),
+    )
     submitted = await client.post(route(scope), json=submit_body())
     command = await db_session.get(IIICollectionCommandV1, submitted.json()["data"]["commandId"])
     attempt = await db_session.get(IIICollectionAttemptV1, submitted.json()["data"]["attemptId"])
     assert command is not None and attempt is not None
     headers = {"x-iii-bridge-token": "bridge-token"}
-    assert (await client.post("/api/v1/iii-collections/expected-key-reports", json=report_body(command, attempt, event_id=None), headers=headers)).status_code == 200
+    assert (
+        await client.post(
+            "/api/v1/iii-collections/expected-key-reports",
+            json=report_body(command, attempt, event_id=None),
+            headers=headers,
+        )
+    ).status_code == 200
 
     async def must_not_query(_request):
         raise AssertionError("successful zero must not be inferred from ODP")
 
-    monkeypatch.setattr("backend.workflow.evidence_batch_materializer.post_reconciliation_query", must_not_query)
+    monkeypatch.setattr(
+        "backend.workflow.evidence_batch_materializer.post_reconciliation_query",
+        must_not_query,
+    )
     response = await client.post(f"{route(scope)}/{command.id}/materialize")
     assert response.status_code == 200
     assert response.json()["data"]["materializationStatus"] == "completed_empty"
@@ -244,12 +277,36 @@ async def test_materialization_outage_is_indeterminate_and_recovery_appends_revi
     async def query(request):
         if request["mode"] == "attempt_page":
             if not recovered:
-                raise OdpQueryUnavailable("cursor snapshot unavailable")
-            return {**_base(request), "mode": "attempt_page", "records": [], "results": [], "as_of": "2026-08-30T00:00:00Z"}
+                raise OdpQueryUnavailableError("cursor snapshot unavailable")
+            return {
+                **_base(request),
+                "mode": "attempt_page",
+                "records": [],
+                "results": [],
+                "as_of": "2026-08-30T00:00:00Z",
+            }
         record = _record(command)
-        return {**_base(request), "mode": "exact", "records": [record], "results": [{"key": {"source_id": command.odp_source_id, "event_id": "event-1"}, "classification": "present", "retention_state": "unknown", "record": record}]}
+        return {
+            **_base(request),
+            "mode": "exact",
+            "records": [record],
+            "results": [
+                {
+                    "key": {
+                        "source_id": command.odp_source_id,
+                        "event_id": "event-1",
+                    },
+                    "classification": "present",
+                    "retention_state": "unknown",
+                    "record": record,
+                }
+            ],
+        }
 
-    monkeypatch.setattr("backend.workflow.evidence_batch_materializer.post_reconciliation_query", query)
+    monkeypatch.setattr(
+        "backend.workflow.evidence_batch_materializer.post_reconciliation_query",
+        query,
+    )
     first = await client.post(f"{route(scope)}/{command.id}/materialize")
     assert first.status_code == 200
     assert first.json()["data"]["materializationStatus"] == "indeterminate"
@@ -269,14 +326,27 @@ async def test_materialization_outage_is_indeterminate_and_recovery_appends_revi
 
 
 @pytest.mark.asyncio
-async def test_explicit_signed_rejection_materializes_partial_not_completed(client, db_session, monkeypatch):
-    scope, command = await submit_report_and_receipt(client, db_session, monkeypatch, outcome="rejected")
+async def test_explicit_signed_rejection_materializes_partial_not_completed(
+    client, db_session, monkeypatch
+):
+    scope, command = await submit_report_and_receipt(
+        client, db_session, monkeypatch, outcome="rejected"
+    )
 
     async def query(request):
         assert request["mode"] == "attempt_page"
-        return {**_base(request), "mode": "attempt_page", "records": [], "results": [], "as_of": "2026-08-30T00:00:00Z"}
+        return {
+            **_base(request),
+            "mode": "attempt_page",
+            "records": [],
+            "results": [],
+            "as_of": "2026-08-30T00:00:00Z",
+        }
 
-    monkeypatch.setattr("backend.workflow.evidence_batch_materializer.post_reconciliation_query", query)
+    monkeypatch.setattr(
+        "backend.workflow.evidence_batch_materializer.post_reconciliation_query",
+        query,
+    )
     response = await client.post(f"{route(scope)}/{command.id}/materialize")
     assert response.status_code == 200
     data = response.json()["data"]
@@ -287,22 +357,58 @@ async def test_explicit_signed_rejection_materializes_partial_not_completed(clie
 
 
 @pytest.mark.asyncio
-async def test_materialization_chunks_exact_keys_with_one_scope_fingerprint(client, db_session, monkeypatch):
+async def test_materialization_chunks_exact_keys_with_one_scope_fingerprint(
+    client, db_session, monkeypatch
+):
     event_ids = [f"event-{index}" for index in range(101)]
-    scope, command = await submit_report_and_receipt(client, db_session, monkeypatch, event_ids=event_ids)
+    scope, command = await submit_report_and_receipt(
+        client, db_session, monkeypatch, event_ids=event_ids
+    )
     exact_requests: list[dict] = []
 
     async def query(request):
         if request["mode"] == "attempt_page":
-            return {**_base(request), "mode": "attempt_page", "records": [], "results": [], "as_of": "2026-08-30T00:00:00Z"}
+            return {
+                **_base(request),
+                "mode": "attempt_page",
+                "records": [],
+                "results": [],
+                "as_of": "2026-08-30T00:00:00Z",
+            }
         exact_requests.append(request)
         records = [
-            {"source_id": key["source_id"], "event_id": key["event_id"], "odp_record_id": index + 1, "committed_at": "2026-08-30T00:00:00Z", "provider": "test", "source_ts": "2026-08-30T00:00:00Z"}
+            {
+                "source_id": key["source_id"],
+                "event_id": key["event_id"],
+                "odp_record_id": index + 1,
+                "committed_at": "2026-08-30T00:00:00Z",
+                "provider": "test",
+                "source_ts": "2026-08-30T00:00:00Z",
+            }
             for index, key in enumerate(request["keys"])
         ]
-        return {**_base(request), "mode": "exact", "records": records, "results": [{"key": {"source_id": record["source_id"], "event_id": record["event_id"]}, "classification": "present", "retention_state": "unknown", "record": record} for record in records]}
+        return {
+            **_base(request),
+            "mode": "exact",
+            "records": records,
+            "results": [
+                {
+                    "key": {
+                        "source_id": record["source_id"],
+                        "event_id": record["event_id"],
+                    },
+                    "classification": "present",
+                    "retention_state": "unknown",
+                    "record": record,
+                }
+                for record in records
+            ],
+        }
 
-    monkeypatch.setattr("backend.workflow.evidence_batch_materializer.post_reconciliation_query", query)
+    monkeypatch.setattr(
+        "backend.workflow.evidence_batch_materializer.post_reconciliation_query",
+        query,
+    )
     response = await client.post(f"{route(scope)}/{command.id}/materialize")
     assert response.status_code == 200
     data = response.json()["data"]
@@ -416,7 +522,9 @@ async def test_studio_evidence_routes_project_latest_redacted_scoped_status(
     assert list_data["evidenceBatches"][0]["materializationStatus"] == "completed"
     assert "recordReferences" not in list_data["evidenceBatches"][0]
     assert list_data["nextCursor"] is None
-    assert detail.json()["data"]["recordReferences"] == materialized.json()["data"]["recordReferences"]
+    assert detail.json()["data"]["recordReferences"] == materialized.json()["data"][
+        "recordReferences"
+    ]
     assert status_response.json()["data"]["legacyStatus"] == "completed"
     for forbidden in ("payloadSha256", "signature", "expectedKeySet", "rejectionReason"):
         assert forbidden not in detail.text
@@ -513,7 +621,11 @@ async def test_scoped_materialization_detail_ref_proposes_completed_graph_claim(
         retry = sign_receipt_body(retry)
         headers = {"x-iii-bridge-token": "bridge-token"}
         assert (
-            await client.post("/api/v1/iii-collections/ingress-receipts", json=retry, headers=headers)
+            await client.post(
+                "/api/v1/iii-collections/ingress-receipts",
+                json=retry,
+                headers=headers,
+            )
         ).status_code == 200
         updated = await client.post(f"{collection_route}/{command_id}/materialize")
         assert updated.status_code == 200
@@ -569,7 +681,9 @@ async def test_scoped_materialization_detail_ref_projects_completed_empty(
     assert manifest_ref["manifestSchemaVersion"] == "v1"
     assert len(manifest_ref["manifestHash"]) == 64
     assert len(manifest_ref["expectedRecordKeySetHash"]) == 64
-    assert manifest_ref["recordRefSetHash"] == "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    assert manifest_ref["recordRefSetHash"] == (
+        "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    )
     assert manifest_ref["materializationStatus"] == "completed_empty"
     assert manifest_ref["recordRefs"] == []
     assert manifest_ref["excludedItemKeys"] == []
@@ -654,7 +768,10 @@ async def test_scoped_materialization_detail_ref_projects_exact_partial_exclusio
             "as_of": "2026-08-30T00:00:00Z",
         }
 
-    monkeypatch.setattr("backend.workflow.evidence_batch_materializer.post_reconciliation_query", query)
+    monkeypatch.setattr(
+        "backend.workflow.evidence_batch_materializer.post_reconciliation_query",
+        query,
+    )
     materialized = await client.post(f"{route(scope)}/{command.id}/materialize")
     assert materialized.status_code == 200
     batch_id = materialized.json()["data"]["batchId"]
@@ -739,7 +856,15 @@ async def test_integrity_race_returns_matching_persisted_winner(
         batch_id="00000000-0000-0000-0000-000000000001",
         reconciliation_revision=1,
         item_count=report.item_count,
-        counts={"expected": 1, "record_present": 1, "inserted": 0, "duplicate_existing": 0, "rejected": 0, "dlq": 0, "unknown": 0},
+        counts={
+            "expected": 1,
+            "record_present": 1,
+            "inserted": 0,
+            "duplicate_existing": 0,
+            "rejected": 0,
+            "dlq": 0,
+            "unknown": 0,
+        },
         record_references=[],
         finalization_reason="exact_presence_reconciled",
         query_fingerprint="0" * 64,
@@ -788,7 +913,9 @@ async def test_integrity_race_returns_matching_persisted_winner(
 
 
 @pytest.mark.asyncio
-async def test_studio_materialization_list_pages_sql_latest_summaries(client, db_session, monkeypatch):
+async def test_studio_materialization_list_pages_sql_latest_summaries(
+    client, db_session, monkeypatch
+):
     scope, command = await submit_report_and_receipt(client, db_session, monkeypatch)
     first_attempt = (
         await db_session.execute(

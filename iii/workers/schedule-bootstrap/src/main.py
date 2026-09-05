@@ -6,12 +6,14 @@ import os
 import sys
 import time
 import uuid
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
-from iii import InitOptions, register_worker
 from iii.triggers import Trigger
 from iii_observability import Logger
+
+from iii import InitOptions, register_worker
 
 III_ROOT = Path(__file__).resolve().parents[3]
 if str(III_ROOT) not in sys.path:

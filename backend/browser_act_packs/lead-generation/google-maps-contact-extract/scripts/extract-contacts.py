@@ -5,7 +5,11 @@ import sys
 def main():
     sys.stdout.reconfigure(encoding='utf-8', newline='\n')
     parser = argparse.ArgumentParser()
-    parser.add_argument('--depth', default='shallow')  # 'shallow' = homepage only, 'deep' = also discover contact/about pages
+    # 'shallow' = homepage only, 'deep' = also discover contact/about pages
+    parser.add_argument(
+        '--depth',
+        default='shallow',
+    )
     args = parser.parse_args()
 
     depth = args.depth
@@ -29,7 +33,9 @@ def main():
     var m;
     while ((m = mailtoRe.exec(html)) !== null) {
       var decoded = '';
-      try { decoded = decodeURIComponent(m[1]).toLowerCase(); } catch(x) { decoded = m[1].toLowerCase(); }
+      try {
+        decoded = decodeURIComponent(m[1]).toLowerCase();
+      } catch(x) { decoded = m[1].toLowerCase(); }
       if (!isSpam(decoded)) emailSet[decoded] = true;
     }
     var bodyText = document.body ? (document.body.innerText || '') : '';
@@ -85,9 +91,11 @@ def main():
       var contactLinks = Array.from(document.querySelectorAll('a[href]')).filter(function(a) {
         var href = a.href || '';
         var text = (a.textContent || '').toLowerCase();
-        return (href.indexOf('/contact') !== -1 || href.indexOf('/about') !== -1 ||
-                href.indexOf('/reach') !== -1 || text.match(/contact|about|reach us|get in touch/)) &&
-               href.indexOf(origin) === 0 && href !== url;
+        return (
+          (href.indexOf('/contact') !== -1 || href.indexOf('/about') !== -1 ||
+           href.indexOf('/reach') !== -1 || text.match(/contact|about|reach us|get in touch/)) &&
+          href.indexOf(origin) === 0 && href !== url
+        );
       }).map(function(a) { return a.href.split('#')[0]; });
       var seen = {};
       contactLinks.forEach(function(l) { seen[l] = true; });

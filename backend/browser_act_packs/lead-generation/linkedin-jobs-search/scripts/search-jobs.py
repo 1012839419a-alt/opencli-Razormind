@@ -1,6 +1,7 @@
 import argparse
 import sys
 
+
 def main():
     sys.stdout.reconfigure(encoding='utf-8', newline='\n')
     parser = argparse.ArgumentParser()
@@ -9,8 +10,14 @@ def main():
     parser.add_argument('--start', default='0')              # pagination offset
     parser.add_argument('--count', default='25')             # results per page (max 100)
     parser.add_argument('--work-type', default='')           # 1=On-site, 2=Remote, 3=Hybrid
-    parser.add_argument('--job-type', default='')            # F=Full-time, P=Part-time, C=Contract, T=Temporary, I=Internship, V=Volunteer
-    parser.add_argument('--experience', default='')          # 1=Internship, 2=Entry, 3=Associate, 4=Mid-Senior, 5=Director
+    parser.add_argument(
+        '--job-type',
+        default='',
+    )  # F=Full-time, P=Part-time, C=Contract, T=Temporary, I=Internship, V=Volunteer
+    parser.add_argument(
+        '--experience',
+        default='',
+    )  # 1=Internship, 2=Entry, 3=Associate, 4=Mid-Senior, 5=Director
     parser.add_argument('--time-posted', default='')         # r86400=24h, r604800=7d, r2592000=30d
     parser.add_argument('--company-ids', default='')         # comma-separated LinkedIn company IDs
     args = parser.parse_args()
@@ -41,8 +48,13 @@ def main():
         }};
         const keywords = encodeURIComponent('{args.keywords}');
         const location = encodeURIComponent('{args.location}');
-        const query = `(origin:JOB_SEARCH_PAGE_KEYWORD_HISTORY,keywords:${{keywords}},locationUnion:(seoLocation:(location:${{location}})),{selected_filters}spellCorrectionEnabled:true)`;
-        const url = `/voyager/api/voyagerJobsDashJobCards?decorationId=com.linkedin.voyager.dash.deco.jobs.search.JobSearchCardsCollectionLite-88&count={args.count}&q=jobSearch&query=${{query}}&servedEventEnabled=false&start={args.start}`;
+        const query = `(origin:JOB_SEARCH_PAGE_KEYWORD_HISTORY,keywords:${{keywords}},` +
+          `locationUnion:(seoLocation:(location:${{location}})),` +
+          `{selected_filters}spellCorrectionEnabled:true)`;
+        const url = `/voyager/api/voyagerJobsDashJobCards?decorationId=` +
+          `com.linkedin.voyager.dash.deco.jobs.search.JobSearchCardsCollectionLite-88&` +
+          `count={args.count}&q=jobSearch&query=${{query}}&` +
+          `servedEventEnabled=false&start={args.start}`;
         const res = await fetch(url, {{headers}});
         if (!res.ok) return JSON.stringify({{error: true, message: `HTTP ${{res.status}}`}});
         const data = await res.json();

@@ -12,7 +12,9 @@ async def test_admin_can_create_list_and_update_disabled_automation_draft(db_ses
     workspace = Workspace(name="Automation", slug="automation")
     db_session.add_all((user, workspace))
     await db_session.flush()
-    db_session.add(WorkspaceMembership(workspace_id=workspace.id, user_id=user.id, role=WorkspaceRole.ADMIN))
+    db_session.add(
+        WorkspaceMembership(workspace_id=workspace.id, user_id=user.id, role=WorkspaceRole.ADMIN)
+    )
     await db_session.commit()
 
     app = FastAPI()
@@ -37,7 +39,10 @@ async def test_admin_can_create_list_and_update_disabled_automation_draft(db_ses
         })
         automation_id = created.json()["data"]["id"]
         listed = await client.get(f"/workspaces/{workspace.id}/automations")
-        updated = await client.patch(f"/workspaces/{workspace.id}/automations/{automation_id}", json={"name": "Updated review"})
+        updated = await client.patch(
+            f"/workspaces/{workspace.id}/automations/{automation_id}",
+            json={"name": "Updated review"},
+        )
 
     assert created.status_code == 201
     assert listed.json()["data"][0]["name"] == "Daily review"

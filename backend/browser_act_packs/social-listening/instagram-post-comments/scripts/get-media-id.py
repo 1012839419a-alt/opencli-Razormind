@@ -1,10 +1,15 @@
 import argparse
 import sys
 
+
 def main():
     sys.stdout.reconfigure(encoding='utf-8', newline='\n')
     parser = argparse.ArgumentParser()
-    parser.add_argument('shortcode')  # Post shortcode from URL (e.g., BwrsO1Bho2N from instagram.com/p/BwrsO1Bho2N/)
+    parser.add_argument(
+        'shortcode',
+        help='Post shortcode from URL '
+        '(e.g., BwrsO1Bho2N from instagram.com/p/BwrsO1Bho2N/)',
+    )
     args = parser.parse_args()
 
     js = f"""
@@ -18,10 +23,13 @@ def main():
         }});
         if (!r.ok) {{
           var errText = await r.text();
-          return JSON.stringify({{ error: true, message: 'HTTP ' + r.status, detail: errText.slice(0, 200) }});
+          var detail = errText.slice(0, 200);
+          return JSON.stringify({{ error: true, message: 'HTTP ' + r.status, detail }});
         }}
         var data = await r.json();
-        if (!data.items || !data.items[0]) return JSON.stringify({{ error: true, message: 'Media not found' }});
+        if (!data.items || !data.items[0]) {{
+          return JSON.stringify({{ error: true, message: 'Media not found' }});
+        }}
         var m = data.items[0];
         return JSON.stringify({{
           media_id: m.pk,
@@ -36,6 +44,7 @@ def main():
     }})()
     """
     print(js)
+
 
 if __name__ == '__main__':
     main()

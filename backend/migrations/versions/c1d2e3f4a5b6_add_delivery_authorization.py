@@ -5,8 +5,8 @@ Revises: b0c1d2e3f4a5
 Create Date: 2026-08-30
 """
 
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 
 revision = "c1d2e3f4a5b6"
 down_revision = "b0c1d2e3f4a5"
@@ -25,7 +25,11 @@ def upgrade() -> None:
         sa.Column("target_kind", sa.String(length=64), nullable=False),
         sa.ForeignKeyConstraint(["workspace_id"], ["studio_workspaces.id"], ondelete="RESTRICT"),
         sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint("workspace_id", "receiver_identity", name="uq_delivery_target_receiver"),
+        sa.UniqueConstraint(
+            "workspace_id",
+            "receiver_identity",
+            name="uq_delivery_target_receiver",
+        ),
     )
     op.create_index("ix_delivery_targets_workspace", "delivery_targets", ["workspace_id", "id"])
     op.create_index("ix_delivery_targets_workspace_id", "delivery_targets", ["workspace_id"])
@@ -51,13 +55,25 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["workspace_id"], ["studio_workspaces.id"], ondelete="RESTRICT"),
         sa.ForeignKeyConstraint(["project_id"], ["studio_projects.id"], ondelete="RESTRICT"),
         sa.ForeignKeyConstraint(["workflow_id"], ["studio_workflows.id"], ondelete="RESTRICT"),
-        sa.ForeignKeyConstraint(["studio_workflow_version_id"], ["studio_workflow_versions.id"], ondelete="RESTRICT"),
+        sa.ForeignKeyConstraint(
+            ["studio_workflow_version_id"],
+            ["studio_workflow_versions.id"],
+            ondelete="RESTRICT",
+        ),
         sa.ForeignKeyConstraint(["run_id"], ["workflow_runs.id"], ondelete="RESTRICT"),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("target_id", "revision", name="uq_delivery_target_revision"),
     )
-    op.create_index("ix_delivery_target_revisions_target_id", "delivery_target_revisions", ["target_id"])
-    op.create_index("ix_delivery_target_revision_scope", "delivery_target_revisions", ["workspace_id", "project_id", "workflow_id", "run_id"])
+    op.create_index(
+        "ix_delivery_target_revisions_target_id",
+        "delivery_target_revisions",
+        ["target_id"],
+    )
+    op.create_index(
+        "ix_delivery_target_revision_scope",
+        "delivery_target_revisions",
+        ["workspace_id", "project_id", "workflow_id", "run_id"],
+    )
     op.create_table(
         "delivery_authorization_decisions",
         sa.Column("id", sa.String(length=36), nullable=False),
@@ -104,17 +120,49 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["workspace_id"], ["studio_workspaces.id"], ondelete="RESTRICT"),
         sa.ForeignKeyConstraint(["project_id"], ["studio_projects.id"], ondelete="RESTRICT"),
         sa.ForeignKeyConstraint(["workflow_id"], ["studio_workflows.id"], ondelete="RESTRICT"),
-        sa.ForeignKeyConstraint(["studio_workflow_version_id"], ["studio_workflow_versions.id"], ondelete="RESTRICT"),
+        sa.ForeignKeyConstraint(
+            ["studio_workflow_version_id"],
+            ["studio_workflow_versions.id"],
+            ondelete="RESTRICT",
+        ),
         sa.ForeignKeyConstraint(["run_id"], ["workflow_runs.id"], ondelete="RESTRICT"),
         sa.ForeignKeyConstraint(["target_id"], ["delivery_targets.id"], ondelete="RESTRICT"),
-        sa.ForeignKeyConstraint(["target_revision_id"], ["delivery_target_revisions.id"], ondelete="RESTRICT"),
+        sa.ForeignKeyConstraint(
+            ["target_revision_id"],
+            ["delivery_target_revisions.id"],
+            ondelete="RESTRICT",
+        ),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("decision_hash", name="uq_delivery_authorization_decision_hash"),
-        sa.UniqueConstraint("workspace_id", "project_id", "workflow_id", "studio_workflow_version_id", "run_id", "operation_id", name="uq_delivery_authorization_operation"),
-        sa.UniqueConstraint("workspace_id", "project_id", "workflow_id", "studio_workflow_version_id", "run_id", "idempotency_key", name="uq_delivery_authorization_idempotency"),
+        sa.UniqueConstraint(
+            "workspace_id",
+            "project_id",
+            "workflow_id",
+            "studio_workflow_version_id",
+            "run_id",
+            "operation_id",
+            name="uq_delivery_authorization_operation",
+        ),
+        sa.UniqueConstraint(
+            "workspace_id",
+            "project_id",
+            "workflow_id",
+            "studio_workflow_version_id",
+            "run_id",
+            "idempotency_key",
+            name="uq_delivery_authorization_idempotency",
+        ),
     )
-    op.create_index("ix_delivery_authorization_decisions_target_id", "delivery_authorization_decisions", ["target_id"])
-    op.create_index("ix_delivery_authorization_scope_created", "delivery_authorization_decisions", ["workspace_id", "project_id", "workflow_id", "run_id", "created_at", "id"])
+    op.create_index(
+        "ix_delivery_authorization_decisions_target_id",
+        "delivery_authorization_decisions",
+        ["target_id"],
+    )
+    op.create_index(
+        "ix_delivery_authorization_scope_created",
+        "delivery_authorization_decisions",
+        ["workspace_id", "project_id", "workflow_id", "run_id", "created_at", "id"],
+    )
 
 
 def downgrade() -> None:

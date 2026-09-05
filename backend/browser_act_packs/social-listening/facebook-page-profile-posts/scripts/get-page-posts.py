@@ -1,15 +1,24 @@
 import argparse
 import sys
 
+
 def main():
     sys.stdout.reconfigure(encoding='utf-8', newline='\n')
     parser = argparse.ArgumentParser()
-    parser.add_argument('page_id')                          # Numeric Facebook page/profile ID
-    parser.add_argument('--page-url', default='')           # Original input URL (used as inputUrl / pageName)
-    parser.add_argument('--cursor', default='null')         # Pagination cursor; null for first page
-    parser.add_argument('--after-time', default='null')     # Unix timestamp: only posts after this
-    parser.add_argument('--before-time', default='null')    # Unix timestamp: only posts before this
-    parser.add_argument('--count', default='5')             # Posts per batch (1-10 recommended)
+    parser.add_argument('page_id')  # Numeric Facebook page/profile ID
+    parser.add_argument(
+        '--page-url', default=''
+    )  # Original input URL (used as inputUrl / pageName)
+    parser.add_argument(
+        '--cursor', default='null'
+    )  # Pagination cursor; null for first page
+    parser.add_argument(
+        '--after-time', default='null'
+    )  # Unix timestamp: only posts after this
+    parser.add_argument(
+        '--before-time', default='null'
+    )  # Unix timestamp: only posts before this
+    parser.add_argument('--count', default='5')  # Posts per batch (1-10 recommended)
     args = parser.parse_args()
 
     cursor_val = 'null' if args.cursor == 'null' else repr(args.cursor)
@@ -25,7 +34,8 @@ def main():
   try {{
     const fbDtsg = require('DTSGInitData')?.token || '';
     let lsd = '';
-    const allScripts = Array.from(document.querySelectorAll('script')).map(s => s.textContent).join('');
+    const allScripts = Array.from(document.querySelectorAll('script'))
+      .map(s => s.textContent).join('');
     const lsdM = allScripts.match(/"LSD"[^}}]*"token":"([^"]+)"/);
     if (lsdM) lsd = lsdM[1];
 
@@ -63,7 +73,8 @@ def main():
       '__relay_internal__pv__IncludeCommentWithAttachmentrelayprovider': true,
       '__relay_internal__pv__GHLShouldUpdateVideoPreviewImagerelayprovider': false,
       '__relay_internal__pv__GHLVideoTimestampOnShortsrelayprovider': false,
-      '__relay_internal__pv__CometFeedStoryDangerouslySetInnerFeedItemDisplayContentrelayprovider': false,
+      ['__relay_internal__pv__FBReelsMediaFooter_comet_enable_reels_ads_' +
+        'gkrelayprovider']: false,
       '__relay_internal__pv__StoriesRingrelayprovider': false,
       '__relay_internal__pv__UseCometRouter_cometRouterrelayprovider': false,
       '__relay_internal__pv__FBReelsFeedbackActionsrelayprovider': false,
@@ -95,7 +106,13 @@ def main():
 
     const text = await resp.text();
     const lines = text.split('\\n').filter(l => l.trim().startsWith('{{'));
-    if (lines.length < 2) return JSON.stringify({{ error: true, message: 'Unexpected response format', raw: text.slice(0, 200) }});
+    if (lines.length < 2) {{
+      return JSON.stringify({{
+        error: true,
+        message: 'Unexpected response format',
+        raw: text.slice(0, 200)
+      }});
+    }}
 
     const inputUrl = '{page_url}';
     const pageId   = '{args.page_id}';
@@ -195,11 +212,16 @@ def main():
       const actor0 = contentActors?.[0];
 
       // Collaborators
-      const collabs = (node?.comet_sections?.context_layout?.story?.comet_sections?.title?.story?.collaborators || [])
-        .map(c => ({{ id: c?.id || null, name: c?.name || null, profileUrl: c?.url || null }}));
+      const collabs = (
+        node?.comet_sections?.context_layout?.story?.comet_sections?.title
+          ?.story?.collaborators || []
+      ).map(c => ({{ id: c?.id || null, name: c?.name || null, profileUrl: c?.url || null }}));
 
       // Page ad library
-      const delegatePage = node?.comet_sections?.context_layout?.story?.comet_sections?.actor_photo?.story?.actors?.[0]?.delegate_page;
+      const delegatePage = (
+        node?.comet_sections?.context_layout?.story?.comet_sections
+          ?.actor_photo?.story?.actors?.[0]?.delegate_page
+      );
       const pageAdLibrary = delegatePage ? {{
         is_business_page_active: delegatePage.is_business_page_active ?? null,
         id: delegatePage.id || null
@@ -213,7 +235,9 @@ def main():
       const flat = flatReactions(topReactions);
 
       const likes    = renderers?.[0]?.feedback?.reaction_count?.count ?? null;
-      const comments = renderers?.[1]?.feedback?.comment_rendering_instance?.comments?.total_count ?? null;
+      const comments =
+        renderers?.[1]?.feedback?.comment_rendering_instance
+          ?.comments?.total_count ?? null;
       const shares   = renderers?.[2]?.feedback?.share_count?.count ?? null;
 
       const creationTime = node?.comet_sections?.timestamp?.story?.creation_time || null;
